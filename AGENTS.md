@@ -28,6 +28,10 @@ cargo test                               # 全量单测（约 140 个）
 # 桥接同步（改 bridge/ 后必做；重启 dsh web 后生效）
 robocopy bridge\src "$env:DSH_HOME\profiles\web\packages\dsh-tui-bridge\src" /MIR
 
+# 桥接测试（node:test；纯函数 + 登录文件层 + model-selection 钩子）
+cd bridge; npm test
+node tools/smoke-bridge.mjs        # DSH 升级后跑：对部署副本跑契约冒烟
+
 # 联调
 node tools/probe-online.mjs       # 桥接是否在线
 node tools/hello-test.mjs         # 发 hello 打印全部帧（验证启动路径）
@@ -89,6 +93,15 @@ cargo 走 crates.io 官方源（本机网络已修复）。`client/vendor/` 与
 
 ### bridge（Node.js）
 
+- **模块布局**：`index.js` 只留 socket/会话生命周期与消息分发；`trim.js`（负载
+  裁剪纯函数）、`compose.js`（harness 路径、session 元数据、model-selection
+  钩子）、`login.js`（/login 三字段与文件/凭证落点，home 可注入）都有
+  `node:test` 单测（`bridge/test/`，`cd bridge && npm test`）。新代码进对应
+  模块，别再往 index.js 里堆纯逻辑。
+- **跨 await 的 conn 纪律**：消息处理器里凡是 `await` 之后要动 `conn`（detach/
+  重绑）的，必须在 await 前捕获局部 `current = conn`，await 后校验
+  `conn === current && conns.has(current)` 再操作——连续 attach/`/new` 会并发
+  交换闭包里的 `conn`，操作过期连接会串会话（`attach` 分支有对照实现）。
 - 一切副作用挂 `ctx.effect()`；连接对象在 `conns` 集合，detach 必须清理监听、
   撤销待审批（`done('cancelled')`）。
 - **快照/历史数据源**：活跃会话取 `agent.session.events`（内存，零磁盘读）；
@@ -166,8 +179,10 @@ cargo 走 crates.io 官方源（本机网络已修复）。`client/vendor/` 与
   断言缓存行数/颜色/内容），不能只靠模型层测试。
 - 已知偶发：全量并行测试偶有一次 flake（tool 卡片断言），单跑或复跑即过，勿
   据此大改。
-- 桥接侧无测试框架；纯函数用 `node -e` 从 profile 副本 import
-  `_trimToolResultEvent` 做冒烟。
+- 桥接侧有 `node:test`（`bridge/test/`，`cd bridge && npm test`）：trim/compose/
+  login 三个模块各一文件；文件层测试必须走 temp home（不要碰真实 `%DSH_HOME%`）。
+  DSH 升级后跑 `node tools/smoke-bridge.mjs` 对部署副本做契约冒烟
+  （`installModelSelection` 是内联副本，钉在 DSH 版本上）。
 
 ## 已知事项
 

@@ -46,18 +46,32 @@ const MAX_RENDER_LINES_PER_MSG: usize = 800;
 /// Horizontal page margin in columns (user preference, 4 spaces each side).
 const PAGE_MARGIN: u16 = 4;
 
+/// Per-frame overlay/panel handles handed to `render` — one struct instead
+/// of five trailing parameters (the panels are owned by the main loop, the
+/// renderer only borrows them for one frame).
+pub struct RenderOverlays<'a> {
+    pub help_visible: bool,
+    pub overlay: Option<&'a CopyOverlay>,
+    pub toast: Option<&'a str>,
+    pub settings: Option<&'a mut SettingsState>,
+    pub login: Option<&'a mut LoginState>,
+}
+
 pub fn render(
     frame: &mut Frame,
     state: &mut AppState,
     input: &InputState,
     scroll: &mut ScrollState,
     theme: &Theme,
-    help_visible: bool,
-    overlay: Option<&CopyOverlay>,
-    toast: Option<&str>,
-    mut settings: Option<&mut SettingsState>,
-    mut login: Option<&mut LoginState>,
+    overlays: RenderOverlays<'_>,
 ) {
+    let RenderOverlays {
+        help_visible,
+        overlay,
+        toast,
+        mut settings,
+        mut login,
+    } = overlays;
     let area = frame.area();
     // Page: fixed side margins, capped at the configured max width and
     // centered; text wraps within this content width.
@@ -2173,7 +2187,7 @@ mod tests {
         let backend = TestBackend::new(80, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| render(f, &mut s, &input, &mut scroll, &theme, false, None, None, None, None))
+            .draw(|f| render(f, &mut s, &input, &mut scroll, &theme, RenderOverlays { help_visible: false, overlay: None, toast: None, settings: None, login: None }))
             .unwrap();
         let buf = terminal.backend().buffer();
         let row = |y: u16| -> String {
@@ -2202,7 +2216,7 @@ mod tests {
             (crate::model::BREATH_CYCLE_MS / 2) as u64,
         ));
         terminal
-            .draw(|f| render(f, &mut s, &input, &mut scroll, &theme, false, None, None, None, None))
+            .draw(|f| render(f, &mut s, &input, &mut scroll, &theme, RenderOverlays { help_visible: false, overlay: None, toast: None, settings: None, login: None }))
             .unwrap();
         let backend_fg = terminal.backend().buffer()[(bullet_x as u16, 38)].fg;
         assert_ne!(backend_fg, theme.dim, "working bullet breathes (not gray)");
@@ -2224,7 +2238,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| render(f, &mut s, &input, &mut scroll, &theme, false, None, None, None, None))
+            .draw(|f| render(f, &mut s, &input, &mut scroll, &theme, RenderOverlays { help_visible: false, overlay: None, toast: None, settings: None, login: None }))
             .unwrap();
         // Fixed bottom: input(3, y18..21) + gap(y21) + status(y22) + title(y23).
         let title_row = |buf: &ratatui::buffer::Buffer, y: u16| -> String {
@@ -2241,7 +2255,7 @@ mod tests {
         // Without a title the row is blank (no leftover glyphs).
         s.session_title = None;
         terminal
-            .draw(|f| render(f, &mut s, &input, &mut scroll, &theme, false, None, None, None, None))
+            .draw(|f| render(f, &mut s, &input, &mut scroll, &theme, RenderOverlays { help_visible: false, overlay: None, toast: None, settings: None, login: None }))
             .unwrap();
         let blank = title_row(terminal.backend().buffer(), 23);
         assert!(blank.trim().is_empty(), "blank title row: {blank:?}");
@@ -2281,7 +2295,7 @@ mod tests {
         let backend = TestBackend::new(80, 12);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| render(f, &mut s, &input, &mut scroll, &theme, false, None, None, None, None))
+            .draw(|f| render(f, &mut s, &input, &mut scroll, &theme, RenderOverlays { help_visible: false, overlay: None, toast: None, settings: None, login: None }))
             .unwrap();
         let buf = terminal.backend().buffer();
         let row = |y: u16| -> String {
@@ -2331,7 +2345,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| render(f, &mut s, &input, &mut scroll, &theme, false, None, None, None, None))
+            .draw(|f| render(f, &mut s, &input, &mut scroll, &theme, RenderOverlays { help_visible: false, overlay: None, toast: None, settings: None, login: None }))
             .unwrap();
         let buf = terminal.backend().buffer();
         let row = |y: u16| -> String {
@@ -2400,11 +2414,13 @@ mod tests {
                     &input,
                     &mut scroll,
                     &theme,
-                    false,
-                    None,
-                    None,
-                    Some(&mut settings),
-                    None,
+                    RenderOverlays {
+                        help_visible: false,
+                        overlay: None,
+                        toast: None,
+                        settings: Some(&mut settings),
+                        login: None,
+                    },
                 )
             })
             .unwrap();
@@ -2451,11 +2467,13 @@ mod tests {
                     &input,
                     &mut scroll,
                     &theme,
-                    false,
-                    None,
-                    None,
-                    Some(&mut settings),
-                    None,
+                    RenderOverlays {
+                        help_visible: false,
+                        overlay: None,
+                        toast: None,
+                        settings: Some(&mut settings),
+                        login: None,
+                    },
                 )
             })
             .unwrap();
@@ -2480,15 +2498,15 @@ mod tests {
         let mut scroll = ScrollState::default();
         let theme = Theme::ferra();
         let mut login = crate::login::LoginState::default();
-        login.apply(
-            true,
-            true,
-            Some("file".into()),
-            Some("…1234".into()),
-            Some("a1b2c3d4-0000-0000-0000-000000000000".into()),
-            None,
-            None,
-        );
+        login.apply(crate::login::LoginView {
+            api_key_configured: true,
+            api_key_writable: true,
+            api_key_source: Some("file".into()),
+            api_key_hint: Some("…1234".into()),
+            account: Some("a1b2c3d4-0000-0000-0000-000000000000".into()),
+            proxy: None,
+            error: None,
+        });
         let backend = TestBackend::new(80, 24);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
@@ -2499,11 +2517,13 @@ mod tests {
                     &input,
                     &mut scroll,
                     &theme,
-                    false,
-                    None,
-                    None,
-                    None,
-                    Some(&mut login),
+                    RenderOverlays {
+                        help_visible: false,
+                        overlay: None,
+                        toast: None,
+                        settings: None,
+                        login: Some(&mut login),
+                    },
                 )
             })
             .unwrap();
@@ -2538,11 +2558,13 @@ mod tests {
                     &input,
                     &mut scroll,
                     &theme,
-                    false,
-                    None,
-                    None,
-                    None,
-                    Some(&mut login),
+                    RenderOverlays {
+                        help_visible: false,
+                        overlay: None,
+                        toast: None,
+                        settings: None,
+                        login: Some(&mut login),
+                    },
                 )
             })
             .unwrap();
@@ -2578,7 +2600,7 @@ mod tests {
         let backend = TestBackend::new(80, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| render(f, &mut s, &input, &mut scroll, &theme, false, None, None, None, None))
+            .draw(|f| render(f, &mut s, &input, &mut scroll, &theme, RenderOverlays { help_visible: false, overlay: None, toast: None, settings: None, login: None }))
             .unwrap();
         let buf = terminal.backend().buffer();
         // Layout: 40 rows = transcript(35) + input(3) + spacer(1) + status(1)
@@ -2758,7 +2780,7 @@ mod tests {
         let backend = TestBackend::new(80, 12);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| render(f, &mut s, &input, &mut scroll, &theme, false, None, None, None, None))
+            .draw(|f| render(f, &mut s, &input, &mut scroll, &theme, RenderOverlays { help_visible: false, overlay: None, toast: None, settings: None, login: None }))
             .unwrap();
         let buf = terminal.backend().buffer();
         // Page x = (80 - 72) / 2 = 4; 150 columns wrap into 3 rows (72/72/6)
@@ -2907,7 +2929,7 @@ mod tests {
         let backend = TestBackend::new(80, 20);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| render(f, &mut s, &input, &mut scroll, &theme, false, None, None, None, None))
+            .draw(|f| render(f, &mut s, &input, &mut scroll, &theme, RenderOverlays { help_visible: false, overlay: None, toast: None, settings: None, login: None }))
             .unwrap();
         let buf = terminal.backend().buffer();
         // Content width capped at 40, centered on 80 → x = 20..60.
@@ -3189,7 +3211,7 @@ mod tests {
         let backend = TestBackend::new(80, 12);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| render(f, &mut s, &input, &mut scroll, &theme, false, None, None, None, None))
+            .draw(|f| render(f, &mut s, &input, &mut scroll, &theme, RenderOverlays { help_visible: false, overlay: None, toast: None, settings: None, login: None }))
             .unwrap();
         let buf = terminal.backend().buffer();
         // Block = padding + content + padding rows (y 0..3), all solid.

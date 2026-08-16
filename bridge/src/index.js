@@ -11,262 +11,32 @@
  *         | interrupt{} | ping{}
  *   down: welcome{sessionId,status,provider?,model?,title?} | snapshot{events[]}
  *         | event{event} | status{status} | presets{presets[]} | title{title}
- *         | login{apiKey,account?,proxy?,error?} | error{code,message} | pong{}
+ *         | login{apiKeyConfigured,apiKeyWritable,apiKeySource?,apiKeyHint?,
+ *                account?,proxy?,error?} | error{code,message} | pong{}
+ *
+ * Module layout (index.js keeps only the socket/session lifecycle):
+ *   trim.js    — payload trimming (pure)
+ *   compose.js — harness-home paths, session meta, model-selection hooks
+ *   login.js   — the /login fields and their file/credentials seams
  */
 import { randomBytes, randomUUID } from 'node:crypto'
-import { existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { WebSocket, WebSocketServer } from 'ws'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { buildToolNames, trimToolResultEvent } from './trim.js'
+import {
+  defaultModelSelection,
+  dshHome,
+  installModelSelection,
+  isExistingDirectory,
+  latestTitle,
+  sessionPresetOf,
+} from './compose.js'
+import { sendLogin, setLoginField } from './login.js'
 
 const name = 'tui-bridge'
 const inject = ['webServer']
-
-// ---- payload trimming (pure, module-level for tests) ----
-// tool/result payloads are the bulk of a session log. The TUI only needs
-// the toolCallId plus the tail of the output (exit marker, line count).
-// Reads (file contents) are not displayed at all — strip them entirely.
-const TOOL_RESULT_TAIL_CHARS = 2000
-const READ_TOOLS = new Set(['read', 'read_text', 'read_image'])
-
-/**
- * Trim one event's tool/result payload. Returns the same object when
- * nothing changed (no clone), a shallow clone otherwise.
- */
-function trimToolResultEvent(e, toolNames) {
-  if (e?.type !== 'tool/result') return e
-  const blocks = e.data?.message?.content
-  if (!Array.isArray(blocks) || blocks.length === 0) return e
-  const head = blocks[0]
-  if (!head || !Array.isArray(head.content)) return e
-  const toolName = toolNames.get(head.toolCallId)
-  const tail = READ_TOOLS.has(toolName) ? 0 : TOOL_RESULT_TAIL_CHARS
-  let changed = false
-  const inner = head.content.map((b) => {
-    if (b?.type === 'text' && typeof b.text === 'string' && b.text.length > tail) {
-      changed = true
-      return { ...b, text: tail > 0 ? b.text.slice(-tail) : '' }
-    }
-    return b
-  })
-  if (!changed) return e
-  return {
-    ...e,
-    data: {
-      ...e.data,
-      message: { ...e.data.message, content: [{ ...head, content: inner }] },
-    },
-  }
-}
-
-/** callId -> tool name, for payload-trim decisions. */
-function buildToolNames(events) {
-  const names = new Map()
-  for (const e of events) {
-    if (e.type === 'tool/call' && e.data?.callId) names.set(e.data.callId, e.data?.name)
-  }
-  return names
-}
-
-/** Root DSH home, matching the deployment's own resolution. */
-function dshHome() {
-  return process.env.DSH_HOME
-    ?? join(process.env.HOME ?? process.env.USERPROFILE ?? '.', '.dsh')
-}
-
-/** Whether `p` names an existing directory (the client's cwd claim). */
-function isExistingDirectory(p) {
-  if (typeof p !== 'string' || p === '') return false
-  try { return statSync(p).isDirectory() } catch { return false }
-}
-
-/** Latest `session/title` of a session's log, or undefined. */
-function latestTitle(events) {
-  const list = Array.isArray(events) ? events : []
-  for (let i = list.length - 1; i >= 0; i--) {
-    if (list[i]?.type === 'session/title') return list[i].data?.title
-  }
-  return undefined
-}
-
-/** Preset id a session recorded: latest `agent-preset/selected`, else header. */
-function sessionPresetOf(meta, events) {
-  const list = Array.isArray(events) ? events : []
-  for (let i = list.length - 1; i >= 0; i--) {
-    if (list[i]?.type === 'agent-preset/selected') return list[i].data?.agentPreset
-  }
-  return meta?.agentPreset
-}
-
-/**
- * Agent-scoped model selection, inlined from @deepseek-ai/dsh-agent's
- * `installModelSelection` so the bridge keeps its tiny dependency surface.
- * Without it the selected provider/model never reach prompt assembly — the
- * deployment persona's `{{model}}` variable stays unbound and every turn
- * fails with "prompt variable {{model}} has no value". The host's own
- * entry points (web `session.create`, headless) install this in `setup`,
- * and the bridge must do the same for every session it creates or resumes.
- *
- * `selection` is the mutable `{ current, assembled }` pair: `current` feeds
- * the persona/assembly variables, `assembled` snapshots it for request
- * routing so a later switch never splits the two surfaces mid-step.
- */
-function installModelSelection(agentCtx, selection) {
-  const disposeAssembly = agentCtx.on('system-prompt/assemble', async (_assembly, _context, next) => {
-    const selected = selection.current
-    const assembled = await next()
-    selection.assembled = selected
-    if (selected === undefined) return assembled
-    return {
-      ...assembled,
-      variables: { ...assembled.variables, provider: selected.provider, model: selected.model },
-    }
-  })
-  const disposeRequest = agentCtx.on('agent/request', async (_payload, next) => {
-    const resolved = await next()
-    const selected = selection.assembled
-    if (selected === undefined) return resolved
-    const { reasoningEffort: _inheritedEffort, ...withoutInheritedEffort } = resolved
-    return {
-      ...withoutInheritedEffort,
-      provider: selected.provider,
-      model: selected.model,
-      ...(selected.reasoningEffort === undefined ? {} : { reasoningEffort: selected.reasoningEffort }),
-    }
-  })
-  return () => { disposeAssembly(); disposeRequest() }
-}
-
-/** Default model selection the host composes, or undefined without the service. */
-function defaultModelSelection(ctx) {
-  const service = ctx.get('agentDefaultModel')
-  return typeof service?.currentSelection === 'function' ? service.currentSelection() : undefined
-}
-
-// ---- /login fields (D33) ----
-// API key: the deepseek provider's credential ref, stored through the host's
-// credentials service (same document the web Models page writes) — the value
-// never crosses the wire, only its configured/source/hint view.
-const DEEPSEEK_API_KEY_REF = 'DEEPSEEK_API_KEY'
-// 账号: the harness's anonymous user id (sent as x-deepseek-harness-user-id),
-// a bare UUID line in <harness home>/.anonymous-user-id. Blank = delete →
-// the next launch mints a fresh id.
-const ACCOUNT_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-// proxy: the HTTPS_PROXY line of <harness home>/.env — the harness loads
-// that file into its launch environment at boot, so edits apply after the
-// next dsh web restart.
-const PROXY_ENV_NAME = 'HTTPS_PROXY'
-
-function accountFile() { return join(dshHome(), '.anonymous-user-id') }
-function envFile() { return join(dshHome(), '.env') }
-
-/** The persisted harness account id, or undefined (auto-generated). */
-function readAccount() {
-  try {
-    const text = readFileSync(accountFile(), 'utf8').trim()
-    return ACCOUNT_UUID_PATTERN.test(text) ? text : undefined
-  } catch { return undefined }
-}
-
-/** Value of one KEY= line in the harness-home .env, or undefined. */
-function readEnvLine(name) {
-  try {
-    const text = readFileSync(envFile(), 'utf8')
-    for (const line of text.split(/\r?\n/)) {
-      const eq = line.indexOf('=')
-      if (eq !== -1 && line.slice(0, eq).trim() === name) return line.slice(eq + 1)
-    }
-    return undefined
-  } catch { return undefined }
-}
-
-/**
- * Replace (or remove, when `value` is undefined/empty) one KEY line in the
- * harness-home .env, leaving every other line byte-identical. The file's own
- * line-ending style is preserved.
- */
-function writeEnvLine(name, value) {
-  const file = envFile()
-  let text = ''
-  try { text = readFileSync(file, 'utf8') } catch {}
-  const eol = text.includes('\r\n') ? '\r\n' : '\n'
-  const lines = text.split(/\r?\n/)
-  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
-  const kept = lines.filter((line) => {
-    const eq = line.indexOf('=')
-    return eq === -1 || line.slice(0, eq).trim() !== name
-  })
-  if (typeof value === 'string' && value !== '') kept.push(`${name}=${value}`)
-  if (kept.length === 0) {
-    try { unlinkSync(file) } catch {}
-    return
-  }
-  writeFileSync(file, `${kept.join(eol)}${eol}`, 'utf8')
-}
-
-/** Persist the harness account id; an empty value deletes it (fresh id next launch). */
-function writeAccount(value) {
-  if (value === '') {
-    try { unlinkSync(accountFile()) } catch {}
-    return
-  }
-  if (!ACCOUNT_UUID_PATTERN.test(value)) {
-    throw new Error(`账号必须是 UUID 格式（如 ${randomUUID()}），留空则自动生成`)
-  }
-  writeFileSync(accountFile(), `${value.trim()}\n`, 'utf8')
-}
-
-/**
- * Read/write one login field through the host's own seams: the API key goes
- * through the credentials service (hot reload), the account and proxy are
- * harness-home files read at the next host launch.
- */
-async function setLoginField(ctx, field, value) {
-  if (field === 'apiKey') {
-    const credentials = ctx.get('credentials')
-    if (!credentials) throw new Error('credentials service unavailable')
-    if (value === '') await credentials.unset(DEEPSEEK_API_KEY_REF)
-    else await credentials.set(DEEPSEEK_API_KEY_REF, value)
-  } else if (field === 'account') {
-    writeAccount(value)
-  } else if (field === 'proxy') {
-    writeEnvLine(PROXY_ENV_NAME, value === '' ? undefined : value)
-  } else {
-    throw new Error(`unknown login field "${field}"`)
-  }
-}
-
-/** Push the login page state; `error` is the message of a rejected write. */
-async function sendLogin(ctx, send, ws, error) {
-  let apiKey = { configured: false, writable: false, source: undefined, hint: undefined }
-  try {
-    const credentials = ctx.get('credentials')
-    if (credentials) {
-      const view = await credentials.describe(DEEPSEEK_API_KEY_REF)
-      apiKey.configured = view?.configured === true
-      apiKey.writable = view?.writable === true
-      apiKey.source = view?.source
-      if (apiKey.configured) {
-        const hit = await credentials.resolve(DEEPSEEK_API_KEY_REF)
-        const value = hit?.value
-        // Only a hint ever leaves the host — never the secret itself.
-        if (typeof value === 'string' && value.length > 4) apiKey.hint = `…${value.slice(-4)}`
-      }
-    }
-  } catch (loginError) {
-    error = error ?? String(loginError?.message ?? loginError)
-  }
-  send(ws, {
-    type: 'login',
-    apiKeyConfigured: apiKey.configured,
-    apiKeyWritable: apiKey.writable,
-    ...(apiKey.source !== undefined ? { apiKeySource: apiKey.source } : {}),
-    ...(apiKey.hint !== undefined ? { apiKeyHint: apiKey.hint } : {}),
-    ...(readAccount() !== undefined ? { account: readAccount() } : {}),
-    ...(readEnvLine(PROXY_ENV_NAME) !== undefined ? { proxy: readEnvLine(PROXY_ENV_NAME) } : {}),
-    ...(error !== undefined ? { error } : {}),
-  })
-}
 
 function apply(ctx, config = {}) {
   const routePath = config.path ?? '/dsh-tui'
@@ -311,6 +81,13 @@ function apply(ctx, config = {}) {
     'user/message', 'assistant/message', 'tool/call', 'tool/result',
     'turn/start', 'turn/end', 'todo/write',
   ])
+  // Replay-window budgets. SNAPSHOT_CAP is the WIRE budget — one welcome
+  // frame must stay small for a cold terminal attach, so it is deliberately
+  // lower than the client's own local replay guard (model.rs
+  // SNAPSHOT_SURFACE_CAP=2000): the client cap protects its render cache
+  // from pathological logs, the bridge cap protects the socket frame.
+  // HISTORY_CAP bounds one lazy scroll-back page (independent knob — a
+  // PageUp burst must not flood the client).
   const SNAPSHOT_CAP = 600
   const HISTORY_CAP = 2000
   const trimEvent = trimToolResultEvent
@@ -745,7 +522,12 @@ function apply(ctx, config = {}) {
           break
         }
         case 'attach': {
-          if (!conn || typeof msg.sessionId !== 'string') return
+          // Capture the connection this request belongs to BEFORE any
+          // await: while `resumePersistedSession` runs, another attach or
+          // `/new` message may swap the closure's `conn`, and detaching the
+          // newer connection would strand or corrupt this socket.
+          const current = conn
+          if (!current || typeof msg.sessionId !== 'string') return
           void (async () => {
             // Picker / `/resume <id>`: live agents attach directly; a
             // persisted-but-cold session is resumed first (same path as
@@ -756,8 +538,11 @@ function apply(ctx, config = {}) {
               send(ws, { type: 'error', code: 'no-live-session', message: `no live agent ${msg.sessionId}` })
               return
             }
-            const clientCwd = conn.clientCwd
-            detach(conn, { keepSocket: true })
+            // A later message already moved this socket — abandon silently
+            // (the newer operation owns it now).
+            if (conn !== current || !conns.has(current)) return
+            const clientCwd = current.clientCwd
+            detach(current, { keepSocket: true })
             conn = attach(ws, nextAgent, clientCwd)
           })().catch((error) => {
             send(ws, { type: 'error', code: 'attach-failed', message: String(error?.message ?? error) })

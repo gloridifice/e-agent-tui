@@ -117,5 +117,8 @@ node probe-online.mjs       # 桥接在线探测
 node hello-test.mjs         # 发 hello 并打印全部帧（复现/验证启动路径）
 node probe-startup.mjs      # attach 延迟 + 快照帧大小（启动瓶颈测量）
 node dump-snapshot.mjs      # 抓真实快照样本（供 smoke/时序 example 离线用）
+node smoke-bridge.mjs       # 对部署副本跑纯函数契约冒烟（DSH 升级后必跑）
 node ws-test.mjs            # 协议往返测试
 ```
+
+桥接侧单测（node:test，trim/compose/login 三个模块）：`cd bridge && npm test`。

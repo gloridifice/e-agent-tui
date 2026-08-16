@@ -12,9 +12,12 @@ use ratatui::style::Color;
 use crate::config::{Config, Theme};
 use crate::render::{render_markdown, RenderLine, RenderOptions};
 
-/// Snapshot guard: only this many surface events are replayed. Kept small
-/// until the bridge-side trimming ships with a DSH restart; huge replays
-/// otherwise make every frame rebuild thousands of lines.
+/// Snapshot guard: only this many surface events are replayed. This is the
+/// CLIENT's local render-cache budget, independent of the bridge's wire
+/// budget (`SNAPSHOT_CAP` = 600 in bridge/src/index.js): the bridge keeps
+/// the welcome frame small, this cap protects the cache from pathological
+/// logs that arrive through other paths. Do not "unify" the two values —
+/// they guard different layers.
 const SNAPSHOT_SURFACE_CAP: usize = 2000;
 
 /// One breathing cycle (gray → yellow → gray) of the running indicator.

@@ -70,26 +70,30 @@ impl Default for LoginState {
     }
 }
 
+/// One bridge `login` frame — the value VIEW only: the API key itself
+/// never leaves the host (its view is `configured/writable/source/hint`).
+#[derive(Debug, Clone, Default)]
+pub struct LoginView {
+    pub api_key_configured: bool,
+    pub api_key_writable: bool,
+    pub api_key_source: Option<String>,
+    pub api_key_hint: Option<String>,
+    pub account: Option<String>,
+    pub proxy: Option<String>,
+    /// Message of the last rejected write; absent after a success.
+    pub error: Option<String>,
+}
+
 impl LoginState {
-    /// Apply one bridge `login` frame (via crate::protocol::ServerMessage::Login).
-    #[allow(clippy::too_many_arguments)]
-    pub fn apply(
-        &mut self,
-        api_key_configured: bool,
-        api_key_writable: bool,
-        api_key_source: Option<String>,
-        api_key_hint: Option<String>,
-        account: Option<String>,
-        proxy: Option<String>,
-        error: Option<String>,
-    ) {
-        self.api_key_configured = api_key_configured;
-        self.api_key_writable = api_key_writable;
-        self.api_key_source = api_key_source;
-        self.api_key_hint = api_key_hint;
-        self.account = account;
-        self.proxy = proxy;
-        self.error = error;
+    /// Apply one bridge `login` frame.
+    pub fn apply(&mut self, view: LoginView) {
+        self.api_key_configured = view.api_key_configured;
+        self.api_key_writable = view.api_key_writable;
+        self.api_key_source = view.api_key_source;
+        self.api_key_hint = view.api_key_hint;
+        self.account = view.account;
+        self.proxy = view.proxy;
+        self.error = view.error;
         self.loading = false;
     }
 
@@ -240,15 +244,15 @@ mod tests {
     fn login_frame_updates_state_and_clears_error() {
         let mut s = LoginState::default();
         s.error = Some("旧错误".into());
-        s.apply(
-            true,
-            true,
-            Some("file".into()),
-            Some("…abcd".into()),
-            Some("a1b2c3d4-0000-0000-0000-000000000000".into()),
-            Some("http://127.0.0.1:7890".into()),
-            None,
-        );
+        s.apply(LoginView {
+            api_key_configured: true,
+            api_key_writable: true,
+            api_key_source: Some("file".into()),
+            api_key_hint: Some("…abcd".into()),
+            account: Some("a1b2c3d4-0000-0000-0000-000000000000".into()),
+            proxy: Some("http://127.0.0.1:7890".into()),
+            error: None,
+        });
         assert!(s.api_key_configured);
         assert_eq!(s.api_key_hint.as_deref(), Some("…abcd"));
         assert_eq!(s.account.as_deref(), Some("a1b2c3d4-0000-0000-0000-000000000000"));

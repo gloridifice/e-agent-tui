@@ -57,7 +57,13 @@ fn main() -> anyhow::Result<()> {
     let backend = ratatui::backend::TestBackend::new(120, 40);
     let mut terminal = ratatui::Terminal::new(backend)?;
     terminal.draw(|frame| {
-        render(frame, &mut state, &input, &mut scroll, &theme, false, None, None, None, None);
+        render(frame, &mut state, &input, &mut scroll, &theme, dsh_tui::ui::RenderOverlays {
+            help_visible: false,
+            overlay: None,
+            toast: None,
+            settings: None,
+            login: None,
+        });
     })?;
     let t4 = Instant::now();
     println!(

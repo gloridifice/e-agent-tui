@@ -87,16 +87,22 @@ async fn main() -> anyhow::Result<()> {
     result
 }
 
+/// Mutable locals that bridge messages update — grouped so `handle_msg`
+/// keeps a short parameter list instead of five `&mut` tails.
+pub struct UiChannels<'a> {
+    pub picker: &'a mut Option<PickerState>,
+    pub scroll: &'a mut ScrollState,
+    pub copy_mode: &'a mut Option<copy::CopyMode>,
+    pub new_modes: &'a mut Vec<NewMode>,
+    pub login: &'a mut Option<LoginState>,
+}
+
 /// Apply one bridge message to the shared state. Returns a fatal reason when
 /// the connection is unusable and the main loop must stop.
 fn handle_msg(
     msg: ServerMessage,
     state_r: &Arc<std::sync::Mutex<AppState>>,
-    picker: &mut Option<PickerState>,
-    scroll: &mut ScrollState,
-    copy_mode: &mut Option<copy::CopyMode>,
-    new_modes: &mut Vec<NewMode>,
-    login: &mut Option<LoginState>,
+    ui: &mut UiChannels<'_>,
 ) -> Option<String> {
     match &msg {
         ServerMessage::Welcome { session_id, status, provider, model, title } => {
@@ -115,8 +121,8 @@ fn handle_msg(
             if switched {
                 // Fresh transcript (e.g. `/new` or picker attach): the old
                 // viewport and copy-mode rows no longer exist.
-                *scroll = ScrollState::default();
-                *copy_mode = None;
+                *ui.scroll = ScrollState::default();
+                *ui.copy_mode = None;
             }
             // Remember the attached session (D17).
             let mut state_file = dsh_tui::config::StateFile::load();
@@ -151,7 +157,7 @@ fn handle_msg(
         ServerMessage::Sessions { sessions } => {
             let sessions = sessions.clone();
             state_r.lock().unwrap().sessions = sessions.clone();
-            if let Some(p) = picker.as_mut() {
+            if let Some(p) = ui.picker.as_mut() {
                 p.sessions = sessions;
             }
             None
@@ -160,8 +166,8 @@ fn handle_msg(
             // The `/new <mode>` popup feeds off this roster. Broken presets
             // cannot mount — offering one would invite a failed `/new`; the
             // roster order (declared `order`) is kept as-is.
-            new_modes.clear();
-            new_modes.extend(
+            ui.new_modes.clear();
+            ui.new_modes.extend(
                 presets
                     .iter()
                     .filter(|p| p.broken.is_none())
@@ -186,16 +192,16 @@ fn handle_msg(
             proxy,
             error,
         } => {
-            if let Some(l) = login.as_mut() {
-                l.apply(
-                    *api_key_configured,
-                    *api_key_writable,
-                    api_key_source.clone(),
-                    api_key_hint.clone(),
-                    account.clone(),
-                    proxy.clone(),
-                    error.clone(),
-                );
+            if let Some(l) = ui.login.as_mut() {
+                l.apply(dsh_tui::login::LoginView {
+                    api_key_configured: *api_key_configured,
+                    api_key_writable: *api_key_writable,
+                    api_key_source: api_key_source.clone(),
+                    api_key_hint: api_key_hint.clone(),
+                    account: account.clone(),
+                    proxy: proxy.clone(),
+                    error: error.clone(),
+                });
             }
             None
         }
@@ -387,7 +393,14 @@ async fn run(
                 if is_snapshot {
                     phases.mark("snapshot received");
                 }
-                if let Some(reason) = handle_msg(msg, &state_r, &mut picker, &mut scroll, &mut copy_mode, &mut input.new_modes, &mut login) {
+                let mut ui = UiChannels {
+                    picker: &mut picker,
+                    scroll: &mut scroll,
+                    copy_mode: &mut copy_mode,
+                    new_modes: &mut input.new_modes,
+                    login: &mut login,
+                };
+                if let Some(reason) = handle_msg(msg, &state_r, &mut ui) {
                     fatal = Some(reason);
                     break 'outer;
                 }
@@ -403,7 +416,14 @@ async fn run(
         loop {
             match rx_in.try_recv() {
                 Ok(msg) => {
-                    if let Some(reason) = handle_msg(msg, &state_r, &mut picker, &mut scroll, &mut copy_mode, &mut input.new_modes, &mut login) {
+                    let mut ui = UiChannels {
+                        picker: &mut picker,
+                        scroll: &mut scroll,
+                        copy_mode: &mut copy_mode,
+                        new_modes: &mut input.new_modes,
+                        login: &mut login,
+                    };
+                    if let Some(reason) = handle_msg(msg, &state_r, &mut ui) {
                         fatal = Some(reason);
                         break 'outer;
                     }
@@ -833,7 +853,13 @@ async fn run(
                     None
                 };
                 terminal.draw(|frame| {
-                    render(frame, &mut state, &input, &mut scroll, &theme, help_visible, overlay.as_ref(), toast, settings.as_mut(), login.as_mut());
+                    render(frame, &mut state, &input, &mut scroll, &theme, dsh_tui::ui::RenderOverlays {
+                        help_visible,
+                        overlay: overlay.as_ref(),
+                        toast,
+                        settings: settings.as_mut(),
+                        login: login.as_mut(),
+                    });
                     if let Some(p) = picker.as_ref() {
                         render_picker(frame, p, &theme);
                     }

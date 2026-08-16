@@ -1,0 +1,29 @@
+[package]
+name = "dsh-tui"
+version = "0.1.0"
+edition = "2021"
+description = "Terminal UI client for DeepSeek Harness (DSH)"
+
+[features]
+default = []
+# Tracy profiler instrumentation (real-time profiler; see ../docs/tracy.md).
+# Build the profiling binary with: cargo build --offline --release --features tracy
+tracy = ["dep:tracy-client"]
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.24"
+futures-util = { version = "0.3", features = ["sink"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+url = "2"
+ratatui = "0.29"
+crossterm = "0.28"
+unicode-width = "0.2"
+pulldown-cmark = "0.13"
+arboard = "3"
+wasmi = "0.40"
+toml = "0.8"
+directories = "5"
+tracy-client = { version = "0.18", optional = true, default-features = false, features = ["enable", "manual-lifetime", "ondemand"] }

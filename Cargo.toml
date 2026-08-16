@@ -1,0 +1,12 @@
+# dsh-tui — Cargo workspace root.
+#
+# `cargo run` (and cargo build/test/check) from the repo root operates on
+# the default member below, so `cargo run` here launches the TUI client.
+# bridge/ and tools/ are Node.js and live outside the workspace.
+[workspace]
+members = ["client"]
+default-members = ["client"]
+# Historical offline vendoring (discontinued; see AGENTS.md) — excluded so
+# the ~2000 vendored crates under client/vendor never join the workspace.
+exclude = ["client/vendor"]
+resolver = "2"

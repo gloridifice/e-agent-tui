@@ -1,0 +1,11 @@
+{
+  "name": "dsh-tui-tools",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "pi-grok-mermaid": "^0.1.0",
+    "smol-toml": "^1.8.0",
+    "undici": "^8.10.0"
+  }
+}

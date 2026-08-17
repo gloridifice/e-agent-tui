@@ -152,6 +152,13 @@ pub fn remove_lock(path: &Path) {
     let _ = std::fs::remove_file(path);
 }
 
+/// An instance count records ownership, not service liveness. Even a positive
+/// count can survive an abruptly terminated TUI, so the endpoint must still be
+/// reachable before the lock is reused.
+fn reusable_lock(lock: &InstanceLock, service_reachable: bool) -> bool {
+    lock.dsh_pid != 0 && service_reachable
+}
+
 /// Kill a process by pid (the last attached TUI may not own the child handle).
 /// Returns whether the operating-system command accepted the termination.
 pub fn kill_process(pid: u32) -> bool {
@@ -232,10 +239,10 @@ pub struct DshSession {
 pub fn acquire(url: &str, dsh_home: &Path) -> DshSession {
     let path = lock_path(dsh_home);
     if let Some(mut lock) = read_lock(&path) {
-        // A zero-instance lock records a previous shutdown failure. Reuse it
-        // only while the service is still reachable; otherwise discard the
-        // stale retry record and start a fresh managed service below.
-        if lock.instances > 0 || probe(url) {
+        // Any lock can outlive its service when a TUI is terminated abruptly.
+        // Reuse it only while the endpoint is reachable; `instances > 0` alone
+        // is not evidence that DSH is still running.
+        if reusable_lock(&lock, probe(url)) {
             lock.instances = lock.instances.saturating_add(1);
             write_lock(&path, &lock);
             return DshSession {
@@ -397,6 +404,16 @@ mod tests {
         assert_eq!(read_lock(&path), Some(lock));
         remove_lock(&path);
         assert_eq!(read_lock(&path), None);
+    }
+
+    #[test]
+    fn positive_instance_count_does_not_make_an_unreachable_lock_reusable() {
+        let stale = InstanceLock {
+            dsh_pid: 42,
+            instances: 1,
+        };
+        assert!(!reusable_lock(&stale, false));
+        assert!(reusable_lock(&stale, true));
     }
 
     /// Child mode used by `reap_child_timeout_is_bounded`. In an ordinary

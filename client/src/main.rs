@@ -101,8 +101,9 @@ async fn main() -> anyhow::Result<()> {
 
     // On TUI exit: release the launcher bookkeeping. A dshe-spawned service
     // is shut down when this is the last attached TUI; an out-of-band dsh is
-    // left untouched.
-    e::launcher::release(&mut dsh_session);
+    // left untouched. Delay the confirmation until after leaving the alternate
+    // screen so it remains visible in the caller's terminal.
+    let dsh_server_closed = e::launcher::release(&mut dsh_session);
 
     disable_raw_mode().ok();
     execute!(
@@ -113,6 +114,9 @@ async fn main() -> anyhow::Result<()> {
         crossterm::event::DisableBracketedPaste
     )
     .ok();
+    if dsh_server_closed {
+        println!("{DSH_SERVER_CLOSED_MESSAGE}");
+    }
     result
 }
 
@@ -987,6 +991,11 @@ mod tests {
             KeyCode::Char('h'),
             KeyModifiers::NONE,
         )));
+    }
+
+    #[test]
+    fn shutdown_confirmation_has_the_required_text() {
+        assert_eq!(DSH_SERVER_CLOSED_MESSAGE, "dsh 服务器已关闭。");
     }
 
     #[test]

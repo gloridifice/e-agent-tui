@@ -23,6 +23,8 @@ use serde::{Deserialize, Serialize};
 
 const PROBE_TIMEOUT_MS: u64 = 400;
 const SPAWN_WAIT_TIMEOUT_SECS: u64 = 45;
+const CHILD_REAP_TIMEOUT_MS: u64 = 2_000;
+const CHILD_REAP_POLL_MS: u64 = 20;
 const DSH_PROFILE: &str = "dshe";
 
 /// DSH home (the bridge token and the instance lock live here), matching the
@@ -151,22 +153,65 @@ pub fn remove_lock(path: &Path) {
 }
 
 /// Kill a process by pid (the last attached TUI may not own the child handle).
-pub fn kill_process(pid: u32) {
+/// Returns whether the operating-system command accepted the termination.
+pub fn kill_process(pid: u32) -> bool {
     #[cfg(windows)]
     {
-        let _ = Command::new("taskkill")
+        Command::new("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .output();
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
     }
     #[cfg(not(windows))]
     {
-        unsafe {
-            // SAFETY: best-effort SIGTERM by pid.
-            let _ = std::process::Command::new("kill")
-                .args(["-TERM", &pid.to_string()])
-                .output();
+        Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+    }
+}
+
+/// Reap an exited child without allowing launcher shutdown to block forever.
+fn reap_child_with_timeout(child: &mut Child, timeout: Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(CHILD_REAP_POLL_MS));
+            }
+            Ok(None) | Err(_) => return false,
         }
     }
+}
+
+/// Stop a service through the child handle retained by the TUI.
+///
+/// On Windows that handle belongs to the `cmd /C` shim, not to the Node DSH
+/// process. `Child::kill` would terminate only `cmd.exe` and orphan Node, so
+/// terminate the complete wrapper process tree instead. Reaping is bounded so
+/// a failed OS termination cannot hang TUI shutdown indefinitely.
+fn kill_child_service(mut child: Child) -> bool {
+    #[cfg(windows)]
+    let (service_stopped, wrapper_stopped) = {
+        let tree_stopped = kill_process(child.id());
+        let wrapper_stopped = tree_stopped || child.kill().is_ok();
+        // Killing only the shim is cleanup, not proof that Node stopped.
+        (tree_stopped, wrapper_stopped)
+    };
+    #[cfg(not(windows))]
+    let (service_stopped, wrapper_stopped) = {
+        let stopped = child.kill().is_ok();
+        (stopped, stopped)
+    };
+    let reaped = if wrapper_stopped {
+        reap_child_with_timeout(&mut child, Duration::from_millis(CHILD_REAP_TIMEOUT_MS))
+    } else {
+        matches!(child.try_wait(), Ok(Some(_)))
+    };
+    service_stopped && reaped
 }
 
 // ---------- orchestration ----------
@@ -187,15 +232,19 @@ pub struct DshSession {
 pub fn acquire(url: &str, dsh_home: &Path) -> DshSession {
     let path = lock_path(dsh_home);
     if let Some(mut lock) = read_lock(&path) {
-        // Another `dshe` already spawned (or is spawning) the service — join
-        // its count and bridge to it.
-        lock.instances += 1;
-        write_lock(&path, &lock);
-        return DshSession {
-            child: None,
-            in_lock: true,
-            path,
-        };
+        // A zero-instance lock records a previous shutdown failure. Reuse it
+        // only while the service is still reachable; otherwise discard the
+        // stale retry record and start a fresh managed service below.
+        if lock.instances > 0 || probe(url) {
+            lock.instances = lock.instances.saturating_add(1);
+            write_lock(&path, &lock);
+            return DshSession {
+                child: None,
+                in_lock: true,
+                path,
+            };
+        }
+        remove_lock(&path);
     }
     if probe(url) {
         // A dsh is already running out-of-band: bridge without lifecycle.
@@ -207,7 +256,7 @@ pub fn acquire(url: &str, dsh_home: &Path) -> DshSession {
     }
     // Spawn `dsh --profile dshe` and own its shutdown.
     let argv = dsh_command();
-    let mut child = match spawn_dsh(&argv) {
+    let child = match spawn_dsh(&argv) {
         Ok(child) => child,
         Err(_) => {
             return DshSession {
@@ -220,10 +269,9 @@ pub fn acquire(url: &str, dsh_home: &Path) -> DshSession {
     let pid = child.id();
     let ready = wait_for_dsh(url, Duration::from_secs(SPAWN_WAIT_TIMEOUT_SECS));
     if !ready {
-        // The service never came up — abandon the child so it isn't orphaned
-        // and fall through to the normal connect (which will surface the
-        // connection error to the user).
-        let _ = child.kill();
+        // The service never came up. Use the same process-tree cleanup as the
+        // normal last-TUI shutdown so a Windows cmd shim cannot orphan Node.
+        kill_child_service(child);
         return DshSession {
             child: None,
             in_lock: false,
@@ -246,30 +294,42 @@ pub fn acquire(url: &str, dsh_home: &Path) -> DshSession {
 
 /// Release the launcher bookkeeping on TUI exit: decrement the instance count
 /// and, when this is the last TUI of a dshe-spawned service, shut it down.
-pub fn release(session: &mut DshSession) {
+/// Returns `true` only when this release successfully stopped that service.
+pub fn release(session: &mut DshSession) -> bool {
     if !session.in_lock {
         // External dsh — never touch it. If we spawned a child but didn't
-        // lock (spawn failed to come up), make sure it's reaped.
-        if let Some(mut child) = session.child.take() {
-            let _ = child.kill();
+        // lock (spawn failed to come up), make sure its complete shim tree is
+        // stopped and reaped. This is startup-failure cleanup, not a managed
+        // service shutdown to announce to the user.
+        if let Some(child) = session.child.take() {
+            kill_child_service(child);
         }
-        return;
+        return false;
     }
     let Some(mut lock) = read_lock(&session.path) else {
-        return;
+        return false;
     };
     lock.instances = lock.instances.saturating_sub(1);
     if lock.instances == 0 {
         // Last TUI: shut the spawned service down (via our child handle when
         // we own it, else by pid).
-        if let Some(mut child) = session.child.take() {
-            let _ = child.kill();
+        let stopped = if let Some(child) = session.child.take() {
+            kill_child_service(child)
         } else {
-            kill_process(lock.dsh_pid);
+            kill_process(lock.dsh_pid)
+        };
+        if stopped {
+            remove_lock(&session.path);
+        } else {
+            // Keep a retryable ownership record. A later acquire joins it if
+            // the service is alive, or removes it as stale before respawning.
+            lock.instances = 0;
+            write_lock(&session.path, &lock);
         }
-        remove_lock(&session.path);
+        stopped
     } else {
         write_lock(&session.path, &lock);
+        false
     }
 }
 
@@ -337,5 +397,202 @@ mod tests {
         assert_eq!(read_lock(&path), Some(lock));
         remove_lock(&path);
         assert_eq!(read_lock(&path), None);
+    }
+
+    /// Child mode used by `reap_child_timeout_is_bounded`. In an ordinary
+    /// test run the environment variable is absent and this exits.
+    #[test]
+    fn reap_timeout_child() {
+        if std::env::var_os("DSHE_LAUNCHER_REAP_TEST_CHILD").is_none() {
+            return;
+        }
+        loop {
+            std::thread::sleep(Duration::from_secs(60));
+        }
+    }
+
+    #[test]
+    fn reap_child_timeout_is_bounded() {
+        let test_exe = std::env::current_exe().unwrap();
+        let mut child = Command::new(test_exe)
+            .args([
+                "--exact",
+                "launcher::tests::reap_timeout_child",
+                "--nocapture",
+            ])
+            .env("DSHE_LAUNCHER_REAP_TEST_CHILD", "1")
+            .spawn()
+            .expect("spawn reap timeout child");
+        std::thread::sleep(Duration::from_millis(50));
+
+        let started = std::time::Instant::now();
+        let exited = reap_child_with_timeout(&mut child, Duration::from_millis(40));
+        let elapsed = started.elapsed();
+        let _ = child.kill();
+        let cleaned = reap_child_with_timeout(&mut child, Duration::from_secs(2));
+
+        assert!(!exited, "running child must hit the reap deadline");
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "reap deadline blocked for {elapsed:?}"
+        );
+        assert!(cleaned, "test child was not reaped after cleanup");
+    }
+
+    /// Child mode used by `release_kills_windows_cmd_process_tree`. In an
+    /// ordinary test run the environment variable is absent and this exits.
+    #[cfg(windows)]
+    #[test]
+    fn windows_process_tree_server_child() {
+        let Ok(port) = std::env::var("DSHE_LAUNCHER_TEST_PORT") else {
+            return;
+        };
+        let port: u16 = port.parse().expect("test port");
+        let _listener = TcpListener::bind(("127.0.0.1", port)).expect("bind child server");
+        loop {
+            std::thread::sleep(Duration::from_secs(60));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn release_kills_windows_cmd_process_tree() {
+        let port = {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            drop(listener);
+            port
+        };
+        let test_exe = std::env::current_exe().unwrap();
+        let child = Command::new("cmd")
+            .args(["/D", "/C"])
+            .arg(test_exe)
+            .args([
+                "--exact",
+                "launcher::tests::windows_process_tree_server_child",
+                "--nocapture",
+            ])
+            .env("DSHE_LAUNCHER_TEST_PORT", port.to_string())
+            .spawn()
+            .expect("spawn cmd-wrapped child server");
+        let wrapper_pid = child.id();
+        let url = format!("ws://127.0.0.1:{port}");
+        if !wait_for_dsh(&url, Duration::from_secs(5)) {
+            kill_process(wrapper_pid);
+            panic!("cmd-wrapped child server did not start");
+        }
+
+        let dir = std::env::temp_dir().join(format!(
+            "dshe-launcher-tree-test-{}-{port}",
+            std::process::id()
+        ));
+        let path = lock_path(&dir);
+        write_lock(
+            &path,
+            &InstanceLock {
+                dsh_pid: wrapper_pid,
+                instances: 1,
+            },
+        );
+        let mut session = DshSession {
+            child: Some(child),
+            in_lock: true,
+            path: path.clone(),
+        };
+
+        assert!(release(&mut session));
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while probe(&url) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(!probe(&url), "Node-like descendant was left running");
+        assert!(!path.exists(), "instance lock was not removed");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn zero_instance_lock_rejoins_a_still_running_service() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let dir =
+            std::env::temp_dir().join(format!("dshe-zero-lock-rejoin-test-{}", std::process::id()));
+        let path = lock_path(&dir);
+        write_lock(
+            &path,
+            &InstanceLock {
+                dsh_pid: u32::MAX,
+                instances: 0,
+            },
+        );
+
+        let session = acquire(&url, &dir);
+
+        assert!(session.in_lock, "live failed-shutdown service is rejoined");
+        assert!(session.child.is_none(), "rejoin must not spawn another dsh");
+        assert_eq!(read_lock(&path).unwrap().instances, 1);
+        remove_lock(&path);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn release_retains_retry_lock_when_shutdown_fails() {
+        let dir =
+            std::env::temp_dir().join(format!("dshe-release-failure-test-{}", std::process::id()));
+        let path = lock_path(&dir);
+        write_lock(
+            &path,
+            &InstanceLock {
+                dsh_pid: u32::MAX,
+                instances: 1,
+            },
+        );
+        let mut session = DshSession {
+            child: None,
+            in_lock: true,
+            path: path.clone(),
+        };
+
+        assert!(!release(&mut session));
+        assert_eq!(
+            read_lock(&path),
+            Some(InstanceLock {
+                dsh_pid: u32::MAX,
+                instances: 0,
+            }),
+            "failed shutdown remains retryable"
+        );
+        remove_lock(&path);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn release_does_not_report_shutdown_for_external_or_remaining_instances() {
+        let dir =
+            std::env::temp_dir().join(format!("dshe-release-outcome-test-{}", std::process::id()));
+        let path = lock_path(&dir);
+        let mut external = DshSession {
+            child: None,
+            in_lock: false,
+            path: path.clone(),
+        };
+        assert!(!release(&mut external));
+
+        write_lock(
+            &path,
+            &InstanceLock {
+                dsh_pid: u32::MAX,
+                instances: 2,
+            },
+        );
+        let mut joined = DshSession {
+            child: None,
+            in_lock: true,
+            path: path.clone(),
+        };
+        assert!(!release(&mut joined));
+        assert_eq!(read_lock(&path).unwrap().instances, 1);
+        remove_lock(&path);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

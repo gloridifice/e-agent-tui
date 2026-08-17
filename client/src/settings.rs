@@ -18,6 +18,9 @@ pub enum ItemKind {
     /// are not static — they come from `SettingsState.modes`, fed by the
     /// bridge's `presets` message.
     ModeChoice,
+    /// Choice over the discovered theme files (`%APPDATA%\dshe\themes\`):
+    /// options come from `SettingsState.themes`.
+    ThemeChoice,
     Input,
     ReadOnly,
 }
@@ -39,11 +42,13 @@ pub static ITEMS: &[ItemDef] = &[
     ItemDef {
         category: 0,
         label: "主题",
-        desc: "ferra 预设或自定义色板（自定义色板在 TOML 中手改）",
-        kind: ItemKind::Choice { options: &["ferra", "custom"] },
-        get: |c| c.theme.preset.clone(),
+        desc: "配色主题（themes 目录下的合法主题；默认 deepseek-e）",
+        kind: ItemKind::ThemeChoice,
+        get: |c| c.theme.clone(),
         apply: |c, v| {
-            c.theme.preset = v;
+            if !v.is_empty() {
+                c.theme = v;
+            }
         },
     },
     ItemDef {
@@ -229,18 +234,31 @@ pub fn items_in(category: usize) -> Vec<&'static ItemDef> {
     ITEMS.iter().filter(|i| i.category == category).collect()
 }
 
-/// Option list of a choice/mode-choice item: the static labels, or the live
-/// mode roster (`SettingsState.modes`, the ids of the presets the bridge
-/// sent). The current value is appended when the roster lacks it, so a
-/// configured mode that no longer exists stays visible (the bridge falls
-/// back to `standard` on the next fresh process anyway).
-pub fn dynamic_options(def: &ItemDef, config: &Config, modes: &[String]) -> Vec<String> {
+/// Option list of a choice/mode/theme-choice item: the static labels, the
+/// live mode roster (`SettingsState.modes`, the ids of the presets the
+/// bridge sent), or the live theme list (`SettingsState.themes`). The
+/// current value is appended when the roster lacks it, so a configured mode
+/// or theme that no longer exists stays visible (the bridge falls back to
+/// `standard`; the theme resolver falls back to a built-in).
+pub fn dynamic_options(
+    def: &ItemDef,
+    config: &Config,
+    modes: &[String],
+    themes: &[String],
+) -> Vec<String> {
     match def.kind {
         ItemKind::Choice { options } => options.iter().map(|o| (*o).to_string()).collect(),
         ItemKind::ModeChoice => {
             let mut list: Vec<String> = modes.to_vec();
             if !list.iter().any(|m| *m == config.default_mode) {
                 list.push(config.default_mode.clone());
+            }
+            list
+        }
+        ItemKind::ThemeChoice => {
+            let mut list: Vec<String> = themes.to_vec();
+            if !list.iter().any(|t| *t == config.theme) {
+                list.push(config.theme.clone());
             }
             list
         }
@@ -271,6 +289,9 @@ pub struct SettingsState {
     /// Agent-preset mode ids from the bridge's `presets` roster — the
     /// option list of the 默认模式 item.
     pub modes: Vec<String>,
+    /// Theme names discovered from the themes directory — the option list
+    /// of the 主题 item.
+    pub themes: Vec<String>,
 }
 
 impl Default for SettingsState {
@@ -281,6 +302,7 @@ impl Default for SettingsState {
             editing: None,
             scroll: 0,
             modes: Vec::new(),
+            themes: Vec::new(),
         }
     }
 }
@@ -310,7 +332,7 @@ impl SettingsState {
         if let Some(edit) = self.editing.take() {
             let def = self.current_item();
             let options: Vec<String> = def
-                .map(|d| dynamic_options(d, config, &self.modes))
+                .map(|d| dynamic_options(d, config, &self.modes, &self.themes))
                 .unwrap_or_default();
             match edit {
                 Edit::Input { buf } => match key.code {
@@ -408,6 +430,17 @@ impl SettingsState {
                                 .unwrap_or(0);
                             self.editing = Some(Edit::Choice { cursor });
                         }
+                        ItemKind::ThemeChoice => {
+                            // Cursor on the configured theme name (present
+                            // even when the registry no longer lists it).
+                            let current = (def.get)(config);
+                            let cursor = self
+                                .themes
+                                .iter()
+                                .position(|t| *t == current)
+                                .unwrap_or(0);
+                            self.editing = Some(Edit::Choice { cursor });
+                        }
                         ItemKind::Input => {
                             // Replace semantics: start with an empty buffer.
                             self.editing = Some(Edit::Input { buf: String::new() });
@@ -482,21 +515,23 @@ mod tests {
 
     #[test]
     fn enter_edits_choice_confirm_and_esc_cancel() {
-        let mut s = SettingsState::default(); // 主题: ferra/custom
+        let mut s = SettingsState::default(); // 主题: deepseek-e/ferra
+        s.themes = vec!["deepseek-e".into(), "ferra".into()];
         let mut config = Config::default();
+        assert_eq!(config.theme, "deepseek-e");
         s.handle_key(&key(KeyCode::Enter), &mut config);
         assert_eq!(s.editing, Some(Edit::Choice { cursor: 0 }), "cursor on the current value");
         s.handle_key(&key(KeyCode::Right), &mut config);
         assert_eq!(s.editing, Some(Edit::Choice { cursor: 1 }));
         s.handle_key(&key(KeyCode::Enter), &mut config);
-        assert_eq!(config.theme.preset, "custom", "Enter confirms the choice");
+        assert_eq!(config.theme, "ferra", "Enter confirms the choice");
         // Esc cancels the next edit (nothing applied).
         s.handle_key(&key(KeyCode::Enter), &mut config);
         s.handle_key(&key(KeyCode::Left), &mut config);
         assert_eq!(s.editing, Some(Edit::Choice { cursor: 0 }));
         s.handle_key(&key(KeyCode::Esc), &mut config);
         assert_eq!(s.editing, None);
-        assert_eq!(config.theme.preset, "custom", "cancelled edit keeps the value");
+        assert_eq!(config.theme, "ferra", "cancelled edit keeps the value");
     }
 
     #[test]
@@ -567,9 +602,22 @@ mod tests {
         let mut config = Config::default();
         config.default_mode = "gone".into();
         let modes = vec!["standard".to_string(), "minimal".to_string()];
-        let opts = dynamic_options(&ITEMS[5], &config, &modes);
+        let no_themes: Vec<String> = vec![];
+        let opts = dynamic_options(&ITEMS[5], &config, &modes, &no_themes);
         assert_eq!(opts, vec!["standard", "minimal", "gone"]);
         // Static choices pass through unchanged.
-        assert_eq!(dynamic_options(&ITEMS[1], &config, &modes), vec!["开", "关"]);
+        assert_eq!(
+            dynamic_options(&ITEMS[1], &config, &modes, &no_themes),
+            vec!["开", "关"]
+        );
+    }
+
+    #[test]
+    fn stale_theme_stays_selectable() {
+        let mut config = Config::default();
+        config.theme = "custom-mine".into();
+        let themes = vec!["deepseek-e".to_string(), "ferra".to_string()];
+        let opts = dynamic_options(&ITEMS[0], &config, &[], &themes);
+        assert_eq!(opts, vec!["deepseek-e", "ferra", "custom-mine"]);
     }
 }

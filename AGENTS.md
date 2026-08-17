@@ -5,31 +5,34 @@
 
 ## 项目是什么
 
-DeepSeek Harness（DSH）的终端客户端，两部分：
+DeepSeek Harness（DSH）的终端客户端（项目名 **e**，可执行文件 **`dshe`**），两部分：
 
 - `bridge/` — Node.js（ESM）DSH **host-composition 插件**。注册一条 WS 升级路由
   （`/dsh-tui`），把会话事件转发给 TUI，并接受输入/命令/中断/审批应答/会话切换/
-  历史分页。注入依赖只有 `webServer`。
-- `client/` — Rust（ratatui + crossterm）单 exe 客户端。无 TLS/网络依赖（除
-  WebSocket 本体），纯本地渲染。
+  历史分页，以及 `/login` `/model` `/skill:<名称>` 桥接。注入依赖只有 `webServer`。
+- `client/` — Rust（ratatui + crossterm）单 exe 客户端（crate `e`，产物
+  `dshe.exe`）。含启动器（`launcher.rs`：探测/spawn `dsh --profile tui`/桥接）与
+  主题系统（`theme.rs` + `config.rs`）。无 TLS/网络依赖（除 WebSocket 本体）。
 
 两个进程通过 JSON WebSocket 通信（协议见 `docs/design.md` §5 与
 `client/src/protocol.rs`）；token 认证，token 在 `%DSH_HOME%\dsh-tui.token`。
+客户端配置在 `%APPDATA%\dshe\config.toml`，主题在 `%APPDATA%\dshe\themes\`。
 
 ## 常用命令（Windows / PowerShell）
 
 ```powershell
-# 客户端（根目录是 Cargo workspace，默认成员 client，直接在根目录执行）
-cargo run                                # 根目录编译并启动 dsh-tui
-cargo build --release                    # 产物 target\release\dsh-tui.exe
+# 客户端（根目录是 Cargo workspace，默认成员 client，crate 名 e，产物 dshe.exe）
+cargo run                                # 根目录编译并启动 dshe
+cargo build --release                    # 产物 target\release\dshe.exe
 cargo build --release --features tracy   # Tracy profiling 版（DSH_TUI_TRACY=1 激活）
-cargo test                               # 全量单测（约 140 个）
+cargo test                               # 全量单测（约 160 个）
 
-# 桥接同步（改 bridge/ 后必做；重启 dsh web 后生效）
-robocopy bridge\src "$env:DSH_HOME\profiles\web\packages\dsh-tui-bridge\src" /MIR
+# 桥接同步（改 bridge/ 后必做；重启 dsh 后生效）
+.\tools\mount-bridge.ps1 -Profile web    # 或 -Profile tui（dshe 的 tui profile）
+# 等价手动：robocopy bridge\src "$env:DSH_HOME\profiles\<p>\packages\dsh-tui-bridge\src" /MIR
 
-# 桥接测试（node:test；纯函数 + 登录文件层 + model-selection 钩子）
-cd bridge; npm test
+# 桥接测试（node:test；trim/compose/login/skill/model 五个模块）
+cd bridge; npm test                      # = node --test --test-isolation=none "test/*.test.js"
 node tools/smoke-bridge.mjs        # DSH 升级后跑：对部署副本跑契约冒烟
 
 # 联调
@@ -74,28 +77,35 @@ cargo 走 crates.io 官方源（本机网络已修复）。`client/vendor/` 与
   `scroll.offset` 保持视口）。顶部历史提示行是**纯显示**，不进缓存；
   `Thinking...` 行是 `Msg::Thinking` 卡片（进缓存），但快照回放/历史前插时
   不生成（`state.replaying`），文件组合并/结算扫描会跳过它。
-- **Tracy/计时**（`profile.rs`）：埋点用 `dsh_tui::tracy_zone!("字面量")`（宏，
+- **Tracy/计时**（`profile.rs`）：埋点用 `e::tracy_zone!("字面量")`（宏，
   无 client 时安全空转）；阶段打点用 `PhaseTimers`。zone 名必须是字符串字面量。
 - **底部布局与标题行**：页面底部固定行序为 输入栏/gap/状态栏/**会话标题行**
   （`ui.rs::render` 的 chunks 数组；`max_queue` 公式里的 `+3` 与之一致）。标题行
-  是 `AppState.session_title`（`welcome.title` 初始化 + `session/title` 事件实时
-  更新），画在 transcript 之外——更新它**不得**触碰 render_cache；改底部行数时
-  必须同步 ui 层测试里硬编码的行号（status/queue/question/settings 四个测试）。
+  左侧是 `AppState.session_title`（`welcome.title` 初始化 + `session/title` 事件实时
+  更新）、右侧是 `AppState.session_cwd`（`welcome.cwd` 初始化，即会话头部
+  `header.cwd`），标题过长以 `…` 截断以保住路径；两者都画在 transcript 之外——
+  更新它们**不得**触碰 render_cache；改底部行数时必须同步 ui 层测试里硬编码的
+  行号（status/queue/question/settings 四个测试）。
 - **启动即新会话**：新进程不带 `resumeSessionId` 发 hello，桥接就地建会话（
   `hello.cwd` 工作区 + `hello.mode` 默认模式，失效回退 standard）；只有 CLI 会话
   id 与「记住上次会话」（默认关）走续接。`/resume` 打开选择器、`/resume <id>`
   直接 attach（都是纯客户端命令）。
-- **/login 面板**（`login.rs` + `ui.rs::render_login`）：输入栏变登录设置页，
-  三个字段的状态全部来自桥接 `login` 帧（客户端只发 `login-get` / `login-set`）。
-  API key 永不回传、编辑态画 ●、环境变量来源只读；改 `render()` 参数（settings
-  与 login 两个 Option<&mut>）时同步改所有调用点（ui 测试 + examples）。
+- **/login 面板**（`login.rs` + `ui.rs::render_login`）：输入栏变登录页，一层三选一
+  菜单（API key / Account / Proxy）→ 子页面（`login.rs::Page` 状态机：Menu /
+  Providers / ApiKey / Account / ProxyList / ProxyForm）。状态全部来自桥接 `login`
+  帧（客户端发 `login-get` / `login-set-api-key` / `login-codex-start` /
+  `login-codex-cancel` / `login-proxy-create` / `login-proxy-delete`）。API key
+  永不回传、编辑态画 ●；代理表单协议字段三选一循环、其余字段 Enter 编辑；改
+  `render()` 参数（settings 与 login 两个 Option<&mut>）时同步改所有调用点
+  （ui 测试 + examples）。
 - 新增交互键位后同步更新：`ui.rs` 的 `help_overlay`、README 速查表、input 测试。
 
 ### bridge（Node.js）
 
 - **模块布局**：`index.js` 只留 socket/会话生命周期与消息分发；`trim.js`（负载
   裁剪纯函数）、`compose.js`（harness 路径、session 元数据、model-selection
-  钩子）、`login.js`（/login 三字段与文件/凭证落点，home 可注入）都有
+  钩子）、`login.js`（/login 三字段与文件/凭证落点，home 可注入）、`skill.js`
+  （/skill 命令解析 + `<skill_content>` 渲染）、`model.js`（/model 帧投影）都有
   `node:test` 单测（`bridge/test/`，`cd bridge && npm test`）。新代码进对应
   模块，别再往 index.js 里堆纯逻辑。
 - **跨 await 的 conn 纪律**：消息处理器里凡是 `await` 之后要动 `conn`（detach/
@@ -147,6 +157,8 @@ cargo 走 crates.io 官方源（本机网络已修复）。`client/vendor/` 与
   同一会话，防跨会话串标题）；此后的标题更新不必专门推送——`session/event`
   全量转发已把 `session/title` 事件带给客户端。`session/title` **不进**
   `SNAPSHOT_SURFACE`：历史前插会经 `apply_event` 回放，旧标题会覆盖新标题。
+  工作区路径走 `welcome.cwd`（会话头部 `header.cwd`，attach 时随 welcome 下发），
+  客户端存进 `session_cwd` 渲染在标题行右侧。
 - **model selection 必须装**：桥接创建/恢复的每个会话都要在 `setup` 里先
   `installModelSelection(agentCtx, { current, assembled: undefined })`（内联自
   `@deepseek-ai/dsh-agent` 的同名函数，两个 waterfall：`system-prompt/assemble`
@@ -156,15 +168,38 @@ cargo 走 crates.io 官方源（本机网络已修复）。`client/vendor/` 与
   `current` 取 `/new` 镜像的当前会话 provider/model（`mirror`），否则
   `ctx.get('agentDefaultModel').currentSelection()`；web/headless 入口都装，
   桥接不能漏。只 mount preset 不够——这是两个正交的 setup 步骤。
-- **/login 字段落点**（桥接）：`login-get`/`login-set` 两个上行帧，
-  `login{apiKeyConfigured,apiKeyWritable,apiKeySource?,apiKeyHint?,account?,
-  proxy?,error?}` 下行帧。API key 走 `ctx.get('credentials')` 的
-  `describe/set/unset(DEEPSEEK_API_KEY)`（**值永不回传**，只发 `…末四位` hint，
-  环境变量来源 `writable=false`）；账号读写 `%DSH_HOME%\.anonymous-user-id`
-  （裸 UUID 行，留空删除、下次启动重生成，即 `x-deepseek-harness-user-id`）；
-  proxy 读写 `%DSH_HOME%\.env` 的 `HTTPS_PROXY` 行（`writeEnvLine` 只动这一行、
-  保留换行风格，**重启 dsh web 生效**）。写失败经同一 `login` 帧的 `error` 回给
-  面板，不走 transcript 错误流。
+- **/login 字段落点**（桥接 `login.js`）：上行 `login-get` / `login-set-api-key`
+  / `login-codex-start` / `login-codex-cancel` / `login-proxy-create` /
+  `login-proxy-delete`；下行 `login{providers[],proxies[],codex?,error?}` +
+  `login-codex{status,userCode?,verificationUri?,accountId?,error?}`。
+  - API key：`ctx.llm.listProviders()` 列提供商，`providerCredentialRef` 从
+    settings 读 `apiKeyEnv`（缺省回退 `<ID>_API_KEY`），走 `ctx.credentials` 的
+    `describe/set/unset(ref)`（**值永不回传**，只发 `…末四位` hint，env 来源只读）。
+  - Account（codex）：设备码流程（`auth.openai.com` usercode→轮询 token→换
+    OAuth token），凭证存 `%DSH_HOME%\dsh-tui-codex.json`；**端到端生效还需宿主
+    `dsh-llm-pi-ai` 接持久化 OAuth 凭证**（当前 `InMemoryCredentialStore`）。
+  - Proxy：存 `%DSH_HOME%\dsh-tui-proxies.json`（api key 不回传）。
+  写失败经同一 `login` 帧的 `error` 回给面板，不走 transcript 错误流。
+- **/model（桥接）**：上行 `model-get` / `model-set{provider,model}`；下行
+  `model{providers[{id,name,models[{id,name,description?}]}],current?}`。
+  `sendModel` 用 `ctx.llm.listProviders()` + `ctx.llm.listModels(id)`（adapter
+  无目录时该 provider 返回空列表不整体失败）。会话创建/恢复时把
+  `modelSelections.set(agent.id, selection)` 存下那个 `{current,assembled}` 对；
+  `model-set` 改 `selection.current`（下一次 `system-prompt/assemble` 生效）并
+  顺手更新 `agent.options`，再回 `model` 帧刷新客户端状态栏。
+- **/skill（桥接）**：`/skill:<名称>` 或 `/skill <名称>` 由桥接拦截（`skill.js`
+  的 `parseSkillCommand`），经 `ctx.get('skills').get(name, {cwd, signal, scope})`
+  查技能——**DSH 的 skill-filesystem 已按 `<workspace>/.agents/skills/` >
+  `~/.agents/skills/` 优先级发现**，桥接只负责把 `renderSkillContent(skill)`
+  （`<skill_content>` 块）以 `createUserMessage` + `source:{kind:"skill-invocation"}`
+  `followup` 进会话（镜像 dsh-tool-skill 的用户显式调用注入）；未知名回
+  `error{code:"skill-unknown"}`。跨 await 后要校验 `conns.has(current)`。
+- **主题/启动器（客户端）**：配置 `%APPDATA%\dshe\config.toml`（`Config.theme`
+  存主题名，`resolved_theme` 为 `#[serde(skip)]` 的解析结果缓存，渲染期零磁盘读）；
+  主题文件在 `%APPDATA%\dshe\themes\*.toml`（`theme.rs` 扫描/校验/内置
+  deepseek-e + ferra）。`launcher.rs`：`probe(url)` TCP 探测 → 无 dsh 则 spawn
+  `dsh --profile tui`（`dsh` 或 `npx @deepseek-ai/dsh`）→ `%DSH_HOME%\dsh-tui.lock`
+  计数「最后一个 tui 关闭时关 dsh」。`/reload` 重读 config + 重扫主题。
 
 ## 维护纪律
 
@@ -179,14 +214,16 @@ cargo 走 crates.io 官方源（本机网络已修复）。`client/vendor/` 与
   断言缓存行数/颜色/内容），不能只靠模型层测试。
 - 已知偶发：全量并行测试偶有一次 flake（tool 卡片断言），单跑或复跑即过，勿
   据此大改。
-- 桥接侧有 `node:test`（`bridge/test/`，`cd bridge && npm test`）：trim/compose/
-  login 三个模块各一文件；文件层测试必须走 temp home（不要碰真实 `%DSH_HOME%`）。
+- 桥接侧有 `node:test`（`bridge/test/`，`cd bridge && npm test`，用
+  `--test-isolation=none` 避免沙箱 spawn EPERM）：trim/compose/login/skill/model
+  五个模块各一文件；文件层测试必须走 temp home（不要碰真实 `%DSH_HOME%`）。
   DSH 升级后跑 `node tools/smoke-bridge.mjs` 对部署副本做契约冒烟
   （`installModelSelection` 是内联副本，钉在 DSH 版本上）。
 
 ## 已知事项
 
-- **重启 DSH 才能加载新桥接**：改动 `bridge/src` 后需 robocopy 同步 + 用户重启
-  `dsh web`。旧桥接的启动全量读盘约 14s；新桥接活跃会话 <100ms。
+- **重启 DSH 才能加载新桥接**：改动 `bridge/src` 后需重新挂载（
+  `.\tools\mount-bridge.ps1 -Profile <web|tui>`，等价 robocopy）+ 用户重启 dsh。
+  旧桥接的启动全量读盘约 14s；新桥接活跃会话 <100ms。
 - 设计文档里 M 里程碑编号已落后于实现（功能已超出 M6），以代码与 README 为准。
 - `DSH_TUI_TIMING=1` 下各启动阶段耗时打印到 stderr，定位启动回归用。

@@ -1,4 +1,4 @@
-# dsh-tui — Cargo workspace root.
+# e — Cargo workspace root.
 #
 # `cargo run` (and cargo build/test/check) from the repo root operates on
 # the default member below, so `cargo run` here launches the TUI client.

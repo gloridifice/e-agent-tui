@@ -1,8 +1,8 @@
 //! render_demo — print a sample markdown document through the renderer so
 //! the box-drawing output can be eyeballed.
 
-use dsh_tui::config::Theme;
-use dsh_tui::render::render_markdown;
+use e::config::Theme;
+use e::render::render_markdown;
 
 fn main() {
     let md = "\
@@ -51,7 +51,7 @@ graph TD
     let theme = Theme::ferra();
     let mut next = 0;
     let mut units = std::collections::HashMap::new();
-    let options = dsh_tui::render::RenderOptions::default();
+    let options = e::render::RenderOptions::default();
     let lines = render_markdown(md, &theme, &mut next, &options, &mut units);
     for (i, r) in lines.iter().enumerate() {
         let plain: String = r.line.spans.iter().map(|s| s.content.as_ref()).collect();

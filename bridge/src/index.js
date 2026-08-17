@@ -33,7 +33,9 @@ import {
   latestTitle,
   sessionPresetOf,
 } from './compose.js'
-import { sendLogin, setLoginField } from './login.js'
+import { createProxy, runCodexLogin, sendLogin, setProviderApiKey } from './login.js'
+import { shapeModelFrame } from './model.js'
+import { parseSkillCommand, renderSkillContent, skillInvocationSource } from './skill.js'
 
 const name = 'tui-bridge'
 const inject = ['webServer']
@@ -59,6 +61,12 @@ function apply(ctx, config = {}) {
   const wss = new WebSocketServer({ noServer: true })
   /** @type {Set<{ws: WebSocket, agent: object, abort: AbortController, off: () => void}>} */
   const conns = new Set()
+  /**
+   * agentId → the mutable `{ current, assembled }` pair installModelSelection
+   * closed over. `/model` mutates `.current` so the next turn's assembly (and
+   * request routing) use the newly selected provider/model.
+   */
+  const modelSelections = new Map()
 
   // ---- user questions (ask_user_question) ----
   // The host's web UI owns the single userQuestions provider slot, so the
@@ -72,6 +80,31 @@ function apply(ctx, config = {}) {
 
   const send = (ws, message) => {
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message))
+  }
+
+  /**
+   * Push the model catalog (providers × models) plus the agent's current
+   * selection to one socket. Listing every provider's models is advisory
+   * (`ctx.llm.listModels` may throw for an adapter without a catalog); a
+   * failed provider is omitted rather than failing the whole frame.
+   */
+  async function sendModel(ws, agent) {
+    const llm = ctx.get('llm')
+    const providers = llm?.listProviders?.() ?? []
+    const modelLists = {}
+    await Promise.all(providers.map(async (p) => {
+      try {
+        modelLists[p.id] = await llm.listModels(p.id)
+      } catch {
+        modelLists[p.id] = []
+      }
+    }))
+    const selection = modelSelections.get(agent.id)
+    const current = selection?.current
+      ?? (agent.options?.provider !== undefined && agent.options?.model !== undefined
+        ? { provider: agent.options.provider, model: agent.options.model }
+        : undefined)
+    send(ws, { type: 'model', ...shapeModelFrame(providers, modelLists, current) })
   }
 
   // ---- snapshot / lazy history paging ----
@@ -262,6 +295,7 @@ function apply(ctx, config = {}) {
         if (preset) await agentPresets.mount(agentCtx, preset.id)
       },
     })
+    modelSelections.set(agent.id, modelSelection)
     // The cwd header alone does not make the session a member of its
     // workspace: the workspace registry keeps an explicit session account
     // (and a session-path index) that only `attachSession` feeds. Without
@@ -316,22 +350,59 @@ function apply(ctx, config = {}) {
           return undefined
         }
       }
+      const selection = { current: defaultModelSelection(ctx), assembled: undefined }
       const { agent } = await agents.resume({
         resumeSessionId: sessionId,
         // Same composition as the host's cold resume: the default model
         // selection first (the persona `{{model}}` variable and request
         // routing read it), then the preset the session recorded.
         setup: async (agentCtx) => {
-          installModelSelection(agentCtx, {
-            current: defaultModelSelection(ctx),
-            assembled: undefined,
-          })
+          installModelSelection(agentCtx, selection)
           if (preset) await agentPresets.mount(agentCtx, preset.id)
         },
       })
+      modelSelections.set(agent.id, selection)
       return agent
     } catch {
       return undefined
+    }
+  }
+
+  /**
+   * `/skill:<name>` (and `/skill <name>`): look the skill up through the
+   * host's `skills` registry (which already discovers `~/.agents/skills/`
+   * and `<workspace>/.agents/skills/` with project over user priority) and
+   * inject the rendered instructions as a user-explicit skill invocation,
+   * mirroring dsh-tool-skill's `<skill_content>` injection. A missing skill
+   * is an error, not a connection failure.
+   */
+  async function injectSkill(ws, conn, name) {
+    const current = conn
+    if (!current) return
+    const skills = ctx.get('skills')
+    if (!skills) {
+      send(ws, { type: 'error', code: 'skill-unavailable', message: 'skills service unavailable' })
+      return
+    }
+    try {
+      const skill = await skills.get(name, {
+        cwd: current.agent.session?.header?.cwd,
+        signal: current.abort.signal,
+        scope: current.agent,
+      })
+      // The socket may have been re-attached while the lookup ran.
+      if (conn !== current || !conns.has(current)) return
+      if (!skill) {
+        send(ws, { type: 'error', code: 'skill-unknown', message: `skill "${name}" is unknown or no longer available` })
+        return
+      }
+      current.agent.followup(createUserMessage({
+        content: [{ type: 'text', text: renderSkillContent(skill) }],
+        source: skillInvocationSource(name),
+      }))
+    } catch (error) {
+      if (conn !== current || !conns.has(current)) return
+      send(ws, { type: 'error', code: 'skill-failed', message: String(error?.message ?? error) })
     }
   }
 
@@ -364,6 +435,9 @@ function apply(ctx, config = {}) {
       // Latest session/title of the log (undefined until the session has
       // one); live title updates ride the ordinary event frames.
       title: latestTitle(agent.session?.events),
+      // Workspace path of the attached session (its header cwd) — the TUI
+      // renders it right-aligned in the title row below the status bar.
+      cwd: agent.session?.header?.cwd,
     })
     sendSnapshot(conn)
     // Agent-preset roster for the client's `/new <mode>` suggestion popup.
@@ -444,6 +518,8 @@ function apply(ctx, config = {}) {
   wss.on('connection', (ws) => {
     /** @type {ReturnType<typeof attach> | null} */
     let conn = null
+    /** @type {AbortController | null} in-flight Codex device login */
+    let codexAbort = null
 
     ws.on('message', (data) => {
       let msg
@@ -509,6 +585,13 @@ function apply(ctx, config = {}) {
               .catch((error) => {
                 send(ws, { type: 'error', code: 'new-failed', message: String(error?.message ?? error) })
               })
+            return
+          }
+          // `/skill:<name>` is the bridge's own command: inject the skill's
+          // instructions into the session (DSH has no such slash command).
+          const skillName = parseSkillCommand(trimmed)
+          if (skillName !== undefined) {
+            injectSkill(ws, conn, skillName)
             return
           }
           const commands = ctx.get('commands')
@@ -621,11 +704,11 @@ function apply(ctx, config = {}) {
           sendLogin(ctx, send, ws).catch(() => {})
           break
         }
-        case 'login-set': {
-          if (!conn || typeof msg.field !== 'string' || typeof msg.value !== 'string') return
+        case 'login-set-api-key': {
+          if (!conn || typeof msg.provider !== 'string' || typeof msg.value !== 'string') return
           void (async () => {
             try {
-              await setLoginField(ctx, msg.field, msg.value)
+              await setProviderApiKey(ctx, msg.provider, msg.value)
               await sendLogin(ctx, send, ws)
             } catch (error) {
               // The state frame carries the message so the login page can
@@ -633,6 +716,79 @@ function apply(ctx, config = {}) {
               await sendLogin(ctx, send, ws, String(error?.message ?? error))
             }
           })()
+          break
+        }
+        case 'login-codex-start': {
+          if (!conn || codexAbort) return
+          codexAbort = new AbortController()
+          runCodexLogin(send, ws, codexAbort.signal)
+            .then(() => {
+              codexAbort = null
+              sendLogin(ctx, send, ws).catch(() => {})
+            })
+            .catch((error) => {
+              codexAbort = null
+              const message = String(error?.message ?? error)
+              if (message !== 'Login cancelled') {
+                send(ws, { type: 'login-codex', status: 'error', error: message })
+              }
+            })
+          break
+        }
+        case 'login-codex-cancel': {
+          codexAbort?.abort()
+          codexAbort = null
+          break
+        }
+        case 'login-proxy-create': {
+          if (!conn || typeof msg.baseUrl !== 'string') return
+          void (async () => {
+            try {
+              createProxy({
+                baseUrl: msg.baseUrl,
+                apiKey: typeof msg.apiKey === 'string' ? msg.apiKey : '',
+                protocol: typeof msg.protocol === 'string' ? msg.protocol : '',
+                model: typeof msg.model === 'string' ? msg.model : '',
+              })
+              await sendLogin(ctx, send, ws)
+            } catch (error) {
+              await sendLogin(ctx, send, ws, String(error?.message ?? error))
+            }
+          })()
+          break
+        }
+        case 'login-proxy-delete': {
+          if (!conn || typeof msg.id !== 'string') return
+          void (async () => {
+            try {
+              deleteProxy(msg.id)
+              await sendLogin(ctx, send, ws)
+            } catch (error) {
+              await sendLogin(ctx, send, ws, String(error?.message ?? error))
+            }
+          })()
+          break
+        }
+        case 'model-get': {
+          if (!conn) return
+          sendModel(ws, conn.agent).catch((error) => {
+            send(ws, { type: 'error', code: 'model-failed', message: String(error?.message ?? error) })
+          })
+          break
+        }
+        case 'model-set': {
+          if (!conn || typeof msg.provider !== 'string' || typeof msg.model !== 'string') return
+          const current = conn
+          const selection = modelSelections.get(current.agent.id)
+          if (selection) selection.current = { provider: msg.provider, model: msg.model }
+          // Keep the agent's own metadata in step so `welcome`/status and any
+          // later `/new` mirror reflect the switch.
+          try {
+            current.agent.options = { ...(current.agent.options ?? {}), provider: msg.provider, model: msg.model }
+          } catch {}
+          sendModel(ws, current.agent).catch((error) => {
+            send(ws, { type: 'error', code: 'model-failed', message: String(error?.message ?? error) })
+          })
           break
         }
         case 'interrupt': {

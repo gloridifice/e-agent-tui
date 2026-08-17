@@ -421,12 +421,18 @@ fn render_status(
     theme: &Theme,
 ) {
     let dim = Style::default().fg(theme.dim);
-    let label = match state.status {
-        AgentStatus::Running => "running",
-        AgentStatus::Idle => "idle",
+    // Running bullet leads the status bar: yellow breathing while the agent
+    // is running (or has just been sent work), gray while idle. One space
+    // separates it from the elements that follow.
+    let bullet = if state.status == AgentStatus::Running || state.working {
+        Span::styled("•", Style::default().fg(breathing_color(theme, state.breath_phase())))
+    } else {
+        Span::styled("•", dim)
     };
     let mut spans = vec![
-        Span::styled("dsh-tui", dim),
+        bullet,
+        Span::styled(" ", dim),
+        Span::styled("e", dim),
         Span::styled(" · ", dim),
     ];
     if state.config.show_model_in_status {
@@ -435,21 +441,10 @@ fn render_status(
             spans.push(Span::styled(" · ", dim));
         }
     }
-    // No status glyph — just the bare state label.
     if state.question.is_some() {
         spans.push(Span::styled("⏳ 等待选择", Style::default().fg(theme.running)));
         spans.push(Span::styled(" · ", dim));
     }
-    // Working bullet: same symbol as the tool cards, yellow breathing while
-    // the agent works, gray while idle.
-    let bullet = if state.working {
-        Span::styled("•", Style::default().fg(breathing_color(theme, state.breath_phase())))
-    } else {
-        Span::styled("•", dim)
-    };
-    spans.push(bullet);
-    spans.push(Span::styled(" ", dim));
-    spans.push(Span::styled(label, dim));
     let left = Line::from(spans);
     let mut right_spans = Vec::new();
     if !scroll.follow {
@@ -468,19 +463,42 @@ fn render_status(
 }
 
 /// Session title row below the status bar: the latest `session/title` of
-/// the attached session, live-updated by event frames. Blank until the
-/// session has a title.
+/// the attached session on the left and the session's workspace path on the
+/// right. Overly long titles truncate with an ellipsis so the path stays
+/// visible; the row is blank until the session has either.
 fn render_title(frame: &mut Frame, area: ratatui::layout::Rect, state: &AppState, theme: &Theme) {
-    let text = match state.session_title.as_deref() {
-        Some(title) if !title.is_empty() => format!("❯ {title}"),
+    let style = Style::default().fg(theme.dim).bg(theme.bg);
+    let buffer = frame.buffer_mut();
+    let width = area.width as usize;
+
+    // Left-aligned title, truncated to leave the path (plus a small gap)
+    // visible. Drawn first so the path below wins any overlap (defensive:
+    // the truncation already reserves the path's columns).
+    let title = match state.session_title.as_deref() {
+        Some(title) if !title.trim().is_empty() => format!("❯ {}", title.trim()),
         _ => String::new(),
     };
-    let line = Line::from(Span::styled(
-        text,
-        Style::default().fg(theme.dim).bg(theme.bg),
-    ));
-    let buffer = frame.buffer_mut();
-    buffer.set_line(area.x, area.y, &line, area.width);
+    let cwd = state.session_cwd.as_deref().unwrap_or("").trim().to_string();
+    let path_w = UnicodeWidthStr::width(cwd.as_str());
+    if !title.is_empty() {
+        let avail = width.saturating_sub(path_w.saturating_add(2));
+        let shown = if UnicodeWidthStr::width(title.as_str()) > avail {
+            trim_to_width(&title, avail)
+        } else {
+            title
+        };
+        let left = Line::from(Span::styled(shown, style));
+        buffer.set_line(area.x, area.y, &left, area.width);
+    }
+
+    // Right-aligned workspace path (the session's header cwd), positioned by
+    // its display width so it sits flush against the right edge. `set_line`
+    // ignores `Line::alignment`, so the x offset is computed here instead.
+    if !cwd.is_empty() {
+        let right = Line::from(Span::styled(cwd, style));
+        let right_x = area.x + area.width.saturating_sub(path_w as u16);
+        buffer.set_line(right_x, area.y, &right, path_w as u16);
+    }
 }
 
 /// First-seen-ordered per-file counts over FULL paths (dedupe happens
@@ -1154,11 +1172,12 @@ fn render_transcript(
 
 fn help_overlay(theme: &Theme) -> Vec<Line<'static>> {
     let rows = [
-        "帮助 — dsh-tui",
+        "帮助 — e",
         "Enter 发送   Shift+Enter 换行   Alt+Enter 多行   Ctrl+Enter 发送   ↑↓ 历史/多行移行",
         "Esc 中断   Ctrl+C 清空输入/空闲退出   /exit /q /quit 退出",
         "Ctrl+B 复制模式   Ctrl+N 会话选择器   Ctrl+H 帮助",
-        "/settings 设置面板   /login 登录设置（API key/账号/proxy）   /new [模式] 新建会话（空格后提示可用模式）   PgUp/PgDn 滚动",
+        "/settings 设置面板   /login 登录（API key/Account/Proxy）   /new [模式] 新建会话（空格后提示可用模式）   PgUp/PgDn 滚动",
+        "/theme 切换主题   /model 选择模型   /reload 重载配置/主题/技能   /skill:<名称> 注入技能",
         "/resume 切换会话（打开选择器）/ /resume <会话ID> 直接切换",
         "审批: Y 允许 / n 拒绝   提问: ←→ 切换选项  Enter 选中/下一项(最后一项确定)  Esc 取消",
         "复制模式: hjkl 移动  V 行选  Ctrl+V 块选  y 复制  Esc 退出",
@@ -1370,6 +1389,242 @@ impl PickerState {
     }
 }
 
+/// One selectable theme in the `/theme` picker.
+pub struct ThemeInfo {
+    pub name: String,
+    pub palette: Theme,
+}
+
+/// /theme picker state: the discovered themes, hovered by `sel`.
+pub struct ThemePicker {
+    pub themes: Vec<ThemeInfo>,
+    pub sel: usize,
+}
+
+impl ThemePicker {
+    pub fn from_themes(files: &[crate::theme::ThemeFile], current: &str) -> Self {
+        let themes: Vec<ThemeInfo> = files
+            .iter()
+            .map(|f| ThemeInfo {
+                name: f.name.clone(),
+                palette: f.to_theme().unwrap_or_default(),
+            })
+            .collect();
+        let sel = themes.iter().position(|t| t.name == current).unwrap_or(0);
+        Self { themes, sel }
+    }
+}
+
+/// /model picker state: providers on the left, the selected provider's
+/// models on the right. ←→ switches provider, ↑↓ moves the model cursor,
+/// Enter applies.
+pub struct ModelPicker {
+    pub providers: Vec<crate::protocol::ModelProviderInfo>,
+    pub prov_sel: usize,
+    pub model_sel: usize,
+    /// Current selection (provider id, model id), for the initial cursor.
+    pub current: Option<(String, String)>,
+}
+
+impl ModelPicker {
+    pub fn new(providers: Vec<crate::protocol::ModelProviderInfo>, current: Option<(String, String)>) -> Self {
+        let prov_sel = current
+            .as_ref()
+            .and_then(|(p, _)| providers.iter().position(|x| x.id == *p))
+            .unwrap_or(0);
+        let model_sel = current
+            .as_ref()
+            .and_then(|(_, m)| {
+                providers.get(prov_sel).and_then(|x| x.models.iter().position(|y| y.id == *m))
+            })
+            .unwrap_or(0);
+        Self { providers, prov_sel, model_sel, current }
+    }
+
+    /// The (provider id, model id) under the cursor.
+    pub fn selected(&self) -> Option<(String, String)> {
+        let provider = self.providers.get(self.prov_sel)?;
+        let model = provider.models.get(self.model_sel)?;
+        Some((provider.id.clone(), model.id.clone()))
+    }
+}
+
+/// Full-screen theme picker overlay (`/theme`): each row is the theme name
+/// plus a small color swatch so the palette is previewable before applying.
+pub fn render_theme_picker(frame: &mut Frame, picker: &ThemePicker, theme: &Theme) {
+    let area = frame.area();
+    let width = (area.width * 70 / 100).clamp(40, area.width);
+    let height = (area.height * 70 / 100).clamp(8, area.height);
+    let rect = ratatui::layout::Rect {
+        x: (area.width - width) / 2,
+        y: (area.height - height) / 2,
+        width,
+        height,
+    };
+    let block = Block::default()
+        .borders(ratatui::widgets::Borders::ALL)
+        .border_style(Style::default().fg(theme.user))
+        .title(" 主题 · /theme ")
+        .style(Style::default().bg(theme.bg_soft));
+    let inner = block.inner(rect);
+    frame.render_widget(ratatui::widgets::Clear, rect);
+    frame.render_widget(block, rect);
+
+    let mut rows: Vec<Line<'static>> = vec![
+        Line::from(Span::styled(
+            "选择配色主题（themes 目录下的合法主题）",
+            Style::default().fg(theme.dim),
+        )),
+        Line::from(Span::styled(
+            "─".repeat(width.saturating_sub(2) as usize),
+            Style::default().fg(theme.dim),
+        )),
+    ];
+    let list_height = inner.height.saturating_sub(4) as usize;
+    let start = picker.sel.saturating_sub(list_height - 1);
+    for (i, info) in picker.themes.iter().enumerate().skip(start).take(list_height) {
+        let marker = if i == picker.sel { "› " } else { "  " };
+        let mut spans = vec![
+            Span::styled(
+                marker.to_string(),
+                Style::default().fg(theme.user),
+            ),
+            Span::styled(
+                info.name.clone(),
+                if i == picker.sel {
+                    Style::default().fg(theme.bg).bg(theme.fg)
+                } else {
+                    Style::default().fg(theme.fg)
+                },
+            ),
+            Span::styled("  ", Style::default().fg(theme.dim)),
+        ];
+        for color in [
+            info.palette.bg,
+            info.palette.fg,
+            info.palette.user,
+            info.palette.ok,
+            info.palette.err,
+            info.palette.running,
+        ] {
+            spans.push(Span::styled("  ", Style::default().bg(color)));
+            spans.push(Span::styled(" ", Style::default().fg(theme.dim)));
+        }
+        rows.push(Line::from(spans));
+    }
+    if picker.themes.is_empty() {
+        rows.push(Line::from(Span::styled(
+            "（无可用主题）",
+            Style::default().fg(theme.dim),
+        )));
+    }
+    rows.push(Line::from(Span::styled(
+        "↑↓ 选择   Enter 应用   Esc 退出",
+        Style::default().fg(theme.dim),
+    )));
+    frame.render_widget(Paragraph::new(Text::from(rows)), inner);
+}
+
+/// Full-screen model picker overlay (`/model`): providers on the left,
+/// the selected provider's models on the right. ←→ switches provider, ↑↓
+/// moves the model cursor, Enter applies, Esc cancels.
+pub fn render_model_picker(frame: &mut Frame, picker: &ModelPicker, theme: &Theme) {
+    let area = frame.area();
+    let width = (area.width * 80 / 100).clamp(50, area.width);
+    let height = (area.height * 80 / 100).clamp(10, area.height);
+    let rect = ratatui::layout::Rect {
+        x: (area.width - width) / 2,
+        y: (area.height - height) / 2,
+        width,
+        height,
+    };
+    let block = Block::default()
+        .borders(ratatui::widgets::Borders::ALL)
+        .border_style(Style::default().fg(theme.user))
+        .title(" 模型 · /model ")
+        .style(Style::default().bg(theme.bg_soft));
+    let inner = block.inner(rect);
+    frame.render_widget(ratatui::widgets::Clear, rect);
+    frame.render_widget(block, rect);
+
+    // Two columns: providers (40%) | models (60%).
+    let prov_w = inner.width * 40 / 100;
+    let model_w = inner.width - prov_w - 1;
+    let list_h = inner.height.saturating_sub(3) as usize;
+
+    let mut prov_rows: Vec<Line<'static>> = Vec::new();
+    let prov_start = picker.prov_sel.saturating_sub(list_h.saturating_sub(1));
+    for (i, p) in picker.providers.iter().enumerate().skip(prov_start).take(list_h) {
+        let marker = if i == picker.prov_sel { "› " } else { "  " };
+        prov_rows.push(Line::from(vec![
+            Span::styled(marker.to_string(), Style::default().fg(theme.user)),
+            Span::styled(
+                trim_to_width(&p.name, prov_w.saturating_sub(2) as usize),
+                if i == picker.prov_sel {
+                    Style::default().fg(theme.bg).bg(theme.fg)
+                } else {
+                    Style::default().fg(theme.fg)
+                },
+            ),
+        ]));
+    }
+    let mut model_rows: Vec<Line<'static>> = Vec::new();
+    let models = picker.providers.get(picker.prov_sel).map(|p| p.models.as_slice()).unwrap_or(&[]);
+    if models.is_empty() {
+        model_rows.push(Line::from(Span::styled("（无可用模型）", Style::default().fg(theme.dim))));
+    } else {
+        let model_start = picker.model_sel.saturating_sub(list_h.saturating_sub(1));
+        for (i, m) in models.iter().enumerate().skip(model_start).take(list_h) {
+            let marker = if i == picker.model_sel { "› " } else { "  " };
+            let mut spans = vec![
+                Span::styled(marker.to_string(), Style::default().fg(theme.user)),
+                Span::styled(
+                    trim_to_width(&m.name, model_w.saturating_sub(2) as usize),
+                    if i == picker.model_sel {
+                        Style::default().fg(theme.bg).bg(theme.fg)
+                    } else {
+                        Style::default().fg(theme.fg)
+                    },
+                ),
+            ];
+            if i == picker.model_sel {
+                if let Some(d) = &m.description {
+                    spans.push(Span::styled(
+                        format!("  {d}"),
+                        Style::default().fg(theme.dim),
+                    ));
+                }
+            }
+            model_rows.push(Line::from(spans));
+        }
+    }
+
+    let mut rows = vec![
+        Line::from(Span::styled(
+            "─".repeat(width.saturating_sub(2) as usize),
+            Style::default().fg(theme.dim),
+        )),
+    ];
+    let max_rows = prov_rows.len().max(model_rows.len());
+    for i in 0..max_rows {
+        let pl = prov_rows.get(i).cloned().unwrap_or_else(|| Line::from(""));
+        let ml = model_rows.get(i).cloned().unwrap_or_else(|| Line::from(""));
+        // Left column padded to prov_w, then a gutter, then the model column.
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        spans.extend(pl.spans);
+        let used = spans.iter().map(|s| s.width()).sum::<usize>() as u16;
+        let pad = prov_w.saturating_sub(used) + 1;
+        spans.push(Span::styled(" ".repeat(pad as usize), Style::default().fg(theme.dim)));
+        spans.extend(ml.spans);
+        rows.push(Line::from(spans));
+    }
+    rows.push(Line::from(Span::styled(
+        "←→ 切提供商   ↑↓ 选模型   Enter 应用   Esc 退出",
+        Style::default().fg(theme.dim),
+    )));
+    frame.render_widget(Paragraph::new(Text::from(rows)), inner);
+}
+
 /// Full-screen session picker overlay (Ctrl+N).
 pub fn render_picker(frame: &mut Frame, picker: &PickerState, theme: &Theme) {
     let area = frame.area();
@@ -1464,52 +1719,259 @@ pub fn render_login(
     .split(area);
 
     let buffer = frame.buffer_mut();
+    let title = match &login.page {
+        crate::login::Page::Menu => "登录",
+        crate::login::Page::Providers => "API key · 选择提供商",
+        crate::login::Page::ApiKey { .. } => "API key · 填写",
+        crate::login::Page::Account => "Account · 网页登录",
+        crate::login::Page::ProxyList => "Proxy · 已保存的代理",
+        crate::login::Page::ProxyForm => "Proxy · 新建代理",
+    };
     buffer.set_line(
         rows[1].x,
         rows[1].y,
         &Line::from(vec![
             Span::styled("❯ ", Style::default().fg(theme.user).bg(theme.bg_soft)),
-            Span::styled("登录设置", Style::default().fg(theme.fg).bg(theme.bg_soft)),
+            Span::styled(title, Style::default().fg(theme.fg).bg(theme.bg_soft)),
         ]),
         rows[1].width,
     );
 
     let item_area = rows[3];
-    for (i, (field, label)) in crate::login::FIELDS.iter().enumerate() {
-        let y = item_area.y + i as u16;
-        if y >= item_area.y + item_area.height {
-            break;
+    match &login.page {
+        crate::login::Page::Menu => {
+            let items: &[(&str, &str)] = &[
+                ("API key", "为各模型提供商填写 API key"),
+                ("Account", "网页登录 Codex（ChatGPT 订阅）"),
+                ("Proxy", "管理自定义代理端点"),
+            ];
+            for (i, (label, hint)) in items.iter().enumerate() {
+                let y = item_area.y + i as u16;
+                if y >= item_area.y + item_area.height {
+                    break;
+                }
+                login_list_row(
+                    buffer,
+                    area,
+                    y,
+                    i == login.pos,
+                    false,
+                    label,
+                    Span::styled((*hint).to_string(), Style::default().fg(theme.dim).bg(theme.bg_soft)),
+                    theme,
+                );
+            }
         }
-        let focused = i == login.pos;
-        let editing = focused && login.editing.is_some();
-        let name_bg = if focused && !editing { theme.bg } else { theme.bg_soft };
-        // Fixed 12-cell name column keeps the values aligned (CJK aware).
-        let label_width = UnicodeWidthStr::width(*label);
-        let mut spans: Vec<Span<'static>> = vec![
-            Span::styled("  ", Style::default().fg(theme.fg).bg(name_bg)),
-            Span::styled((*label).to_string(), Style::default().fg(theme.fg).bg(name_bg)),
-        ];
-        if label_width < 12 {
-            spans.push(Span::styled(
-                " ".repeat(12 - label_width),
-                Style::default().fg(theme.fg).bg(name_bg),
-            ));
+        crate::login::Page::Providers => {
+            for (i, p) in login.providers.iter().enumerate() {
+                let y = item_area.y + i as u16;
+                if y >= item_area.y + item_area.height {
+                    break;
+                }
+                let value = if p.api_key_configured {
+                    let hint = p.api_key_hint.as_deref().unwrap_or("");
+                    Span::styled(
+                        format!("已配置 {hint}"),
+                        Style::default().fg(theme.ok).bg(theme.bg_soft),
+                    )
+                } else {
+                    Span::styled(
+                        "未配置（Enter 填写）",
+                        Style::default().fg(theme.dim).bg(theme.bg_soft),
+                    )
+                };
+                login_list_row(
+                    buffer,
+                    area,
+                    y,
+                    i == login.pos,
+                    false,
+                    &p.name,
+                    value,
+                    theme,
+                );
+            }
+            if login.providers.is_empty() && !login.loading {
+                buffer.set_line(
+                    area.x,
+                    item_area.y,
+                    &Line::from(Span::styled(
+                        "没有可用的提供商",
+                        Style::default().fg(theme.dim).bg(theme.bg_soft),
+                    )),
+                    item_area.width,
+                );
+            }
         }
-        let value = login_value_line(*field, login, theme, editing);
-        spans.push(value);
-        let line = Line::from(spans);
-        let line_width = (line.width() as u16).min(area.width);
-        let x = area.x;
-        buffer.set_line(x, y, &line, line_width);
+        crate::login::Page::ApiKey { .. } => {
+            let buf = login.editing.as_deref().unwrap_or("");
+            let shown = format!("{}█", "●".repeat(buf.chars().count()));
+            buffer.set_line(
+                area.x,
+                item_area.y,
+                &Line::from(Span::styled(
+                    shown,
+                    Style::default().fg(theme.ok).bg(theme.bg),
+                )),
+                item_area.width,
+            );
+        }
+        crate::login::Page::Account => {
+            let (status, url) = if login.codex_pending {
+                (
+                    "请在网页登录：",
+                    login.codex_verification_uri.as_deref().unwrap_or(""),
+                )
+            } else if login.codex_logged_in() {
+                let id = login
+                    .codex
+                    .as_ref()
+                    .and_then(|c| c.account_id.as_deref())
+                    .unwrap_or("");
+                ("已登录 Codex", id)
+            } else {
+                ("按 Enter 开始网页登录", "")
+            };
+            buffer.set_line(
+                area.x,
+                item_area.y,
+                &Line::from(Span::styled(
+                    status,
+                    Style::default().fg(theme.fg).bg(theme.bg_soft),
+                )),
+                item_area.width,
+            );
+            if !url.is_empty() {
+                buffer.set_line(
+                    area.x,
+                    item_area.y + 1,
+                    &Line::from(Span::styled(
+                        url,
+                        Style::default().fg(theme.user).bg(theme.bg_soft),
+                    )),
+                    item_area.width,
+                );
+                if let Some(code) = login.codex_user_code.as_deref() {
+                    buffer.set_line(
+                        area.x,
+                        item_area.y + 2,
+                        &Line::from(Span::styled(
+                            format!("用户代码：{code}"),
+                            Style::default().fg(theme.ok).bg(theme.bg_soft),
+                        )),
+                        item_area.width,
+                    );
+                }
+            }
+        }
+        crate::login::Page::ProxyList => {
+            for (i, p) in login.proxies.iter().enumerate() {
+                let y = item_area.y + i as u16;
+                if y >= item_area.y + item_area.height {
+                    break;
+                }
+                login_list_row(
+                    buffer,
+                    area,
+                    y,
+                    i == login.pos,
+                    false,
+                    &p.name,
+                    Span::styled(p.base_url.clone(), Style::default().fg(theme.dim).bg(theme.bg_soft)),
+                    theme,
+                );
+            }
+            let new_y = item_area.y + login.proxies.len() as u16;
+            if new_y < item_area.y + item_area.height {
+                login_list_row(
+                    buffer,
+                    area,
+                    new_y,
+                    login.pos == login.proxies.len(),
+                    false,
+                    "+ New",
+                    Span::styled(
+                        "新建代理".to_string(),
+                        Style::default().fg(theme.user).bg(theme.bg_soft),
+                    ),
+                    theme,
+                );
+            }
+        }
+        crate::login::Page::ProxyForm => {
+            let fields: &[&str] = &["base url", "api key", "协议模式", "模型名称"];
+            for (i, label) in fields.iter().enumerate() {
+                let y = item_area.y + i as u16;
+                if y >= item_area.y + item_area.height {
+                    break;
+                }
+                let editing = i == login.pos && login.editing.is_some();
+                let value = if editing {
+                    let buf = login.editing.as_deref().unwrap_or("");
+                    let shown = if i == 1 {
+                        "●".repeat(buf.chars().count())
+                    } else {
+                        buf.to_string()
+                    };
+                    Span::styled(
+                        format!("{shown}█"),
+                        Style::default().fg(theme.ok).bg(theme.bg),
+                    )
+                } else {
+                    let v = match i {
+                        2 => crate::login::PROTOCOLS[login.draft.protocol % crate::login::PROTOCOLS.len()].1.to_string(),
+                        _ => match i {
+                            0 => login.draft.base_url.clone(),
+                            1 => login.draft.api_key.clone(),
+                            _ => login.draft.model.clone(),
+                        },
+                    };
+                    let shown = if i == 2 {
+                        format!("◄ {v} ►")
+                    } else if v.is_empty() {
+                        "（可选）".to_string()
+                    } else if i == 1 {
+                        "●".repeat(v.chars().count())
+                    } else {
+                        v
+                    };
+                    Span::styled(shown, Style::default().fg(theme.dim).bg(theme.bg_soft))
+                };
+                login_list_row(buffer, area, y, i == login.pos, editing, label, value, theme);
+            }
+            let save_y = item_area.y + crate::login::PROXY_ROWS as u16 - 1;
+            if save_y < item_area.y + item_area.height {
+                login_list_row(
+                    buffer,
+                    area,
+                    save_y,
+                    login.pos == crate::login::PROXY_SAVE_ROW,
+                    false,
+                    "保存",
+                    Span::styled(
+                        "保存并创建".to_string(),
+                        Style::default().fg(theme.user).bg(theme.bg_soft),
+                    ),
+                    theme,
+                );
+            }
+        }
     }
 
-    // Footer: the last rejected write outranks the key hint.
+    // Footer: the last rejected write outranks the hint.
     let footer = if let Some(error) = login.error.as_deref() {
         format!("✗ {error}")
     } else if login.loading {
         "读取中…".to_string()
     } else {
-        "↑/↓ 选择   Enter 编辑   Esc 退出 · 即改即存".to_string()
+        match &login.page {
+            crate::login::Page::Menu => "↑/↓ 选择   Enter 进入   Esc 退出".to_string(),
+            crate::login::Page::Providers => "↑/↓ 选择   Enter 填写   Esc 返回".to_string(),
+            crate::login::Page::ApiKey { .. } => "Enter 保存   Esc 返回 · 密钥不会回显".to_string(),
+            crate::login::Page::Account => "Enter 开始登录   Esc 返回".to_string(),
+            crate::login::Page::ProxyList => "↑/↓ 选择   Enter 新建   Esc 返回".to_string(),
+            crate::login::Page::ProxyForm => "↑/↓ 选字段   Enter 编辑/切换   Enter 保存   Esc 返回".to_string(),
+        }
     };
     let fg = if login.error.is_some() { theme.err } else { theme.dim };
     buffer.set_line(
@@ -1520,60 +1982,33 @@ pub fn render_login(
     );
 }
 
-/// The value cell of one /login row. Editing shows the typed buffer (the
-/// API key as bullets, never the stored secret); otherwise the field's
-/// configured/placeholder view.
-fn login_value_line(field: &str, login: &LoginState, theme: &Theme, editing: bool) -> Span<'static> {
-    let bg = if editing { theme.bg } else { theme.bg_soft };
-    if editing {
-        let buf = match &login.editing {
-            Some(crate::login::Edit::Input { buf }) => buf.as_str(),
-            None => "",
-        };
-        let shown = if field == "apiKey" {
-            "●".repeat(buf.chars().count())
-        } else {
-            buf.to_string()
-        };
-        return Span::styled(
-            format!("{shown}█"),
-            Style::default().fg(theme.ok).bg(bg),
-        );
+/// Render one login list row: a fixed-width label column followed by a value.
+fn login_list_row(
+    buffer: &mut ratatui::buffer::Buffer,
+    area: ratatui::layout::Rect,
+    y: u16,
+    focused: bool,
+    editing: bool,
+    label: &str,
+    value: Span<'static>,
+    theme: &Theme,
+) {
+    let name_bg = if focused && !editing { theme.bg } else { theme.bg_soft };
+    let label_width = UnicodeWidthStr::width(label);
+    let mut spans: Vec<Span<'static>> = vec![
+        Span::styled("  ", Style::default().fg(theme.fg).bg(name_bg)),
+        Span::styled(label.to_string(), Style::default().fg(theme.fg).bg(name_bg)),
+    ];
+    if label_width < 12 {
+        spans.push(Span::styled(
+            " ".repeat(12 - label_width),
+            Style::default().fg(theme.fg).bg(name_bg),
+        ));
     }
-    match field {
-        "apiKey" => {
-            if login.api_key_configured {
-                let hint = login.api_key_hint.as_deref().unwrap_or("");
-                let source = match login.api_key_source.as_deref() {
-                    Some("env") => "（环境变量，只读）",
-                    _ => "",
-                };
-                Span::styled(
-                    format!("已配置 {hint}{source}"),
-                    Style::default().fg(theme.ok).bg(bg),
-                )
-            } else {
-                Span::styled(
-                    "未配置（输入后 Enter 保存）",
-                    Style::default().fg(theme.dim).bg(bg),
-                )
-            }
-        }
-        "account" => match login.account.as_deref() {
-            Some(id) => Span::styled(id.to_string(), Style::default().fg(theme.fg).bg(bg)),
-            None => Span::styled(
-                "自动生成（留空删除，下次启动重生成）",
-                Style::default().fg(theme.dim).bg(bg),
-            ),
-        },
-        _ => match login.proxy.as_deref() {
-            Some(proxy) => Span::styled(proxy.to_string(), Style::default().fg(theme.fg).bg(bg)),
-            None => Span::styled(
-                "未设置（直连；修改后重启 dsh web 生效）",
-                Style::default().fg(theme.dim).bg(bg),
-            ),
-        },
-    }
+    spans.push(value);
+    let line = Line::from(spans);
+    let line_width = (line.width() as u16).min(area.width);
+    buffer.set_line(area.x, y, &line, line_width);
 }
 
 /// /settings overlay (design §4.7): category column + item list, live edit.
@@ -1769,10 +2204,10 @@ fn settings_value_line(
             }
             Line::from(spans)
         }
-        crate::settings::ItemKind::ModeChoice => {
+        crate::settings::ItemKind::ModeChoice | crate::settings::ItemKind::ThemeChoice => {
             // Same ○/● rendering over the live roster (the current value is
             // appended when the roster no longer lists it).
-            let options = crate::settings::dynamic_options(item, config, &settings.modes);
+            let options = crate::settings::dynamic_options(item, config, &settings.modes, &settings.themes);
             let mut spans: Vec<Span<'static>> = Vec::new();
             for (i, opt) in options.iter().enumerate() {
                 if i > 0 {
@@ -1972,7 +2407,10 @@ mod tests {
     /// running edit gets a spinner line.
     #[test]
     fn file_group_renders_one_line_format() {
-        let config = crate::config::Config::default();
+        let mut config = crate::config::Config::default();
+        // ui tests assert the ferra palette — pin the resolved theme so the
+        // default (deepseek-e) doesn't shift the expected colors.
+        config.resolved_theme = Theme::ferra();
         let mut s = AppState::default();
         s.config = config.clone();
         for (seq, id, name, path) in [
@@ -2030,7 +2468,10 @@ mod tests {
     fn activity_text_uses_bark_dim() {
         use crate::model::{EditItem, FileGroup, ReadItem, ToolCard, ToolState};
 
-        let config = crate::config::Config::default();
+        let mut config = crate::config::Config::default();
+        // ui tests assert the ferra palette — pin the resolved theme so the
+        // default (deepseek-e) doesn't shift the expected colors.
+        config.resolved_theme = Theme::ferra();
         let mut s = AppState::default();
         s.config = config.clone();
         s.msgs.push(Msg::Tool(ToolCard {
@@ -2110,7 +2551,9 @@ mod tests {
 
         // Failure: bullet turns red (and only then).
         let mut s3 = AppState::default();
-        s3.config = crate::config::Config::default();
+        let mut fail_cfg = crate::config::Config::default();
+        fail_cfg.resolved_theme = Theme::ferra();
+        s3.config = fail_cfg;
         s3.msgs.push(Msg::FileGroup(FileGroup {
             reads: vec![ReadItem {
                 call_id: "r2".into(),
@@ -2141,7 +2584,10 @@ mod tests {
     fn tool_done_glyph_is_bullet() {
         use crate::model::{ToolCard, ToolState};
 
-        let config = crate::config::Config::default();
+        let mut config = crate::config::Config::default();
+        // ui tests assert the ferra palette — pin the resolved theme so the
+        // default (deepseek-e) doesn't shift the expected colors.
+        config.resolved_theme = Theme::ferra();
         let mut s = AppState::default();
         s.config = config;
         s.msgs.push(Msg::Tool(ToolCard {
@@ -2178,7 +2624,10 @@ mod tests {
     fn status_bar_has_spacing_and_working_bullet() {
         use ratatui::backend::TestBackend;
 
-        let config = crate::config::Config::default();
+        let mut config = crate::config::Config::default();
+        // ui tests assert the ferra palette — pin the resolved theme so the
+        // default (deepseek-e) doesn't shift the expected colors.
+        config.resolved_theme = Theme::ferra();
         let mut s = AppState::default();
         s.config = config.clone();
         let input = InputState::new(&config);
@@ -2200,18 +2649,31 @@ mod tests {
         let spacer = row(37);
         assert!(spacer.trim().is_empty(), "one-row gap above the status bar: {spacer:?}");
         let status = row(38);
-        assert!(status.contains("idle"), "status label present: {status:?}");
         assert!(status.contains('•'), "working bullet present: {status:?}");
+        assert!(
+            !status.contains("idle") && !status.contains("running"),
+            "no idle/running text label: {status:?}"
+        );
+        // The bullet leads the status bar, flush against the content area's
+        // left edge (x=4 with the default page margin), followed by one space
+        // and the `e` brand.
+        assert!(
+            status.trim_start().starts_with("• e"),
+            "bullet leads, space-separated from e: {status:?}"
+        );
         // Char index (not byte index — the row holds multi-byte `·`): each
         // cell contributes exactly one char, so this is also the cell column.
         let bullet_x = status.chars().position(|c| c == '•').expect("bullet cell");
+        assert_eq!(bullet_x, 4, "bullet at the content area's leading edge");
         assert_eq!(
             buf[(bullet_x as u16, 38)].fg,
             theme.dim,
             "idle bullet is gray"
         );
-        // Working: the bullet leaves gray (breathing toward yellow).
-        s.working = true;
+        // Running (with no visible activity and `working` left false): the
+        // bullet still leaves gray (breathing toward yellow) — the running
+        // status alone must drive the breath.
+        s.status = AgentStatus::Running;
         s.activity_epoch = Some(std::time::Instant::now() - std::time::Duration::from_millis(
             (crate::model::BREATH_CYCLE_MS / 2) as u64,
         ));
@@ -2219,7 +2681,7 @@ mod tests {
             .draw(|f| render(f, &mut s, &input, &mut scroll, &theme, RenderOverlays { help_visible: false, overlay: None, toast: None, settings: None, login: None }))
             .unwrap();
         let backend_fg = terminal.backend().buffer()[(bullet_x as u16, 38)].fg;
-        assert_ne!(backend_fg, theme.dim, "working bullet breathes (not gray)");
+        assert_ne!(backend_fg, theme.dim, "running bullet breathes (not gray)");
     }
 
     /// The title row below the status bar shows the session's latest
@@ -2228,7 +2690,10 @@ mod tests {
     fn title_row_renders_below_status_bar() {
         use ratatui::backend::TestBackend;
 
-        let config = crate::config::Config::default();
+        let mut config = crate::config::Config::default();
+        // ui tests assert the ferra palette — pin the resolved theme so the
+        // default (deepseek-e) doesn't shift the expected colors.
+        config.resolved_theme = Theme::ferra();
         let mut s = AppState::default();
         s.config = config.clone();
         s.session_title = Some("重构 bridge".into());
@@ -2249,7 +2714,7 @@ mod tests {
         let title = title_row(terminal.backend().buffer(), 23);
         assert!(title.replace(' ', "").contains("重构bridge"), "title row: {title}");
         assert!(
-            title_row(terminal.backend().buffer(), 22).contains("idle"),
+            title_row(terminal.backend().buffer(), 22).contains("• e"),
             "status bar still one row above the title"
         );
         // Without a title the row is blank (no leftover glyphs).
@@ -2261,6 +2726,55 @@ mod tests {
         assert!(blank.trim().is_empty(), "blank title row: {blank:?}");
     }
 
+    /// The title row also carries the workspace path, right-aligned; a long
+    /// title truncates with an ellipsis so the path never scrolls off.
+    #[test]
+    fn title_row_shows_path_right_aligned_and_truncates_long_titles() {
+        use ratatui::backend::TestBackend;
+
+        let mut config = crate::config::Config::default();
+        // ui tests assert the ferra palette — pin the resolved theme so the
+        // default (deepseek-e) doesn't shift the expected colors.
+        config.resolved_theme = Theme::ferra();
+        let mut s = AppState::default();
+        s.config = config.clone();
+        s.session_title = Some("重构 bridge".into());
+        s.session_cwd = Some(r"D:\MyProjects\Chore\dsh".into());
+        let input = InputState::new(&config);
+        let mut scroll = ScrollState::default();
+        let theme = Theme::ferra();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render(f, &mut s, &input, &mut scroll, &theme, RenderOverlays { help_visible: false, overlay: None, toast: None, settings: None, login: None }))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let title = (0u16..80)
+            .map(|x| buf[(x, 23)].symbol().chars().next().unwrap_or(' '))
+            .collect::<String>();
+        // Left-aligned title (❯ prefix); CJK wide glyphs occupy two cells,
+        // so strip spaces before matching.
+        assert!(title.replace(' ', "").starts_with("❯重构bridge"), "title left: {title:?}");
+        // Right-aligned path (all ASCII) sits flush against the content
+        // area's right edge. The page leaves a 4-column margin on each side
+        // of an 80-col terminal, so the 72-wide content area ends at x=75.
+        assert!(title.trim_end().ends_with(r"D:\MyProjects\Chore\dsh"), "path right: {title:?}");
+        assert_eq!(buf[(75, 23)].symbol(), "h", "path ends at the content's right edge");
+
+        // A very long title truncates with an ellipsis, keeping the path.
+        s.session_title = Some("x".repeat(120));
+        terminal
+            .draw(|f| render(f, &mut s, &input, &mut scroll, &theme, RenderOverlays { help_visible: false, overlay: None, toast: None, settings: None, login: None }))
+            .unwrap();
+        let buf2 = terminal.backend().buffer();
+        let long = (0u16..80)
+            .map(|x| buf2[(x, 23)].symbol().chars().next().unwrap_or(' '))
+            .collect::<String>();
+        assert!(long.contains('…'), "long title truncates with an ellipsis: {long:?}");
+        assert!(long.trim_end().ends_with(r"D:\MyProjects\Chore\dsh"), "path stays visible: {long:?}");
+        assert_eq!(buf2[(75, 23)].symbol(), "h", "path still flush right");
+    }
+
     /// A pending question shrinks the transcript by a 3-row question panel,
     /// replaces the input bar with the selection bar (highlighted option
     /// reversed), and marks the status bar as waiting.
@@ -2268,7 +2782,10 @@ mod tests {
     fn question_bar_replaces_input_bar() {
         use ratatui::backend::TestBackend;
 
-        let config = crate::config::Config::default();
+        let mut config = crate::config::Config::default();
+        // ui tests assert the ferra palette — pin the resolved theme so the
+        // default (deepseek-e) doesn't shift the expected colors.
+        config.resolved_theme = Theme::ferra();
         let mut s = AppState::default();
         s.config = config.clone();
         s.msgs.push(Msg::User { text: "hi".into() });
@@ -2332,7 +2849,10 @@ mod tests {
     fn prompt_queue_renders_above_input_bar() {
         use ratatui::backend::TestBackend;
 
-        let config = crate::config::Config::default();
+        let mut config = crate::config::Config::default();
+        // ui tests assert the ferra palette — pin the resolved theme so the
+        // default (deepseek-e) doesn't shift the expected colors.
+        config.resolved_theme = Theme::ferra();
         let mut s = AppState::default();
         s.config = config.clone();
         s.queue = vec![
@@ -2383,13 +2903,19 @@ mod tests {
     fn settings_panel_replaces_input_and_focus_colors() {
         use ratatui::backend::TestBackend;
 
-        let config = crate::config::Config::default();
+        let mut config = crate::config::Config::default();
+        // ui tests assert the ferra palette — pin the resolved theme so the
+        // default (deepseek-e) doesn't shift the expected colors.
+        config.resolved_theme = Theme::ferra();
         let mut s = AppState::default();
         s.config = config.clone();
         let input = InputState::new(&config);
         let mut scroll = ScrollState::default();
         let theme = Theme::ferra();
         let mut settings = crate::settings::SettingsState::default(); // 外观 · 主题
+        // The 主题 item lists discovered themes; give it two so the ○/● and
+        // "custom" assertions below still have a non-selected option.
+        settings.themes = vec!["ferra".into(), "custom".into()];
         let backend = TestBackend::new(80, 24);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let has_cell = |buf: &ratatui::buffer::Buffer, sym: char, fg: Color, bg: Color| -> bool {
@@ -2433,7 +2959,7 @@ mod tests {
         let status_row: String = (0..80u16)
             .map(|x| buf[(x, 22)].symbol().chars().next().unwrap_or(' '))
             .collect();
-        assert!(status_row.contains("idle"), "status bar remains above the title row");
+        assert!(status_row.contains("• e"), "status bar remains above the title row");
         // Category tabs: centered and never highlighted (Ash background).
         let tab_cell = (0..24u16)
             .flat_map(|y| (0..80u16).map(move |x| (x, y)))
@@ -2485,13 +3011,17 @@ mod tests {
     }
 
     /// The /login panel replaces the input bar (same 2/3-height Ash shape as
-    /// the settings panel): title, three field rows, and the footer hint —
-    /// the focused NAME sits on Night and the API key value never shows.
+    /// the settings panel). The three-way menu renders, Enter opens the
+    /// provider sub-page (configured-key view with hint), and the API-key
+    /// edit masks the typed secret.
     #[test]
     fn login_panel_replaces_input_bar() {
         use ratatui::backend::TestBackend;
 
-        let config = crate::config::Config::default();
+        let mut config = crate::config::Config::default();
+        // ui tests assert the ferra palette — pin the resolved theme so the
+        // default (deepseek-e) doesn't shift the expected colors.
+        config.resolved_theme = Theme::ferra();
         let mut s = AppState::default();
         s.config = config.clone();
         let input = InputState::new(&config);
@@ -2499,80 +3029,52 @@ mod tests {
         let theme = Theme::ferra();
         let mut login = crate::login::LoginState::default();
         login.apply(crate::login::LoginView {
-            api_key_configured: true,
-            api_key_writable: true,
-            api_key_source: Some("file".into()),
-            api_key_hint: Some("…1234".into()),
-            account: Some("a1b2c3d4-0000-0000-0000-000000000000".into()),
-            proxy: None,
+            providers: vec![crate::protocol::ProviderInfo {
+                id: "deepseek".into(),
+                name: "DeepSeek".into(),
+                api_key_configured: true,
+                api_key_writable: true,
+                api_key_source: Some("file".into()),
+                api_key_hint: Some("…1234".into()),
+            }],
+            proxies: vec![],
+            codex: None,
             error: None,
         });
         let backend = TestBackend::new(80, 24);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let all_text = |buf: &ratatui::buffer::Buffer| -> String {
+            (0..24u16)
+                .flat_map(|y| (0..80u16).map(move |x| buf[(x, y)].symbol().chars().next().unwrap_or(' ')))
+                .collect::<String>()
+                .replace(' ', "")
+        };
+        // Menu page: the three choices render.
         terminal
-            .draw(|f| {
-                render(
-                    f,
-                    &mut s,
-                    &input,
-                    &mut scroll,
-                    &theme,
-                    RenderOverlays {
-                        help_visible: false,
-                        overlay: None,
-                        toast: None,
-                        settings: None,
-                        login: Some(&mut login),
-                    },
-                )
-            })
+            .draw(|f| render(f, &mut s, &input, &mut scroll, &theme, RenderOverlays { help_visible: false, overlay: None, toast: None, settings: None, login: Some(&mut login) }))
             .unwrap();
-        let buf = terminal.backend().buffer();
-        let all: String = (0..24u16)
-            .flat_map(|y| (0..80u16).map(move |x| buf[(x, y)].symbol().chars().next().unwrap_or(' ')))
-            .collect::<String>()
-            .replace(' ', "");
-        // The login page replaces the input bar; the transcript input
-        // placeholder is gone and the three fields render.
-        assert!(all.contains("登录设置"), "login title");
-        assert!(all.contains("APIkey"), "API key row (spaces stripped)");
-        assert!(all.contains("账号"), "account row");
-        assert!(all.contains("proxy"), "proxy row");
-        assert!(all.contains("已配置…1234"), "configured key view with hint");
-        assert!(all.contains("↑/↓选择"), "footer hint");
-        // The stored secret never renders — only the …1234 hint.
+        let all = all_text(terminal.backend().buffer());
+        assert!(all.contains("登录"), "login title");
+        assert!(all.contains("APIkey"), "API key menu item (spaces stripped)");
+        assert!(all.contains("Account"), "Account menu item");
+        assert!(all.contains("Proxy"), "Proxy menu item");
+        // Provider sub-page: the provider row shows the configured-key view.
+        login.page = crate::login::Page::Providers;
+        login.loading = false;
+        terminal
+            .draw(|f| render(f, &mut s, &input, &mut scroll, &theme, RenderOverlays { help_visible: false, overlay: None, toast: None, settings: None, login: Some(&mut login) }))
+            .unwrap();
+        let all = all_text(terminal.backend().buffer());
+        assert!(all.contains("DeepSeek"), "provider row: {all:?}");
+        assert!(all.contains("已配置…1234"), "configured key hint");
         assert!(!all.contains("sk-"), "no secret on screen");
-        // Focused first row (API key) NAME on Night.
-        let name_cell = (0..24u16)
-            .flat_map(|y| (0..80u16).map(move |x| (x, y)))
-            .find(|&(x, y)| buf[(x, y)].symbol() == "A")
-            .expect("API key row rendered");
-        assert_eq!(buf[name_cell].bg, theme.bg, "focused name is Night");
-        // Editing masks the typed key as bullets.
-        login.editing = Some(crate::login::Edit::Input { buf: "sk-secret".into() });
+        // API-key edit masks the typed secret as bullets.
+        login.page = crate::login::Page::ApiKey { provider: "deepseek".into(), buf: String::new() };
+        login.editing = Some("sk-secret".into());
         terminal
-            .draw(|f| {
-                render(
-                    f,
-                    &mut s,
-                    &input,
-                    &mut scroll,
-                    &theme,
-                    RenderOverlays {
-                        help_visible: false,
-                        overlay: None,
-                        toast: None,
-                        settings: None,
-                        login: Some(&mut login),
-                    },
-                )
-            })
+            .draw(|f| render(f, &mut s, &input, &mut scroll, &theme, RenderOverlays { help_visible: false, overlay: None, toast: None, settings: None, login: Some(&mut login) }))
             .unwrap();
-        let buf = terminal.backend().buffer();
-        let all: String = (0..24u16)
-            .flat_map(|y| (0..80u16).map(move |x| buf[(x, y)].symbol().chars().next().unwrap_or(' ')))
-            .collect::<String>()
-            .replace(' ', "");
+        let all = all_text(terminal.backend().buffer());
         assert!(all.contains("●●●●●●●●●█"), "typed key renders as bullets");
         assert!(!all.contains("sk-secret"), "typed secret never renders in plain text");
     }
@@ -2584,7 +3086,10 @@ mod tests {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         use ratatui::backend::TestBackend;
 
-        let config = crate::config::Config::default();
+        let mut config = crate::config::Config::default();
+        // ui tests assert the ferra palette — pin the resolved theme so the
+        // default (deepseek-e) doesn't shift the expected colors.
+        config.resolved_theme = Theme::ferra();
         let mut s = AppState::default();
         s.config = config.clone();
         for i in 0..30 {
@@ -2645,7 +3150,10 @@ mod tests {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         use ratatui::backend::TestBackend;
 
-        let config = crate::config::Config::default();
+        let mut config = crate::config::Config::default();
+        // ui tests assert the ferra palette — pin the resolved theme so the
+        // default (deepseek-e) doesn't shift the expected colors.
+        config.resolved_theme = Theme::ferra();
         let mut input = InputState::new(&config);
         for c in "你好世界".chars() {
             input.handle_key(&KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE), true);
@@ -2686,7 +3194,10 @@ mod tests {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         use ratatui::backend::TestBackend;
 
-        let config = crate::config::Config::default();
+        let mut config = crate::config::Config::default();
+        // ui tests assert the ferra palette — pin the resolved theme so the
+        // default (deepseek-e) doesn't shift the expected colors.
+        config.resolved_theme = Theme::ferra();
         let mut input = InputState::new(&config);
         let action = input.handle_key(
             &KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT),
@@ -2727,7 +3238,10 @@ mod tests {
     fn input_bar_wraps_long_content() {
         use ratatui::backend::TestBackend;
 
-        let config = crate::config::Config::default();
+        let mut config = crate::config::Config::default();
+        // ui tests assert the ferra palette — pin the resolved theme so the
+        // default (deepseek-e) doesn't shift the expected colors.
+        config.resolved_theme = Theme::ferra();
         let mut input = InputState::new(&config);
         input.buf = "x".repeat(60);
         input.cursor = input.buf.chars().count();
@@ -2770,7 +3284,10 @@ mod tests {
     fn user_block_long_lines_stay_solid() {
         use ratatui::backend::TestBackend;
 
-        let config = crate::config::Config::default();
+        let mut config = crate::config::Config::default();
+        // ui tests assert the ferra palette — pin the resolved theme so the
+        // default (deepseek-e) doesn't shift the expected colors.
+        config.resolved_theme = Theme::ferra();
         let mut s = AppState::default();
         s.config = config.clone();
         s.msgs.push(Msg::User { text: "x".repeat(150) });
@@ -2801,7 +3318,10 @@ mod tests {
     #[test]
     fn tail_splice_updates_only_the_streaming_message() {        use ratatui::backend::TestBackend;
 
-        let config = crate::config::Config::default();
+        let mut config = crate::config::Config::default();
+        // ui tests assert the ferra palette — pin the resolved theme so the
+        // default (deepseek-e) doesn't shift the expected colors.
+        config.resolved_theme = Theme::ferra();
         let mut s = AppState::default();
         s.config = config.clone();
         s.apply_event(&serde_json::json!({
@@ -2850,7 +3370,10 @@ mod tests {
     #[test]
     fn history_prepend_keeps_viewport() {        use ratatui::backend::TestBackend;
 
-        let config = crate::config::Config::default();
+        let mut config = crate::config::Config::default();
+        // ui tests assert the ferra palette — pin the resolved theme so the
+        // default (deepseek-e) doesn't shift the expected colors.
+        config.resolved_theme = Theme::ferra();
         let mut s = AppState::default();
         s.config = config.clone();
         s.apply_event(&serde_json::json!({
@@ -2907,7 +3430,10 @@ mod tests {
     fn page_max_width_caps_and_wraps() {
         use ratatui::backend::TestBackend;
 
-        let config = crate::config::Config::default();
+        let mut config = crate::config::Config::default();
+        // ui tests assert the ferra palette — pin the resolved theme so the
+        // default (deepseek-e) doesn't shift the expected colors.
+        config.resolved_theme = Theme::ferra();
         let mut s = AppState::default();
         s.config = config.clone();
         s.config.page_max_width = 40;
@@ -2949,7 +3475,10 @@ mod tests {
     /// while running, green once the phase completes.
     #[test]
     fn thinking_renders_like_tool_card() {
-        let config = crate::config::Config::default();
+        let mut config = crate::config::Config::default();
+        // ui tests assert the ferra palette — pin the resolved theme so the
+        // default (deepseek-e) doesn't shift the expected colors.
+        config.resolved_theme = Theme::ferra();
         let mut s = AppState::default();
         s.config = config.clone();
         s.start_thinking();
@@ -2980,7 +3509,10 @@ mod tests {
     /// pad to the full area width.
     #[test]
     fn code_block_fill_uses_night() {
-        let config = crate::config::Config::default();
+        let mut config = crate::config::Config::default();
+        // ui tests assert the ferra palette — pin the resolved theme so the
+        // default (deepseek-e) doesn't shift the expected colors.
+        config.resolved_theme = Theme::ferra();
         let mut s = AppState::default();
         s.config = config;
         s.msgs.push(Msg::Assistant {
@@ -3149,7 +3681,10 @@ mod tests {
     fn follow_pins_wrapped_tail_and_gap_row() {
         use ratatui::backend::TestBackend;
 
-        let config = crate::config::Config::default();
+        let mut config = crate::config::Config::default();
+        // ui tests assert the ferra palette — pin the resolved theme so the
+        // default (deepseek-e) doesn't shift the expected colors.
+        config.resolved_theme = Theme::ferra();
         let mut s = AppState::default();
         s.config = config.clone();
         s.apply_event(&serde_json::json!({
@@ -3201,7 +3736,10 @@ mod tests {
     fn user_block_has_no_bg_gaps() {
         use ratatui::backend::TestBackend;
 
-        let config = crate::config::Config::default();
+        let mut config = crate::config::Config::default();
+        // ui tests assert the ferra palette — pin the resolved theme so the
+        // default (deepseek-e) doesn't shift the expected colors.
+        config.resolved_theme = Theme::ferra();
         let mut s = AppState::default();
         s.config = config.clone();
         s.msgs.push(Msg::User { text: "你好世界".into() });
@@ -3240,7 +3778,10 @@ mod tests {
     fn failed_file_items_are_listed_separately() {
         use crate::model::{EditItem, FileGroup, ReadItem};
 
-        let config = crate::config::Config::default();
+        let mut config = crate::config::Config::default();
+        // ui tests assert the ferra palette — pin the resolved theme so the
+        // default (deepseek-e) doesn't shift the expected colors.
+        config.resolved_theme = Theme::ferra();
         let mut s = AppState::default();
         s.config = config;
         s.msgs.push(Msg::FileGroup(FileGroup {
@@ -3295,7 +3836,10 @@ mod tests {
     fn file_group_collapses_repeats_into_counts() {
         use crate::model::{EditItem, FileGroup, ReadItem};
 
-        let config = crate::config::Config::default();
+        let mut config = crate::config::Config::default();
+        // ui tests assert the ferra palette — pin the resolved theme so the
+        // default (deepseek-e) doesn't shift the expected colors.
+        config.resolved_theme = Theme::ferra();
         let mut s = AppState::default();
         s.config = config;
         s.msgs.push(Msg::FileGroup(FileGroup {

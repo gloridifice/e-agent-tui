@@ -1,163 +1,386 @@
-//! /login panel (D33): the input bar becomes a login settings page with
-//! three fields — API key (host credentials seam, value never read back),
-//! 账号 (the harness anonymous user id sent as x-deepseek-harness-user-id),
-//! and proxy (the HTTPS_PROXY line of the harness-home .env, applied on the
-//! next host restart). ↑/↓ move, Enter edits, Esc exits — every confirmed
-//! edit is sent to the bridge immediately (即改即存).
+//! /login panel (D33): the input bar becomes a login page with a three-way
+//! menu — API key / Account / Proxy — each opening a sub-page.
 //!
-//! The panel mirrors the /settings panel's shape (borderless, replaces the
-//! input bar) but its data lives on the bridge, not in config.toml: the
-//! client requests it with `login-get` and the `login` frame refreshes it.
+//! - API key: lists the model providers; Enter opens that provider's API key
+//!   entry (the secret is typed fresh, never prefilled or read back).
+//! - Account: OpenAI Codex (ChatGPT subscription) web login via the device
+//!   code flow — the panel shows the verification URL + user code and polls
+//!   the bridge until the login completes.
+//! - Proxy: lists saved proxy routes plus `+ New`; the create form collects
+//!   base URL, API key, protocol (three choices) and model name — none of
+//!   which is mandatory except a non-empty base URL.
 
 use crossterm::event::{KeyCode, KeyEvent};
 
-/// The three editable fields, in display order.
-pub const FIELDS: &[(&str, &str)] = &[
-    ("apiKey", "API key"),
-    ("account", "账号"),
-    ("proxy", "proxy"),
+use crate::protocol::{ClientMessage, CodexInfo, ProviderInfo, ProxyInfo};
+
+/// Wire protocols a custom proxy route may speak (first = default).
+pub const PROTOCOLS: &[(&str, &str)] = &[
+    ("openai-completions", "OpenAI Chat Completions"),
+    ("openai-responses", "OpenAI Responses"),
+    ("anthropic-messages", "Anthropic Messages"),
 ];
 
-/// What the UI should do after a key press.
+/// Index of the "save and create" row in the proxy form (after the 4 fields).
+pub const PROXY_SAVE_ROW: usize = 4;
+
+/// The sub-page currently shown.
 #[derive(Debug, PartialEq)]
+pub enum Page {
+    /// 三选一: API key / Account / Proxy.
+    Menu,
+    /// API key: the provider list.
+    Providers,
+    /// Typing one provider's API key.
+    ApiKey { provider: String, buf: String },
+    /// Account: the Codex web-login page.
+    Account,
+    /// Proxy: saved routes + `+ New`.
+    ProxyList,
+    /// Proxy create form: 4 fields + a save row.
+    ProxyForm,
+}
+
+/// What the UI should do after a key press.
+#[derive(Debug)]
 pub enum LoginAction {
     None,
     Exit,
-    /// A field edit was confirmed — send it to the bridge.
-    Set { field: &'static str, value: String },
+    /// Send one bridge message.
+    Send(ClientMessage),
 }
 
-/// In-progress edit of the focused value. Enter confirms, Esc cancels.
-#[derive(Debug, PartialEq)]
-pub enum Edit {
-    /// The typed buffer (apiKey starts empty — the secret is never
-    /// pre-filled; account/proxy start with their current value).
-    Input { buf: String },
+/// The four proxy-form fields plus a save row, in display order.
+pub const PROXY_ROWS: usize = 5;
+
+/// Draft values of the proxy create form.
+#[derive(Debug, Default, PartialEq)]
+pub struct ProxyDraft {
+    pub base_url: String,
+    pub api_key: String,
+    pub protocol: usize,
+    pub model: String,
 }
 
 pub struct LoginState {
-    /// Hovered field index (0..FIELDS.len()).
+    /// Current sub-page.
+    pub page: Page,
+    /// Selection within the current list page (also the proxy-form row).
     pub pos: usize,
-    /// Active edit.
-    pub editing: Option<Edit>,
-    // ---- bridge-synced state (the `login` frame) ----
-    pub api_key_configured: bool,
-    pub api_key_writable: bool,
-    pub api_key_source: Option<String>,
-    pub api_key_hint: Option<String>,
-    pub account: Option<String>,
-    pub proxy: Option<String>,
-    /// Message of the last rejected write; cleared on the next success.
+    /// In-progress text edit of a proxy form field (None while browsing).
+    pub editing: Option<String>,
     pub error: Option<String>,
-    /// The initial login-get has not been answered yet.
     pub loading: bool,
+    // ---- bridge-synced state (the `login` frame) ----
+    pub providers: Vec<ProviderInfo>,
+    pub proxies: Vec<ProxyInfo>,
+    pub codex: Option<CodexInfo>,
+    // ---- live Codex device login (the `login-codex` frame) ----
+    pub codex_pending: bool,
+    pub codex_user_code: Option<String>,
+    pub codex_verification_uri: Option<String>,
+    /// Proxy create form draft.
+    pub draft: ProxyDraft,
 }
 
 impl Default for LoginState {
     fn default() -> Self {
         Self {
+            page: Page::Menu,
             pos: 0,
             editing: None,
-            api_key_configured: false,
-            api_key_writable: false,
-            api_key_source: None,
-            api_key_hint: None,
-            account: None,
-            proxy: None,
             error: None,
             loading: true,
+            providers: Vec::new(),
+            proxies: Vec::new(),
+            codex: None,
+            codex_pending: false,
+            codex_user_code: None,
+            codex_verification_uri: None,
+            draft: ProxyDraft::default(),
         }
     }
 }
 
-/// One bridge `login` frame — the value VIEW only: the API key itself
-/// never leaves the host (its view is `configured/writable/source/hint`).
+/// One bridge `login` frame — the value VIEW only: secrets never cross the wire.
 #[derive(Debug, Clone, Default)]
 pub struct LoginView {
-    pub api_key_configured: bool,
-    pub api_key_writable: bool,
-    pub api_key_source: Option<String>,
-    pub api_key_hint: Option<String>,
-    pub account: Option<String>,
-    pub proxy: Option<String>,
-    /// Message of the last rejected write; absent after a success.
+    pub providers: Vec<ProviderInfo>,
+    pub proxies: Vec<ProxyInfo>,
+    pub codex: Option<CodexInfo>,
+    pub error: Option<String>,
+}
+
+/// One bridge `login-codex` frame.
+#[derive(Debug, Clone, Default)]
+pub struct CodexView {
+    pub status: String,
+    pub user_code: Option<String>,
+    pub verification_uri: Option<String>,
+    pub account_id: Option<String>,
     pub error: Option<String>,
 }
 
 impl LoginState {
     /// Apply one bridge `login` frame.
     pub fn apply(&mut self, view: LoginView) {
-        self.api_key_configured = view.api_key_configured;
-        self.api_key_writable = view.api_key_writable;
-        self.api_key_source = view.api_key_source;
-        self.api_key_hint = view.api_key_hint;
-        self.account = view.account;
-        self.proxy = view.proxy;
+        self.providers = view.providers;
+        self.proxies = view.proxies;
+        self.codex = view.codex;
         self.error = view.error;
         self.loading = false;
+        // Clamp the cursor to the refreshed list.
+        self.pos = self.pos.min(self.list_len().saturating_sub(1));
     }
 
-    /// Current value of the focused field, for prefilling edits: the API
-    /// key is never prefilled (the client does not know it); account and
-    /// proxy start from their current value.
-    fn current_value(&self, field: &str) -> String {
+    /// Apply one bridge `login-codex` frame.
+    pub fn apply_codex(&mut self, view: CodexView) {
+        match view.status.as_str() {
+            "pending" => {
+                self.codex_pending = true;
+                self.codex_user_code = view.user_code;
+                self.codex_verification_uri = view.verification_uri;
+            }
+            "done" => {
+                self.codex_pending = false;
+                self.codex_user_code = None;
+                self.codex_verification_uri = None;
+                self.codex = Some(CodexInfo {
+                    logged_in: true,
+                    account_id: view.account_id,
+                });
+            }
+            _ => {
+                self.codex_pending = false;
+                self.codex_user_code = None;
+                self.codex_verification_uri = None;
+                if let Some(err) = view.error {
+                    self.error = Some(err);
+                }
+            }
+        }
+    }
+
+    /// Number of selectable rows on the current list page (menu/providers/
+    /// proxy-list). Proxy-list has one extra `+ New` row.
+    fn list_len(&self) -> usize {
+        match self.page {
+            Page::Menu => 3,
+            Page::Providers => self.providers.len().max(1),
+            Page::ProxyList => self.proxies.len() + 1,
+            _ => 1,
+        }
+    }
+
+    /// Move the selection, clamped to the current list.
+    fn move_pos(&mut self, delta: i32) {
+        let len = self.list_len().max(1) as i32;
+        let next = (self.pos as i32 + delta).clamp(0, len - 1);
+        self.pos = next as usize;
+    }
+
+    fn open_menu_item(&mut self) {
+        match self.pos {
+            0 => self.page = Page::Providers,
+            1 => self.page = Page::Account,
+            _ => self.page = Page::ProxyList,
+        }
+        self.pos = 0;
+    }
+
+    fn proxy_field_value(&self, field: usize) -> String {
         match field {
-            "account" => self.account.clone().unwrap_or_default(),
-            "proxy" => self.proxy.clone().unwrap_or_default(),
-            _ => String::new(),
+            0 => self.draft.base_url.clone(),
+            1 => self.draft.api_key.clone(),
+            2 => PROTOCOLS[self.draft.protocol % PROTOCOLS.len()].0.to_string(),
+            _ => self.draft.model.clone(),
+        }
+    }
+
+    /// Start editing the focused proxy-form field (secret fields start empty).
+    fn begin_proxy_edit(&mut self) {
+        let field = self.pos;
+        let buf = if field == 1 { String::new() } else { self.proxy_field_value(field) };
+        self.editing = Some(buf);
+    }
+
+    /// Commit the edited proxy-form field back into the draft.
+    fn commit_proxy_edit(&mut self, value: String) {
+        let value = value.trim().to_string();
+        match self.pos {
+            0 => self.draft.base_url = value,
+            1 => self.draft.api_key = value,
+            3 => self.draft.model = value,
+            _ => {}
         }
     }
 
     pub fn handle_key(&mut self, key: &KeyEvent) -> LoginAction {
-        // ---- editing: Enter confirms (sends), Esc cancels ----
-        if let Some(edit) = self.editing.take() {
-            match edit {
-                Edit::Input { buf } => match key.code {
-                    KeyCode::Enter => {
-                        let field = FIELDS[self.pos].0;
-                        return LoginAction::Set { field, value: buf.trim().to_string() };
+        // ---- text editing (proxy form fields + API key) ----
+        if let Some(buf) = self.editing.take() {
+            return match key.code {
+                KeyCode::Enter => {
+                    if let Page::ApiKey { provider, .. } = &self.page {
+                        let provider = provider.clone();
+                        let action = LoginAction::Send(ClientMessage::LoginSetApiKey {
+                            provider,
+                            value: buf.trim().to_string(),
+                        });
+                        self.page = Page::Providers;
+                        self.pos = 0;
+                        action
+                    } else {
+                        self.commit_proxy_edit(buf);
+                        self.pos = (self.pos + 1).min(PROXY_SAVE_ROW);
+                        LoginAction::None
                     }
-                    KeyCode::Esc => return LoginAction::None,
-                    KeyCode::Char(c) if !c.is_ascii_control() => {
-                        let mut next = buf;
-                        next.push(c);
-                        self.editing = Some(Edit::Input { buf: next });
+                }
+                KeyCode::Esc => {
+                    if matches!(self.page, Page::ApiKey { .. }) {
+                        self.page = Page::Providers;
+                        self.pos = 0;
                     }
-                    KeyCode::Backspace => {
-                        let mut next = buf;
-                        next.pop();
-                        self.editing = Some(Edit::Input { buf: next });
-                    }
-                    _ => self.editing = Some(Edit::Input { buf }),
-                },
-            }
-            return LoginAction::None;
+                    LoginAction::None
+                }
+                KeyCode::Char(c) if !c.is_ascii_control() => {
+                    let mut next = buf;
+                    next.push(c);
+                    self.editing = Some(next);
+                    LoginAction::None
+                }
+                KeyCode::Backspace => {
+                    let mut next = buf;
+                    next.pop();
+                    self.editing = Some(next);
+                    LoginAction::None
+                }
+                _ => {
+                    self.editing = Some(buf);
+                    LoginAction::None
+                }
+            };
         }
 
         // ---- browsing ----
-        match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => LoginAction::Exit,
-            KeyCode::Up | KeyCode::Char('k') => {
+        match (&self.page, key.code) {
+            (Page::Menu, KeyCode::Esc | KeyCode::Char('q')) => LoginAction::Exit,
+            (Page::Menu, KeyCode::Up | KeyCode::Char('k')) => {
                 self.pos = self.pos.saturating_sub(1);
                 LoginAction::None
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.pos = (self.pos + 1).min(FIELDS.len() - 1);
+            (Page::Menu, KeyCode::Down | KeyCode::Char('j')) => {
+                self.pos = (self.pos + 1).min(2);
                 LoginAction::None
             }
-            KeyCode::Enter => {
-                let field = FIELDS[self.pos].0;
-                // An env-supplied key is read-only — refuse to edit it and
-                // surface why (the bridge answers the write attempt with a
-                // clear message either way, but never start a doomed edit).
-                if field == "apiKey" && self.api_key_configured && !self.api_key_writable {
-                    return LoginAction::None;
+            (Page::Menu, KeyCode::Enter) => {
+                self.open_menu_item();
+                LoginAction::None
+            }
+
+            (Page::Providers, KeyCode::Esc) => {
+                self.page = Page::Menu;
+                self.pos = 0;
+                LoginAction::None
+            }
+            (Page::Providers, KeyCode::Up | KeyCode::Char('k')) => {
+                self.move_pos(-1);
+                LoginAction::None
+            }
+            (Page::Providers, KeyCode::Down | KeyCode::Char('j')) => {
+                self.move_pos(1);
+                LoginAction::None
+            }
+            (Page::Providers, KeyCode::Enter) => {
+                if let Some(p) = self.providers.get(self.pos) {
+                    self.page = Page::ApiKey { provider: p.id.clone(), buf: String::new() };
+                    self.editing = Some(String::new());
                 }
-                self.editing = Some(Edit::Input { buf: self.current_value(field) });
                 LoginAction::None
             }
+
+            (Page::ApiKey { .. }, _) => LoginAction::None,
+
+            (Page::Account, KeyCode::Esc | KeyCode::Char('q')) => {
+                if self.codex_pending {
+                    let action = LoginAction::Send(ClientMessage::LoginCodexCancel);
+                    self.codex_pending = false;
+                    action
+                } else {
+                    self.page = Page::Menu;
+                    self.pos = 0;
+                    LoginAction::None
+                }
+            }
+            (Page::Account, KeyCode::Enter) if !self.codex_pending && !self.codex_logged_in() => {
+                LoginAction::Send(ClientMessage::LoginCodexStart)
+            }
+            (Page::Account, _) => LoginAction::None,
+
+            (Page::ProxyList, KeyCode::Esc) => {
+                self.page = Page::Menu;
+                self.pos = 0;
+                LoginAction::None
+            }
+            (Page::ProxyList, KeyCode::Up | KeyCode::Char('k')) => {
+                self.move_pos(-1);
+                LoginAction::None
+            }
+            (Page::ProxyList, KeyCode::Down | KeyCode::Char('j')) => {
+                self.move_pos(1);
+                LoginAction::None
+            }
+            (Page::ProxyList, KeyCode::Enter) => {
+                if self.pos == self.proxies.len() {
+                    // `+ New` — open the create form.
+                    self.page = Page::ProxyForm;
+                    self.pos = 0;
+                    self.draft = ProxyDraft::default();
+                }
+                LoginAction::None
+            }
+
+            (Page::ProxyForm, KeyCode::Esc) => {
+                self.page = Page::ProxyList;
+                self.pos = self.proxies.len();
+                LoginAction::None
+            }
+            (Page::ProxyForm, KeyCode::Up | KeyCode::Char('k')) => {
+                self.pos = self.pos.saturating_sub(1);
+                LoginAction::None
+            }
+            (Page::ProxyForm, KeyCode::Down | KeyCode::Char('j')) => {
+                self.pos = (self.pos + 1).min(PROXY_SAVE_ROW);
+                LoginAction::None
+            }
+            (Page::ProxyForm, KeyCode::Enter) => {
+                if self.pos == PROXY_SAVE_ROW {
+                    let d = &self.draft;
+                    let action = LoginAction::Send(ClientMessage::LoginProxyCreate {
+                        base_url: d.base_url.trim().to_string(),
+                        api_key: d.api_key.trim().to_string(),
+                        protocol: PROTOCOLS[d.protocol % PROTOCOLS.len()].0.to_string(),
+                        model: d.model.trim().to_string(),
+                    });
+                    self.page = Page::ProxyList;
+                    self.pos = self.proxies.len();
+                    action
+                } else if self.pos == 2 {
+                    // Protocol field cycles through the three choices.
+                    self.draft.protocol = (self.draft.protocol + 1) % PROTOCOLS.len();
+                    LoginAction::None
+                } else {
+                    self.begin_proxy_edit();
+                    LoginAction::None
+                }
+            }
+
             _ => LoginAction::None,
         }
+    }
+
+    /// Whether the Codex account is currently logged in.
+    pub fn codex_logged_in(&self) -> bool {
+        self.codex.as_ref().map_or(false, |c| c.logged_in)
     }
 }
 
@@ -177,87 +400,111 @@ mod tests {
     }
 
     #[test]
-    fn up_down_move_and_clamp() {
+    fn menu_opens_subpages() {
         let mut s = LoginState::default();
-        s.handle_key(&key(KeyCode::Down));
-        assert_eq!(s.pos, 1);
-        s.handle_key(&key(KeyCode::Down));
-        s.handle_key(&key(KeyCode::Down));
-        assert_eq!(s.pos, 2, "clamped at the last field");
-        s.handle_key(&key(KeyCode::Up));
-        assert_eq!(s.pos, 1);
-        s.handle_key(&key(KeyCode::Up));
-        s.handle_key(&key(KeyCode::Up));
-        assert_eq!(s.pos, 0, "clamped at the first field");
-    }
-
-    #[test]
-    fn enter_edits_account_and_sends_the_value() {
-        let mut s = LoginState::default();
-        s.account = Some("旧账号".into());
-        s.pos = 1;
-        s.handle_key(&key(KeyCode::Enter));
-        // Account edits are prefilled with the current value.
-        assert_eq!(s.editing, Some(Edit::Input { buf: "旧账号".into() }));
-        // Replace semantics: backspace the prefill, then type the new value.
-        for _ in 0.."旧账号".chars().count() {
-            s.handle_key(&key(KeyCode::Backspace));
-        }
-        type_text(&mut s, "新账号");
-        let action = s.handle_key(&key(KeyCode::Enter));
-        assert_eq!(
-            action,
-            LoginAction::Set { field: "account", value: "新账号".into() }
-        );
-        assert!(s.editing.is_none());
-    }
-
-    #[test]
-    fn api_key_edit_starts_empty_and_esc_cancels() {
-        let mut s = LoginState::default();
-        s.api_key_configured = true;
-        s.api_key_writable = true;
-        s.api_key_hint = Some("…1234".into());
-        s.handle_key(&key(KeyCode::Enter));
-        assert_eq!(
-            s.editing,
-            Some(Edit::Input { buf: String::new() }),
-            "the secret is never prefilled"
-        );
-        type_text(&mut s, "sk-secret");
+        assert_eq!(s.page, Page::Menu);
+        s.handle_key(&key(KeyCode::Enter)); // API key
+        assert_eq!(s.page, Page::Providers);
         s.handle_key(&key(KeyCode::Esc));
-        assert!(s.editing.is_none(), "Esc cancels the edit");
-        // Env-supplied keys are read-only: Enter refuses to start an edit.
-        s.api_key_writable = false;
-        s.handle_key(&key(KeyCode::Enter));
-        assert!(s.editing.is_none(), "read-only key cannot be edited");
+        s.pos = 1;
+        s.handle_key(&key(KeyCode::Enter)); // Account
+        assert_eq!(s.page, Page::Account);
+        s.handle_key(&key(KeyCode::Esc));
+        s.pos = 2;
+        s.handle_key(&key(KeyCode::Enter)); // Proxy
+        assert_eq!(s.page, Page::ProxyList);
     }
 
     #[test]
-    fn esc_exits_the_panel() {
+    fn provider_enter_opens_api_key_edit_and_sends() {
         let mut s = LoginState::default();
-        assert_eq!(s.handle_key(&key(KeyCode::Esc)), LoginAction::Exit);
-        assert_eq!(s.handle_key(&key(KeyCode::Char('q'))), LoginAction::Exit);
-    }
-
-    #[test]
-    fn login_frame_updates_state_and_clears_error() {
-        let mut s = LoginState::default();
-        s.error = Some("旧错误".into());
-        s.apply(LoginView {
-            api_key_configured: true,
+        s.providers.push(ProviderInfo {
+            id: "deepseek".into(),
+            name: "DeepSeek".into(),
+            api_key_configured: false,
             api_key_writable: true,
-            api_key_source: Some("file".into()),
-            api_key_hint: Some("…abcd".into()),
-            account: Some("a1b2c3d4-0000-0000-0000-000000000000".into()),
-            proxy: Some("http://127.0.0.1:7890".into()),
-            error: None,
+            api_key_source: None,
+            api_key_hint: None,
         });
-        assert!(s.api_key_configured);
-        assert_eq!(s.api_key_hint.as_deref(), Some("…abcd"));
-        assert_eq!(s.account.as_deref(), Some("a1b2c3d4-0000-0000-0000-000000000000"));
-        assert_eq!(s.proxy.as_deref(), Some("http://127.0.0.1:7890"));
-        assert_eq!(s.error, None);
-        assert!(!s.loading);
+        s.page = Page::Providers;
+        s.handle_key(&key(KeyCode::Enter));
+        assert!(matches!(s.page, Page::ApiKey { .. }));
+        assert_eq!(s.editing, Some(String::new()), "the secret starts empty");
+        type_text(&mut s, "sk-secret");
+        let action = s.handle_key(&key(KeyCode::Enter));
+        assert!(matches!(
+            action,
+            LoginAction::Send(ClientMessage::LoginSetApiKey { provider, value })
+                if provider == "deepseek" && value == "sk-secret"
+        ));
+        assert_eq!(s.page, Page::Providers);
+    }
+
+    #[test]
+    fn proxy_form_cycles_protocol_and_saves() {
+        let mut s = LoginState::default();
+        s.page = Page::ProxyForm;
+        // base URL (pos 0): Enter begins editing, Enter commits + advances.
+        s.handle_key(&key(KeyCode::Enter));
+        type_text(&mut s, "https://example.com/v1");
+        s.handle_key(&key(KeyCode::Enter));
+        assert_eq!(s.draft.base_url, "https://example.com/v1");
+        // apiKey (pos 1): secret starts empty even though the field has a value.
+        s.handle_key(&key(KeyCode::Enter));
+        type_text(&mut s, "sk-key");
+        s.handle_key(&key(KeyCode::Enter));
+        assert_eq!(s.draft.api_key, "sk-key");
+        // protocol (pos 2): Enter cycles the choice, no advance.
+        s.handle_key(&key(KeyCode::Enter));
+        assert_eq!(s.draft.protocol, 1);
+        // model (pos 3).
+        s.handle_key(&key(KeyCode::Down));
+        s.handle_key(&key(KeyCode::Enter));
+        type_text(&mut s, "gpt-4o");
+        s.handle_key(&key(KeyCode::Enter));
+        assert_eq!(s.draft.model, "gpt-4o");
+        // save row
+        let action = s.handle_key(&key(KeyCode::Enter));
+        assert!(matches!(
+            action,
+            LoginAction::Send(ClientMessage::LoginProxyCreate { protocol, .. })
+                if protocol == "openai-responses"
+        ));
+        assert_eq!(s.page, Page::ProxyList);
+    }
+
+    #[test]
+    fn codex_enter_starts_login_and_esc_cancels() {
+        let mut s = LoginState::default();
+        s.page = Page::Account;
+        assert!(matches!(
+            s.handle_key(&key(KeyCode::Enter)),
+            LoginAction::Send(ClientMessage::LoginCodexStart)
+        ));
+        s.codex_pending = true;
+        assert!(matches!(
+            s.handle_key(&key(KeyCode::Esc)),
+            LoginAction::Send(ClientMessage::LoginCodexCancel)
+        ));
+    }
+
+    #[test]
+    fn codex_frame_marks_logged_in() {
+        let mut s = LoginState::default();
+        s.apply_codex(CodexView {
+            status: "pending".into(),
+            user_code: Some("ABCD-EFGH".into()),
+            verification_uri: Some("https://auth.openai.com/codex/device".into()),
+            ..Default::default()
+        });
+        assert!(s.codex_pending);
+        assert_eq!(s.codex_user_code.as_deref(), Some("ABCD-EFGH"));
+        s.apply_codex(CodexView {
+            status: "done".into(),
+            account_id: Some("acc-1".into()),
+            ..Default::default()
+        });
+        assert!(!s.codex_pending);
+        assert!(s.codex.as_ref().unwrap().logged_in);
     }
 }

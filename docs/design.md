@@ -1,17 +1,21 @@
-# DSH TUI 设计文档（草案 v0.4）
+# DSH TUI 设计文档（草案 v0.5）
 
 > 状态：**设计已定稿**（D1–D24 全部确认），进入实施阶段前不再改动；实施验证项见 §8。
 > v0.4 变更：消息格式规范（用户消息原样、shell 卡 spinner+行数、read 合并折叠）；输入栏无边框背景块 + 粘贴占位。
+> v0.5 变更（v0.1.0 里程碑）：项目改名 **e**（可执行文件 **`dshe`**）；配置迁到
+> `%APPDATA%\dshe\config.toml`、主题目录 `%APPDATA%\dshe\themes\`（默认
+> **deepseek-e**，另内置 ferra）；新增 `/theme` `/model` `/reload` `/skill:<名称>`；
+> 启动器 `dshe` 自动 spawn `dsh --profile tui`（或 npx）／桥接已运行的 dsh。
 
 ## 0. 已定决策（✅）
 
 | # | 决策 | 结论 |
 |---|------|------|
-| D1 | 运行形态 | 独立客户端进程（`dsh tui`），通过桥接连到运行中的 DSH，可与 Web GUI 并存 |
+| D1 | 运行形态 | 独立客户端进程（`dshe`，项目名 **e** / e tui），通过桥接连到运行中的 DSH，可与 Web GUI 并存 |
 | D2 | 布局 | 单列对话流（Claude Code 风格） |
 | D3 | 客户端语言 | Rust（ratatui + crossterm + tokio-tungstenite + serde） |
 | D4 | 项目构成 | TS 桥接插件（DSH 侧）+ Rust 客户端 |
-| D5 | 主题 | ferra（色板见 §3.4），终端侧可装官方 Windows Terminal port |
+| D5 | 主题 | deepseek-e（默认）与 ferra 两个内置主题；`%APPDATA%\dshe\themes\` 下所有合法 toml 皆可选 |
 | D6 | 工具调用卡 | 行内单行卡（默认折叠，可展开） |
 | D7 | 用户消息前缀 | `❯` 符号 |
 | D8 | Markdown 渲染 | 首期完整渲染：标题/粗斜体/行内码/代码块/列表/引用/**表格**/**mermaid** |
@@ -23,7 +27,7 @@
 | D14 | 语法高亮 | 二期再上 syntect；首期代码块纯色 + 语言标签 |
 | D15 | 桥接鉴权 | 轻量 token：桥接插件生成随机 token 写入 DSH 数据目录，客户端自动读取 |
 | D16 | 桥接插件形态 | 正式 TS 插件包（可用 `ws` 库），作为产品一部分长期维护 |
-| D17 | 启动行为 | `dsh tui` 记住上次会话直达；首次无历史弹选择器；`--list` 强制选择器 |
+| D17 | 启动行为 | `dshe` 记住上次会话直达；首次无历史弹选择器；`--list` 强制选择器 |
 | D18 | mermaid 超宽 | v1 截断 + 折叠提示（复制仍拿完整源码）；v2 全屏图形模式 hjkl 四向滚动 |
 | D19 | 复制提示 | 复制成功后输入区临时提示 `已复制 N 行`，约 2 秒后消失 |
 | D20 | 用户消息展示 | 逐字原样展示，不做 markdown 渲染；前缀 `❯` Coral |
@@ -31,9 +35,9 @@
 | D22 | read 合并与折叠 | 同一 turn 内相邻 read 合并为紧凑状态列表；全部结束折叠为 Bark 灰 `<a>, <b>, <c>`（只文件名，超宽截断 `+N`）；Enter 展开还原、Esc 收回 |
 | D23 | 输入栏形态 | 无边框背景块：Ash 底、上边距 1 行 + 文本区 + 下边距 1 行；前缀 `❯` Coral；多行模式最多显示 3 行，超出滚动、光标行可见 |
 | D24 | 粘贴超长占位 | 粘贴 >1000 字符显示 Rose 色 `[N text pasted]`；发送原样完整内容；Alt+Enter 多行模式可展开编辑 |
-| D25 | spinner 可配置 | 默认 A 半月旋转 `◐◓◑◒`（~120ms/帧）；帧序做成可配置枚举（`dsh-tui.toml` 可换 B/C/D/E）；字体缺字形自动降级 ASCII `\|/-\` |
+| D25 | spinner 可配置 | 默认 A 半月旋转 `◐◓◑◒`（~120ms/帧）；帧序做成可配置枚举（`config.toml` 可换 B/C/D/E）；字体缺字形自动降级 ASCII `\|/-\` |
 | D26 | 设置面板入口 | `/settings` 命令进入全屏覆盖层（无快捷键）；左分类栏 + 右项目列表；`↑↓` 选择 `←→` 切枚举 `Enter` 编辑数值/颜色 `Space` 切布尔 `Esc` 退出 |
-| D27 | 配置存储 | `%APPDATA%\dsh-tui\config.toml`（toml+serde）；优先级 默认值 < 文件 < 运行时；**即改即存、即时生效**，修改过的值 Honey 短暂高亮 |
+| D27 | 配置存储 | `%APPDATA%\dshe\config.toml`（toml+serde）；优先级 默认值 < 文件 < 运行时；**即改即存、即时生效**，修改过的值 Honey 短暂高亮 |
 | D28 | TUI 内可改项 | 见 §4.7 清单：外观/行为/显示三类全部可改，高级类只读 |
 | D29 | 不提供 TUI 修改 | 连接参数（启动 flag）、字体字号（终端侧）、剪贴板后端（平台）、键位重绑定（v2）、语法高亮主题（二期） |
 | D30 | 发送键风格 | 设置项：`Enter 即发 + Alt+Enter 多行` ／ `Ctrl+Enter 发送 + Enter 换行`，默认前者 |
@@ -52,7 +56,7 @@
 
 ```
 ┌─────────────────────┐        WebSocket         ┌──────────────────────┐
-│  DSH 进程            │  ws://127.0.0.1:PORT/   │  dsh tui (Rust 进程) │
+│  DSH 进程            │  ws://127.0.0.1:PORT/   │  dshe (e, Rust 进程) │
 │  TS 桥接插件 bridge/ │ ◄────────────────────► │  ratatui 渲染        │
 │  · session/event 流  │   JSON 协议（见 §5）     │  · 消息流 / 输入区    │
 │  · agent/status      │                          │  · markdown+表格渲染  │
@@ -95,7 +99,7 @@ RenderUnit { kind, source: { blockType, raw: String }, cells: RenderedCells }
 
 ```
 ┌──────────────────────────────────────────────────┐
-│ dsh-tui · default · deepseek-v4-pro · ●running   │ ← 状态栏（1 行，固定顶部）
+│ e · default · deepseek-v4-pro · ●running   │ ← 状态栏（1 行，固定顶部）
 ├──────────────────────────────────────────────────┤
 │ ❯ 把 foo 函数重构一下                             │ ← 用户消息：原样展示
 │                                                  │
@@ -212,8 +216,9 @@ RenderUnit { kind, source: { blockType, raw: String }, cells: RenderedCells }
 
 ### 3.5 状态呈现
 
-- 状态栏：`预设名 · 模型 · •running/•idle · turn:step · 子agent数`；右侧快捷键提示。
-  状态符号 `•` 与工具卡一致：**工作中黄色呼吸，空闲灰色**。
+- 状态栏：最前是状态符号 `•`（与工具卡一致：**只要处于 running 状态即黄色呼吸**，
+  无论是否有可见的 thinking/命令/读写活动，空闲才灰色），随后一个空格接 `e ·
+  模型`；右侧快捷键提示。不再显示 idle/running 文字指示。
 - 审批/提问进行中：状态栏该段 Honey 色 `⏳等待审批`。
 - 复制模式：输入区切换为指示条 `-- COPY --`（§3.1），显示选中行数/字节数与可用键。
 
@@ -315,7 +320,7 @@ assistant 消息顶部。**复制的永远是原始 markdown 源码**（经 §2.
 - 启动：**每个新 TUI 进程默认新建一个会话**（多进程各自一屏一会话）——客户端
   不带 `resumeSessionId` 发 `hello`，桥接就地创建：工作区取 `hello.cwd`（TUI 启动
   目录），模式取 `hello.mode`（/settings「默认模式」的 preset id，失效时桥接回退
-  `standard`，再回退 roster 默认）；`dsh tui <session-id>` 或开启「记住上次会话」
+  `standard`，再回退 roster 默认）；`dshe <session-id>` 或开启「记住上次会话」
   （默认关）则改为续接指定/上次会话。**续接对冷会话友好**：id 不在活跃注册表时
   （宿主重启后必然如此），桥接先经 `sessionPersistence` + `agents.resume` 按会话
   记录的 preset（`agent-preset/selected` 事件 > header）恢复该持久化会话，恢复
@@ -323,11 +328,13 @@ assistant 消息顶部。**复制的永远是原始 markdown 源码**（经 §2.
   失败（agents 缺失等）才以错误帧 + 4001 结束。
 - `Ctrl+N` / `/resume` 打开会话选择器；`/resume <session-id>` 直接 attach 切换
   （选择器/`/resume` 对冷会话同样先 resume，找不到才报错、不断连）。
-- 状态栏下方固定一行显示当前会话标题：`welcome.title`（会话日志最近一条
-  `session/title`，由桥接在 attach 时读取）初始填充；冷恢复会话日志不在内存，
-  桥接经 `sessionQuery.readTitleSnapshots` 补发 `title{title}` 帧；此后
-  `session/title` 事件经普通 event 帧实时更新（客户端只更新该行，不重建
-  transcript 缓存）；无标题时该行为空。
+- 状态栏下方固定一行显示当前会话：左侧标题、右侧工作区路径。标题由
+  `welcome.title`（会话日志最近一条 `session/title`，由桥接在 attach 时读取）
+  初始填充；冷恢复会话日志不在内存，桥接经 `sessionQuery.readTitleSnapshots`
+  补发 `title{title}` 帧；此后 `session/title` 事件经普通 event 帧实时更新
+  （客户端只更新该行，不重建 transcript 缓存）。路径由 `welcome.cwd`（会话头部
+  `header.cwd`，桥接在 attach 时读取）填充；标题过长以 `…` 截断以保住右侧路径，
+  标题/路径均无时该行为空。
 - `/new`：新建会话并切换（保留旧会话）。新会话落在 **TUI 启动目录**的工作区——
   客户端在 `hello` 里带上 `cwd`，桥接用它（校验为真实目录后）作为 `agents.create`
   的 `meta.cwd`，再把新会话 `attachSession` 进该 cwd 的 workspace 台账（与 host
@@ -373,7 +380,7 @@ assistant 消息顶部。**复制的永远是原始 markdown 源码**（经 §2.
   底）；选择类编辑时 `←/→` 移动光标，光标所在选项 Night 底。
 - **编辑语义**：`Enter` 确认修改、`Esc` 取消退回；编辑期间按键不外泄。退出面板
   后消息流/输入栏状态原样恢复。
-- 保存：**即改即存**写入 `%APPDATA%\dsh-tui\config.toml` 并即时生效。
+- 保存：**即改即存**写入 `%APPDATA%\dshe\config.toml` 并即时生效。
 
 **可配置项清单（TUI 内可改）**
 
@@ -403,24 +410,27 @@ assistant 消息顶部。**复制的永远是原始 markdown 源码**（经 §2.
 
 ### 4.8 登录设置（/login，D33）
 
-- **入口**：输入 `/login`（仅命令，无快捷键）；输入栏变为登录设置页，形态与
-  /settings 一致（无边框 Ash 底、占页面高度 2/3、↑/↓ 选择、Enter 编辑、Esc
-  退出、即改即存）。字段状态全部来自桥接 `login` 帧——客户端不持久化任何
-  登录信息。
-- **三个字段与落点**（都在宿主侧，由桥接读写）：
-  - **API key**：`ctx.credentials` 的 `DEEPSEEK_API_KEY`（与 web Models 页同一
-    存储 `%DSH_HOME%\.credentials.yaml`），`credentials.set/unset` 写入后经
-    `credentials/updated` 即时生效。**密钥值永不回传**——下行只带
-    `configured/writable/source/hint(…末四位)`；编辑框输入画 ●，环境变量来源
-    只读（不可编辑）。
-  - **账号**：harness 匿名用户 id（`%DSH_HOME%\.anonymous-user-id`，裸 UUID 行，
-    即请求头 `x-deepseek-harness-user-id`）。可查看/改写/留空（留空删除文件，
-    下次启动自动重生成）；须为 UUID 格式。
-  - **proxy**：`%DSH_HOME%\.env` 的 `HTTPS_PROXY` 行（harness 启动时加载该文件
-    到环境分层，`writeEnvLine` 只增删这一行、保留其余行与换行风格）；**重启
-    `dsh web` 后生效**，空值删除该行（恢复直连）。
-- **错误呈现**：写失败（env 遮蔽、格式错等）由桥接经同一 `login` 帧的 `error`
-  字段回传，显示在面板页脚（红色 ✗），不走 transcript 错误流。
+- **入口**：输入 `/login`（仅命令，无快捷键）；输入栏变为登录页，形态与
+  /settings 一致（无边框 Ash 底、占页面高度 2/3）。登录页是一层三选一菜单：
+  **API key / Account / Proxy**，Enter 进入对应子页面，Esc 逐层返回。
+- **API key**：子页面列出模型提供商（`ctx.llm.listProviders()`）；Enter 进入该
+  提供商的 key 填写。落点走 `ctx.credentials` 的该提供商 `apiKeyEnv` 引用（
+  `providerCredentialRef` 从 settings 读取，缺省回退 `<ID>_API_KEY`），
+  `credentials.set/unset` 写入后经 `credentials/updated` 即时生效。**密钥值永不
+  回传**——下行只带 `configured/writable/source/hint(…末四位)`；编辑框输入画 ●，
+  环境变量来源只读。
+- **Account**：OpenAI Codex（ChatGPT 订阅）网页登录，走**设备码流程**（无需本地
+  回调端口）：桥接 POST `auth.openai.com/api/accounts/deviceauth/usercode` 拿
+  `user_code`，面板显示 `https://auth.openai.com/codex/device` + 用户代码，轮询
+  `deviceauth/token` 自动检测登录完成，换 token 得 `{access,refresh,accountId}`，
+  存 `%DSH_HOME%\dsh-tui-codex.json`。⚠️ 端到端生效还需宿主
+  `dsh-llm-pi-ai` 接入持久化 OAuth 凭证（当前用 `InMemoryCredentialStore`，无
+  登录流程）。
+- **Proxy**：列出已保存代理 + `+ New`；新建表单填 base url / api key / 协议模式
+  （`openai-completions` / `openai-responses` / `anthropic-messages` 三选一，非必选）
+  / 模型名称（非必填）。落点存 `%DSH_HOME%\dsh-tui-proxies.json`（api key 不回传）。
+- **错误呈现**：写失败由桥接经同一 `login` 帧的 `error` 字段回传，显示在面板页脚
+  （红色 ✗），不走 transcript 错误流。
 
 ## 5. 桥接与协议（v1 草案）
 
@@ -431,17 +441,22 @@ assistant 消息顶部。**复制的永远是原始 markdown 源码**（经 §2.
 ### 5.2 消息协议（JSON，serde 两侧严格对齐）
 
 **上行（TUI → DSH）**：`hello` / `input` / `command` / `interrupt` / `approval-answer` /
-`login-get` / `login-set{field,value}` / `ping`（载荷同 v0.1，见 git 历史）。`hello`
-另带可选 `cwd`（TUI 启动目录，新会话的工作区）与 `mode`（新会话的默认 preset id，
-仅在不带 `resumeSessionId` 时发送）。
+`login-get` / `login-set-api-key{provider,value}` / `login-codex-start` /
+`login-codex-cancel` / `login-proxy-create{baseUrl,apiKey,protocol,model}` /
+`login-proxy-delete{id}` / `ping`。`hello` 另带可选 `cwd`（TUI 启动目录，新会话的
+工作区）与 `mode`（新会话的默认 preset id，仅在不带 `resumeSessionId` 时发送）。
 
 **下行（DSH → TUI）**：`welcome` / `snapshot` / `event` / `status` / `presets` / `title` /
-`login` / `approval` / `resolved` / `error` / `pong`。`welcome` 另带可选 `title`（attach 时
-日志最近一条 `session/title`；冷恢复会话日志不在内存，桥接经 `readTitleSnapshots` 补发
-`title{title}` 帧；此后标题更新走普通 `event` 帧的 `session/title` 事件）。
+`login` / `login-codex` / `approval` / `resolved` / `error` / `pong`。`welcome` 另带可选
+`title`（attach 时日志最近一条 `session/title`；冷恢复会话日志不在内存，桥接经
+`readTitleSnapshots` 补发 `title{title}` 帧；此后标题更新走普通 `event` 帧的
+`session/title` 事件）与可选 `cwd`（会话头部 `header.cwd`，标题行右侧显示的工作区路径）。
 
-`login` 载荷 `{ apiKeyConfigured, apiKeyWritable, apiKeySource?, apiKeyHint?, account?,
-proxy?, error? }`（§4.8）：API key 只有视图没有值。
+`login` 载荷 `{ providers: [{id,name,apiKeyConfigured,apiKeyWritable,apiKeySource?,
+apiKeyHint?}], proxies: [{id,name,baseUrl,protocol,model}], codex?: {loggedIn,
+accountId?}, error? }`（§4.8）：API key 只有视图没有值。`login-codex` 载荷
+`{ status: pending|done|error, userCode?, verificationUri?, accountId?, error? }`
+（设备码登录进度）。
 
 `presets` 载荷 `{ presets: [{ id, name?, description?, order?, broken? }] }`：agent-presets
 roster 快照，每次 attach（hello/`/new`/picker）后紧随 `welcome` 下发；客户端用它渲染
@@ -466,7 +481,7 @@ tungstenite `max_frame_size` 而加入的裁剪）。
 | Mermaid | **wasmtime + grok-mermaid WASM** | 备选：wasmi；失败降级源码围栏 |
 | 代码高亮 | syntect（ferra 自定义主题） | 见 O14 首期确认 |
 | 剪贴板 | arboard（系统剪贴板） | Windows 直写剪贴板 |
-| 配置 | toml + serde（`%APPDATA%\dsh-tui\config.toml`） | 即改即存（§4.7） |
+| 配置 | toml + serde（`%APPDATA%\dshe\config.toml`） | 即改即存（§4.7） |
 | 宽字符 | unicode-width | 中文/emoji 宽度 |
 | 分发 | 单 exe（仓库根为 Cargo workspace，根目录 `cargo run` 即启动） | 用户无需 Node |
 

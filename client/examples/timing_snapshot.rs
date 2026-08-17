@@ -8,10 +8,10 @@
 
 use std::time::Instant;
 
-use dsh_tui::model::AppState;
-use dsh_tui::ui::{render, ScrollState};
-use dsh_tui::config::Config;
-use dsh_tui::input::InputState;
+use e::model::AppState;
+use e::ui::{render, ScrollState};
+use e::config::Config;
+use e::input::InputState;
 
 fn main() -> anyhow::Result<()> {
     let path = std::env::args()
@@ -57,7 +57,7 @@ fn main() -> anyhow::Result<()> {
     let backend = ratatui::backend::TestBackend::new(120, 40);
     let mut terminal = ratatui::Terminal::new(backend)?;
     terminal.draw(|frame| {
-        render(frame, &mut state, &input, &mut scroll, &theme, dsh_tui::ui::RenderOverlays {
+        render(frame, &mut state, &input, &mut scroll, &theme, e::ui::RenderOverlays {
             help_visible: false,
             overlay: None,
             toast: None,

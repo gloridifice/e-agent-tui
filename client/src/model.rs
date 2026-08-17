@@ -338,6 +338,9 @@ pub struct AppState {
     /// Latest `session/title` of the attached session — rendered in the
     /// title row below the status bar (live-updated by event frames).
     pub session_title: Option<String>,
+    /// Workspace path of the attached session (its header cwd) — rendered
+    /// right-aligned in the title row below the status bar.
+    pub session_cwd: Option<String>,
     /// Snapshot replay is truncated (guard for huge session logs).
     pub snapshot_truncated: bool,
     /// Live configuration (persisted TOML, editable via /settings).
@@ -384,7 +387,8 @@ pub struct AppState {
     pub render_width: usize,
     /// The agent is "working": set as soon as the user sends a message (even
     /// before the turn starts) and cleared by visible activity or an idle
-    /// status. Drives the Thinking card and the status-bar breathing bullet.
+    /// status. Drives the Thinking card; the status-bar breathing bullet is
+    /// driven by the running status (plus this flag for the pre-turn window).
     pub working: bool,
     /// While true (snapshot replay / history prepend), the working flag
     /// updates but no Thinking rows enter the transcript — history is
@@ -404,6 +408,7 @@ impl Default for AppState {
             provider: None,
             model: None,
             session_title: None,
+            session_cwd: None,
             snapshot_truncated: false,
             config: Config::default(),
             next_unit: 0,
@@ -612,6 +617,7 @@ impl AppState {
         // The title belongs to the session being left (welcome sets the
         // new one right after the switch).
         self.session_title = None;
+        self.session_cwd = None;
         // Queued prompts belong to the session they were typed for.
         self.queue.clear();
     }
@@ -669,6 +675,7 @@ impl AppState {
                 }
                 self.session_id = new_id;
                 self.session_title = data.get("title").and_then(Value::as_str).map(String::from);
+                self.session_cwd = data.get("cwd").and_then(Value::as_str).map(String::from);
                 self.status = if data.get("status").and_then(Value::as_str) == Some("running") {
                     AgentStatus::Running
                 } else {
@@ -757,7 +764,20 @@ impl AppState {
                     .and_then(|s| s.get("kind"))
                     .and_then(Value::as_str);
                 if source_kind == Some("user") {
+                    // The client optimistically shows a Thinking card the
+                    // moment the user sends a message, before the bridge
+                    // echoes the `user/message` event. Move the echo BEFORE
+                    // that trailing card so the transcript reads
+                    // "user message → thinking" rather than
+                    // "thinking → user message".
+                    let trailing_thinking = match self.msgs.last() {
+                        Some(Msg::Thinking(_)) => self.msgs.pop(),
+                        _ => None,
+                    };
                     self.msgs.push(Msg::User { text });
+                    if let Some(card) = trailing_thinking {
+                        self.msgs.push(card);
+                    }
                 } else {
                     self.msgs.push(Msg::System {
                         text: text.chars().take(200).collect(),
@@ -1140,7 +1160,8 @@ pub fn tick_spinners(state: &mut AppState, now: std::time::Instant) -> bool {
         Msg::Thinking(card) => card.state == ThinkState::Running,
         _ => false,
     }) || matches!(state.msgs.last(), Some(Msg::Streaming { .. }))
-        || state.working;
+        || state.working
+        || state.status == AgentStatus::Running;
 
     if any_pending {
         if state.activity_epoch.is_none() {
@@ -1221,6 +1242,22 @@ mod tests {
             "source": {"kind": "plugin", "plugin": "x"}
         })));
         assert!(matches!(&s.msgs[0], Msg::System { .. }));
+    }
+
+    #[test]
+    fn user_message_precedes_the_optimistic_thinking_card() {
+        let mut s = AppState::default();
+        // The client shows this placeholder the moment the user sends a
+        // message, before the bridge echoes the `user/message` event.
+        s.start_thinking();
+        assert!(matches!(s.msgs.last(), Some(Msg::Thinking(_))));
+        s.apply_event(&event("user/message", serde_json::json!({
+            "content": [{"type": "text", "text": "你好"}],
+            "source": {"kind": "user"}
+        })));
+        assert_eq!(s.msgs.len(), 2);
+        assert!(matches!(&s.msgs[0], Msg::User { text } if text == "你好"));
+        assert!(matches!(&s.msgs[1], Msg::Thinking(_)));
     }
 
     #[test]
@@ -1660,6 +1697,19 @@ mod tests {
     }
 
     #[test]
+    fn welcome_sets_cwd_and_switch_clears_it() {
+        let mut s = AppState::default();
+        s.apply("welcome", &serde_json::json!({
+            "sessionId": "a", "status": "idle", "cwd": r"D:\MyProjects\Chore\dsh"
+        }));
+        assert_eq!(s.session_cwd.as_deref(), Some(r"D:\MyProjects\Chore\dsh"));
+        // Switching sessions clears the old path; the new welcome's cwd
+        // (or absence of one) replaces it.
+        s.apply("welcome", &serde_json::json!({"sessionId": "b", "status": "idle"}));
+        assert_eq!(s.session_cwd, None, "cwd follows the session switch");
+    }
+
+    #[test]
     fn title_event_updates_the_title_row() {
         let mut s = AppState::default();
         s.apply_event(&event("session/title", serde_json::json!({ "title": "自动生成" })));
@@ -1831,6 +1881,24 @@ mod tests {
         s.cache_valid = true;
         assert!(!tick_spinners(&mut s, std::time::Instant::now()), "settled card stops redraws");
         assert!(s.cache_valid, "no invalidation when nothing animates");
+        assert!(s.activity_epoch.is_none(), "epoch cleared when idle");
+    }
+
+    /// Running status alone (no tool/thinking/streaming, `working` false)
+    /// must keep the breathing clock alive — the status-bar bullet breathes
+    /// for the whole task, not only while a card is visible.
+    #[test]
+    fn running_status_drives_breathing_without_visible_activity() {
+        let mut s = AppState::default();
+        s.status = AgentStatus::Running;
+        s.working = false;
+        s.cache_valid = true;
+        assert!(tick_spinners(&mut s, std::time::Instant::now()), "running drives redraws");
+        assert!(s.activity_epoch.is_some(), "epoch set while running");
+        assert!(!s.cache_valid, "animation invalidates the cache");
+        // Idle with nothing animating stops the clock again.
+        s.status = AgentStatus::Idle;
+        assert!(!tick_spinners(&mut s, std::time::Instant::now()), "idle stops redraws");
         assert!(s.activity_epoch.is_none(), "epoch cleared when idle");
     }
 

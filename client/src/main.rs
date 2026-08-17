@@ -1,4 +1,4 @@
-//! dsh-tui — terminal client for DeepSeek Harness (M2: transcript + input).
+//! e — terminal client for DeepSeek Harness (the `dshe` executable).
 //!
 //! One tokio runtime: a websocket reader forwards bridge messages, a writer
 //! drains outbound commands, and the main loop polls crossterm keys, applies
@@ -15,14 +15,14 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use dsh_tui::config::Config;
-use dsh_tui::copy;
-use dsh_tui::input::{InputAction, InputState, NewMode};
-use dsh_tui::login::{LoginAction, LoginState};
-use dsh_tui::model::{tick_spinners, AgentStatus, AppState, ApprovalCard, Msg, QuestionBatch};
-use dsh_tui::protocol::{ClientMessage, ServerMessage};
-use dsh_tui::settings;
-use dsh_tui::ui::{render, render_picker, scroll_page, CopyOverlay, PickerState, ScrollState};
+use e::config::Config;
+use e::copy;
+use e::input::{InputAction, InputState, NewMode};
+use e::login::{LoginAction, LoginState};
+use e::model::{tick_spinners, AgentStatus, AppState, ApprovalCard, Msg, QuestionBatch};
+use e::protocol::{ClientMessage, ServerMessage};
+use e::settings;
+use e::ui::{render, render_picker, scroll_page, CopyOverlay, PickerState, ScrollState};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
@@ -30,34 +30,51 @@ use tokio_tungstenite::connect_async_with_config;
 use tokio_tungstenite::tungstenite::Message;
 
 fn token_path() -> PathBuf {
-    if let Ok(home) = std::env::var("DSH_HOME") {
-        return PathBuf::from(home).join("dsh-tui.token");
-    }
-    let user = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_else(|_| ".".into());
-    PathBuf::from(user).join(".dsh").join("dsh-tui.token")
+    e::launcher::dsh_home().join("dsh-tui.token")
 }
 
 fn read_token() -> anyhow::Result<String> {
-    let raw = std::fs::read_to_string(token_path())
-        .with_context(|| "cannot read bridge token (is DSH running with dsh-tui-bridge?)")?;
-    Ok(raw.trim().to_string())
+    let path = token_path();
+    // The token is written by the bridge on startup; a freshly spawned dsh
+    // may race the file slightly behind the listening socket, so retry a beat.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match std::fs::read_to_string(&path) {
+            Ok(raw) => return Ok(raw.trim().to_string()),
+            Err(error) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                let _ = error;
+            }
+            Err(error) => {
+                return Err(anyhow::anyhow!(
+                    "cannot read bridge token at {} ({error}) — is DSH running with the tui bridge?",
+                    path.display()
+                ));
+            }
+        }
+    }
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let mut phases = dsh_tui::profile::PhaseTimers::new();
+    let mut phases = e::profile::PhaseTimers::new();
     // Tracy: active only with `--features tracy` AND DSH_TUI_TRACY=1.
     #[allow(unused_variables)]
-    let _tracy = dsh_tui::profile::start_tracy();
+    let _tracy = e::profile::start_tracy();
 
     let mut args = std::env::args().skip(1);
     let url = args
         .next()
         .unwrap_or_else(|| "ws://127.0.0.1:3080/dsh-tui".to_string());
     let resume_session_id = args.next();
-    let _z = dsh_tui::tracy_zone!("read_token");
+
+    // Launcher preamble: ensure a DSH bridge is listening at `url`, spawning
+    // `dsh --profile tui` when none is (global dsh, else npx). `dsh_session`
+    // records whether this process owns the spawned service so `release`
+    // below can shut it down when the last TUI closes.
+    let mut dsh_session = e::launcher::acquire(&url, &e::launcher::dsh_home());
+
+    let _z = e::tracy_zone!("read_token");
     let token = read_token()?;
     drop(_z);
     phases.mark("read token");
@@ -75,6 +92,11 @@ async fn main() -> anyhow::Result<()> {
     phases.mark("terminal setup");
 
     let result = run(url, token, resume_session_id, &mut phases).await;
+
+    // On TUI exit: release the launcher bookkeeping. A dshe-spawned service
+    // is shut down when this is the last attached TUI; an out-of-band dsh is
+    // left untouched.
+    e::launcher::release(&mut dsh_session);
 
     disable_raw_mode().ok();
     execute!(
@@ -95,6 +117,7 @@ pub struct UiChannels<'a> {
     pub copy_mode: &'a mut Option<copy::CopyMode>,
     pub new_modes: &'a mut Vec<NewMode>,
     pub login: &'a mut Option<LoginState>,
+    pub model_picker: &'a mut Option<e::ui::ModelPicker>,
 }
 
 /// Apply one bridge message to the shared state. Returns a fatal reason when
@@ -105,7 +128,7 @@ fn handle_msg(
     ui: &mut UiChannels<'_>,
 ) -> Option<String> {
     match &msg {
-        ServerMessage::Welcome { session_id, status, provider, model, title } => {
+        ServerMessage::Welcome { session_id, status, provider, model, title, cwd } => {
             let switched = {
                 let mut state = state_r.lock().unwrap();
                 let switched = state.session_id.as_deref() != Some(session_id.as_str());
@@ -115,6 +138,7 @@ fn handle_msg(
                     "provider": provider,
                     "model": model,
                     "title": title,
+                    "cwd": cwd,
                 }));
                 switched
             };
@@ -125,13 +149,13 @@ fn handle_msg(
                 *ui.copy_mode = None;
             }
             // Remember the attached session (D17).
-            let mut state_file = dsh_tui::config::StateFile::load();
+            let mut state_file = e::config::StateFile::load();
             state_file.last_session_id = Some(session_id.clone());
             state_file.save();
             None
         }
         ServerMessage::Snapshot { events, truncated } => {
-            let _z = dsh_tui::tracy_zone!("snapshot apply");
+            let _z = e::tracy_zone!("snapshot apply");
             state_r.lock().unwrap().apply(
                 "snapshot",
                 &serde_json::json!({ "events": events, "truncated": truncated }),
@@ -183,25 +207,41 @@ fn handle_msg(
             state_r.lock().unwrap().session_title = Some(title.clone());
             None
         }
-        ServerMessage::Login {
-            api_key_configured,
-            api_key_writable,
-            api_key_source,
-            api_key_hint,
-            account,
-            proxy,
-            error,
-        } => {
+        ServerMessage::Login { providers, proxies, codex, error } => {
             if let Some(l) = ui.login.as_mut() {
-                l.apply(dsh_tui::login::LoginView {
-                    api_key_configured: *api_key_configured,
-                    api_key_writable: *api_key_writable,
-                    api_key_source: api_key_source.clone(),
-                    api_key_hint: api_key_hint.clone(),
-                    account: account.clone(),
-                    proxy: proxy.clone(),
+                l.apply(e::login::LoginView {
+                    providers: providers.clone(),
+                    proxies: proxies.clone(),
+                    codex: codex.clone(),
                     error: error.clone(),
                 });
+            }
+            None
+        }
+        ServerMessage::LoginCodex { status, user_code, verification_uri, account_id, error } => {
+            if let Some(l) = ui.login.as_mut() {
+                l.apply_codex(e::login::CodexView {
+                    status: status.clone(),
+                    user_code: user_code.clone(),
+                    verification_uri: verification_uri.clone(),
+                    account_id: account_id.clone(),
+                    error: error.clone(),
+                });
+            }
+            None
+        }
+        ServerMessage::Model { providers, current } => {
+            let cur = current.clone().map(|c| (c.provider.clone(), c.model.clone()));
+            // Populate the open picker (if any). The frame also arrives after
+            // `model-set` — by then the picker is closed, so only the state
+            // below is updated.
+            if let Some(mp) = ui.model_picker.as_mut() {
+                *mp = e::ui::ModelPicker::new(providers.clone(), cur);
+            }
+            let mut state = state_r.lock().unwrap();
+            if let Some(c) = current {
+                state.provider = Some(c.provider.clone());
+                state.model = Some(c.model.clone());
             }
             None
         }
@@ -253,11 +293,17 @@ async fn run(
     url: String,
     token: String,
     resume_session_id: Option<String>,
-    phases: &mut dsh_tui::profile::PhaseTimers,
+    phases: &mut e::profile::PhaseTimers,
 ) -> anyhow::Result<()> {
     // Config: persisted TOML, live-editable via /settings (D26–D30).
-    let _z = dsh_tui::tracy_zone!("config load");
+    let _z = e::tracy_zone!("config load");
     let mut config = Config::load();
+    // Discover the themes directory (ensuring the two defaults exist) and
+    // resolve the configured theme name to a palette. `themes` is refreshed
+    // by `/reload` and `/theme`; `config.resolved_theme` caches the result
+    // so render-time lookups never touch disk.
+    let mut themes = e::theme::load_themes(&Config::themes_dir());
+    config.resolved_theme = e::theme::resolve(&config.theme, &themes);
     // A fresh process opens a NEW session by default (each process shows
     // one session); resume only through the explicit CLI session id or the
     // opt-in remember-last-session setting. The new session is created on
@@ -265,7 +311,7 @@ async fn run(
     // when that preset id is stale).
     let resume_session_id = resume_session_id.or_else(|| {
         if config.remember_last_session {
-            dsh_tui::config::StateFile::load().last_session_id
+            e::config::StateFile::load().last_session_id
         } else {
             None
         }
@@ -284,6 +330,8 @@ async fn run(
     let mut picker: Option<PickerState> = None;
     let mut settings: Option<settings::SettingsState> = None;
     let mut login: Option<LoginState> = None;
+    let mut theme_picker: Option<e::ui::ThemePicker> = None;
+    let mut model_picker: Option<e::ui::ModelPicker> = None;
     let mut theme = theme;
 
     let (ws, _) = {
@@ -295,7 +343,7 @@ async fn run(
             max_frame_size: Some(512 * 1024 * 1024),
             ..Default::default()
         };
-        let _z = dsh_tui::tracy_zone!("ws connect");
+        let _z = e::tracy_zone!("ws connect");
         let ws = connect_async_with_config(&url, Some(config), false)
             .await
             .with_context(|| format!("connect {url}"))?;
@@ -345,7 +393,7 @@ async fn run(
             let item = match item {
                 Ok(item) => item,
                 Err(error) => {
-                    eprintln!("[dsh-tui] websocket stream error: {error}");
+                    eprintln!("[dshe] websocket stream error: {error}");
                     break;
                 }
             };
@@ -399,6 +447,7 @@ async fn run(
                     copy_mode: &mut copy_mode,
                     new_modes: &mut input.new_modes,
                     login: &mut login,
+                    model_picker: &mut model_picker,
                 };
                 if let Some(reason) = handle_msg(msg, &state_r, &mut ui) {
                     fatal = Some(reason);
@@ -422,6 +471,7 @@ async fn run(
                         copy_mode: &mut copy_mode,
                         new_modes: &mut input.new_modes,
                         login: &mut login,
+                        model_picker: &mut model_picker,
                     };
                     if let Some(reason) = handle_msg(msg, &state_r, &mut ui) {
                         fatal = Some(reason);
@@ -492,6 +542,9 @@ async fn run(
                     settings::SettingsAction::None => {}
                     settings::SettingsAction::Exit => settings = None,
                     settings::SettingsAction::Changed => {
+                        // The theme name may have changed via /settings —
+                        // resolve it against the theme registry before saving.
+                        config.resolved_theme = e::theme::resolve(&config.theme, &themes);
                         if let Err(error) = config.save() {
                             state_r.lock().unwrap().msgs.push(Msg::Error {
                                 text: format!("设置保存失败: {error}"),
@@ -518,15 +571,10 @@ async fn run(
                 match l.handle_key(&key) {
                     LoginAction::None => {}
                     LoginAction::Exit => login = None,
-                    LoginAction::Set { field, value } => {
-                        // Every confirmed edit goes to the bridge; the
-                        // refreshed `login` frame updates the panel.
-                        let _ = tx_out
-                            .send(ClientMessage::LoginSet {
-                                field: field.to_string(),
-                                value,
-                            })
-                            .await;
+                    LoginAction::Send(msg) => {
+                        // Every confirmed action goes to the bridge; the
+                        // refreshed `login`/`login-codex` frame updates the panel.
+                        let _ = tx_out.send(msg).await;
                     }
                 }
                 continue;
@@ -562,6 +610,80 @@ async fn run(
                     KeyCode::Backspace => {
                         p.query.pop();
                         p.sel = 0;
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
+            // ---- /theme picker owns the keys while open ----
+            if let Some(tp) = theme_picker.as_mut() {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => theme_picker = None,
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        tp.sel = tp.sel.saturating_sub(1);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        let n = tp.themes.len();
+                        if n > 0 {
+                            tp.sel = (tp.sel + 1).min(n - 1);
+                        }
+                    }
+                    KeyCode::Enter => {
+                        if let Some(name) = tp.themes.get(tp.sel).map(|t| t.name.clone()) {
+                            // Apply: persist the name, resolve the palette,
+                            // and rebuild the cached transcript with it.
+                            config.theme = name;
+                            config.resolved_theme = e::theme::resolve(&config.theme, &themes);
+                            if let Err(error) = config.save() {
+                                state_r.lock().unwrap().msgs.push(Msg::Error {
+                                    text: format!("主题保存失败: {error}"),
+                                });
+                            }
+                            {
+                                let mut state = state_r.lock().unwrap();
+                                state.config = config.clone();
+                                state.cache_valid = false;
+                            }
+                            theme = config.theme();
+                            theme_picker = None;
+                        }
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
+            // ---- /model picker owns the keys while open ----
+            if let Some(mp) = model_picker.as_mut() {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => model_picker = None,
+                    KeyCode::Left | KeyCode::Char('h') => {
+                        if mp.prov_sel > 0 {
+                            mp.prov_sel -= 1;
+                            mp.model_sel = 0;
+                        }
+                    }
+                    KeyCode::Right | KeyCode::Char('l') => {
+                        if mp.prov_sel + 1 < mp.providers.len() {
+                            mp.prov_sel += 1;
+                            mp.model_sel = 0;
+                        }
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        mp.model_sel = mp.model_sel.saturating_sub(1);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        let n = mp.providers.get(mp.prov_sel).map(|p| p.models.len()).unwrap_or(0);
+                        if n > 0 {
+                            mp.model_sel = (mp.model_sel + 1).min(n - 1);
+                        }
+                    }
+                    KeyCode::Enter => {
+                        if let Some((provider, model)) = mp.selected() {
+                            model_picker = None;
+                            let _ = tx_out.send(ClientMessage::ModelSet { provider, model }).await;
+                        }
                     }
                     _ => {}
                 }
@@ -772,12 +894,41 @@ async fn run(
                         let mut s = settings::SettingsState::default();
                         // 默认模式 choice feeds off the live roster.
                         s.modes = input.new_modes.iter().map(|m| m.id.clone()).collect();
+                        // 主题 choice feeds off the discovered theme files.
+                        s.themes = themes.iter().map(|t| t.name.clone()).collect();
                         settings = Some(s);
                     } else if line == "/login" {
                         // The input bar becomes the login settings page;
                         // its state comes from the bridge (`login` frame).
                         login = Some(LoginState::default());
                         let _ = tx_out.send(ClientMessage::LoginGet).await;
+                    } else if line == "/theme" {
+                        // Theme selector: discovered theme files with a
+                        // color swatch; Enter applies and persists the name.
+                        theme_picker = Some(e::ui::ThemePicker::from_themes(&themes, &config.theme));
+                    } else if line == "/model" {
+                        // Model selector: providers × models fed by the
+                        // bridge's `model` frame; Enter applies to the session.
+                        model_picker = Some(e::ui::ModelPicker::new(Vec::new(), None));
+                        let _ = tx_out.send(ClientMessage::ModelGet).await;
+                    } else if line == "/reload" {
+                        // Re-read config + rescan the theme registry (and
+                        // later skills); keep the current session attached.
+                        config = Config::load();
+                        themes = e::theme::load_themes(&Config::themes_dir());
+                        config.resolved_theme = e::theme::resolve(&config.theme, &themes);
+                        {
+                            let mut state = state_r.lock().unwrap();
+                            state.config = config.clone();
+                            state.cache_valid = false;
+                        }
+                        theme = config.theme();
+                        input.paste_placeholder_chars = config.paste_placeholder_chars;
+                        input.enter_sends = config.enter_sends;
+                        input.history_limit = config.history_limit;
+                        state_r.lock().unwrap().msgs.push(Msg::System {
+                            text: "已重载配置、主题与技能".into(),
+                        });
                     } else if line == "/help" {
                         help_visible = true;
                     } else if line == "/copy" {
@@ -848,12 +999,12 @@ async fn run(
                 let toast = copy_toast.as_ref().map(|(t, _)| t.as_str());
                 let first_frame = !first_draw_done;
                 let _z = if first_frame {
-                    dsh_tui::tracy_zone!("first frame")
+                    e::tracy_zone!("first frame")
                 } else {
                     None
                 };
                 terminal.draw(|frame| {
-                    render(frame, &mut state, &input, &mut scroll, &theme, dsh_tui::ui::RenderOverlays {
+                    render(frame, &mut state, &input, &mut scroll, &theme, e::ui::RenderOverlays {
                         help_visible,
                         overlay: overlay.as_ref(),
                         toast,
@@ -862,6 +1013,12 @@ async fn run(
                     });
                     if let Some(p) = picker.as_ref() {
                         render_picker(frame, p, &theme);
+                    }
+                    if let Some(tp) = theme_picker.as_ref() {
+                        e::ui::render_theme_picker(frame, tp, &theme);
+                    }
+                    if let Some(mp) = model_picker.as_ref() {
+                        e::ui::render_model_picker(frame, mp, &theme);
                     }
                 })?;
                 if first_frame {

@@ -6,7 +6,7 @@
   "main": "src/index.js",
   "description": "WebSocket bridge exposing DSH session events and controls to the dsh-tui terminal client.",
   "scripts": {
-    "test": "node --test"
+    "test": "node --test --test-isolation=none \"test/*.test.js\""
   },
   "dependencies": {
     "ws": "^8.18.0"

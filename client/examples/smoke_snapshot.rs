@@ -2,7 +2,7 @@
 //! report the resulting message mix. Usage:
 //!   cargo run --example smoke_snapshot -- <path-to-snapshot.json>
 
-use dsh_tui::model::{AppState, Msg, ToolState};
+use e::model::{AppState, Msg, ToolState};
 
 fn main() -> anyhow::Result<()> {
     let path = std::env::args()

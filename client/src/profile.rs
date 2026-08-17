@@ -29,7 +29,7 @@ impl PhaseTimers {
         let now = Instant::now();
         let ms = now.duration_since(self.last).as_secs_f64() * 1000.0;
         self.last = now;
-        eprintln!("[dsh-tui timing] {name:>34}: {ms:10.2} ms");
+        eprintln!("[dshe timing] {name:>34}: {ms:10.2} ms");
     }
 }
 
@@ -42,7 +42,7 @@ pub fn start_tracy() -> Option<tracy_client::Client> {
         return None;
     }
     let client = tracy_client::Client::start();
-    eprintln!("[dsh-tui] tracy client started — connect the profiler");
+    eprintln!("[dshe] tracy client started — connect the profiler");
     Some(client)
 }
 
@@ -51,7 +51,7 @@ pub fn start_tracy() -> Option<()> {
     None
 }
 
-/// One Tracy zone: `let _z = dsh_tui::tracy_zone!("name");`.
+/// One Tracy zone: `let _z = e::tracy_zone!("name");`.
 ///
 /// Safe without the profiler: it returns `None` (a no-op) unless the Tracy
 /// client is actually running — `span!` itself panics without a client, so
@@ -77,7 +77,7 @@ macro_rules! tracy_zone {
     }};
 }
 
-/// Drop-only stand-in so `let _z = dsh_tui::tracy_zone!(..)` compiles without
+/// Drop-only stand-in so `let _z = e::tracy_zone!(..)` compiles without
 /// the feature (non-Copy: explicit `drop(_z)` stays meaningful).
 #[cfg(not(feature = "tracy"))]
 #[must_use]

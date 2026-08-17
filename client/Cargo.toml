@@ -1,8 +1,12 @@
 [package]
-name = "dsh-tui"
+name = "e"
 version = "0.1.0"
 edition = "2021"
-description = "Terminal UI client for DeepSeek Harness (DSH)"
+description = "e — terminal client for DeepSeek Harness (DSH); the dshe executable"
+
+[[bin]]
+name = "dshe"
+path = "src/main.rs"
 
 [features]
 default = []

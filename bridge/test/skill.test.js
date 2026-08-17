@@ -1,0 +1,59 @@
+// /skill layer pure-function contracts (node --test test/skill.test.js).
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import {
+  isSkillName,
+  parseSkillCommand,
+  renderSkillContent,
+  skillInvocationSource,
+} from '../src/skill.js'
+
+test('isSkillName accepts kebab-case skill names only', () => {
+  assert.equal(isSkillName('deepseek-e'), true)
+  assert.equal(isSkillName('cordis-plugin-development'), true)
+  assert.equal(isSkillName('a1-b2'), true)
+  assert.equal(isSkillName('BadName'), false)
+  assert.equal(isSkillName('has space'), false)
+  assert.equal(isSkillName(''), false)
+  assert.equal(isSkillName(undefined), false)
+})
+
+test('parseSkillCommand accepts colon and space forms, lowercased', () => {
+  assert.equal(parseSkillCommand('/skill:cordis-plugin-development'), 'cordis-plugin-development')
+  assert.equal(parseSkillCommand('/skill:DeepSeek-Dev'), 'deepseek-dev')
+  assert.equal(parseSkillCommand('/skill foo-bar'), 'foo-bar')
+  assert.equal(parseSkillCommand('/skill   foo  '), 'foo')
+  assert.equal(parseSkillCommand('/skill'), undefined)
+  assert.equal(parseSkillCommand('/skill:'), undefined)
+  assert.equal(parseSkillCommand('/skill foo bar'), undefined)
+  assert.equal(parseSkillCommand('/skills:foo'), undefined)
+  assert.equal(parseSkillCommand('/new'), undefined)
+  assert.equal(parseSkillCommand('hello /skill:x'), undefined)
+})
+
+test('renderSkillContent wraps instructions and escapes the name', () => {
+  const skill = {
+    name: 'foo"&<',
+    provider: 'filesystem',
+    resourceBase: { kind: 'directory', path: 'D:\\ws\\<x>' },
+    content: 'do <the> & thing',
+  }
+  const rendered = renderSkillContent(skill)
+  assert.ok(rendered.startsWith('<skill_content name="foo&quot;&amp;&lt;">'))
+  assert.ok(rendered.includes('<skill_instructions>\ndo <the> & thing\n</skill_instructions>'))
+  assert.ok(rendered.includes('Base directory for this skill: D:\\ws\\&lt;x&gt;'))
+  assert.ok(rendered.endsWith('</skill_content>'))
+})
+
+test('renderSkillContent without a resource base falls back to a provider hint', () => {
+  const rendered = renderSkillContent({ name: 'x', provider: 'runtime', content: 'c' })
+  assert.ok(rendered.includes('managed by provider "runtime"'))
+})
+
+test('skillInvocationSource matches dsh-tool-skill', () => {
+  assert.deepEqual(skillInvocationSource('foo-bar'), {
+    kind: 'skill-invocation',
+    name: 'foo-bar',
+    form: 'instructions',
+  })
+})

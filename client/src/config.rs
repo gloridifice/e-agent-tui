@@ -1,103 +1,15 @@
-//! Client configuration (design §4.7, D25–D30): persisted TOML in
-//! %APPDATA%\dsh-tui\config.toml, editable live through /settings.
-//! Defaults are the documented design values; the Theme derives from the
-//! configured palette.
+//! Client configuration: persisted TOML in %APPDATA%\dshe\config.toml,
+//! editable live through /settings. The selected theme is a name resolved
+//! against the themes directory (see `theme.rs`); the two built-in defaults
+//! are deepseek-e and ferra, with deepseek-e the default.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 
-use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
 
-// ---------- theme (D5, ferra palette) ----------
+pub use crate::theme::Theme;
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(default)]
-pub struct ThemeConfig {
-    /// "ferra" preset or "custom".
-    pub preset: String,
-    /// Hex overrides for custom presets ("bg", "fg", "user", …).
-    pub overrides: HashMap<String, String>,
-}
-
-impl Default for ThemeConfig {
-    fn default() -> Self {
-        Self { preset: "ferra".into(), overrides: HashMap::new() }
-    }
-}
-
-#[derive(Clone, Copy)]
-pub struct Theme {
-    pub bg: Color,
-    pub bg_soft: Color,
-    pub selection: Color,
-    pub dim: Color,
-    pub fg: Color,
-    pub ok: Color,
-    pub link: Color,
-    pub user: Color,
-    pub rose: Color,
-    pub err: Color,
-    pub running: Color,
-}
-
-impl Theme {
-    pub fn ferra() -> Self {
-        Self {
-            bg: Color::Rgb(0x2b, 0x29, 0x2d),
-            bg_soft: Color::Rgb(0x38, 0x35, 0x39),
-            selection: Color::Rgb(0x4d, 0x42, 0x4b),
-            dim: Color::Rgb(0x6f, 0x5d, 0x63),
-            fg: Color::Rgb(0xd1, 0xd1, 0xe0),
-            ok: Color::Rgb(0xb1, 0xb6, 0x95),
-            link: Color::Rgb(0xfe, 0xcd, 0xb2),
-            user: Color::Rgb(0xff, 0xa0, 0x7a),
-            rose: Color::Rgb(0xf6, 0xb6, 0xc9),
-            err: Color::Rgb(0xe0, 0x6b, 0x75),
-            running: Color::Rgb(0xf5, 0xd7, 0x6e),
-        }
-    }
-
-    pub fn from_config(cfg: &ThemeConfig) -> Self {
-        if cfg.preset != "custom" && cfg.overrides.is_empty() {
-            return Self::ferra();
-        }
-        let base = Self::ferra();
-        let apply = |field: &mut Color, key: &str| {
-            if let Some(hex) = cfg.overrides.get(key) {
-                if let Some(c) = parse_hex(hex) {
-                    *field = c;
-                }
-            }
-        };
-        let mut t = base;
-        apply(&mut t.bg, "bg");
-        apply(&mut t.bg_soft, "bg_soft");
-        apply(&mut t.selection, "selection");
-        apply(&mut t.dim, "dim");
-        apply(&mut t.fg, "fg");
-        apply(&mut t.ok, "ok");
-        apply(&mut t.link, "link");
-        apply(&mut t.user, "user");
-        apply(&mut t.rose, "rose");
-        apply(&mut t.err, "err");
-        apply(&mut t.running, "running");
-        t
-    }
-}
-
-fn parse_hex(hex: &str) -> Option<Color> {
-    let hex = hex.trim().trim_start_matches('#');
-    if hex.len() != 6 {
-        return None;
-    }
-    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-    Some(Color::Rgb(r, g, b))
-}
-
-// ---------- full config (D28) ----------
+// ---------- full config ----------
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(default)]
@@ -105,7 +17,12 @@ pub struct Config {
     // 外观
     pub spinner_style: String,
     pub spinner_frame_ms: u64,
-    pub theme: ThemeConfig,
+    /// Selected theme name ("deepseek-e" | "ferra" | a `<name>` from the
+    /// themes directory). The resolved palette is cached in `resolved_theme`
+    /// (not persisted) so render-time lookup never touches disk.
+    pub theme: String,
+    #[serde(skip)]
+    pub resolved_theme: Theme,
     pub plain_color: bool,
     // 行为
     pub remember_last_session: bool,
@@ -138,7 +55,8 @@ impl Default for Config {
         Self {
             spinner_style: "A".into(),
             spinner_frame_ms: 120,
-            theme: ThemeConfig::default(),
+            theme: "deepseek-e".into(),
+            resolved_theme: Theme::deepseek_e(),
             plain_color: false,
             // A fresh TUI process opens a NEW session by default; resume
             // goes through the CLI session id, `/resume`, or this opt-in.
@@ -162,27 +80,41 @@ impl Default for Config {
 }
 
 impl Config {
+    /// `%APPDATA%\dshe` on Windows, `~/.config/dshe` elsewhere.
+    pub fn config_dir() -> PathBuf {
+        directories::ProjectDirs::from("", "", "dshe")
+            .map(|d| d.config_dir().to_path_buf())
+            .unwrap_or_else(|| PathBuf::from(".dshe"))
+    }
+
     pub fn config_path() -> PathBuf {
-        directories::ProjectDirs::from("", "", "dsh-tui")
-            .map(|d| d.config_dir().join("config.toml"))
-            .unwrap_or_else(|| PathBuf::from("dsh-tui.toml"))
+        Self::config_dir().join("config.toml")
+    }
+
+    /// Theme files live beside the config: `%APPDATA%\dshe\themes\`.
+    pub fn themes_dir() -> PathBuf {
+        Self::config_dir().join("themes")
     }
 
     pub fn state_path() -> PathBuf {
-        directories::ProjectDirs::from("", "", "dsh-tui")
+        directories::ProjectDirs::from("", "", "dshe")
             .map(|d| d.data_dir().join("state.toml"))
-            .unwrap_or_else(|| PathBuf::from("dsh-tui.state.toml"))
+            .unwrap_or_else(|| PathBuf::from("dshe.state.toml"))
     }
 
     pub fn load() -> Self {
         let path = Self::config_path();
-        match std::fs::read_to_string(&path) {
+        let mut config = match std::fs::read_to_string(&path) {
             Ok(text) => toml::from_str(&text).unwrap_or_else(|error| {
-                eprintln!("[dsh-tui] config parse failed ({error}); using defaults");
+                eprintln!("[dshe] config parse failed ({error}); using defaults");
                 Self::default()
             }),
             Err(_) => Self::default(),
-        }
+        };
+        // Fall back the cached palette by built-in name; the real theme
+        // resolution (against the themes directory) happens at startup.
+        config.resolved_theme = Theme::from_name(&config.theme);
+        config
     }
 
     pub fn save(&self) -> Result<(), String> {
@@ -195,7 +127,7 @@ impl Config {
     }
 
     pub fn theme(&self) -> Theme {
-        Theme::from_config(&self.theme)
+        self.resolved_theme
     }
 }
 

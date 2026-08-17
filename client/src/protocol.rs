@@ -49,11 +49,23 @@ pub enum ClientMessage {
     /// Request older history: surface events with seq < `before_seq`,
     /// newest first from the stored log (lazy scroll-back paging).
     History { before_seq: u64, limit: usize },
-    /// Read the login settings page state (API key view / account / proxy).
+    /// Read the login page state (providers / proxies / codex account).
     LoginGet,
-    /// Write one login field: "apiKey" | "account" | "proxy". An empty
-    /// value clears the field (the API key itself is never read back).
-    LoginSet { field: String, value: String },
+    /// Store one provider's API key (empty clears it; the value itself is
+    /// never read back — only its configured/source/hint view).
+    LoginSetApiKey { provider: String, value: String },
+    /// Begin the OpenAI Codex (ChatGPT) device-code login.
+    LoginCodexStart,
+    /// Cancel an in-flight Codex login.
+    LoginCodexCancel,
+    /// Create a custom proxy provider route.
+    LoginProxyCreate { base_url: String, api_key: String, protocol: String, model: String },
+    /// Remove one custom proxy provider route.
+    LoginProxyDelete { id: String },
+    /// Request the provider/model catalog (for the `/model` picker).
+    ModelGet,
+    /// Select the provider/model for the attached session.
+    ModelSet { provider: String, model: String },
     /// Keepalive.
     Ping,
 }
@@ -105,6 +117,10 @@ pub enum ServerMessage {
         /// has one; live updates ride ordinary `event` frames).
         #[serde(default)]
         title: Option<String>,
+        /// Workspace path of the attached session (its header cwd), rendered
+        /// right-aligned in the title row below the status bar.
+        #[serde(default)]
+        cwd: Option<String>,
     },
     Snapshot {
         events: Vec<Value>,
@@ -129,22 +145,33 @@ pub enum ServerMessage {
     /// when the log is cold (resumed sessions) and the welcome frame could
     /// not carry one.
     Title { title: String },
-    /// Login settings page state. The API key value itself never crosses
-    /// the wire — only its configured/source/hint view.
+    /// Login page state: the model providers (API-key entries), the saved
+    /// proxy routes, and the codex account view. Secret values never cross
+    /// the wire — only configured/source/hint views.
     Login {
+        /// Providers that authenticate with an API key, in roster order.
         #[serde(default)]
-        api_key_configured: bool,
+        providers: Vec<ProviderInfo>,
+        /// Custom proxy provider routes the user has added.
         #[serde(default)]
-        api_key_writable: bool,
+        proxies: Vec<ProxyInfo>,
+        /// OpenAI Codex (ChatGPT subscription) account view.
         #[serde(default)]
-        api_key_source: Option<String>,
-        #[serde(default)]
-        api_key_hint: Option<String>,
-        #[serde(default)]
-        account: Option<String>,
-        #[serde(default)]
-        proxy: Option<String>,
+        codex: Option<CodexInfo>,
         /// Message of the last rejected write (absent after a success).
+        #[serde(default)]
+        error: Option<String>,
+    },
+    /// Live OpenAI Codex device-login progress.
+    LoginCodex {
+        /// "pending" | "done" | "error".
+        status: String,
+        #[serde(default)]
+        user_code: Option<String>,
+        #[serde(default)]
+        verification_uri: Option<String>,
+        #[serde(default)]
+        account_id: Option<String>,
         #[serde(default)]
         error: Option<String>,
     },
@@ -165,6 +192,14 @@ pub enum ServerMessage {
     QuestionResolved {
         question_rpc_id: String,
         outcome: String,
+    },
+    /// The provider/model catalog (for the `/model` picker) plus the current
+    /// selection.
+    Model {
+        #[serde(default)]
+        providers: Vec<ModelProviderInfo>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        current: Option<ModelCurrent>,
     },
     Error { code: String, message: String },
     Pong,
@@ -195,6 +230,70 @@ pub struct PresetInfo {
     /// hides it from the mode popup.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub broken: Option<String>,
+}
+
+/// One API-key model provider on the login page.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderInfo {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub api_key_configured: bool,
+    #[serde(default)]
+    pub api_key_writable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_hint: Option<String>,
+}
+
+/// One custom proxy provider route.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyInfo {
+    pub id: String,
+    pub name: String,
+    pub base_url: String,
+    pub protocol: String,
+    pub model: String,
+}
+
+/// OpenAI Codex (ChatGPT subscription) account view.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexInfo {
+    pub logged_in: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+}
+
+/// One model provider in the `/model` picker, with its model catalog.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelProviderInfo {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub models: Vec<ModelInfo>,
+}
+
+/// One selectable model in the `/model` picker.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelInfo {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// The current provider/model selection.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelCurrent {
+    pub provider: String,
+    pub model: String,
 }
 
 impl ClientMessage {
@@ -324,6 +423,27 @@ mod tests {
     }
 
     #[test]
+    fn welcome_parses_cwd_and_defaults_when_absent() {
+        let msg = ServerMessage::from_wire(
+            r#"{"type":"welcome","sessionId":"s1","status":"idle","cwd":"D:\\MyProjects\\Chore\\dsh"}"#,
+        )
+        .expect("welcome with cwd parses");
+        match msg {
+            ServerMessage::Welcome { cwd, .. } => {
+                assert_eq!(cwd.as_deref(), Some(r"D:\MyProjects\Chore\dsh"));
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        // The old bridge sends no cwd — default to None, don't fail.
+        let old = ServerMessage::from_wire(r#"{"type":"welcome","sessionId":"s2","status":"idle"}"#)
+            .expect("old welcome parses");
+        match old {
+            ServerMessage::Welcome { cwd, .. } => assert_eq!(cwd, None),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
     fn presets_frame_parses_camel_case() {
         let msg = ServerMessage::from_wire(
             r#"{"type":"presets","presets":[{"id":"standard","name":"标准模式","order":1},{"id":"minimal","name":"极简模式","description":"双工具编码","order":3},{"id":"mine","broken":"missing composition"}]}"#,
@@ -353,45 +473,104 @@ mod tests {
     }
 
     #[test]
-    fn login_frame_parses_and_set_serializes() {
+    fn login_frame_parses_providers_proxies_codex() {
         let msg = ServerMessage::from_wire(
-            r#"{"type":"login","apiKeyConfigured":true,"apiKeyWritable":true,"apiKeySource":"file","apiKeyHint":"…1234","account":"a1b2c3d4-0000-0000-0000-000000000000","proxy":"http://127.0.0.1:7890"}"#,
+            r#"{"type":"login","providers":[{"id":"deepseek","name":"DeepSeek","apiKeyConfigured":true,"apiKeyWritable":true,"apiKeyHint":"…1234"}],"proxies":[{"id":"proxy-1","name":"我的代理","baseUrl":"https://example.com/v1","protocol":"openai-completions","model":"gpt-4o"}],"codex":{"loggedIn":false}}"#,
         )
         .expect("login parses");
         match msg {
-            ServerMessage::Login { api_key_configured, api_key_hint, api_key_writable, api_key_source, account, proxy, error } => {
-                assert!(api_key_configured);
-                assert!(api_key_writable);
-                assert_eq!(api_key_source.as_deref(), Some("file"));
-                assert_eq!(api_key_hint.as_deref(), Some("…1234"));
-                assert_eq!(account.as_deref(), Some("a1b2c3d4-0000-0000-0000-000000000000"));
-                assert_eq!(proxy.as_deref(), Some("http://127.0.0.1:7890"));
+            ServerMessage::Login { providers, proxies, codex, error } => {
+                assert_eq!(providers.len(), 1);
+                assert!(providers[0].api_key_configured);
+                assert_eq!(providers[0].api_key_hint.as_deref(), Some("…1234"));
+                assert_eq!(proxies.len(), 1);
+                assert_eq!(proxies[0].protocol, "openai-completions");
+                assert!(!codex.unwrap().logged_in);
                 assert_eq!(error, None);
             }
             other => panic!("wrong variant: {other:?}"),
         }
         // A rejected write rides the same frame with `error`.
         let failed = ServerMessage::from_wire(
-            r#"{"type":"login","apiKeyConfigured":false,"apiKeyWritable":false,"error":"credentials-local: bad value"}"#,
+            r#"{"type":"login","providers":[],"proxies":[],"error":"credentials-local: bad value"}"#,
         )
         .expect("login error parses");
         match failed {
-            ServerMessage::Login { api_key_configured, error, .. } => {
-                assert!(!api_key_configured);
-                assert!(error.is_some());
+            ServerMessage::Login { error, .. } => assert!(error.is_some()),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn login_up_frames_serialize() {
+        let set = ClientMessage::LoginSetApiKey { provider: "deepseek".into(), value: "sk-test".into() };
+        let v = serde_json::from_str::<serde_json::Value>(&set.to_wire().unwrap()).unwrap();
+        assert_eq!(v["type"], "login-set-api-key");
+        assert_eq!(v["provider"], "deepseek");
+        assert_eq!(v["value"], "sk-test");
+        let create = ClientMessage::LoginProxyCreate {
+            base_url: "https://x/v1".into(),
+            api_key: "k".into(),
+            protocol: "openai-completions".into(),
+            model: "m".into(),
+        };
+        let v = serde_json::from_str::<serde_json::Value>(&create.to_wire().unwrap()).unwrap();
+        assert_eq!(v["type"], "login-proxy-create");
+        assert_eq!(v["baseUrl"], "https://x/v1");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&ClientMessage::LoginCodexStart.to_wire().unwrap()).unwrap()["type"],
+            "login-codex-start"
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&ClientMessage::LoginGet.to_wire().unwrap()).unwrap()["type"],
+            "login-get"
+        );
+    }
+
+    #[test]
+    fn login_codex_frame_parses() {
+        let msg = ServerMessage::from_wire(
+            r#"{"type":"login-codex","status":"pending","userCode":"ABCD-EFGH","verificationUri":"https://auth.openai.com/codex/device"}"#,
+        )
+        .expect("login-codex parses");
+        match msg {
+            ServerMessage::LoginCodex { status, user_code, verification_uri, .. } => {
+                assert_eq!(status, "pending");
+                assert_eq!(user_code.as_deref(), Some("ABCD-EFGH"));
+                assert_eq!(verification_uri.as_deref(), Some("https://auth.openai.com/codex/device"));
             }
             other => panic!("wrong variant: {other:?}"),
         }
-        // login-set goes out as {type, field, value}.
-        let set = ClientMessage::LoginSet { field: "apiKey".into(), value: "sk-test".into() };
-        let value: serde_json::Value = serde_json::from_str(&set.to_wire().unwrap()).unwrap();
-        assert_eq!(value["type"], "login-set");
-        assert_eq!(value["field"], "apiKey");
-        assert_eq!(value["value"], "sk-test");
-        let get = ClientMessage::LoginGet;
+    }
+
+    #[test]
+    fn model_frame_parses_and_serializes() {
+        let msg = ServerMessage::from_wire(
+            r#"{"type":"model","providers":[{"id":"deepseek","name":"DeepSeek","models":[{"id":"deepseek-v4-pro","name":"DeepSeek V4 Pro","description":"flagship"},{"id":"deepseek-v4","name":"DeepSeek V4"}]}],"current":{"provider":"deepseek","model":"deepseek-v4"}}"#,
+        )
+        .expect("model parses");
+        match msg {
+            ServerMessage::Model { providers, current } => {
+                assert_eq!(providers.len(), 1);
+                assert_eq!(providers[0].models.len(), 2);
+                assert_eq!(providers[0].models[0].description.as_deref(), Some("flagship"));
+                let cur = current.expect("current selection");
+                assert_eq!(cur.provider, "deepseek");
+                assert_eq!(cur.model, "deepseek-v4");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        let set = ClientMessage::ModelSet {
+            provider: "deepseek".into(),
+            model: "deepseek-v4-pro".into(),
+        };
+        let v = serde_json::from_str::<serde_json::Value>(&set.to_wire().unwrap()).unwrap();
+        assert_eq!(v["type"], "model-set");
+        assert_eq!(v["provider"], "deepseek");
+        assert_eq!(v["model"], "deepseek-v4-pro");
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&get.to_wire().unwrap()).unwrap()["type"],
-            "login-get"
+            serde_json::from_str::<serde_json::Value>(&ClientMessage::ModelGet.to_wire().unwrap()).unwrap()["type"],
+            "model-get"
         );
     }
 }

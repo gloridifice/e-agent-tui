@@ -396,7 +396,7 @@ mod tests {
 
     #[test]
     fn flatten_glues_activity_rows() {
-        use crate::model::{EditItem, FileGroup, ToolCard, ToolState};
+        use crate::model::{FileAction, FileGroup, FileItem, ToolCard, ToolState};
         use crate::render::RenderLine;
         use ratatui::text::Line;
 
@@ -412,8 +412,8 @@ mod tests {
             done_from: None,
         }));
         state.msgs.push(Msg::FileGroup(FileGroup {
-            reads: vec![],
-            edits: vec![EditItem {
+            items: vec![FileItem {
+                action: FileAction::Edit,
                 call_id: "e".into(),
                 file: "a.rs".into(),
                 ok: None,

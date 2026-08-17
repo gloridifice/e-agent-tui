@@ -1006,18 +1006,21 @@ fn msg_lines(msg: &Msg, state: &AppState) -> Vec<Line<'static>> {
                         (Some(since), Some(from)) => settle_color(*from, target, since.elapsed()),
                         _ => target,
                     };
+                    let concise_create = card.name == "create";
                     (
                         if *ok {
                             ActivityState::Success
                         } else {
                             ActivityState::Failure
                         },
-                        if *lines_truncated {
+                        if concise_create {
+                            card.summary.clone()
+                        } else if *lines_truncated {
                             format!("{} · 末尾 {lines} 行", card.summary)
                         } else {
                             format!("{} · {lines} 行", card.summary)
                         },
-                        Some(*duration_ms),
+                        (!concise_create).then_some(*duration_ms),
                         Some(color),
                     )
                 }
@@ -1050,47 +1053,20 @@ fn msg_lines(msg: &Msg, state: &AppState) -> Vec<Line<'static>> {
             vec![activity_row_line(&row, state, color)]
         }
         Msg::FileGroup(group) => {
-            let pending_reads: Vec<String> = group
-                .reads
-                .iter()
-                .filter(|i| i.ok.is_none())
-                .map(|i| i.file.clone())
-                .collect();
-            let failed_reads: Vec<String> = group
-                .reads
-                .iter()
-                .filter(|i| i.ok == Some(false))
-                .map(|i| i.file.clone())
-                .collect();
-            let ok_reads: Vec<String> = group
-                .reads
-                .iter()
-                .filter(|i| i.ok == Some(true))
-                .map(|i| i.file.clone())
-                .collect();
-            let pending_edits: Vec<String> = group
-                .edits
-                .iter()
-                .filter(|i| i.ok.is_none())
-                .map(|i| i.file.clone())
-                .collect();
-            let failed_edits: Vec<String> = group
-                .edits
-                .iter()
-                .filter(|i| i.ok == Some(false))
-                .map(|i| i.file.clone())
-                .collect();
-            let ok_edits: Vec<String> = group
-                .edits
-                .iter()
-                .filter(|i| i.ok == Some(true))
-                .map(|i| i.file.clone())
-                .collect();
+            use crate::model::FileAction;
+
+            let files_for = |action: FileAction, ok: Option<bool>| -> Vec<String> {
+                group
+                    .items
+                    .iter()
+                    .filter(|item| item.action == action && item.ok == ok)
+                    .map(|item| item.file.clone())
+                    .collect()
+            };
             let group_id = group
-                .reads
+                .items
                 .first()
                 .map(|item| item.call_id.as_str())
-                .or_else(|| group.edits.first().map(|item| item.call_id.as_str()))
                 .unwrap_or("group");
             let make_row =
                 |suffix: &str, label: &str, summary: String, activity_state: ActivityState| {
@@ -1102,68 +1078,105 @@ fn msg_lines(msg: &Msg, state: &AppState) -> Vec<Line<'static>> {
                     row.state = activity_state;
                     row
                 };
-            let push_failures =
-                |label: &str, suffix: &str, files: &[String], out: &mut Vec<Line<'static>>| {
-                    for (index, (name, count)) in counted_files(files).into_iter().enumerate() {
+            let combined_row = |suffix: &str,
+                                actions: &[FileAction],
+                                ok: Option<bool>,
+                                activity_state: ActivityState,
+                                trailing_semicolon: bool|
+             -> Option<ActivityRow> {
+                let mut parts = actions.iter().filter_map(|action| {
+                    let files = files_for(*action, ok);
+                    (!files.is_empty()).then(|| (action.label(), file_list(&counted_files(&files))))
+                });
+                let (label, summary) = parts.next()?;
+                let mut row = make_row(suffix, label, summary, activity_state);
+                for (label, summary) in parts {
+                    row.continuations.push(ActivityContinuation {
+                        separator: "; ".into(),
+                        label: label.into(),
+                        summary,
+                    });
+                }
+                if trailing_semicolon {
+                    if let Some(last) = row.continuations.last_mut() {
+                        last.summary.push(';');
+                    } else {
+                        row.summary.push(';');
+                    }
+                }
+                Some(row)
+            };
+            let push_failures = |actions: &[FileAction], out: &mut Vec<Line<'static>>| {
+                for action in actions {
+                    let files = files_for(*action, Some(false));
+                    for (index, (name, count)) in counted_files(&files).into_iter().enumerate() {
                         let summary = if count > 1 {
                             format!("{name} x{count}")
                         } else {
                             name
                         };
                         let row = make_row(
-                            &format!("{suffix}:{index}"),
-                            label,
+                            &format!("{}-failed:{index}", action.label()),
+                            action.label(),
                             summary,
                             ActivityState::Failure,
                         );
                         out.push(activity_row_line(&row, state, None));
                     }
-                };
+                }
+            };
 
+            let read_actions = [FileAction::Read, FileAction::View];
+            let write_actions = [FileAction::Edit, FileAction::Replace, FileAction::Insert];
+            let pending_reads = group
+                .items
+                .iter()
+                .any(|item| item.action.is_read_like() && item.ok.is_none());
+            let pending_writes = group
+                .items
+                .iter()
+                .any(|item| !item.action.is_read_like() && item.ok.is_none());
             let mut lines = Vec::new();
-            if !pending_reads.is_empty() {
-                let row = make_row(
-                    "read",
-                    "read",
-                    file_list(&counted_files(&pending_reads)),
+            if pending_reads {
+                if let Some(row) = combined_row(
+                    "read-running",
+                    &read_actions,
+                    None,
                     ActivityState::Running,
-                );
-                lines.push(activity_row_line(&row, state, None));
-                push_failures("read", "read-failed", &failed_reads, &mut lines);
-            } else if !pending_edits.is_empty() {
-                if !ok_reads.is_empty() {
-                    let row = make_row(
-                        "read",
-                        "read",
-                        format!("{};", file_list(&counted_files(&ok_reads))),
-                        ActivityState::Success,
-                    );
+                    false,
+                ) {
                     lines.push(activity_row_line(&row, state, None));
                 }
-                push_failures("read", "read-failed", &failed_reads, &mut lines);
-                let row = make_row(
-                    "edit",
-                    "edit",
-                    file_list(&counted_files(&pending_edits)),
+                push_failures(&read_actions, &mut lines);
+            } else if pending_writes {
+                if let Some(row) = combined_row(
+                    "read-done",
+                    &read_actions,
+                    Some(true),
+                    ActivityState::Success,
+                    true,
+                ) {
+                    lines.push(activity_row_line(&row, state, None));
+                }
+                push_failures(&read_actions, &mut lines);
+                if let Some(row) = combined_row(
+                    "write-running",
+                    &write_actions,
+                    None,
                     ActivityState::Running,
-                );
-                lines.push(activity_row_line(&row, state, None));
-                push_failures("edit", "edit-failed", &failed_edits, &mut lines);
+                    false,
+                ) {
+                    lines.push(activity_row_line(&row, state, None));
+                }
+                push_failures(&write_actions, &mut lines);
             } else {
-                if !ok_reads.is_empty() || !ok_edits.is_empty() {
-                    let (label, summary) = if !ok_reads.is_empty() {
-                        ("read", file_list(&counted_files(&ok_reads)))
-                    } else {
-                        ("edit", file_list(&counted_files(&ok_edits)))
-                    };
-                    let mut row = make_row("done", label, summary, ActivityState::Success);
-                    if !ok_reads.is_empty() && !ok_edits.is_empty() {
-                        row.continuations.push(ActivityContinuation {
-                            separator: "; ".into(),
-                            label: "edit".into(),
-                            summary: file_list(&counted_files(&ok_edits)),
-                        });
-                    }
+                if let Some(row) = combined_row(
+                    "done",
+                    &FileAction::FOLD_ORDER,
+                    Some(true),
+                    ActivityState::Success,
+                    false,
+                ) {
                     let color = match (&group.done_since, &group.done_from) {
                         (Some(since), Some(from)) => {
                             Some(settle_color(*from, theme.ok, since.elapsed()))
@@ -1172,8 +1185,7 @@ fn msg_lines(msg: &Msg, state: &AppState) -> Vec<Line<'static>> {
                     };
                     lines.push(activity_row_line(&row, state, color));
                 }
-                push_failures("read", "read-failed", &failed_reads, &mut lines);
-                push_failures("edit", "edit-failed", &failed_edits, &mut lines);
+                push_failures(&FileAction::FOLD_ORDER, &mut lines);
             }
             lines
         }
@@ -3236,16 +3248,20 @@ mod tests {
         let mut s2 = AppState::default();
         s2.config = config;
         s2.msgs.push(Msg::FileGroup(FileGroup {
-            reads: vec![ReadItem {
-                call_id: "r1".into(),
-                file: "src/a.rs".into(),
-                ok: Some(true),
-            }],
-            edits: vec![EditItem {
-                call_id: "e1".into(),
-                file: "src/b.rs".into(),
-                ok: Some(true),
-            }],
+            items: vec![
+                FileItem {
+                    action: FileAction::Read,
+                    call_id: "r1".into(),
+                    file: "src/a.rs".into(),
+                    ok: Some(true),
+                },
+                FileItem {
+                    action: FileAction::Edit,
+                    call_id: "e1".into(),
+                    file: "src/b.rs".into(),
+                    ok: Some(true),
+                },
+            ],
             frame: 0,
             done_since: None,
             done_from: None,
@@ -3281,12 +3297,12 @@ mod tests {
         fail_cfg.resolved_theme = Theme::ferra();
         s3.config = fail_cfg;
         s3.msgs.push(Msg::FileGroup(FileGroup {
-            reads: vec![ReadItem {
+            items: vec![FileItem {
+                action: FileAction::Read,
                 call_id: "r2".into(),
                 file: "src/x.rs".into(),
                 ok: Some(false),
             }],
-            edits: vec![],
             frame: 0,
             done_since: None,
             done_from: None,
@@ -3365,9 +3381,10 @@ mod tests {
         let theme = Theme::ferra();
         let backend = TestBackend::new(80, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut cursor_anchor = None;
         terminal
             .draw(|f| {
-                render(
+                cursor_anchor = render_with_cursor(
                     f,
                     &mut s,
                     &input,
@@ -3384,6 +3401,16 @@ mod tests {
                 )
             })
             .unwrap();
+        assert_eq!(
+            cursor_anchor,
+            Some(Position::new(6, 35)),
+            "normal frame returns the hidden IME anchor"
+        );
+        assert_eq!(
+            terminal.get_cursor_position().unwrap(),
+            Position::new(0, 0),
+            "rendering does not expose or move the hardware cursor"
+        );
         let buf = terminal.backend().buffer();
         let row = |y: u16| -> String {
             (0..80)
@@ -3404,8 +3431,12 @@ mod tests {
             "no idle/running text label: {status:?}"
         );
         assert!(
-            status.trim_start().starts_with("• standard — CH—"),
-            "status shows indicator, mode, model and cache rate: {status:?}"
+            status.trim_start().starts_with("• standard"),
+            "status shows indicator and mode: {status:?}"
+        );
+        assert!(
+            !status.contains('—') && !status.contains("CH"),
+            "missing model and usage are omitted: {status:?}"
         );
         assert!(status.contains("^h Help"), "right help hint: {status:?}");
         // Char index (not byte index — the row holds multi-byte `·`): each
@@ -3426,13 +3457,16 @@ mod tests {
         // bullet still leaves gray (breathing toward yellow) — the running
         // status alone must drive the breath.
         s.status = AgentStatus::Running;
+        s.model = Some("deepseek-chat".into());
+        s.token_usage.input_tokens = 50;
+        s.token_usage.cache_read_tokens = 50;
         s.activity_epoch = Some(
             std::time::Instant::now()
                 - std::time::Duration::from_millis((crate::model::BREATH_CYCLE_MS / 2) as u64),
         );
         terminal
             .draw(|f| {
-                render(
+                cursor_anchor = render_with_cursor(
                     f,
                     &mut s,
                     &input,
@@ -3449,8 +3483,82 @@ mod tests {
                 )
             })
             .unwrap();
+        assert_eq!(
+            terminal.get_cursor_position().unwrap(),
+            Position::new(0, 0),
+            "animated status redraw never moves a visible hardware cursor"
+        );
+        let running_buf = terminal.backend().buffer();
+        let running_status: String = (0..80)
+            .map(|x| running_buf[(x, 38)].symbol().chars().next().unwrap_or(' '))
+            .collect();
+        assert!(
+            running_status.contains("standard deepseek-chat CH50%"),
+            "available model and cache rate are shown: {running_status:?}"
+        );
         let backend_fg = terminal.backend().buffer()[(bullet_x as u16, 38)].fg;
         assert_ne!(backend_fg, theme.dim, "running bullet breathes (not gray)");
+    }
+
+    #[test]
+    fn running_redraw_keeps_hardware_cursor_hidden_and_only_moves_ime_anchor() {
+        let mut config = crate::config::Config::default();
+        config.resolved_theme = Theme::ferra();
+        let mut state = AppState::default();
+        state.config = config.clone();
+        state.status = AgentStatus::Running;
+        state.activity_epoch = Some(std::time::Instant::now());
+        let input = InputState::new(&config);
+        let mut scroll = ScrollState::default();
+        let theme = Theme::ferra();
+        let backend = CursorTrackingBackend::new(80, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.hide_cursor().unwrap();
+
+        let mut expected_anchor = None;
+        for _ in 0..2 {
+            terminal
+                .draw(|frame| {
+                    expected_anchor = render_with_cursor(
+                        frame,
+                        &mut state,
+                        &input,
+                        &mut scroll,
+                        &theme,
+                        RenderOverlays {
+                            input_page: None,
+                            help_visible: false,
+                            overlay: None,
+                            toast: None,
+                            settings: None,
+                            login: None,
+                        },
+                    );
+                })
+                .unwrap();
+            terminal
+                .set_cursor_position(expected_anchor.expect("input IME anchor"))
+                .unwrap();
+        }
+
+        assert_eq!(
+            terminal.get_cursor_position().unwrap(),
+            expected_anchor.unwrap(),
+            "hidden terminal cursor stays anchored to the input"
+        );
+        assert_eq!(
+            terminal.backend().show_calls,
+            0,
+            "no frame may show the hardware cursor"
+        );
+        assert!(
+            !terminal.backend().draw_while_visible,
+            "diff writer must never run while the hardware cursor is visible"
+        );
+        assert!(
+            !terminal.backend().visible,
+            "hardware cursor remains hidden"
+        );
     }
 
     /// The title row below the status bar shows the session's latest title
@@ -4785,7 +4893,7 @@ mod tests {
     /// glued together — no gap row between them.
     #[test]
     fn tool_and_file_group_are_glued_without_gap() {
-        use crate::model::{EditItem, FileGroup, ToolCard, ToolState};
+        use crate::model::{FileAction, FileGroup, FileItem, ToolCard, ToolState};
         use ratatui::backend::TestBackend;
 
         let tool = || {
@@ -4802,8 +4910,8 @@ mod tests {
         };
         let group = || {
             Msg::FileGroup(FileGroup {
-                reads: vec![],
-                edits: vec![EditItem {
+                items: vec![FileItem {
+                    action: FileAction::Edit,
                     call_id: "e1".into(),
                     file: "a.rs".into(),
                     ok: None,
@@ -5038,7 +5146,7 @@ mod tests {
     /// join the folded green line.
     #[test]
     fn failed_file_items_are_listed_separately() {
-        use crate::model::{EditItem, FileGroup, ReadItem};
+        use crate::model::{FileAction, FileGroup, FileItem};
 
         let mut config = crate::config::Config::default();
         // ui tests assert the ferra palette — pin the resolved theme so the
@@ -5047,23 +5155,26 @@ mod tests {
         let mut s = AppState::default();
         s.config = config;
         s.msgs.push(Msg::FileGroup(FileGroup {
-            reads: vec![
-                ReadItem {
+            items: vec![
+                FileItem {
+                    action: FileAction::Read,
                     call_id: "r1".into(),
                     file: "src/ok.rs".into(),
                     ok: Some(true),
                 },
-                ReadItem {
+                FileItem {
+                    action: FileAction::View,
                     call_id: "r2".into(),
                     file: "src/bad.rs".into(),
                     ok: Some(false),
                 },
+                FileItem {
+                    action: FileAction::Replace,
+                    call_id: "e1".into(),
+                    file: "src/fix.rs".into(),
+                    ok: Some(false),
+                },
             ],
-            edits: vec![EditItem {
-                call_id: "e1".into(),
-                file: "src/fix.rs".into(),
-                ok: Some(false),
-            }],
             frame: 0,
             done_since: None,
             done_from: None,
@@ -5280,9 +5391,15 @@ mod tests {
     }
 
     #[test]
-    fn file_group_collapses_repeats_into_counts() {
-        use crate::model::{EditItem, FileGroup, ReadItem};
+    fn file_group_collapses_operations_and_repeats_into_counts() {
+        use crate::model::{FileAction, FileGroup, FileItem};
 
+        let item = |action: FileAction, id: &str, file: &str, ok: bool| FileItem {
+            action,
+            call_id: id.into(),
+            file: file.into(),
+            ok: Some(ok),
+        };
         let mut config = crate::config::Config::default();
         // ui tests assert the ferra palette — pin the resolved theme so the
         // default (deepseek-e) doesn't shift the expected colors.
@@ -5290,44 +5407,14 @@ mod tests {
         let mut s = AppState::default();
         s.config = config;
         s.msgs.push(Msg::FileGroup(FileGroup {
-            reads: vec![
-                ReadItem {
-                    call_id: "r1".into(),
-                    file: "src/foo.rs".into(),
-                    ok: Some(true),
-                },
-                ReadItem {
-                    call_id: "r2".into(),
-                    file: "src/foo.rs".into(),
-                    ok: Some(true),
-                },
-                ReadItem {
-                    call_id: "r3".into(),
-                    file: "src/foo.rs".into(),
-                    ok: Some(true),
-                },
-            ],
-            edits: vec![
-                EditItem {
-                    call_id: "e1".into(),
-                    file: "src/model.rs".into(),
-                    ok: Some(true),
-                },
-                EditItem {
-                    call_id: "e2".into(),
-                    file: "src/model.rs".into(),
-                    ok: Some(true),
-                },
-                EditItem {
-                    call_id: "e3".into(),
-                    file: "src/bar.rs".into(),
-                    ok: Some(true),
-                },
-                EditItem {
-                    call_id: "e4".into(),
-                    file: "world.rs".into(),
-                    ok: Some(true),
-                },
+            items: vec![
+                item(FileAction::Read, "r1", "src/foo.rs", true),
+                item(FileAction::Read, "r2", "src/foo.rs", true),
+                item(FileAction::View, "v1", "src/view.rs", true),
+                item(FileAction::Edit, "e1", "src/model.rs", true),
+                item(FileAction::Edit, "e2", "src/model.rs", true),
+                item(FileAction::Replace, "p1", "src/bar.rs", true),
+                item(FileAction::Insert, "i1", "world.rs", true),
             ],
             frame: 0,
             done_since: None,
@@ -5340,29 +5427,17 @@ mod tests {
             .map(|sp| sp.content.as_ref())
             .collect();
         assert_eq!(
-            text, "  • read foo.rs x3; edit model.rs x2, bar.rs, world.rs",
-            "repeats fold into xN"
+            text,
+            "  • read foo.rs x2; view view.rs; edit model.rs x2; replace bar.rs; insert world.rs",
+            "operation labels survive folding and repeats fold into xN"
         );
-        // Failed repeats: one red line per DISTINCT file, with its count.
+        // Failed repeats: one red line per DISTINCT action/file, with count.
         let group = FileGroup {
-            reads: vec![
-                ReadItem {
-                    call_id: "r1".into(),
-                    file: "src/bad.rs".into(),
-                    ok: Some(false),
-                },
-                ReadItem {
-                    call_id: "r2".into(),
-                    file: "src/bad.rs".into(),
-                    ok: Some(false),
-                },
-                ReadItem {
-                    call_id: "r3".into(),
-                    file: "src/bad.rs".into(),
-                    ok: Some(false),
-                },
+            items: vec![
+                item(FileAction::View, "v1", "src/bad.rs", false),
+                item(FileAction::View, "v2", "src/bad.rs", false),
+                item(FileAction::View, "v3", "src/bad.rs", false),
             ],
-            edits: vec![],
             frame: 0,
             done_since: None,
             done_from: None,
@@ -5375,7 +5450,7 @@ mod tests {
             .iter()
             .map(|sp| sp.content.as_ref())
             .collect();
-        assert_eq!(text, "  • read bad.rs x3");
+        assert_eq!(text, "  • view bad.rs x3");
         assert_eq!(
             crate::model::file_group_line_count(&group),
             1,

@@ -94,14 +94,54 @@ pub enum ToolState {
     },
 }
 
-/// A merged group of consecutive read/edit calls rendered on one line:
-/// `read a.rs, b.rs; edit c.rs`. While a read is pending the line shows the
-/// spinner; while an edit is pending the finished reads keep their own line
-/// with a trailing `;` and the running edit gets a spinner line below.
+/// File operations that can share one folded activity group. The operation
+/// name remains visible (`read`, `view`, `edit`, `replace`, `insert`) even
+/// when several kinds settle onto the same line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FileAction {
+    Read,
+    View,
+    Edit,
+    Replace,
+    Insert,
+    Create,
+}
+
+impl FileAction {
+    pub const FOLD_ORDER: [Self; 5] = [
+        Self::Read,
+        Self::View,
+        Self::Edit,
+        Self::Replace,
+        Self::Insert,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::View => "view",
+            Self::Edit => "edit",
+            Self::Replace => "replace",
+            Self::Insert => "insert",
+            Self::Create => "create",
+        }
+    }
+
+    pub fn is_read_like(self) -> bool {
+        matches!(self, Self::Read | Self::View)
+    }
+
+    pub fn foldable(self) -> bool {
+        self != Self::Create
+    }
+}
+
+/// A merged group of consecutive file operations rendered on one line, for
+/// example `read a.rs; view b.rs; replace c.rs`. Creates deliberately remain
+/// standalone because they introduce a new file rather than mutate/read one.
 #[derive(Debug, Clone)]
 pub struct FileGroup {
-    pub reads: Vec<ReadItem>,
-    pub edits: Vec<EditItem>,
+    pub items: Vec<FileItem>,
     pub frame: usize,
     /// Settle transition (whole group): captured when the last pending item
     /// settles, animated toward umber/red instead of snapping.
@@ -110,15 +150,8 @@ pub struct FileGroup {
 }
 
 #[derive(Debug, Clone)]
-pub struct ReadItem {
-    pub call_id: String,
-    pub file: String,
-    /// None = still pending.
-    pub ok: Option<bool>,
-}
-
-#[derive(Debug, Clone)]
-pub struct EditItem {
+pub struct FileItem {
+    pub action: FileAction,
     pub call_id: String,
     pub file: String,
     /// None = still pending.
@@ -127,53 +160,48 @@ pub struct EditItem {
 
 impl FileGroup {
     pub fn pending(&self) -> bool {
-        self.reads.iter().any(|i| i.ok.is_none()) || self.edits.iter().any(|i| i.ok.is_none())
+        self.items.iter().any(|item| item.ok.is_none())
     }
 }
 
 /// Screen rows a file group renders. MUST match `ui::msg_lines` exactly —
 /// copy-mode row math (global_row) depends on it. Failed items render one
-/// line per DISTINCT file (repeats collapse into `name xN`).
+/// line per DISTINCT action/file pair (repeats collapse into `name xN`).
 pub fn file_group_line_count(group: &FileGroup) -> usize {
-    let distinct_failed = |items: &[&String]| -> usize {
-        let mut seen = std::collections::HashSet::new();
-        let mut n = 0usize;
-        for f in items {
-            if seen.insert(f.as_str()) {
-                n += 1;
-            }
-        }
-        n
+    let failed = |read_like: bool| -> usize {
+        FileAction::FOLD_ORDER
+            .iter()
+            .copied()
+            .filter(|action| action.is_read_like() == read_like)
+            .map(|action| {
+                group
+                    .items
+                    .iter()
+                    .filter(|item| item.action == action && item.ok == Some(false))
+                    .map(|item| item.file.as_str())
+                    .collect::<std::collections::HashSet<_>>()
+                    .len()
+            })
+            .sum()
     };
-    let pending_reads = group.reads.iter().filter(|i| i.ok.is_none()).count();
-    let failed_reads = distinct_failed(
-        &group
-            .reads
+    let any = |read_like: bool, ok: Option<bool>| {
+        group
+            .items
             .iter()
-            .filter(|i| i.ok == Some(false))
-            .map(|i| &i.file)
-            .collect::<Vec<_>>(),
-    );
-    let ok_reads = group.reads.iter().filter(|i| i.ok == Some(true)).count();
-    let pending_edits = group.edits.iter().filter(|i| i.ok.is_none()).count();
-    let failed_edits = distinct_failed(
-        &group
-            .edits
-            .iter()
-            .filter(|i| i.ok == Some(false))
-            .map(|i| &i.file)
-            .collect::<Vec<_>>(),
-    );
-    let ok_edits = group.edits.iter().filter(|i| i.ok == Some(true)).count();
-    if pending_reads > 0 {
-        // breathing read line + failed reads
-        1 + failed_reads
-    } else if pending_edits > 0 {
-        // merged ok reads? + failed reads + breathing edit line + failed edits
-        usize::from(ok_reads > 0) + failed_reads + 1 + failed_edits
+            .any(|item| item.action.is_read_like() == read_like && item.ok == ok)
+    };
+    if any(true, None) {
+        // breathing read/view line + settled read/view failures
+        1 + failed(true)
+    } else if any(false, None) {
+        // folded successful reads/views + their failures + breathing write
+        // line + settled write failures
+        usize::from(any(true, Some(true))) + failed(true) + 1 + failed(false)
     } else {
-        // folded ok line? + failed reads + failed edits
-        usize::from(ok_reads > 0 || ok_edits > 0) + failed_reads + failed_edits
+        // one folded success line + one line per distinct failed action/file.
+        usize::from(group.items.iter().any(|item| item.ok == Some(true)))
+            + failed(true)
+            + failed(false)
     }
 }
 
@@ -651,12 +679,7 @@ impl AppState {
                     }
                 }
                 Msg::FileGroup(group) => {
-                    for item in group.reads.iter_mut() {
-                        if item.ok.is_none() {
-                            item.ok = Some(false);
-                        }
-                    }
-                    for item in group.edits.iter_mut() {
+                    for item in &mut group.items {
                         if item.ok.is_none() {
                             item.ok = Some(false);
                         }
@@ -943,8 +966,7 @@ impl AppState {
                 self.msgs.iter().rposition(|msg| match msg {
                     Msg::Tool(card) => card.call_id == *call_id,
                     Msg::FileGroup(group) => {
-                        group.reads.iter().any(|item| item.call_id == *call_id)
-                            || group.edits.iter().any(|item| item.call_id == *call_id)
+                        group.items.iter().any(|item| item.call_id == *call_id)
                     }
                     _ => false,
                 })
@@ -1100,13 +1122,10 @@ impl AppState {
         let ok = exit_marker(output) == 0 && !is_error;
         match msg {
             Msg::FileGroup(group) => {
-                if let Some(item) = group.reads.iter_mut().find(|item| item.call_id == call_id) {
-                    item.ok = Some(ok);
-                } else if let Some(item) =
-                    group.edits.iter_mut().find(|item| item.call_id == call_id)
-                {
-                    item.ok = Some(ok);
-                }
+                let Some(item) = group.items.iter_mut().find(|item| item.call_id == call_id) else {
+                    return false;
+                };
+                item.ok = Some(ok);
                 settle_group(group, breath_now);
             }
             Msg::Tool(card) if card.call_id == call_id && card.state == ToolState::Running => {
@@ -1338,8 +1357,7 @@ impl AppState {
                 self.transcript_cache.invalidate();
                 self.stop_thinking();
                 let start_ms = host_event_time(event);
-                let is_read = matches!(name.as_str(), "read" | "read_text" | "read_image");
-                let is_edit = matches!(name.as_str(), "edit" | "write");
+                let file_call = classify_file_call(name, arguments, self.session_cwd.as_deref());
                 let group_at = self
                     .msgs
                     .iter()
@@ -1347,56 +1365,42 @@ impl AppState {
                 let group_open =
                     group_at.map_or(false, |i| matches!(self.msgs[i], Msg::FileGroup(_)));
                 let display_index;
-                if (is_read || is_edit) && self.config.read_merge && group_open {
-                    let i = group_at.expect("open group index");
-                    display_index = i;
-                    if let Some(Msg::FileGroup(group)) = self.msgs.get_mut(i) {
-                        if is_read {
-                            group.reads.push(ReadItem {
-                                call_id: call_id.clone(),
-                                file: read_target(arguments),
-                                ok: None,
-                            });
-                        } else {
-                            group.edits.push(EditItem {
-                                call_id: call_id.clone(),
-                                file: read_target(arguments),
-                                ok: None,
-                            });
-                        }
-                    }
-                } else if (is_read || is_edit) && self.config.read_merge {
-                    let mut group = FileGroup {
-                        reads: Vec::new(),
-                        edits: Vec::new(),
-                        frame: 0,
-                        done_since: None,
-                        done_from: None,
+                if let Some((action, file)) = file_call
+                    .as_ref()
+                    .filter(|(action, _)| action.foldable() && self.config.read_merge)
+                {
+                    let item = FileItem {
+                        action: *action,
+                        call_id: call_id.clone(),
+                        file: file.clone(),
+                        ok: None,
                     };
-                    if is_read {
-                        group.reads.push(ReadItem {
-                            call_id: call_id.clone(),
-                            file: read_target(arguments),
-                            ok: None,
-                        });
+                    if group_open {
+                        let i = group_at.expect("open group index");
+                        display_index = i;
+                        if let Some(Msg::FileGroup(group)) = self.msgs.get_mut(i) {
+                            group.items.push(item);
+                        }
                     } else {
-                        group.edits.push(EditItem {
-                            call_id: call_id.clone(),
-                            file: read_target(arguments),
-                            ok: None,
-                        });
+                        self.activity_epoch
+                            .get_or_insert_with(std::time::Instant::now);
+                        self.msgs.push(Msg::FileGroup(FileGroup {
+                            items: vec![item],
+                            frame: 0,
+                            done_since: None,
+                            done_from: None,
+                        }));
+                        display_index = self.msgs.len() - 1;
                     }
-                    self.activity_epoch
-                        .get_or_insert_with(std::time::Instant::now);
-                    self.msgs.push(Msg::FileGroup(group));
-                    display_index = self.msgs.len() - 1;
                 } else {
-                    let summary = tool_summary(name, arguments);
+                    let (display_name, summary) = file_call
+                        .map(|(action, file)| (action.label().to_owned(), file))
+                        .unwrap_or_else(|| (name.clone(), tool_summary(name, arguments)));
                     self.activity_epoch
                         .get_or_insert_with(std::time::Instant::now);
                     self.msgs.push(Msg::Tool(ToolCard {
                         call_id: call_id.clone(),
-                        name: name.clone(),
+                        name: display_name,
                         summary,
                         state: ToolState::Running,
                         frame: 0,
@@ -1911,16 +1915,71 @@ fn host_event_time(event: &HostEvent) -> u64 {
     })
 }
 
-fn read_target(arguments: &str) -> String {
-    serde_json::from_str::<Value>(arguments)
-        .ok()
-        .and_then(|v| {
-            v.get("file_path")
-                .or_else(|| v.get("filePath"))
-                .and_then(Value::as_str)
-                .map(String::from)
-        })
-        .unwrap_or_default()
+/// Classify built-in file tools and str_replace_editor commands into the
+/// common activity vocabulary. Editor paths are absolute by schema, so make
+/// them workspace-relative when possible before they reach the display model.
+fn classify_file_call(
+    name: &str,
+    arguments: &str,
+    workspace: Option<&str>,
+) -> Option<(FileAction, String)> {
+    let parsed: Value = serde_json::from_str(arguments).ok()?;
+    let ordinary = match name {
+        "read" | "read_text" | "read_image" => Some(FileAction::Read),
+        "edit" | "write" => Some(FileAction::Edit),
+        _ => None,
+    };
+    if let Some(action) = ordinary {
+        let path = parsed
+            .get("file_path")
+            .or_else(|| parsed.get("filePath"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        return Some((action, path.to_owned()));
+    }
+    if name != "str_replace_editor" {
+        return None;
+    }
+    let action = match parsed.get("command").and_then(Value::as_str)? {
+        "view" => FileAction::View,
+        "create" => FileAction::Create,
+        "str_replace" => FileAction::Replace,
+        "insert" => FileAction::Insert,
+        _ => return None,
+    };
+    let path = parsed
+        .get("path")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    Some((action, workspace_relative_path(path, workspace)))
+}
+
+fn workspace_relative_path(path: &str, workspace: Option<&str>) -> String {
+    let normalize = |value: &str| value.trim_end_matches(['/', '\\']).replace('\\', "/");
+    let normalized_path = normalize(path);
+    let Some(workspace) = workspace else {
+        return normalized_path;
+    };
+    let normalized_workspace = normalize(workspace);
+    if normalized_workspace.is_empty() {
+        return normalized_path;
+    }
+    let path_parts: Vec<&str> = normalized_path.split('/').collect();
+    let workspace_parts: Vec<&str> = normalized_workspace.split('/').collect();
+    let inside_workspace = path_parts.len() >= workspace_parts.len()
+        && path_parts
+            .iter()
+            .zip(&workspace_parts)
+            .all(|(path, workspace)| path.eq_ignore_ascii_case(workspace));
+    if !inside_workspace {
+        return normalized_path;
+    }
+    let relative = &path_parts[workspace_parts.len()..];
+    if relative.is_empty() {
+        ".".to_owned()
+    } else {
+        relative.join("/")
+    }
 }
 
 #[cfg(test)]
@@ -2053,8 +2112,22 @@ mod tests {
         let Msg::FileGroup(group) = &s.msgs[0] else {
             panic!("FileGroup expected")
         };
-        assert_eq!(group.reads.len(), 2);
-        assert_eq!(group.edits.len(), 1);
+        assert_eq!(
+            group
+                .items
+                .iter()
+                .filter(|item| item.action == FileAction::Read)
+                .count(),
+            2
+        );
+        assert_eq!(
+            group
+                .items
+                .iter()
+                .filter(|item| item.action == FileAction::Edit)
+                .count(),
+            1
+        );
         // A non-file tool breaks the group; the next read starts a new one.
         s.apply_event(&event_seq(
             "tool/call",
@@ -2072,9 +2145,60 @@ mod tests {
             }),
         ));
         assert_eq!(s.msgs.len(), 3);
-        assert!(
-            matches!(&s.msgs[2], Msg::FileGroup(g) if g.reads.len() == 1 && g.edits.is_empty())
+        assert!(matches!(&s.msgs[2], Msg::FileGroup(g)
+            if g.items.len() == 1 && g.items[0].action == FileAction::Read));
+    }
+
+    #[test]
+    fn str_replace_editor_folds_operations_but_keeps_create_standalone() {
+        let mut s = AppState::default();
+        s.session_cwd = Some(r"G:\workspace".into());
+        for (seq, id, command, path) in [
+            (1, "v1", "view", r"G:\workspace\src\a.rs"),
+            (2, "r1", "str_replace", r"G:\workspace\src\b.rs"),
+            (3, "i1", "insert", r"G:\workspace\src\c.rs"),
+        ] {
+            s.apply_event(&event_seq(
+                "tool/call",
+                seq,
+                serde_json::json!({
+                    "callId": id,
+                    "name": "str_replace_editor",
+                    "arguments": serde_json::json!({
+                        "command": command, "path": path
+                    }).to_string()
+                }),
+            ));
+        }
+        let Msg::FileGroup(group) = &s.msgs[0] else {
+            panic!("editor operations should use FileGroup")
+        };
+        assert_eq!(
+            group
+                .items
+                .iter()
+                .map(|item| (item.action, item.file.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (FileAction::View, "src/a.rs"),
+                (FileAction::Replace, "src/b.rs"),
+                (FileAction::Insert, "src/c.rs"),
+            ]
         );
+
+        s.apply_event(&event_seq(
+            "tool/call",
+            4,
+            serde_json::json!({
+                "callId": "c1",
+                "name": "str_replace_editor",
+                "arguments": serde_json::json!({
+                    "command": "create", "path": r"G:\workspace\src\new.rs"
+                }).to_string()
+            }),
+        ));
+        assert!(matches!(&s.msgs[1], Msg::Tool(card)
+            if card.name == "create" && card.summary == "src/new.rs"));
     }
 
     #[test]
@@ -2118,45 +2242,50 @@ mod tests {
         ));
         assert!(
             matches!(&s.msgs[0], Msg::FileGroup(g)
-                if g.reads[0].ok == Some(true) && g.edits[0].ok == Some(false)),
+                if g.items[0].ok == Some(true) && g.items[1].ok == Some(false)),
             "read ok, edit failed"
         );
     }
 
     #[test]
     fn file_group_line_count_tracks_the_renderer() {
-        let read = |id: &str, ok: Option<bool>| ReadItem {
-            call_id: id.into(),
-            file: format!("{id}.rs"),
-            ok,
-        };
-        let edit = |id: &str, ok: Option<bool>| EditItem {
+        let item = |action: FileAction, id: &str, ok: Option<bool>| FileItem {
+            action,
             call_id: id.into(),
             file: format!("{id}.rs"),
             ok,
         };
         // All settled: folded ok line + one line per failure.
         let group = FileGroup {
-            reads: vec![read("a", Some(true)), read("b", Some(false))],
-            edits: vec![edit("c", Some(false))],
+            items: vec![
+                item(FileAction::Read, "a", Some(true)),
+                item(FileAction::View, "b", Some(false)),
+                item(FileAction::Replace, "c", Some(false)),
+            ],
             frame: 0,
             done_since: None,
             done_from: None,
         };
         assert_eq!(file_group_line_count(&group), 3);
-        // Reads pending: breathing line + settled failures.
+        // Reads pending: breathing read/view line + settled failures.
         let group = FileGroup {
-            reads: vec![read("a", None), read("b", Some(false))],
-            edits: vec![],
+            items: vec![
+                item(FileAction::Read, "a", None),
+                item(FileAction::View, "b", Some(false)),
+            ],
             frame: 0,
             done_since: None,
             done_from: None,
         };
         assert_eq!(file_group_line_count(&group), 2);
-        // Edits pending: ok reads line + failed reads + breathing edits + failed edits.
+        // Writes pending: ok reads line + failed reads + breathing writes + failures.
         let group = FileGroup {
-            reads: vec![read("a", Some(true)), read("b", Some(false))],
-            edits: vec![edit("c", None), edit("d", Some(false))],
+            items: vec![
+                item(FileAction::Read, "a", Some(true)),
+                item(FileAction::View, "b", Some(false)),
+                item(FileAction::Replace, "c", None),
+                item(FileAction::Insert, "d", Some(false)),
+            ],
             frame: 0,
             done_since: None,
             done_from: None,
@@ -2164,8 +2293,10 @@ mod tests {
         assert_eq!(file_group_line_count(&group), 4);
         // All failed: no folded line, one row per failure.
         let group = FileGroup {
-            reads: vec![read("a", Some(false))],
-            edits: vec![edit("c", Some(false))],
+            items: vec![
+                item(FileAction::Read, "a", Some(false)),
+                item(FileAction::Edit, "c", Some(false)),
+            ],
             frame: 0,
             done_since: None,
             done_from: None,
@@ -2377,7 +2508,7 @@ mod tests {
             .expect("file group present");
         assert!(!group.pending(), "interrupted read settles");
         assert!(
-            group.reads.iter().any(|i| i.ok == Some(false)),
+            group.items.iter().any(|i| i.ok == Some(false)),
             "unresolved read marked failed"
         );
         assert!(

@@ -1,7 +1,37 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Buffer } from 'node:buffer'
-import { encodeBoundedFrame } from '../src/frame.js'
+import { encodeBoundedFrame, shapeWelcomeFrame } from '../src/frame.js'
+
+test('welcome reports the actual session preset from header or latest selection', () => {
+  const agent = {
+    id: 's1',
+    status: 'idle',
+    options: { provider: 'deepseek', model: 'chat' },
+    session: {
+      header: { cwd: '/workspace', agentPreset: 'minimal' },
+      events: [{ type: 'session/title', data: { title: 'Work' } }],
+    },
+  }
+  assert.deepEqual(shapeWelcomeFrame(agent, 4, 1024), {
+    type: 'welcome',
+    protocolVersion: 4,
+    maxFrameBytes: 1024,
+    sessionId: 's1',
+    status: 'idle',
+    provider: 'deepseek',
+    model: 'chat',
+    mode: 'minimal',
+    title: 'Work',
+    cwd: '/workspace',
+  })
+
+  agent.session.events.push({
+    type: 'agent-preset/selected',
+    data: { agentPreset: 'cordis' },
+  })
+  assert.equal(shapeWelcomeFrame(agent, 4, 1024).mode, 'cordis')
+})
 
 test('ordinary frames are encoded unchanged below the byte budget', () => {
   const message = { type: 'status', status: 'running' }

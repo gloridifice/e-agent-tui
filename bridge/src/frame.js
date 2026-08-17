@@ -1,4 +1,24 @@
 import { Buffer } from 'node:buffer'
+import { latestTitle, sessionPresetOf } from './compose.js'
+
+/** Project the authoritative attached-session metadata into a welcome frame. */
+export function shapeWelcomeFrame(agent, protocolVersion, maxFrameBytes) {
+  const events = agent.session?.events ?? []
+  return {
+    type: 'welcome',
+    protocolVersion,
+    maxFrameBytes,
+    sessionId: agent.id,
+    status: agent.status,
+    provider: agent.options?.provider,
+    model: agent.options?.model,
+    // Creation records the initial preset in the frozen header; a later
+    // blank-session recompose records agent-preset/selected in the log.
+    mode: sessionPresetOf(agent.session?.header, events),
+    title: latestTitle(events),
+    cwd: agent.session?.header?.cwd,
+  }
+}
 
 function encode(message) {
   return JSON.stringify(message)

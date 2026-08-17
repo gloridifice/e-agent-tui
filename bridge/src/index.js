@@ -9,7 +9,7 @@
  *   up:   hello{token, resumeSessionId?, cwd?, mode?} | input{text}
  *         | command{line} | login-get{} | login-set{field,value}
  *         | interrupt{} | ping{}
- *   down: welcome{sessionId,status,provider?,model?,title?} | snapshot{events[]}
+ *   down: welcome{sessionId,status,provider?,model?,mode?,title?} | snapshot{events[]}
  *         | event{event} | status{status} | presets{presets[]} | title{title}
  *         | commands{commands[]} | command-result{commandId,kind,text?}
  *         | login{apiKeyConfigured,apiKeyWritable,apiKeySource?,apiKeyHint?,
@@ -40,7 +40,7 @@ import { createHistoryStore } from './history.js'
 import { createSessionService } from './session.js'
 import { createClientDispatcher } from './dispatcher.js'
 import { shapeCommandsFrame, watchCommandChanges } from './command.js'
-import { encodeBoundedFrame } from './frame.js'
+import { encodeBoundedFrame, shapeWelcomeFrame } from './frame.js'
 import {
   MAX_FRAME_BYTES,
   PROTOCOL_VERSION,
@@ -209,21 +209,10 @@ function apply(ctx, config = {}) {
     }
     conns.add(conn)
 
-    send(ws, {
-      type: 'welcome',
-      protocolVersion: PROTOCOL_VERSION,
-      maxFrameBytes: MAX_FRAME_BYTES,
-      sessionId: agent.id,
-      status: agent.status,
-      provider: agent.options?.provider,
-      model: agent.options?.model,
-      // Latest session/title of the log (undefined until the session has
-      // one); live title updates ride the ordinary event frames.
-      title: latestTitle(agent.session?.events),
-      // Workspace path of the attached session (its header cwd) — the TUI
-      // renders it right-aligned in the title row below the status bar.
-      cwd: agent.session?.header?.cwd,
-    })
+    // Welcome owns the attached session's authoritative initial page state.
+    // In particular, mode cannot be reconstructed from a new session's
+    // snapshot because its initial preset lives in the frozen header.
+    send(ws, shapeWelcomeFrame(agent, PROTOCOL_VERSION, MAX_FRAME_BYTES))
     sendSnapshot(conn, send)
     // DSH/plugin commands are effective per agent (scoped definitions may
     // shadow globals), so discover them after every attach/session switch.

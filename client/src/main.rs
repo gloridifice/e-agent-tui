@@ -144,6 +144,7 @@ fn handle_msg(
             status,
             provider,
             model,
+            mode,
             title,
             cwd,
             ..
@@ -158,6 +159,7 @@ fn handle_msg(
                         "status": status,
                         "provider": provider,
                         "model": model,
+                        "mode": mode,
                         "title": title,
                         "cwd": cwd,
                     }),

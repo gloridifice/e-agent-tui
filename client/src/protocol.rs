@@ -882,6 +882,10 @@ pub enum ServerMessage {
         status: String,
         provider: Option<String>,
         model: Option<String>,
+        /// Actual agent preset mounted for the attached session. Optional for
+        /// compatibility with bridges that predate authoritative mode display.
+        #[serde(default)]
+        mode: Option<String>,
         /// Latest session/title of the attached session (absent until it
         /// has one; live updates ride ordinary `event` frames).
         #[serde(default)]
@@ -1380,26 +1384,33 @@ mod tests {
     }
 
     #[test]
-    fn welcome_parses_title_and_defaults_when_absent() {
+    fn welcome_parses_mode_title_and_defaults_when_absent() {
         let msg = ServerMessage::from_wire(
-            r#"{"type":"welcome","sessionId":"s1","status":"idle","provider":"p","model":"m","title":"标题行"}"#,
+            r#"{"type":"welcome","sessionId":"s1","status":"idle","provider":"p","model":"m","mode":"cordis","title":"标题行"}"#,
         )
-        .expect("welcome with title parses");
+        .expect("welcome with mode and title parses");
         match msg {
             ServerMessage::Welcome {
-                session_id, title, ..
+                session_id,
+                mode,
+                title,
+                ..
             } => {
                 assert_eq!(session_id, "s1");
+                assert_eq!(mode.as_deref(), Some("cordis"));
                 assert_eq!(title.as_deref(), Some("标题行"));
             }
             other => panic!("wrong variant: {other:?}"),
         }
-        // The old bridge sends no title — default to None, don't fail.
+        // An old bridge may send neither field — default to None, don't fail.
         let old =
             ServerMessage::from_wire(r#"{"type":"welcome","sessionId":"s2","status":"idle"}"#)
                 .expect("old welcome parses");
         match old {
-            ServerMessage::Welcome { title, .. } => assert_eq!(title, None),
+            ServerMessage::Welcome { mode, title, .. } => {
+                assert_eq!(mode, None);
+                assert_eq!(title, None);
+            }
             other => panic!("wrong variant: {other:?}"),
         }
     }

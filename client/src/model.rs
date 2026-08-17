@@ -2528,6 +2528,28 @@ mod tests {
     }
 
     #[test]
+    fn welcome_sets_authoritative_mode_and_old_bridge_falls_back() {
+        let mut s = AppState::default();
+        s.apply(
+            "welcome",
+            &serde_json::json!({
+                "sessionId": "a", "status": "idle", "mode": "cordis"
+            }),
+        );
+        assert_eq!(s.current_mode.as_deref(), Some("cordis"));
+
+        s.apply(
+            "welcome",
+            &serde_json::json!({"sessionId": "b", "status": "idle"}),
+        );
+        assert_eq!(
+            s.current_mode.as_deref(),
+            Some(s.config.default_mode.as_str()),
+            "welcome from an old bridge keeps the configured fallback"
+        );
+    }
+
+    #[test]
     fn welcome_sets_and_switch_clears_the_title() {
         let mut s = AppState::default();
         s.apply(

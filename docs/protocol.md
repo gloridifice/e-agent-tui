@@ -88,6 +88,7 @@ Do not edit capacities or message rosters here by hand.
 - `schedule/change`
 
 The client sends `hello.protocolVersion`; `welcome` replies with
-`protocolVersion` and `maxFrameBytes`. Older peers may omit these fields.
-A legacy bridge that emits larger frames requires an explicit
+`protocolVersion`, `maxFrameBytes`, and the attached session's authoritative
+optional `mode` (latest committed selection, otherwise its creation header).
+Older peers may omit these fields. A legacy bridge that emits larger frames requires an explicit
 `DSHE_LEGACY_MAX_FRAME_MB` client override.

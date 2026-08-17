@@ -173,6 +173,21 @@ pub fn render(
     theme: &Theme,
     overlays: RenderOverlays<'_>,
 ) {
+    let _ = render_with_cursor(frame, state, input, scroll, theme, overlays);
+}
+
+/// Render one frame and return the hidden terminal-cursor anchor used by IME.
+/// The caller owns cursor visibility; UI code must never call
+/// `Frame::set_cursor_position`, because ratatui would show the hardware cursor
+/// while diff cells are being written and make it jump through animated rows.
+pub fn render_with_cursor(
+    frame: &mut Frame,
+    state: &mut AppState,
+    input: &InputState,
+    scroll: &mut ScrollState,
+    theme: &Theme,
+    overlays: RenderOverlays<'_>,
+) -> Option<Position> {
     let RenderOverlays {
         help_visible,
         overlay,
@@ -271,12 +286,15 @@ pub fn render(
     if queue_visible > 0 {
         render_queue(frame, chunks[6], &state.queue, queue_visible, theme);
     }
-    if let Some(page) = input_page.as_mut() {
+    let cursor_anchor = if let Some(page) = input_page.as_mut() {
         render_input_page(frame, chunks[7], page, &state.config, theme);
+        None
     } else if let Some(settings) = settings.as_mut() {
         render_settings(frame, chunks[7], settings, &state.config, theme);
+        None
     } else if let Some(login) = login.as_mut() {
         render_login(frame, chunks[7], login, theme);
+        None
     } else if let Some(question) = state.question.as_ref() {
         // The input bar becomes the selection bar while a question pends.
         render_question_bar(
@@ -285,7 +303,7 @@ pub fn render(
             question,
             theme,
             state.config.user_input_padding as u16,
-        );
+        )
     } else {
         render_input(
             frame,
@@ -295,8 +313,8 @@ pub fn render(
             overlay.is_some(),
             toast,
             state.config.user_input_padding as u16,
-        );
-    }
+        )
+    };
     render_status(frame, chunks[9], state, scroll, theme);
     render_title(frame, chunks[10], state, theme);
     // Slash-command suggestions float above the input bar (last draw wins).
@@ -305,6 +323,7 @@ pub fn render(
             render_suggest(frame, suggest, chunks[7], theme);
         }
     }
+    cursor_anchor
 }
 
 fn render_info_accessory(
@@ -594,7 +613,7 @@ fn render_question_bar(
     batch: &crate::model::QuestionBatch,
     theme: &Theme,
     padding: u16,
-) {
+) -> Option<Position> {
     let block = Block::default()
         .style(Style::default().bg(theme.bg_soft))
         .padding(Padding::new(padding, padding, 1, 1));
@@ -616,6 +635,9 @@ fn render_question_bar(
         left = Line::from(vec![
             Span::styled("❯ ", Style::default().fg(theme.user)),
             Span::styled(batch.draft.clone(), Style::default().fg(theme.fg)),
+            // Software cursor: the hardware cursor stays hidden during all
+            // terminal diff writes to avoid jumping through animated rows.
+            Span::styled(" ", Style::default().fg(theme.bg).bg(theme.fg)),
         ]);
     } else {
         let mut spans = Vec::new();
@@ -650,9 +672,12 @@ fn render_question_bar(
     let hint_x = inner.x + inner.width.saturating_sub(hint_width);
     buffer.set_line(hint_x, inner.y, &hint_line, hint_width);
     if options.is_empty() {
-        // Keep the terminal cursor on the draft for IME-friendly input.
+        // Keep the hidden terminal cursor anchored to the draft so IME
+        // candidate windows still open beside the software cursor.
         let col = unicode_width::UnicodeWidthStr::width(batch.draft.as_str()) as u16;
-        frame.set_cursor_position(Position::new(inner.x + 2 + col, inner.y));
+        Some(Position::new(inner.x + 2 + col, inner.y))
+    } else {
+        None
     }
 }
 
@@ -1702,7 +1727,7 @@ fn render_input(
     copy_active: bool,
     toast: Option<&str>,
     padding: u16,
-) {
+) -> Option<Position> {
     let block = Block::default()
         .style(Style::default().bg(theme.bg_soft))
         // Configurable horizontal gutter + 1-row vertical padding.
@@ -1723,7 +1748,7 @@ fn render_input(
             ),
         ]);
         frame.render_widget(Paragraph::new(Text::from(vec![hint])), inner);
-        return;
+        return None;
     }
 
     if let Some(search) = &input.search {
@@ -1744,7 +1769,7 @@ fn render_input(
             ),
         ]);
         frame.render_widget(Paragraph::new(Text::from(vec![line])), inner);
-        return;
+        return None;
     }
 
     if let Some(toast_text) = toast {
@@ -1753,7 +1778,7 @@ fn render_input(
             Style::default().fg(theme.ok),
         ));
         frame.render_widget(Paragraph::new(Text::from(vec![line])), inner);
-        return;
+        return None;
     }
 
     let (display, placeholder) = input.display_text();
@@ -1802,10 +1827,17 @@ fn render_input(
         let (text, off) = &chunks[i];
         // No prompt prefix: the input bar text starts flush at the edge.
         if placeholder {
-            rendered.push(Line::from(Span::styled(
+            let mut spans = vec![Span::styled(
                 (*text).clone(),
                 Style::default().fg(theme.rose).add_modifier(Modifier::BOLD),
-            )));
+            )];
+            if i == cursor_row {
+                spans.push(Span::styled(
+                    " ",
+                    Style::default().fg(theme.bg).bg(theme.fg),
+                ));
+            }
+            rendered.push(Line::from(spans));
             continue;
         }
         if i == cursor_row {
@@ -1845,10 +1877,10 @@ fn render_input(
             .collect();
         UnicodeWidthStr::width(before.as_str())
     } as u16;
-    frame.set_cursor_position(Position::new(
+    Some(Position::new(
         inner.x + col,
         inner.y + cursor_row.saturating_sub(start) as u16,
-    ));
+    ))
 }
 
 /// Scroll the transcript by a bounded number of visible rows.
@@ -4523,9 +4555,10 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let theme = Theme::ferra();
+        let mut cursor_anchor = None;
         terminal
             .draw(|frame| {
-                render_input(
+                cursor_anchor = render_input(
                     frame,
                     ratatui::layout::Rect::new(0, 0, 80, 5),
                     &input,
@@ -4539,9 +4572,14 @@ mod tests {
         // Cursor sits after "你好世" (6 cells) inside the 2-column gutter:
         // x = 2 + 6 = 8; one padding row above the input line means y = 1.
         assert_eq!(
+            cursor_anchor,
+            Some(Position::new(8, 1)),
+            "hidden IME anchor tracks CJK display width"
+        );
+        assert_eq!(
             terminal.get_cursor_position().unwrap(),
-            Position::new(8, 1),
-            "cursor tracks CJK display width"
+            Position::new(0, 0),
+            "renderer does not expose or move the hardware cursor"
         );
     }
 
@@ -4568,9 +4606,10 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let theme = Theme::ferra();
+        let mut cursor_anchor = None;
         terminal
             .draw(|frame| {
-                render_input(
+                cursor_anchor = render_input(
                     frame,
                     ratatui::layout::Rect::new(0, 0, 80, 6),
                     &input,
@@ -4583,9 +4622,9 @@ mod tests {
             .unwrap();
         // Cursor on the new empty row: 1 padding row + row 1 → y = 2.
         assert_eq!(
-            terminal.get_cursor_position().unwrap(),
-            Position::new(2, 2),
-            "cursor sits on the new empty row"
+            cursor_anchor,
+            Some(Position::new(2, 2)),
+            "hidden IME anchor sits on the new empty row"
         );
     }
 
@@ -4605,9 +4644,10 @@ mod tests {
         let theme = Theme::ferra();
         let backend = TestBackend::new(20, 8);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut cursor_anchor = None;
         terminal
             .draw(|f| {
-                render_input(
+                cursor_anchor = render_input(
                     f,
                     ratatui::layout::Rect::new(0, 0, 20, 6),
                     &input,
@@ -4629,9 +4669,9 @@ mod tests {
         assert_eq!(row(2), "x".repeat(20), "wrapped row 2");
         assert_eq!(row(3), "x".repeat(20), "wrapped row 3");
         assert_eq!(
-            terminal.get_cursor_position().unwrap(),
-            Position::new(20, 3),
-            "cursor follows the wrapped rows to the end"
+            cursor_anchor,
+            Some(Position::new(20, 3)),
+            "hidden IME anchor follows the wrapped rows to the end"
         );
     }
 

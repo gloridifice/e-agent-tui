@@ -27,10 +27,12 @@ use e::input_page::{InputPageSession, PageEffect};
 use e::model::{tick_spinners, AgentStatus, AppState, ApprovalCard, Msg, QuestionBatch};
 use e::protocol::{ClientMessage, ServerMessage, MAX_WIRE_FRAME_BYTES, WIRE_PROTOCOL_VERSION};
 use e::ui::{
-    render, render_picker, scroll_lines, scroll_page, transcript_view_height, CopyOverlay,
-    PickerAction, PickerState, ScrollState,
+    render_picker, render_with_cursor, scroll_lines, scroll_page, transcript_view_height,
+    CopyOverlay, PickerAction, PickerState, ScrollState,
 };
 use tokio::time::MissedTickBehavior;
+
+const DSH_SERVER_CLOSED_MESSAGE: &str = "dsh 服务器已关闭。";
 
 fn token_path() -> PathBuf {
     e::launcher::dsh_home().join("dsh-tui.token")
@@ -464,6 +466,10 @@ async fn run(
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     let mut terminal = ratatui::init();
+    // The UI paints its own block cursor. Keep the hardware cursor hidden so
+    // crossterm's diff writer cannot visibly drag it through animated cells;
+    // after each frame we only move its hidden position for IME anchoring.
+    terminal.hide_cursor()?;
     let mut fatal: Option<String> = None;
     // Redraw throttle: at most one frame per 30 ms, and only when something
     // changed (events, keys, spinner frames). Streaming chunks arrive at
@@ -920,8 +926,9 @@ async fn run(
                 } else {
                     None
                 };
+                let mut cursor_anchor = None;
                 terminal.draw(|frame| {
-                    render(
+                    cursor_anchor = render_with_cursor(
                         frame,
                         &mut state,
                         &input,
@@ -938,8 +945,14 @@ async fn run(
                     );
                     if let Some(p) = picker.as_ref() {
                         render_picker(frame, p, &theme);
+                        cursor_anchor = None;
                     }
                 })?;
+                if let Some(position) = cursor_anchor {
+                    // Moving a hidden cursor preserves the Windows IME anchor
+                    // without exposing diff-writer cursor travel on screen.
+                    terminal.set_cursor_position(position)?;
+                }
                 if first_frame {
                     drop(_z);
                     first_draw_done = true;

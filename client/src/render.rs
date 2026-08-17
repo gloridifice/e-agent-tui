@@ -175,8 +175,8 @@ pub fn render_markdown(
 }
 
 /// Render one block and append it with glamour-style margins: a blank line
-/// separates every top-level block; code blocks get the `margin: 2` pair and
-/// headings their `block_suffix` blank (glamour dark style).
+/// separates every top-level block; headings get their `block_suffix` blank
+/// (glamour dark style).
 fn emit_block(
     kind: &BlockKind,
     raw: &str,
@@ -194,15 +194,7 @@ fn emit_block(
     if !out.is_empty() {
         push_blank(out, unit, is_code);
     }
-    if is_code {
-        // glamour code_block margin: forced blanks (normalize caps at 2).
-        out.push(blank_row(unit, true));
-    }
     out.extend(block_out);
-    if is_code {
-        out.push(blank_row(unit, true));
-        out.push(blank_row(unit, true));
-    }
     if matches!(kind, BlockKind::Heading) {
         push_blank(out, unit, false);
     }
@@ -1408,7 +1400,7 @@ mod tests {
     }
 
     #[test]
-    fn code_block_gets_glamour_margins() {
+    fn code_block_gets_blank_separators() {
         let lines = render("前文\n\n```\ncode\n```\n\n后文");
         let text = plain(&lines);
         // Glow-style block: header row + content row, no frame.
@@ -1417,7 +1409,6 @@ mod tests {
             .position(|l| l == "  code · 1 行")
             .expect("glow header");
         assert_eq!(text[header_idx - 1], "", "blank row above code block");
-        assert_eq!(text[header_idx - 2], "", "margin: two blanks above");
         assert_eq!(text[header_idx + 1], "  code", "content row follows");
         assert_eq!(
             text[header_idx + 2],
@@ -1425,7 +1416,7 @@ mod tests {
             "inner padding row below the block"
         );
         assert_eq!(text[header_idx + 3], "", "blank row below code block");
-        assert_eq!(text[header_idx + 4], "", "margin: two blanks below");
+        assert_eq!(text[header_idx + 4], "后文", "next paragraph follows");
     }
 
     #[test]

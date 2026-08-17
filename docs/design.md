@@ -8,7 +8,8 @@
 > 启动器 `dshe` 自动 spawn `dsh --profile dshe`（或 npx）／桥接已运行的 dsh；使用
 > 专属 `dshe` profile，避免与 DSH 自带或用户已有的 `tui` profile 冲突。由 `dshe` 启动的
 > Windows 服务在启动超时清理及最后一个 TUI 关闭时均以 `taskkill /T` 终止 `cmd /C` shim 的完整进程树，
-> 避免遗留孤儿 Node；回收等待有上限，关闭失败保留零实例锁供下次 attach 重试，服务已消失时清除 stale 锁并重建。
+> 避免遗留孤儿 Node；回收等待有上限，关闭失败保留零实例锁供下次 attach 重试；所有实例锁均须重新探测
+> bridge endpoint，即使正实例计数也不能证明服务存活，服务已消失时清除 stale 锁并重建。
 > 确认关闭后离开 alternate screen 并输出 `dsh 服务器已关闭。`。桥接外部启动的 DSH 或仍有其他 TUI 时不输出。
 
 ## 0. 已定决策（✅）
@@ -309,7 +310,8 @@ Ferra 色板来源于 casperstorm/ferra README：
    参数补全策略和 action。注册一项就同时注册行为与补全，`input.rs` 不得维护第二份命令表。
    当前 `/settings`、`/login`、`/new`、`/resume`、`/model`、`/theme`、`/reload`、
    `/skill`、`/compact`、`/goal`、`/plan`、`/copy`、`/clear`、退出别名都属于内置项；
-   其中 `/new ` 以 bridge 的 preset roster 做参数级补全。
+   其中 `/new ` 以 bridge 的 preset roster 做参数级补全；输入完整 `/skill` 即切换到当前会话
+   user-invocable skill roster，继续按名称模糊过滤并补成规范 `/skill:<name>`。
 2. **接入命令**：DSH 原生命令或其它 DSH 插件注册的命令。bridge 在 attach 后调用
    `ctx.commands.list(agent)` 自动获取该 agent 的有效目录（全局定义 + agent-scoped shadow），
    下发 handler-free `commands` 帧；`commands/change` 发生时为每条连接重新计算，而非要求
@@ -542,6 +544,11 @@ apiKeyHint?}], proxies: [{id,name,baseUrl,protocol,model}], error? }`（§4.8）
 `presets` 载荷 `{ presets: [{ id, name?, description?, order?, broken? }] }`：agent-presets
 roster 快照，每次 attach（hello/`/new`/picker）后紧随 `welcome` 下发；客户端用它渲染
 `/new ` 模式提示弹窗。
+
+`skills` 载荷 `{ skills: [{ name, description }] }`：bridge 按附着会话的 cwd/scope 调
+`ctx.skills.list`，仅下发 `invocation.userInvocable` 的胜出项；每次 attach 及 `skills/change`
+后全量刷新。客户端输入 `/skill`、`/skill:` 或兼容空格形式时按名称前缀→子串→子序列
+过滤，并始终填入规范 `/skill:<name>`。
 
 `snapshot` 载荷 `{ events, truncated? }`：含契约列出的重建事件，以及带 `surfaceOp` 的未知事件
 （用于新宿主事件的兼容降级）；未知事件在 bridge 侧裁成只含 bounded type/seq/time/surface 元数据的

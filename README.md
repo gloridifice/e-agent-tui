@@ -14,9 +14,9 @@ It connects to the same DSH backend as the Web GUI and shares the same session l
 - **Model selection** — switch provider and model with `/model`
 - **Themes** — `deepseek-e` (default) and `ferra` are embedded from TOML assets; custom themes use an open-ended color palette plus fixed semantic roles
 - **Sessions** — create, switch, and resume conversations with incremental history
-- **Unified commands** — optimized built-ins and commands contributed by DSH/plugins share one fuzzy-completion menu; plugin changes appear live
+- **Unified commands** — optimized built-ins and commands contributed by DSH/plugins share one fuzzy-completion menu; `/skill` immediately opens the live user-invocable skill roster and fills canonical `/skill:<name>` commands
 - **Responsive input** — queue prompts while the agent runs; queued dispatch and copy-mode navigation do not block the UI; a software cursor stays stable while the hidden terminal cursor anchors IME input
-- **Managed backend lifecycle** — when `dshe` starts its dedicated DSH service, startup-timeout cleanup and last-TUI shutdown terminate the complete Windows command-shim process tree with bounded waiting; failed shutdowns retain retry bookkeeping, while confirmed shutdowns print `dsh 服务器已关闭。`; externally started DSH services are left untouched
+- **Managed backend lifecycle** — when `dshe` starts its dedicated DSH service, startup-timeout cleanup and last-TUI shutdown terminate the complete Windows command-shim process tree with bounded waiting; every saved instance lock is revalidated against the bridge endpoint, so an abruptly terminated TUI cannot leave a positive-count stale lock that suppresses the next startup; failed shutdowns retain retry bookkeeping, while confirmed shutdowns print `dsh 服务器已关闭。`; externally started DSH services are left untouched
 - **Fast** — terminal input directly wakes an event-driven frame scheduler; synchronized buffered frames prevent half-painted scrolling, animation patches only active transcript rows, streaming updates only the tail layout suffix, and width-aware grapheme layout materializes only the visible window
 
 ## Installation
@@ -53,7 +53,7 @@ Type `/` to open command completion; continue typing for prefix/substring/fuzzy 
 
 Commands use two compatibility levels:
 
-- **Built-in commands** are optimized for dshe (for example `/settings`, `/model`, `/new`, and `/resume`). Their effect, description, input hint, and specialized completion policy are declared together in `client/src/runtime_command.rs`; `/new ` completes the live agent-preset roster.
+- **Built-in commands** are optimized for dshe (for example `/settings`, `/model`, `/new`, `/resume`, and `/skill`). Their effect, description, input hint, and specialized completion policy are declared together in `client/src/runtime_command.rs`; `/new ` completes the live agent-preset roster, while typing `/skill` immediately completes the attached session's user-invocable skills as `/skill:<name>`.
 - **Integrated commands** come from DSH core or any installed DSH plugin. The bridge discovers the effective per-session `ctx.commands` registry automatically, refreshes it on `commands/change`, and forwards execution results directly to the transcript. No dshe code change is needed when a plugin registers a new command.
 
 DSH 0.1.0-rc.6 exposes command names, descriptions, and one free-form input hint, but no typed argument-completion schema. Therefore every integrated command has name completion and shows its input hint; richer argument completion is available only for built-ins that dshe explicitly optimizes.
@@ -128,4 +128,4 @@ cd bridge; npm test
 node tools/generate-protocol-doc.mjs
 ```
 
-Bridge lifecycle policy is split into testable host, connection, history, session, command, dispatcher, and protocol adapters under `bridge/src/`. Slash completion merges the effective per-session DSH/plugin command catalog with client-optimized commands; live DSH compatibility remains covered by `node tools/smoke-bridge.mjs`.
+Bridge lifecycle policy is split into testable host, connection, history, session, command, skill, dispatcher, and protocol adapters under `bridge/src/`. Slash completion merges the effective per-session DSH/plugin command catalog with client-optimized commands and refreshes cwd/scope-sensitive user-invocable skills after attach or `skills/change`; live DSH compatibility remains covered by `node tools/smoke-bridge.mjs`.

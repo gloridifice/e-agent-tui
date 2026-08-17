@@ -161,8 +161,9 @@ cargo 走 crates.io 官方源（本机网络已修复）。`client/vendor/` 与
   action 同项），禁止在 `input.rs` 再维护平行名称表；`match_command_catalog` 合并桥接下发
   的 `CommandInfo`，同名时内置优先。接入命令来自每个 agent 的有效 `ctx.commands.list`
   视图，至少支持名称模糊补全并显示 DSH 的 free-form input hint；DSH 当前无 typed argument
-  completion schema，只有内置项可做 `/new ` 这类参数补全。收到新 `commands` 帧要立即刷新
-  已打开的提示框，切会话先清旧 agent-scoped 目录。通用执行不得预先 `start_thinking`，结果
+  completion schema，只有内置项可做 `/new ` 这类参数补全；`/skill` 是另一项内置参数补全，
+  输入完整 `/skill` 即展示当前 user-invocable roster，候选统一填成 `/skill:<name>`。收到新
+  `commands`/`skills` 帧要立即刷新已打开的提示框，切会话先清旧 agent-scoped 目录。通用执行不得预先 `start_thinking`，结果
   由 `command-result` 直接投影为 System/Error。
 - **启动即新会话**：新进程不带 `resumeSessionId` 发 hello，桥接就地建会话（
   `hello.cwd` 工作区 + `hello.mode` 默认模式，失效回退 standard）；只有 CLI 会话
@@ -277,7 +278,10 @@ cargo 走 crates.io 官方源（本机网络已修复）。`client/vendor/` 与
   `model-set` 改 `selection.current`（下一次 `system-prompt/assemble` 生效）并
   顺手更新 `agent.options`，再回 `model` 帧刷新客户端状态栏。
 - **/skill（桥接）**：`/skill:<名称>` 或 `/skill <名称>` 由桥接拦截（`skill.js`
-  的 `parseSkillCommand`），经 `ctx.get('skills').get(name, {cwd, signal, scope})`
+  的 `parseSkillCommand`）。每次 attach 及 `skills/change` 后按会话 cwd/scope 调
+  `ctx.skills.list`，只把 `invocation.userInvocable` 的 `{name,description}` 通过 `skills`
+  roster 下发；客户端打出完整 `/skill` 即开始模糊补全，并填入规范 colon 形式。执行时经
+  `ctx.get('skills').get(name, {cwd, signal, scope})`
   查技能——**DSH 的 skill-filesystem 已按 `<workspace>/.agents/skills/` >
   `~/.agents/skills/` 优先级发现**，桥接只负责把 `renderSkillContent(skill)`
   （`<skill_content>` 块）以 `createUserMessage` + `source:{kind:"skill-invocation"}`
@@ -297,7 +301,8 @@ cargo 走 crates.io 官方源（本机网络已修复）。`client/vendor/` 与
   `dsh --profile dshe`（`dsh` 或 `npx @deepseek-ai/dsh`）→ `%DSH_HOME%\dsh-tui.lock`
   计数「最后一个 tui 关闭时关 dsh」；Windows 的 child handle 指向 `cmd /C` shim，正常关闭和启动超时
   清理都必须 `taskkill /T` 整棵进程树，禁止只 `Child::kill` 留下孤儿 Node；子进程回收必须有界，终止失败时
-  保留 `instances: 0` 的锁供下次 attach 重试（服务已消失则视为 stale 后重建）。`release` 只在确实关闭托管服务时返回
+  保留 `instances: 0` 的锁供下次 attach 重试；读取任何锁都必须重新 `probe(url)`，即使 `instances > 0` 也不能
+  当作服务存活证据（TUI 被强杀会留下正计数 stale 锁），服务已消失则清锁并重建。`release` 只在确实关闭托管服务时返回
   `true`，主程序退出 alternate screen 后输出 `dsh 服务器已关闭。`。启动器必须使用专属 `dshe` profile，不能复用
   DSH 自带/用户已有的 `tui` profile（其中的终端 UI 会抢占 stdio，且不提供桥接依赖的
   `webServer`）。`/reload` 重读 config + 重扫主题。

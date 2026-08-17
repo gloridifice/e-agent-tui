@@ -691,19 +691,24 @@ fn render_status(
         .current_mode
         .as_deref()
         .unwrap_or(state.config.default_mode.as_str());
-    let model = state.model.as_deref().unwrap_or("—");
-    let cache_hit = state
-        .cache_hit_rate()
-        .map_or_else(|| "CH—".to_string(), |rate| format!("CH{rate}%"));
-    let left = Line::from(vec![
+    let mut left_spans = vec![
         bullet,
         Span::styled(" ", dim),
         Span::styled(mode.to_owned(), dim),
-        Span::styled(" ", dim),
-        Span::styled(model.to_owned(), dim),
-        Span::styled(" ", dim),
-        Span::styled(cache_hit, dim),
-    ]);
+    ];
+    if let Some(model) = state
+        .model
+        .as_deref()
+        .filter(|model| !model.trim().is_empty())
+    {
+        left_spans.push(Span::styled(" ", dim));
+        left_spans.push(Span::styled(model.to_owned(), dim));
+    }
+    if let Some(rate) = state.cache_hit_rate() {
+        left_spans.push(Span::styled(" ", dim));
+        left_spans.push(Span::styled(format!("CH{rate}%"), dim));
+    }
+    let left = Line::from(left_spans);
     let right =
         Line::from(Span::styled("^h Help", dim)).alignment(ratatui::layout::Alignment::Right);
     // Render through the buffer directly: no wrapping, hard clip at edges.
@@ -3145,11 +3150,49 @@ mod tests {
         assert_eq!(text, "  • read input.rs, foo.rs; edit ui.rs");
     }
 
+    #[test]
+    fn editor_create_is_a_concise_standalone_relative_path_row() {
+        let mut s = AppState::default();
+        s.session_cwd = Some(r"G:\workspace".into());
+        s.apply_event(&serde_json::json!({
+            "type": "tool/call", "seq": 1, "time": 0,
+            "data": {
+                "callId": "c1", "name": "str_replace_editor",
+                "arguments": serde_json::json!({
+                    "command": "create", "path": r"G:\workspace\src\new.rs"
+                }).to_string()
+            }
+        }));
+        let running: String = msg_lines(&s.msgs[0], &s)[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(
+            running.contains("create src/new.rs"),
+            "running row: {running}"
+        );
+
+        s.apply_event(&serde_json::json!({
+            "type": "tool/result", "seq": 2, "time": 1,
+            "data": {"message": {"content": [{
+                "type": "tool-result", "toolCallId": "c1",
+                "content": [{"type": "text", "text": "created"}]
+            }]}}
+        }));
+        let done: String = msg_lines(&s.msgs[0], &s)[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(done, "  • create src/new.rs");
+    }
+
     /// Tool summaries and read/edit file lists use bark (#6f5d63, the `dim`
     /// theme slot) instead of the default white text color.
     #[test]
     fn activity_text_uses_bark_dim() {
-        use crate::model::{EditItem, FileGroup, ReadItem, ToolCard, ToolState};
+        use crate::model::{FileAction, FileGroup, FileItem, ToolCard, ToolState};
 
         let mut config = crate::config::Config::default();
         // ui tests assert the ferra palette — pin the resolved theme so the
@@ -3746,8 +3789,9 @@ mod tests {
             bar.replace(' ', "").contains("Enter确定"),
             "confirm hint: {bar}"
         );
-        // Status row keeps the fixed indicator/mode/model/cache schema.
-        assert!(text(10).contains("•standard—CH—"), "status: {}", row(10));
+        // Missing optional status values do not leave placeholder dashes.
+        assert!(text(10).contains("•standard"), "status: {}", row(10));
+        assert!(!text(10).contains('—') && !text(10).contains("CH"));
     }
 
     /// The pending-prompt queue renders above the input bar: one row per

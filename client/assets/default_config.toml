@@ -22,6 +22,10 @@ history_limit = 1000
 show_model_in_status = true
 show_tool_duration = true
 read_merge = true
+# Thinking content display: compact | lines | full.
+thinking_display = "compact"
+# First N reasoning lines shown in lines mode.
+thinking_lines = 2
 show_timestamps = false
 mermaid_enabled = true
 user_input_padding = 2

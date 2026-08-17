@@ -13,13 +13,13 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::{
     cache::MessageLineRange,
-    config::Theme,
+    config::{Theme, ThinkingDisplayMode},
     display::{
         allocate_accessories, ActivityContinuation, ActivityRow, ActivityState, CardRole,
         ContentCard, DisplayId, DisplayTone, InputAccessory, InputAccessoryKind, TranscriptBlock,
         TranscriptFormat,
     },
-    input::{InputState, Suggestion},
+    input::{InputState, Suggestion, SuggestionKind},
     input_page::{FocusId, InputPage, InputPageSession, ModelPage, ThemePage},
     login::LoginState,
     model::{breathing_color, settle_color, AgentStatus, AppState, Msg, ToolState},
@@ -463,7 +463,11 @@ fn render_suggest(
     lines.push(Line::from(vec![
         Span::styled("❯ ", theme.overlay.accent.style()),
         Span::styled(
-            if suggest.modes { "模式" } else { "命令" },
+            match suggest.kind {
+                SuggestionKind::Commands => "命令",
+                SuggestionKind::Modes => "模式",
+                SuggestionKind::Skills => "技能",
+            },
             theme.overlay.muted.style(),
         ),
     ]));
@@ -928,6 +932,24 @@ fn transcript_block_lines(block: &TranscriptBlock, state: &AppState) -> Vec<Line
         .collect()
 }
 
+/// Reasoning content is folded by default, bounded to the configured first-N
+/// lines in `Lines` mode, and shown completely in `Full` mode. The breathing
+/// `Thinking...` row remains visible in every mode.
+fn reasoning_block_lines(block: &TranscriptBlock, state: &AppState) -> Vec<Line<'static>> {
+    let limit = match state.config.thinking_display_mode() {
+        ThinkingDisplayMode::Compact => return Vec::new(),
+        ThinkingDisplayMode::Lines => state.config.thinking_lines.max(1),
+        ThinkingDisplayMode::Full => usize::MAX,
+    };
+    let color = state.theme().surface.muted_text.fg;
+    block
+        .content
+        .lines()
+        .take(limit)
+        .map(|line| Line::from(Span::styled(line.to_owned(), Style::default().fg(color))))
+        .collect()
+}
+
 fn content_card_lines(
     card: &ContentCard,
     state: &AppState,
@@ -995,9 +1017,12 @@ fn content_card_lines(
 fn msg_lines(msg: &Msg, state: &AppState) -> Vec<Line<'static>> {
     let theme = state.theme();
     match msg {
-        // Thinking output collapses into the breathing `• Thinking... xN`
-        // row; `is_hidden_msg` also skips it in the cache and copy layout.
-        Msg::Block(_) if is_hidden_msg(msg) => Vec::new(),
+        // Compact reasoning output stays folded into the breathing
+        // `• Thinking... xN` row; `Lines`/`Full` render the content here.
+        Msg::Block(_) if is_hidden_msg(msg, state) => Vec::new(),
+        Msg::Block(block) if block.format == TranscriptFormat::Reasoning => {
+            reasoning_block_lines(block, state)
+        }
         Msg::Block(block) => transcript_block_lines(block, state),
         // Cards are built width-aware in styled_msg_lines.
         Msg::Card(_) => Vec::new(),
@@ -1263,19 +1288,21 @@ fn is_activity_msg(msg: &Msg) -> bool {
 /// Thinking output (reasoning blocks) is collapsed into the breathing
 /// `• Thinking... xN` row: it contributes zero transcript rows and zero
 /// inter-message gap, so the cache builder and copy provenance must skip it.
-fn is_hidden_msg(msg: &Msg) -> bool {
+fn is_hidden_msg(msg: &Msg, state: &AppState) -> bool {
     matches!(
         msg,
-        Msg::Block(block) if block.format == TranscriptFormat::Reasoning
+        Msg::Block(block)
+            if block.format == TranscriptFormat::Reasoning
+                && !state.config.thinking_display_mode().shows_reasoning()
     )
 }
 
 /// Whether the next visible message is another activity row. Hidden messages
 /// are transparent to layout adjacency, just as they are to rendering/copy.
-fn next_visible_is_activity(msgs: &[Msg], index: usize) -> bool {
+fn next_visible_is_activity(msgs: &[Msg], index: usize, state: &AppState) -> bool {
     msgs.iter()
         .skip(index + 1)
-        .find(|msg| !is_hidden_msg(msg))
+        .find(|msg| !is_hidden_msg(msg, state))
         .is_some_and(is_activity_msg)
 }
 
@@ -1500,7 +1527,7 @@ pub fn copy_layout_rows(state: &AppState) -> Vec<CopyLayoutRow> {
     let mut global_row = 0usize;
     let width = state.transcript_cache.width.max(1);
     for (index, msg) in state.msgs.iter().enumerate() {
-        if is_hidden_msg(msg) {
+        if is_hidden_msg(msg, state) {
             continue;
         }
         let layout_lines = styled_msg_lines(msg, state, width);
@@ -1548,7 +1575,7 @@ pub fn copy_layout_rows(state: &AppState) -> Vec<CopyLayoutRow> {
                 .map(|line| wrapped_rows(line, width))
                 .sum::<usize>();
         }
-        let next_is_activity = next_visible_is_activity(&state.msgs, index);
+        let next_is_activity = next_visible_is_activity(&state.msgs, index, state);
         if !(is_activity_msg(msg) && next_is_activity) {
             global_row += 1;
         }
@@ -1562,14 +1589,14 @@ fn rebuild_transcript_cache(state: &mut AppState, width: usize) {
     let mut ranges = vec![None; state.msgs.len()];
     let mut tail_len = 0usize;
     for (index, msg) in state.msgs.iter().enumerate() {
-        if is_hidden_msg(msg) {
+        if is_hidden_msg(msg, state) {
             continue;
         }
         let start = base.len();
         let lines = styled_msg_lines(msg, state, width);
         let line_count = lines.len();
         base.extend(lines);
-        let next_is_activity = next_visible_is_activity(&state.msgs, index);
+        let next_is_activity = next_visible_is_activity(&state.msgs, index, state);
         let gap = !(is_activity_msg(msg) && next_is_activity);
         ranges[index] = Some(MessageLineRange {
             start,
@@ -3183,6 +3210,54 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_display_modes_render_compact_lines_and_full() {
+        let mut s = AppState::default();
+        s.transcript_cache.width = 80;
+        s.units.insert(10, "one\ntwo\nthree".into());
+        s.msgs.push(Msg::Block(TranscriptBlock {
+            id: DisplayId::event(1, "reasoning"),
+            unit: Some(10),
+            content: "one\ntwo\nthree".into(),
+            format: TranscriptFormat::Reasoning,
+            tone: DisplayTone::Dim,
+            copy_source: "one\ntwo\nthree".into(),
+            streaming: false,
+        }));
+
+        // Compact (the default) renders only the Thinking indicator row.
+        assert!(styled_msg_lines(&s.msgs[0], &s, 80).is_empty());
+        assert!(!copy_layout_rows(&s).iter().any(|row| row.unit == 10));
+
+        // Lines shows at most the configured first N reasoning lines.
+        s.config.thinking_display = "lines".into();
+        s.config.thinking_lines = 2;
+        let lines = styled_msg_lines(&s.msgs[0], &s, 80);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].spans[0].content, "one");
+        assert_eq!(lines[1].spans[0].content, "two");
+        assert_eq!(
+            copy_layout_rows(&s)
+                .iter()
+                .filter(|row| row.unit == 10)
+                .count(),
+            2,
+            "only the visible first lines enter copy provenance"
+        );
+
+        // Full shows the complete reasoning text.
+        s.config.thinking_display = "full".into();
+        let lines = styled_msg_lines(&s.msgs[0], &s, 80);
+        assert_eq!(lines.len(), 3);
+        assert_eq!(
+            copy_layout_rows(&s)
+                .iter()
+                .filter(|row| row.unit == 10)
+                .count(),
+            3
+        );
+    }
+
+    #[test]
     fn user_block_has_vertical_padding() {
         let s = state_with(vec![Msg::User {
             text: "你好".into(),
@@ -4469,7 +4544,7 @@ mod tests {
             matches: (0..30).map(|i| format!("/plugin-{i:02}")).collect(),
             descriptions: (0..30).map(|_| "plugin command".into()).collect(),
             sources: (0..30).map(|_| CommandSource::Integrated).collect(),
-            modes: false,
+            kind: SuggestionKind::Commands,
         };
         let theme = Theme::ferra();
         let backend = TestBackend::new(80, 40);
@@ -4493,6 +4568,40 @@ mod tests {
             !all.contains("/plugin-00"),
             "popup renders a bounded window"
         );
+    }
+
+    #[test]
+    fn skill_suggestion_popup_has_skill_header_and_canonical_lines() {
+        use ratatui::backend::TestBackend;
+
+        let suggest = Suggestion {
+            query: "/skill".into(),
+            sel: 0,
+            matches: vec!["/skill:code-review".into()],
+            descriptions: vec!["Review a change".into()],
+            sources: vec![CommandSource::Builtin],
+            kind: SuggestionKind::Skills,
+        };
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render_suggest(
+                    frame,
+                    &suggest,
+                    ratatui::layout::Rect::new(4, 16, 72, 3),
+                    &Theme::ferra(),
+                )
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let all: String = (0..20u16)
+            .flat_map(|y| (0..80u16).map(move |x| buf[(x, y)].symbol().to_owned()))
+            .collect();
+        let compact = all.replace(' ', "");
+        assert!(compact.contains("技能"));
+        assert!(compact.contains("/skill:code-review"));
+        assert!(compact.contains("Reviewachange"));
     }
 
     /// Regression: the suggestion popup must be fully opaque — no transcript

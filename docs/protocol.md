@@ -43,6 +43,7 @@ Do not edit capacities or message rosters here by hand.
 - `history`
 - `sessions`
 - `presets`
+- `skills`
 - `title`
 - `login`
 - `approval`

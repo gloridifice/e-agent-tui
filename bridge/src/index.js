@@ -10,8 +10,8 @@
  *         | command{line} | login-get{} | login-set{field,value}
  *         | interrupt{} | ping{}
  *   down: welcome{sessionId,status,provider?,model?,mode?,title?} | snapshot{events[]}
- *         | event{event} | status{status} | presets{presets[]} | title{title}
- *         | commands{commands[]} | command-result{commandId,kind,text?}
+ *         | event{event} | status{status} | presets{presets[]} | skills{skills[]}
+ *         | title{title} | commands{commands[]} | command-result{commandId,kind,text?}
  *         | login{apiKeyConfigured,apiKeyWritable,apiKeySource?,apiKeyHint?,
  *                proxy?,error?} | error{code,message} | pong{}
  *
@@ -33,7 +33,12 @@ import {
   sessionPresetOf,
 } from './compose.js'
 import { shapeModelFrame } from './model.js'
-import { renderSkillContent, skillInvocationSource } from './skill.js'
+import {
+  renderSkillContent,
+  shapeSkillsFrame,
+  skillInvocationSource,
+  watchSkillChanges,
+} from './skill.js'
 import { ConnectionRegistry } from './connection.js'
 import { createHostPort } from './host.js'
 import { createHistoryStore } from './history.js'
@@ -108,6 +113,31 @@ function apply(ctx, config = {}) {
       // A transient list() failure must not wipe the client's open plugin
       // directory — keep the previous roster and let the next commands/change
       // or attach refresh it.
+    }
+  }
+
+  /** Project the cwd/scope-sensitive user-invocable skill roster. */
+  async function sendSkills(conn) {
+    if (!conn || !conns.has(conn)) return
+    const current = conn
+    const refresh = ++current.skillRefresh
+    const skills = host.skills()
+    if (!skills) {
+      send(current.ws, shapeSkillsFrame([]))
+      return
+    }
+    try {
+      const summaries = await skills.list({
+        cwd: current.agent.session?.header?.cwd,
+        signal: current.abort.signal,
+        scope: current.agent,
+      })
+      if (!conns.has(current) || current.skillRefresh !== refresh) return
+      send(current.ws, shapeSkillsFrame(summaries))
+    } catch (error) {
+      if (!conns.has(current) || current.skillRefresh !== refresh) return
+      ctx.logger?.warn?.(`[dsh-tui] skill discovery failed: ${String(error?.message ?? error)}`)
+      // Preserve the previous roster after transient provider failures.
     }
   }
 
@@ -204,6 +234,8 @@ function apply(ctx, config = {}) {
       surface: null,
       /** callId -> tool name (payload trimming) */
       toolNames: buildToolNames(agent.session?.events ?? []),
+      /** Monotonic guard against out-of-order async skill-list refreshes. */
+      skillRefresh: 0,
       /** the TUI's launch directory (hello.cwd), for /new workspace claims */
       clientCwd,
     }
@@ -217,6 +249,9 @@ function apply(ctx, config = {}) {
     // DSH/plugin commands are effective per agent (scoped definitions may
     // shadow globals), so discover them after every attach/session switch.
     sendCommands(conn)
+    // User-invocable skills are cwd/scope-sensitive, so refresh them on every
+    // attach/session switch just like the effective command directory.
+    void sendSkills(conn)
     // Agent-preset roster for the client's `/new <mode>` suggestion popup.
     // Sent on every attach (hello, `/new`, picker) because the roster is
     // re-discovered on demand and edits to presets should reach the popup.
@@ -413,6 +448,10 @@ function apply(ctx, config = {}) {
   ctx.effect(
     () => watchCommandChanges(ctx, conns, sendCommands),
     'dsh-tui: command directory updates',
+  )
+  ctx.effect(
+    () => watchSkillChanges(ctx, conns, (conn) => { void sendSkills(conn) }),
+    'dsh-tui: skill directory updates',
   )
 
   ctx.effect(() => {

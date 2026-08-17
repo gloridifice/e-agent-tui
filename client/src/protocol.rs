@@ -918,6 +918,12 @@ pub enum ServerMessage {
     Presets {
         presets: Vec<PresetInfo>,
     },
+    /// User-invocable skills visible in the attached session's cwd/scope;
+    /// feeds `/skill:<name>` argument completion.
+    Skills {
+        #[serde(default)]
+        skills: Vec<SkillInfo>,
+    },
     /// Title of the attached session, fetched from the projection store
     /// when the log is cold (resumed sessions) and the welcome frame could
     /// not carry one.
@@ -1010,6 +1016,14 @@ pub struct PresetInfo {
     /// hides it from the mode popup.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub broken: Option<String>,
+}
+
+/// One user-invocable skill from the attached agent's effective registry.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillInfo {
+    pub name: String,
+    pub description: String,
 }
 
 /// One effective command discovered through DSH's `ctx.commands.list(agent)`.
@@ -1422,6 +1436,22 @@ mod tests {
                 assert_eq!(presets[0].order, Some(1));
                 assert_eq!(presets[1].description.as_deref(), Some("双工具编码"));
                 assert!(presets[2].broken.is_some());
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn skills_frame_parses() {
+        let msg = ServerMessage::from_wire(
+            r#"{"type":"skills","skills":[{"name":"code-review","description":"Review a change"}]}"#,
+        )
+        .expect("skills parses");
+        match msg {
+            ServerMessage::Skills { skills } => {
+                assert_eq!(skills.len(), 1);
+                assert_eq!(skills[0].name, "code-review");
+                assert_eq!(skills[0].description, "Review a change");
             }
             other => panic!("wrong variant: {other:?}"),
         }

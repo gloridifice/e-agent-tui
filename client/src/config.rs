@@ -13,6 +13,23 @@ pub use crate::theme::Theme;
 
 pub const DEFAULT_CONFIG_SOURCE: &str = include_str!("../assets/default_config.toml");
 
+/// How model reasoning content is displayed in the transcript.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThinkingDisplayMode {
+    /// Current behavior: only the breathing `Thinking...` row is visible.
+    Compact,
+    /// Show at most the first `thinking_lines` lines of reasoning text.
+    Lines,
+    /// Show the complete reasoning text.
+    Full,
+}
+
+impl ThinkingDisplayMode {
+    pub fn shows_reasoning(self) -> bool {
+        !matches!(self, Self::Compact)
+    }
+}
+
 // ---------- full config ----------
 
 #[derive(Serialize, Clone, Debug)]
@@ -42,6 +59,10 @@ pub struct Config {
     pub show_model_in_status: bool,
     pub show_tool_duration: bool,
     pub read_merge: bool,
+    /// How reasoning content is shown: `compact` (default), `lines`, or `full`.
+    pub thinking_display: String,
+    /// Line budget for `ThinkingDisplayMode::Lines`.
+    pub thinking_lines: usize,
     pub show_timestamps: bool,
     pub mermaid_enabled: bool,
     /// Horizontal gutter (in columns) of user message blocks and the input
@@ -74,6 +95,8 @@ struct CompleteConfig {
     show_model_in_status: bool,
     show_tool_duration: bool,
     read_merge: bool,
+    thinking_display: String,
+    thinking_lines: usize,
     show_timestamps: bool,
     mermaid_enabled: bool,
     user_input_padding: usize,
@@ -100,6 +123,8 @@ impl CompleteConfig {
             show_model_in_status: self.show_model_in_status,
             show_tool_duration: self.show_tool_duration,
             read_merge: self.read_merge,
+            thinking_display: self.thinking_display,
+            thinking_lines: self.thinking_lines,
             show_timestamps: self.show_timestamps,
             mermaid_enabled: self.mermaid_enabled,
             user_input_padding: self.user_input_padding,
@@ -127,6 +152,8 @@ struct PartialConfig {
     show_model_in_status: Option<bool>,
     show_tool_duration: Option<bool>,
     read_merge: Option<bool>,
+    thinking_display: Option<String>,
+    thinking_lines: Option<usize>,
     show_timestamps: Option<bool>,
     mermaid_enabled: Option<bool>,
     user_input_padding: Option<usize>,
@@ -158,6 +185,8 @@ impl PartialConfig {
             show_model_in_status,
             show_tool_duration,
             read_merge,
+            thinking_display,
+            thinking_lines,
             show_timestamps,
             mermaid_enabled,
             user_input_padding,
@@ -235,6 +264,22 @@ impl Config {
     pub fn theme(&self) -> Theme {
         self.resolved_theme
     }
+
+    pub fn thinking_display_mode(&self) -> ThinkingDisplayMode {
+        match self.thinking_display.as_str() {
+            "lines" => ThinkingDisplayMode::Lines,
+            "full" => ThinkingDisplayMode::Full,
+            _ => ThinkingDisplayMode::Compact,
+        }
+    }
+
+    pub fn thinking_display_label(&self) -> &'static str {
+        match self.thinking_display_mode() {
+            ThinkingDisplayMode::Compact => "Compact",
+            ThinkingDisplayMode::Lines => "Lines",
+            ThinkingDisplayMode::Full => "Full",
+        }
+    }
 }
 
 /// Last-attached session id, remembered across runs (D17).
@@ -277,6 +322,12 @@ mod tests {
         assert_eq!(config.default_mode, "standard");
         assert_eq!(config.paste_placeholder_chars, 64);
         assert_eq!(config.page_max_width, 0);
+        assert_eq!(config.thinking_display, "compact");
+        assert_eq!(config.thinking_lines, 2);
+        assert_eq!(
+            config.thinking_display_mode(),
+            ThinkingDisplayMode::Compact
+        );
     }
 
     #[test]
@@ -292,6 +343,8 @@ mod tests {
         assert_eq!(config.spinner_frame_ms, 250);
         assert_eq!(config.spinner_style, "A");
         assert_eq!(config.history_limit, 1000);
+        assert_eq!(config.thinking_display, "compact");
+        assert_eq!(config.thinking_lines, 2);
         assert_eq!(config.resolved_theme.user, Theme::ferra().user);
     }
 

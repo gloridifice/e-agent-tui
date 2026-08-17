@@ -187,6 +187,34 @@ pub static ITEMS: &[ItemDef] = &[
     },
     ItemDef {
         category: 2,
+        label: "Thinking 显示",
+        desc: "思考内容显示：Compact 仅指示灯，Lines 前 N 行，Full 完整",
+        kind: ItemKind::Choice {
+            options: &["Compact", "Lines", "Full"],
+        },
+        get: |c| c.thinking_display_label().to_string(),
+        apply: |c, v| {
+            c.thinking_display = match v.as_str() {
+                "Lines" => "lines".into(),
+                "Full" => "full".into(),
+                _ => "compact".into(),
+            };
+        },
+    },
+    ItemDef {
+        category: 2,
+        label: "Thinking 行数",
+        desc: "Lines 模式下最多显示思考内容的前几行",
+        kind: ItemKind::Input,
+        get: |c| c.thinking_lines.to_string(),
+        apply: |c, v| {
+            if let Ok(n) = v.parse::<usize>() {
+                c.thinking_lines = n.clamp(1, 50);
+            }
+        },
+    },
+    ItemDef {
+        category: 2,
         label: "mermaid 渲染",
         desc: "mermaid 代码块渲染为框图（失败时显示源码）",
         kind: ItemKind::Choice {
@@ -623,6 +651,38 @@ mod tests {
         s.handle_key(&key(KeyCode::Right), &mut config); // minimal
         s.handle_key(&key(KeyCode::Enter), &mut config);
         assert_eq!(config.default_mode, "minimal", "Enter confirms the mode");
+    }
+
+    #[test]
+    fn thinking_display_choice_edits_and_line_budget_input() {
+        let mut s = SettingsState::default();
+        s.category = 2; // 显示
+        let mut config = Config::default();
+        assert_eq!(config.thinking_display, "compact");
+        assert_eq!(config.thinking_lines, 2);
+
+        let mode_index = items_in(2)
+            .iter()
+            .position(|item| item.label == "Thinking 显示")
+            .expect("Thinking mode item exists");
+        s.pos[2] = mode_index;
+        s.handle_key(&key(KeyCode::Enter), &mut config);
+        assert_eq!(s.editing, Some(Edit::Choice { cursor: 0 }));
+        s.handle_key(&key(KeyCode::Right), &mut config); // Lines
+        s.handle_key(&key(KeyCode::Enter), &mut config);
+        assert_eq!(config.thinking_display, "lines");
+
+        let lines_index = items_in(2)
+            .iter()
+            .position(|item| item.label == "Thinking 行数")
+            .expect("Thinking lines item exists");
+        s.pos[2] = lines_index;
+        s.handle_key(&key(KeyCode::Enter), &mut config);
+        for c in "5".chars() {
+            s.handle_key(&key(KeyCode::Char(c)), &mut config);
+        }
+        s.handle_key(&key(KeyCode::Enter), &mut config);
+        assert_eq!(config.thinking_lines, 5);
     }
 
     #[test]

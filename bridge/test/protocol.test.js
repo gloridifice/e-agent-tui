@@ -28,6 +28,7 @@ test('canonical contract owns protocol capacities and message roster', () => {
   const docs = readFileSync(new URL('../../docs/protocol.md', import.meta.url), 'utf8')
   assert.match(docs, /Protocol version \| 4/)
   assert.match(docs, /`commands`/)
+  assert.match(docs, /`skills`/)
   assert.match(docs, /`command-result`/)
   assert.match(docs, /Snapshot surface events \| 600/)
 })

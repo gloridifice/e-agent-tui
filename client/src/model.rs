@@ -1177,35 +1177,59 @@ impl AppState {
             "assistant-reasoning",
             &format!("{}:{}", turn.unwrap_or(0), step.unwrap_or(0)),
         );
-        if let Some(Msg::Block(block)) = self
+        let reasoning_visible = self.config.thinking_display_mode().shows_reasoning();
+        if let Some(index) = self
             .msgs
-            .iter_mut()
-            .find(|msg| matches!(msg, Msg::Block(block) if block.id == id))
+            .iter()
+            .position(|msg| matches!(msg, Msg::Block(block) if block.id == id))
         {
-            // Thinking output is folded into the breathing `• Thinking...`
-            // row: it never renders or copies, so it owns no copy unit and
-            // must not invalidate the transcript cache.
-            if streaming {
-                block.content.push_str(text);
-                block.copy_source.push_str(text);
-            } else {
-                block.content = text.to_owned();
-                block.copy_source = text.to_owned();
-                block.streaming = false;
+            let (source, unit) = {
+                let Some(Msg::Block(block)) = self.msgs.get_mut(index) else {
+                    return;
+                };
+                if streaming {
+                    block.content.push_str(text);
+                    block.copy_source.push_str(text);
+                } else {
+                    block.content = text.to_owned();
+                    block.copy_source = text.to_owned();
+                    block.streaming = false;
+                }
+                (block.copy_source.clone(), block.unit)
+            };
+            if let Some(unit) = unit {
+                self.units.insert(unit, source);
+            }
+            if reasoning_visible && !self.replaying {
+                let is_tail = self
+                    .msgs
+                    .last()
+                    .is_some_and(|msg| matches!(msg, Msg::Block(block) if block.id == id));
+                if is_tail {
+                    self.transcript_cache.mark_tail_dirty();
+                } else {
+                    self.transcript_cache.invalidate();
+                }
             }
             return;
         }
+        let unit = self.allocate_copy_unit(text);
         self.msgs.push(Msg::Block(TranscriptBlock {
             id,
-            unit: None,
+            unit: Some(unit),
             content: text.to_owned(),
             format: TranscriptFormat::Reasoning,
             tone: DisplayTone::Dim,
             copy_source: text.to_owned(),
             streaming,
         }));
+        if reasoning_visible && !self.replaying {
+            // The new block is a structural append: the previous tail was the
+            // Thinking row (or an earlier message), so tail splicing would
+            // drop it. Rebuild the cache instead.
+            self.transcript_cache.invalidate();
+        }
     }
-
     /// Compatibility reducer used while existing `Msg` storage migrates to
     /// the shared display models.
     fn reduce_host_event(&mut self, event: &HostEvent) {
@@ -2671,6 +2695,30 @@ mod tests {
             ),
             "answer text settles the Thinking row green"
         );
+    }
+
+    /// In `Lines` and `Full` modes the reasoning text becomes visible, but
+    /// the breathing `Thinking...` indicator still owns the work lifecycle.
+    #[test]
+    fn visible_reasoning_modes_keep_the_thinking_indicator() {
+        let mut s = AppState::default();
+        s.config.thinking_display = "full".into();
+        s.apply_event(&event("turn/start", serde_json::json!({})));
+        s.apply_event(&event(
+            "assistant/chunk",
+            serde_json::json!({
+                "chunk": {"type": "reasoning-delta", "text": "one\ntwo\nthree"}
+            }),
+        ));
+        assert!(
+            matches!(
+                s.msgs.iter().find(|m| matches!(m, Msg::Thinking(_))),
+                Some(Msg::Thinking(card)) if card.state == ThinkState::Running
+            ),
+            "visible reasoning still has a running Thinking indicator"
+        );
+        assert!(s.msgs.iter().any(|msg| matches!(msg, Msg::Block(block)
+            if block.format == TranscriptFormat::Reasoning && block.unit.is_some())));
     }
 
     /// Only ADJACENT thinking phases collapse into one row (xN). Any

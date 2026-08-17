@@ -12,6 +12,27 @@ export function isSkillName(name) {
   return typeof name === 'string' && SKILL_NAME.test(name)
 }
 
+/** Shape the user-invocable part of `ctx.skills.list()` for TUI completion. */
+export function shapeSkillsFrame(summaries) {
+  const skills = []
+  for (const summary of Array.isArray(summaries) ? summaries : []) {
+    if (!summary || !isSkillName(summary.name)) continue
+    if (typeof summary.description !== 'string') continue
+    if (summary.invocation?.userInvocable !== true) continue
+    skills.push({ name: summary.name, description: summary.description })
+  }
+  skills.sort((left, right) => left.name.localeCompare(right.name))
+  return { type: 'skills', skills }
+}
+
+/** `skills/change` is an unfiltered invalidation; every connection must
+ * refetch its cwd/scope-sensitive winning roster. */
+export function watchSkillChanges(ctx, connections, refresh) {
+  return ctx.on('skills/change', () => {
+    for (const connection of connections) refresh(connection)
+  })
+}
+
 /**
  * Extract the skill name from a `/skill:<name>` or `/skill <name>` command
  * line, or undefined when the line is not such a command. The colon form is

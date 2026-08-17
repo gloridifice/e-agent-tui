@@ -27,6 +27,7 @@ use crate::{
 pub enum CompletionKind {
     None,
     NewMode,
+    Skill,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,7 +84,7 @@ pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
     command!("model", "选择模型（provider × model）", None, None, Model),
     command!("theme", "切换主题", None, None, Theme),
     command!("reload", "重载配置 / 主题 / 技能", None, None, Reload),
-    command!("skill", "注入技能", Some("<名称>"), None, Skill),
+    command!("skill", "注入技能", Some("<名称>"), Skill, Skill),
     command!("compact", "压缩上下文", None, None, Forward),
     command!(
         "goal",
@@ -109,6 +110,20 @@ pub fn builtin_command(name: &str) -> Option<&'static BuiltinCommand> {
 /// so input handling never needs a second list of command names.
 pub fn completion_context(line: &str) -> Option<(&'static BuiltinCommand, &str)> {
     let body = line.strip_prefix('/')?;
+
+    // `/skill` starts the roster immediately; both the canonical colon form
+    // and the bridge-compatible space form continue filtering it.
+    let skill = builtin_command("skill").expect("skill command is registered");
+    if body == skill.name {
+        return Some((skill, ""));
+    }
+    if let Some(query) = body.strip_prefix("skill:") {
+        return Some((skill, query));
+    }
+    if let Some(query) = body.strip_prefix("skill ") {
+        return Some((skill, query));
+    }
+
     let (name, query) = body.split_once(' ')?;
     let command = builtin_command(name)?;
     (command.completion != CompletionKind::None).then_some((command, query))
@@ -405,6 +420,9 @@ mod tests {
         assert_eq!(new.completion, CompletionKind::NewMode);
         assert_eq!(new.action, CommandAction::New);
         assert_eq!(completion_context("/new m").unwrap().1, "m");
+        assert_eq!(completion_context("/skill").unwrap().1, "");
+        assert_eq!(completion_context("/skill:code").unwrap().1, "code");
+        assert_eq!(completion_context("/skill code").unwrap().1, "code");
         assert!(completion_context("/resume ").is_none());
     }
 

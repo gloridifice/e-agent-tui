@@ -8,7 +8,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::config::Config;
 use crate::model::AppState;
-use crate::protocol::{ClientMessage, CommandInfo};
+use crate::protocol::{ClientMessage, CommandInfo, SkillInfo};
 use crate::runtime_command::{
     completion_context, match_command_catalog, CommandSource, CompletionKind,
 };
@@ -48,6 +48,8 @@ pub struct InputState {
     /// Effective DSH/plugin commands discovered by the bridge. They are
     /// merged with the centralized built-in registry for every completion.
     pub integrated_commands: Vec<CommandInfo>,
+    /// User-invocable skills visible in the attached session's cwd/scope.
+    pub skills: Vec<SkillInfo>,
     /// Slash-command suggestion popup, when open.
     pub suggest: Option<Suggestion>,
 }
@@ -69,11 +71,17 @@ pub struct Suggestion {
     /// Per-row description column, parallel to `matches` (the command
     /// description or the mode's display name).
     pub descriptions: Vec<String>,
-    /// Per-row source, parallel to `matches`: Builtin vs Integrated. Mode rows
-    /// are all Builtin (the popup header already says 「模式」).
+    /// Per-row source, parallel to `matches`: Builtin vs Integrated. Mode and
+    /// skill rows are all Builtin (their popup headers identify the roster).
     pub sources: Vec<CommandSource>,
-    /// True = mode rows (header "模式"); false = command rows (header "命令").
-    pub modes: bool,
+    pub kind: SuggestionKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SuggestionKind {
+    Commands,
+    Modes,
+    Skills,
 }
 
 impl InputState {
@@ -91,6 +99,7 @@ impl InputState {
             history_limit: config.history_limit,
             new_modes: Vec::new(),
             integrated_commands: Vec::new(),
+            skills: Vec::new(),
             suggest: None,
         }
     }
@@ -99,6 +108,14 @@ impl InputState {
     /// events can arrive while the popup is open, so recompute immediately.
     pub fn replace_integrated_commands(&mut self, commands: Vec<CommandInfo>) {
         self.integrated_commands = commands;
+        self.suggest = None;
+        self.refresh_suggest();
+    }
+
+    /// Replace the effective user-invocable skill roster. `skills/change` can
+    /// arrive with `/skill` open, so rebuild the popup immediately.
+    pub fn replace_skills(&mut self, skills: Vec<SkillInfo>) {
+        self.skills = skills;
         self.suggest = None;
         self.refresh_suggest();
     }
@@ -248,6 +265,28 @@ pub fn match_new_modes<'a>(query: &str, modes: &'a [NewMode]) -> Vec<&'a NewMode
     prefix
 }
 
+/// Fuzzy-rank skills by exact addressable name. The bridge already sends the
+/// winning user-invocable roster sorted by name.
+pub fn match_skills<'a>(query: &str, skills: &'a [SkillInfo]) -> Vec<&'a SkillInfo> {
+    let q = query.to_lowercase();
+    let mut prefix = Vec::new();
+    let mut substring = Vec::new();
+    let mut fuzzy = Vec::new();
+    for skill in skills {
+        let name = skill.name.to_lowercase();
+        if q.is_empty() || name.starts_with(&q) {
+            prefix.push(skill);
+        } else if name.contains(&q) {
+            substring.push(skill);
+        } else if is_subsequence(&q, &name) {
+            fuzzy.push(skill);
+        }
+    }
+    prefix.extend(substring);
+    prefix.extend(fuzzy);
+    prefix
+}
+
 impl InputState {
     pub fn handle_key(&mut self, key: &KeyEvent, idle: bool) -> InputAction {
         // Ctrl+C: clear the input bar; only an empty bar while idle quits.
@@ -352,6 +391,9 @@ impl InputState {
                     // Auto-fill the selected command into the input bar.
                     self.buf = cmd.clone();
                     self.cursor = cmd.chars().count();
+                    if cmd == "/skill" {
+                        self.refresh_suggest();
+                    }
                     return InputAction::None;
                 }
                 KeyCode::Enter if !key.modifiers.contains(KeyModifiers::SHIFT) => {
@@ -411,6 +453,9 @@ impl InputState {
                         let cmd = s.matches[s.sel].clone();
                         self.buf = cmd.clone();
                         self.cursor = cmd.chars().count();
+                        if cmd == "/skill" {
+                            self.refresh_suggest();
+                        }
                     }
                 }
                 InputAction::None
@@ -514,48 +559,26 @@ impl InputState {
             .collect()
     }
 
-    /// Recompute the suggestion popup from the buffer. Two contexts feed it:
-    /// a slash-prefixed word without a space lists slash commands, and the
-    /// `/new ` prefix lists the agent-preset roster as new-session modes.
+    /// Recompute the suggestion popup from the buffer. Three contexts feed it:
+    /// a slash-prefixed word lists commands, `/new ` lists agent presets, and
+    /// `/skill`/`/skill:` lists user-invocable skills.
     /// While the user navigates (the buffer equals one of the listed rows)
     /// the list and its query stay pinned, so the highlight follows the
     /// filled value and Esc can still restore the typed query.
     fn refresh_suggest(&mut self) {
         if let Some(s) = &mut self.suggest {
             let buf_matches = s.matches.iter().position(|m| *m == self.buf);
-            if s.query == self.buf || buf_matches.is_some() {
+            let entering_skill_roster = s.kind == SuggestionKind::Commands && self.buf == "/skill";
+            if !entering_skill_roster && (s.query == self.buf || buf_matches.is_some()) {
                 if let Some(pos) = buf_matches {
                     s.sel = pos;
                 }
                 return;
             }
         }
-        // Command-name popup: "/" or "/set…" without a space.
-        let slash = self.buf.starts_with('/') && !self.buf.contains([' ', '\n']);
-        if slash {
-            let matched = match_command_catalog(&self.buf[1..], &self.integrated_commands);
-            if matched.is_empty() {
-                self.suggest = None;
-                return;
-            }
-            self.suggest = Some(Suggestion {
-                query: self.buf.clone(),
-                sel: 0,
-                matches: matched
-                    .iter()
-                    .map(|candidate| candidate.line.clone())
-                    .collect(),
-                descriptions: matched
-                    .iter()
-                    .map(|candidate| candidate.description.clone())
-                    .collect(),
-                sources: matched.iter().map(|candidate| candidate.source).collect(),
-                modes: false,
-            });
-            return;
-        }
-        // Argument popup selected by the built-in command's declaration. A
-        // second space/newline leaves the single-token completion context.
+        // Argument popup selected by the built-in command's declaration. It
+        // runs before command-name matching so exact `/skill` immediately
+        // transitions from the command catalog to the skill roster.
         if let Some((command, query)) = completion_context(&self.buf) {
             if !query.contains([' ', '\n']) {
                 match command.completion {
@@ -579,13 +602,61 @@ impl InputState {
                             sources: vec![CommandSource::Builtin; matches.len()],
                             matches,
                             descriptions,
-                            modes: true,
+                            kind: SuggestionKind::Modes,
+                        });
+                        return;
+                    }
+                    CompletionKind::Skill => {
+                        let ranked = match_skills(query, &self.skills);
+                        if ranked.is_empty() {
+                            self.suggest = None;
+                            return;
+                        }
+                        let matches: Vec<String> = ranked
+                            .iter()
+                            .map(|skill| format!("/skill:{}", skill.name))
+                            .collect();
+                        let descriptions = ranked
+                            .iter()
+                            .map(|skill| skill.description.clone())
+                            .collect();
+                        self.suggest = Some(Suggestion {
+                            query: self.buf.clone(),
+                            sel: 0,
+                            sources: vec![CommandSource::Builtin; matches.len()],
+                            matches,
+                            descriptions,
+                            kind: SuggestionKind::Skills,
                         });
                         return;
                     }
                     CompletionKind::None => unreachable!("filtered by completion_context"),
                 }
             }
+        }
+        // Command-name popup: "/" or "/set…" without a space.
+        let slash = self.buf.starts_with('/') && !self.buf.contains([' ', '\n']);
+        if slash {
+            let matched = match_command_catalog(&self.buf[1..], &self.integrated_commands);
+            if matched.is_empty() {
+                self.suggest = None;
+                return;
+            }
+            self.suggest = Some(Suggestion {
+                query: self.buf.clone(),
+                sel: 0,
+                matches: matched
+                    .iter()
+                    .map(|candidate| candidate.line.clone())
+                    .collect(),
+                descriptions: matched
+                    .iter()
+                    .map(|candidate| candidate.description.clone())
+                    .collect(),
+                sources: matched.iter().map(|candidate| candidate.source).collect(),
+                kind: SuggestionKind::Commands,
+            });
+            return;
         }
         self.suggest = None;
     }
@@ -942,6 +1013,77 @@ mod tests {
         assert!(s.suggest.is_none());
     }
 
+    fn sample_skills() -> Vec<SkillInfo> {
+        vec![
+            SkillInfo {
+                name: "brooks-audit".into(),
+                description: "Audit architecture".into(),
+            },
+            SkillInfo {
+                name: "code-review".into(),
+                description: "Review a change".into(),
+            },
+            SkillInfo {
+                name: "imagegen".into(),
+                description: "Generate an image".into(),
+            },
+        ]
+    }
+
+    #[test]
+    fn skill_command_immediately_opens_skill_completion() {
+        let mut s = state();
+        s.skills = sample_skills();
+        for c in "/skill".chars() {
+            s.handle_key(&key(KeyCode::Char(c)), true);
+        }
+        let suggest = s.suggest.as_ref().expect("skill roster opens at /skill");
+        assert_eq!(suggest.kind, SuggestionKind::Skills);
+        assert_eq!(
+            suggest.matches,
+            vec![
+                "/skill:brooks-audit",
+                "/skill:code-review",
+                "/skill:imagegen"
+            ]
+        );
+        assert_eq!(suggest.descriptions[0], "Audit architecture");
+    }
+
+    #[test]
+    fn skill_completion_filters_colon_and_space_forms_to_canonical_colon() {
+        let mut colon = state();
+        colon.skills = sample_skills();
+        for c in "/skill:aud".chars() {
+            colon.handle_key(&key(KeyCode::Char(c)), true);
+        }
+        assert_eq!(
+            colon.suggest.as_ref().unwrap().matches,
+            vec!["/skill:brooks-audit"]
+        );
+
+        let mut space = state();
+        space.skills = sample_skills();
+        for c in "/skill image".chars() {
+            space.handle_key(&key(KeyCode::Char(c)), true);
+        }
+        assert_eq!(
+            space.suggest.as_ref().unwrap().matches,
+            vec!["/skill:imagegen"]
+        );
+    }
+
+    #[test]
+    fn skill_directory_change_refreshes_an_open_popup() {
+        let mut s = state();
+        for c in "/skill".chars() {
+            s.handle_key(&key(KeyCode::Char(c)), true);
+        }
+        assert!(s.suggest.is_none());
+        s.replace_skills(sample_skills());
+        assert_eq!(s.suggest.as_ref().unwrap().kind, SuggestionKind::Skills);
+    }
+
     fn sample_modes() -> Vec<NewMode> {
         vec![
             NewMode {
@@ -978,7 +1120,7 @@ mod tests {
             .suggest
             .as_ref()
             .expect("mode popup opens after /new<space>");
-        assert!(suggest.modes, "popup is the mode list");
+        assert_eq!(suggest.kind, SuggestionKind::Modes);
         assert_eq!(suggest.matches.len(), 4, "empty query lists every mode");
         assert_eq!(suggest.matches[0], "/new standard", "roster order is kept");
         assert_eq!(suggest.descriptions[0], "标准模式");

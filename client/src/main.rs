@@ -238,6 +238,7 @@ fn handle_msg(
                 *ui.scroll = ScrollState::default();
                 *ui.copy_mode = None;
                 ui.input.replace_integrated_commands(Vec::new());
+                ui.input.replace_skills(Vec::new());
             }
             // Remember the attached session (D17).
             let mut state_file = e::config::StateFile::load();
@@ -303,6 +304,10 @@ fn handle_msg(
                         .collect(),
                 );
             }
+            None
+        }
+        ServerMessage::Skills { skills } => {
+            ui.input.replace_skills(skills.clone());
             None
         }
         ServerMessage::Title { title } => {

@@ -5,7 +5,9 @@ import {
   isSkillName,
   parseSkillCommand,
   renderSkillContent,
+  shapeSkillsFrame,
   skillInvocationSource,
+  watchSkillChanges,
 } from '../src/skill.js'
 
 test('isSkillName accepts kebab-case skill names only', () => {
@@ -16,6 +18,41 @@ test('isSkillName accepts kebab-case skill names only', () => {
   assert.equal(isSkillName('has space'), false)
   assert.equal(isSkillName(''), false)
   assert.equal(isSkillName(undefined), false)
+})
+
+test('skill roster exposes only valid user-invocable summaries', () => {
+  assert.deepEqual(shapeSkillsFrame([
+    { name: 'zeta-skill', description: 'Z', invocation: { userInvocable: true } },
+    { name: 'alpha-skill', description: 'A', invocation: { userInvocable: true } },
+    { name: 'model-only', description: 'hidden', invocation: { userInvocable: false } },
+    { name: 'Bad Name', description: 'invalid', invocation: { userInvocable: true } },
+    { name: 'missing-description', invocation: { userInvocable: true } },
+  ]), {
+    type: 'skills',
+    skills: [
+      { name: 'alpha-skill', description: 'A' },
+      { name: 'zeta-skill', description: 'Z' },
+    ],
+  })
+})
+
+test('skills/change refreshes every cwd/scope-sensitive connection', () => {
+  let listener
+  let disposed = false
+  const ctx = {
+    on: (name, callback) => {
+      assert.equal(name, 'skills/change')
+      listener = callback
+      return () => { disposed = true }
+    },
+  }
+  const connections = [{ agent: { id: 'a' } }, { agent: { id: 'b' } }]
+  const refreshed = []
+  const off = watchSkillChanges(ctx, connections, (connection) => refreshed.push(connection.agent.id))
+  listener()
+  assert.deepEqual(refreshed, ['a', 'b'])
+  off()
+  assert.equal(disposed, true)
 })
 
 test('parseSkillCommand accepts colon and space forms, lowercased', () => {

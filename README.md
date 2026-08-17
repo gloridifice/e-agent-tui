@@ -7,15 +7,16 @@ It connects to the same DSH backend as the Web GUI and shares the same session l
 ## Highlights
 
 - **Streaming chat** — live output, thinking lines, spinners, and full Markdown rendering (headings, tables, code blocks, mermaid)
-- **Tool cards** — command summaries with line counts and timing; nested Code Mode and workflow work is shown as parented activity rows
-- **Event-aware transcript** — reasoning, context/attachment cards, retries, durable commands, compaction, rich turn outcomes, and DSH surface replacement are projected consistently
+- **Tool cards** — command summaries with line counts and timing; `str_replace_editor` view/replace/insert operations fold with read/edit activity while create stays a concise workspace-relative row; nested Code Mode and workflow work is shown as parented activity rows
+- **Event-aware transcript** — model reasoning is folded into a breathing `Thinking...` indicator without adding transcript/copy rows or splitting adjacent activities; context/attachment cards, retries, durable commands, compaction, rich turn outcomes, and DSH surface replacement are projected consistently
 - **Input accessories** — queued prompts, approvals, questions, todos, goals, and plan mode share a bounded area above the editor
 - **Unified Input Pages** — `/settings`, `/login`, `/model`, and `/theme` replace the editor with one borderless, keyboard-navigable page instead of opening floating windows
 - **Model selection** — switch provider and model with `/model`
 - **Themes** — `deepseek-e` (default) and `ferra` built in; custom themes supported
 - **Sessions** — create, switch, and resume conversations with incremental history
 - **Unified commands** — optimized built-ins and commands contributed by DSH/plugins share one fuzzy-completion menu; plugin changes appear live
-- **Responsive input** — queue prompts while the agent runs; queued dispatch and copy-mode navigation do not block the UI
+- **Responsive input** — queue prompts while the agent runs; queued dispatch and copy-mode navigation do not block the UI; a software cursor stays stable while the hidden terminal cursor anchors IME input
+- **Managed backend lifecycle** — when `dshe` starts its dedicated DSH service, startup-timeout cleanup and last-TUI shutdown terminate the complete Windows command-shim process tree with bounded waiting; failed shutdowns retain retry bookkeeping, while confirmed shutdowns print `dsh 服务器已关闭。`; externally started DSH services are left untouched
 - **Fast** — incremental rendering cache, throttled redraws, only the visible window is drawn
 
 ## Installation
@@ -78,9 +79,11 @@ DSH 0.1.0-rc.6 exposes command names, descriptions, and one free-form input hint
 The two background-free status rows are:
 
 ```text
-<work indicator> <mode> <model> CH<cache-hit%>                         ^h Help
+<work indicator> <mode> [model] [CH<cache-hit%>]                       ^h Help
 <session title, or 新会话>                                   <absolute workspace path>
 ```
+
+The optional model and cache-hit fields are omitted until values are available; the status line does not render placeholder dashes. The mode is the preset actually mounted for the attached session, including an explicit `/new <mode>` selection.
 
 ## Architecture and protocol
 

@@ -72,6 +72,16 @@ cargo 走 crates.io 官方源（本机网络已修复）。`client/vendor/` 与
   背景/copy source）与 `InputAccessory`（输入栏上方）。`EventProjector` 先产出 display/
   surface mutation/page state/accessory/ignore effect，再由状态层应用；禁止在 `ui.rs` 新增绕过
   公共表面的事件专用顶层渲染。旧 `Msg` 域状态只可作为迁移/关联载体，渲染前必须适配到公共表面。
+- **思考输出（reasoning）折叠**：`TranscriptFormat::Reasoning` 块不渲染到屏幕、也不进 copy
+  provenance（`ui.rs::is_hidden_msg` 让缓存构建与 `copy_layout_rows` 都跳过它，且不产生行间 gap）；
+  活动行邻接必须查找下一个**非隐藏**消息，隐藏 reasoning 不得拆开本应 glued 的活动行。
+  思考过程由 `• Thinking... xN` 呼吸灯表示；`assistant/chunk` 只带 reasoning 时不 `stop_thinking`，
+  直到真正的 answer text 到达才结算绿色。因此 `stop_thinking` 必须向后查找 Running 的 Thinking
+  行（隐藏的 reasoning 块会堆在它后面），不能只查 `msgs.last()`。
+- **文件活动折叠**：`FileGroup` 用统一 `FileItem + FileAction` 保留 `read/view/edit/replace/insert`
+  标签，连续的 `str_replace_editor` view/str_replace/insert 与 read/edit 进入同一折叠活动行；编辑器
+  的绝对路径按 `session_cwd` 转成工作区相对路径。create 不进入 FileGroup，单独显示为
+  `<指示灯> create <相对路径>`，完成后也不追加输出行数/耗时。
 - **Surface 语义**：`HostEvent` 解析事件顶层 `time`、`surfaceOp`、`sourceEventSeqs`；replace
   必须先移除 shadowed surface owner，再在原 surface 位置插入替代节点。未知但带 `surfaceOp` 的事件
   也必须进入快照/历史兼容路径。历史前插时保存 shadowed seq，后到的旧页不得复活压缩内容；被分页
@@ -99,7 +109,9 @@ cargo 走 crates.io 官方源（本机网络已修复）。`client/vendor/` 与
   transcript 高度翻页，鼠标滚轮每格移动 3 行（Input Page 打开时也始终操作 transcript）。
   `Ctrl+H` 是 Input Page 之前处理的全局帮助键，带 Control/Alt/Super 的 `hjkl` 不得进入焦点图。
   `Config.enter_sends` 仅为旧配置反序列化
-  兼容，不得再改变键位语义。
+  兼容，不得再改变键位语义。终端硬件光标在 TUI 内必须始终隐藏，屏幕只画软件反色光标；
+  `ui.rs::render_with_cursor` 只返回 IME anchor，主循环在帧完成后移动隐藏光标。禁止重新调用
+  `Frame::set_cursor_position`，它会让 ratatui 在差量绘制期间显示并拖动光标，导致状态灯/输入栏闪烁。
 - **覆盖层与 Input Page 渲染**：真正画在 transcript 之上的命令提示/会话选择器必须先
   `frame.render_widget(Clear, rect)` 再画背景，否则底下文字会透出（有测试
   `suggest_popup_is_opaque_over_transcript`）。`/settings` `/login` `/model` `/theme` 不是
@@ -120,9 +132,10 @@ cargo 走 crates.io 官方源（本机网络已修复）。`client/vendor/` 与
 - **底部布局与双行状态栏**：页面底部固定行序为 输入栏或 Input Page / gap / 状态第一行 /
   **会话标题行**（`ui.rs::render` 的 chunks 数组；accessory budget 公式里的 `+3` 与之一致）。
   两行都不设置背景色：第一行左侧依次为工作指示灯、`AppState.current_mode`、当前模型、
-  `CH<缓存命中率%>`，右侧固定 `^h Help`；第二行左侧是 `AppState.session_title`（空时显示
+  `CH<缓存命中率%>`，其中模型和 CH 暂无值时整项省略（不画占位横线），右侧固定 `^h Help`；第二行左侧是 `AppState.session_title`（空时显示
   `新会话`），右侧是 `AppState.session_cwd` 绝对路径，标题过长以 `…` 截断以保住路径。
-  mode 由 `agent-preset/selected` 回放更新，按 event seq 保留最新值（历史前插不得回退）；CH 从
+  mode 初值取 `welcome.mode`（最近 selection，缺省为创建 header），再由 `agent-preset/selected` 回放更新，
+  按 event seq 保留最新值（历史前插不得回退）；CH 从
   assistant usage 的 input/cache read/cache write 累计计算，历史前插可增加旧总量但不得替换最新
   request 的 usage 锚点；这些页面状态更新**不得**触碰 `TranscriptRenderCache`。改底部行数时必须
   同步 ui 层测试里硬编码的行号。
@@ -263,7 +276,10 @@ cargo 走 crates.io 官方源（本机网络已修复）。`client/vendor/` 与
   主题文件在 `%APPDATA%\dshe\themes\*.toml`（`theme.rs` 扫描/校验/内置
   deepseek-e + ferra）。`launcher.rs`：`probe(url)` TCP 探测 → 无 dsh 则 spawn
   `dsh --profile dshe`（`dsh` 或 `npx @deepseek-ai/dsh`）→ `%DSH_HOME%\dsh-tui.lock`
-  计数「最后一个 tui 关闭时关 dsh」。启动器必须使用专属 `dshe` profile，不能复用
+  计数「最后一个 tui 关闭时关 dsh」；Windows 的 child handle 指向 `cmd /C` shim，正常关闭和启动超时
+  清理都必须 `taskkill /T` 整棵进程树，禁止只 `Child::kill` 留下孤儿 Node；子进程回收必须有界，终止失败时
+  保留 `instances: 0` 的锁供下次 attach 重试（服务已消失则视为 stale 后重建）。`release` 只在确实关闭托管服务时返回
+  `true`，主程序退出 alternate screen 后输出 `dsh 服务器已关闭。`。启动器必须使用专属 `dshe` profile，不能复用
   DSH 自带/用户已有的 `tui` profile（其中的终端 UI 会抢占 stdio，且不提供桥接依赖的
   `webServer`）。`/reload` 重读 config + 重扫主题。
 

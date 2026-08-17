@@ -6,7 +6,10 @@
 > `%APPDATA%\dshe\config.toml`、主题目录 `%APPDATA%\dshe\themes\`（默认
 > **deepseek-e**，另内置 ferra）；新增 `/theme` `/model` `/reload` `/skill:<名称>`；
 > 启动器 `dshe` 自动 spawn `dsh --profile dshe`（或 npx）／桥接已运行的 dsh；使用
-> 专属 `dshe` profile，避免与 DSH 自带或用户已有的 `tui` profile 冲突。
+> 专属 `dshe` profile，避免与 DSH 自带或用户已有的 `tui` profile 冲突。由 `dshe` 启动的
+> Windows 服务在启动超时清理及最后一个 TUI 关闭时均以 `taskkill /T` 终止 `cmd /C` shim 的完整进程树，
+> 避免遗留孤儿 Node；回收等待有上限，关闭失败保留零实例锁供下次 attach 重试，服务已消失时清除 stale 锁并重建。
+> 确认关闭后离开 alternate screen 并输出 `dsh 服务器已关闭。`。桥接外部启动的 DSH 或仍有其他 TUI 时不输出。
 
 ## 0. 已定决策（✅）
 
@@ -219,9 +222,10 @@ RenderUnit { kind, source: { blockType, raw: String }, cells: RenderedCells }
 
 - 页面底部固定两行状态，均不设置背景色。第一行最前是状态符号 `•`（与工具卡一致：
   running 时黄色呼吸，空闲灰色），随后依次显示当前 agent preset 模式、当前模型和
-  `CH<缓存命中率%>`；CH 按 provider usage 的 `cacheRead / (input + cacheRead + cacheWrite)`
-  累计计算，暂无 usage 时显示 `CH—`。历史前插增加旧 usage 总量，但保留最新 request 的替换锚点；
-  mode 按 `agent-preset/selected` 的 event seq 保留最新值，旧页不得回退。右侧固定 `^h Help`。
+  `CH<缓存命中率%>`；当前模型或 CH 暂无值时整项省略，不显示占位横线。CH 按 provider usage 的
+  `cacheRead / (input + cacheRead + cacheWrite)` 累计计算。历史前插增加旧 usage 总量，但保留最新 request 的替换锚点；
+  mode 初值由 `welcome.mode` 下发（最近 selection，缺省为创建 header），之后按
+  `agent-preset/selected` 的 event seq 保留最新值，旧页不得回退。右侧固定 `^h Help`。
 - 第二行左侧显示当前会话标题（无标题时为 `新会话`），右侧显示会话工作区绝对路径；
   标题过长时以 `…` 截断，优先保留路径。
 - 复制模式：输入区切换为指示条 `-- COPY --`（§3.1），显示选中行数/字节数与可用键。
@@ -247,7 +251,8 @@ RenderUnit { kind, source: { blockType, raw: String }, cells: RenderedCells }
 ```
 
 - 文本区：单行模式 1 行；多行模式最多显示 **3 行**，内容超出时区内滚动、光标所在行保持可见；
-  超宽内容在输入栏内**自动折行**（折行后窗口同样跟随光标）。
+  超宽内容在输入栏内**自动折行**（折行后窗口同样跟随光标）。屏幕光标由输入栏绘制反色块；终端硬件光标
+  始终隐藏，仅在每帧完成后移动到同一位置作为 IME anchor，避免差量绘制时在运行状态灯与输入栏间闪动。
 - 前缀 `❯` Coral，与用户消息前缀一致；输入文本 Mist。
 - **粘贴占位**（bracketed paste）：粘贴内容 > **64 字符** → 输入栏显示 Rose 色
   `[N text pasted]` **粘贴块**，块内文本不展开；粘贴块是原子的——光标不可进入其内部
@@ -534,9 +539,14 @@ roster 快照，每次 attach（hello/`/new`/picker）后紧随 `welcome` 下发
 | 表面 | 用途 | 代表事件 |
 |---|---|---|
 | `ActivityRow` | Waiting/Running/Success/Failure/Cancelled 活动，可带 parent/depth | Thinking、tool、retry、command、Code Mode、workflow、compaction |
-| `TranscriptBlock` | 无工作状态的 plain/Markdown/reasoning/fallback 内容 | assistant、turn notice/error、reasoning |
+| `TranscriptBlock` | 无工作状态的 plain/Markdown/fallback 内容；reasoning 块折叠进 `• Thinking...` 呼吸灯，不渲染、不进 copy provenance，并对活动行邻接透明 | assistant、turn notice/error |
 | `ContentCard` | 统一内边距、背景与 copy source 的内容卡 | 用户消息、context、附件占位、compaction summary |
 | `InputAccessory` | 输入栏上方、统一高度预算/优先级/焦点 | queue、approval、question、todo、goal、plan |
+
+文件活动由 `FileAction` 保留操作标签：连续的 `read`、`view`、`edit`、`replace`、`insert`
+可折叠为同一活动行，其中后三者来自 `str_replace_editor` 的 view/str_replace/insert 命令；其绝对路径
+优先按会话 `session_cwd` 显示为工作区相对路径。create 不参与折叠，单独显示
+`<指示灯> create <相对路径>`，完成后不附加工具输出行数或耗时。
 
 DSH surface replace 在显示前执行：shadowed surface node 及其拥有的工具活动从有效 transcript
 删除，replacement 插回原 surface 位置；compaction 的 log-only summary 只更新 lifecycle，唯一可见

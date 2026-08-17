@@ -43,7 +43,7 @@ cargo install --path client --locked
 dshe
 ```
 
-On first launch, `dshe` starts the DSH service automatically, then guides you through signing in (API key / account / proxy); use `/model` to pick a model. If PowerShell cannot find `dshe`, add `%USERPROFILE%\.cargo\bin` to your `PATH`.
+On first launch, `dshe` starts the DSH service automatically, then guides you through signing in (API key / proxy); use `/model` to pick a model. If PowerShell cannot find `dshe`, add `%USERPROFILE%\.cargo\bin` to your `PATH`.
 
 > **Updating**: re-run step 4 after pulling new code. If the bridge changed, repeat step 3 and restart DSH.
 

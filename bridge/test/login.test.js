@@ -3,7 +3,7 @@
 // are faked.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -11,7 +11,6 @@ import {
   deleteProxy,
   listProxies,
   providerCredentialRef,
-  readCodex,
   sendLogin,
   setProviderApiKey,
 } from '../src/login.js'
@@ -63,12 +62,6 @@ test('proxy create/list/delete roundtrip against a temp home', () => {
   assert.deepEqual(listProxies(tempHome()), [])
 })
 
-test('readCodex reports logged-in state from the stored credential', () => {
-  const home = tempHome()
-  assert.equal(readCodex(home).loggedIn, false)
-  assert.equal(existsSync(join(home, 'dsh-tui-codex.json')), false)
-})
-
 test('setProviderApiKey routes the provider ref through the credentials seam', async () => {
   const calls = []
   const ctx = {
@@ -89,7 +82,7 @@ test('setProviderApiKey routes the provider ref through the credentials seam', a
   )
 })
 
-test('sendLogin emits providers/proxies/codex, never the secret', async () => {
+test('sendLogin emits providers/proxies, never the secret', async () => {
   const frames = []
   const send = (ws, frame) => frames.push(frame)
   const ctx = {
@@ -110,6 +103,7 @@ test('sendLogin emits providers/proxies/codex, never the secret', async () => {
   assert.equal(frame.providers[0].id, 'deepseek')
   assert.equal(frame.providers[0].apiKeyHint, '…1234')
   assert.equal(frame.proxies.length, 1)
+  assert.equal(frame.codex, undefined)
   assert.ok(!JSON.stringify(frame).includes('sk-super-secret'), 'secret never on the wire')
 })
 
@@ -126,10 +120,4 @@ test('sendLogin carries the rejected-write error', async () => {
   assert.equal(frames[0].error, '写失败')
   // The provider that failed its key read still appears, unconfigured.
   assert.equal(frames[0].providers[0].apiKeyConfigured, false)
-})
-
-test('readCodex reads a stored credential file', () => {
-  const home = tempHome()
-  writeFileSync(join(home, 'dsh-tui-codex.json'), JSON.stringify({ access: 'a', refresh: 'r', accountId: 'acc-1' }))
-  assert.deepEqual(readCodex(home), { loggedIn: true, accountId: 'acc-1' })
 })

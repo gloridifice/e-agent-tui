@@ -28,8 +28,6 @@ Do not edit capacities or message rosters here by hand.
 - `history`
 - `login-get`
 - `login-set-api-key`
-- `login-codex-start`
-- `login-codex-cancel`
 - `login-proxy-create`
 - `login-proxy-delete`
 - `model-get`
@@ -47,7 +45,6 @@ Do not edit capacities or message rosters here by hand.
 - `presets`
 - `title`
 - `login`
-- `login-codex`
 - `approval`
 - `question`
 - `question-resolved`

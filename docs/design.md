@@ -485,24 +485,17 @@ assistant 消息顶部。**复制的永远是原始 markdown 源码**（经 §2.
 ### 4.8 登录设置（/login，D33）
 
 - **入口**：输入 `/login`（仅命令，无快捷键）；输入栏变为登录页，形态与
-  /settings 一致（无边框 Ash 底、占页面高度 2/3）。登录页是一层三选一菜单：
-  **API key / Account / Proxy**，Enter 进入对应子页面，Esc 逐层返回。
+  /settings 一致（无边框 Ash 底、占页面高度 2/3）。登录页是一层二选一菜单：
+  **API key / Proxy**，Enter 进入对应子页面，Esc 逐层返回。
 - **API key**：子页面列出模型提供商（`ctx.llm.listProviders()`）；Enter 进入该
   提供商的 key 填写。落点走 `ctx.credentials` 的该提供商 `apiKeyEnv` 引用（
   `providerCredentialRef` 从 settings 读取，缺省回退 `<ID>_API_KEY`），
   `credentials.set/unset` 写入后经 `credentials/updated` 即时生效。**密钥值永不
   回传**——下行只带 `configured/writable/source/hint(…末四位)`；编辑框输入画 ●，
   环境变量来源只读且不获得可执行焦点。
-- **Account**：OpenAI Codex（ChatGPT 订阅）网页登录，走**设备码流程**（无需本地
-  回调端口）：桥接 POST `auth.openai.com/api/accounts/deviceauth/usercode` 拿
-  `user_code`，面板显示 `https://auth.openai.com/codex/device` + 用户代码，轮询
-  `deviceauth/token` 自动检测登录完成，换 token 得 `{access,refresh,accountId}`，
-  存 `%DSH_HOME%\dsh-tui-codex.json`。⚠️ 端到端生效还需宿主
-  `dsh-llm-pi-ai` 接入持久化 OAuth 凭证（当前用 `InMemoryCredentialStore`，无
-  登录流程）。
 - **Proxy**：列出已保存代理 + `+ New`；已有代理 Enter 先进入“取消/删除”确认页，只有
   显式聚焦“删除”并 Enter 才发送 `login-proxy-delete`。新建表单填 base url / api key /
-  协议模式（`openai-completions` / `openai-responses` / `anthropic-messages` 三选一）/
+  协议模式（`openai-completions` / `openai-responses` / `anthropic-messages` 二选一）/
   模型名称。落点存 `%DSH_HOME%\dsh-tui-proxies.json`（api key 不回传）。
 - **错误呈现**：写失败由桥接经同一 `login` 帧的 `error` 字段回传，显示在面板页脚
   （红色 ✗），不走 transcript 错误流。
@@ -544,10 +537,7 @@ Node 桥接运行时读取该 JSON，Rust 的 `client/build.rs` 编译期从同�
 事件呈现；`execute` 返回 `undefined` 时桥接发 `command-unknown`，不创建模型消息。
 
 `login` 载荷 `{ providers: [{id,name,apiKeyConfigured,apiKeyWritable,apiKeySource?,
-apiKeyHint?}], proxies: [{id,name,baseUrl,protocol,model}], codex?: {loggedIn,
-accountId?}, error? }`（§4.8）：API key 只有视图没有值。`login-codex` 载荷
-`{ status: pending|done|error, userCode?, verificationUri?, accountId?, error? }`
-（设备码登录进度）。
+apiKeyHint?}], proxies: [{id,name,baseUrl,protocol,model}], error? }`（§4.8）：API key 只有视图没有值。
 
 `presets` 载荷 `{ presets: [{ id, name?, description?, order?, broken? }] }`：agent-presets
 roster 快照，每次 attach（hello/`/new`/picker）后紧随 `welcome` 下发；客户端用它渲染

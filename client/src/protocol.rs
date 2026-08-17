@@ -805,15 +805,11 @@ pub enum ClientMessage {
     /// Request older history: surface events with seq < `before_seq`,
     /// newest first from the stored log (lazy scroll-back paging).
     History { before_seq: u64, limit: usize },
-    /// Read the login page state (providers / proxies / codex account).
+    /// Read the login page state (providers / proxies).
     LoginGet,
     /// Store one provider's API key (empty clears it; the value itself is
     /// never read back — only its configured/source/hint view).
     LoginSetApiKey { provider: String, value: String },
-    /// Begin the OpenAI Codex (ChatGPT) device-code login.
-    LoginCodexStart,
-    /// Cancel an in-flight Codex login.
-    LoginCodexCancel,
     /// Create a custom proxy provider route.
     LoginProxyCreate {
         base_url: String,
@@ -928,9 +924,9 @@ pub enum ServerMessage {
     Title {
         title: String,
     },
-    /// Login page state: the model providers (API-key entries), the saved
-    /// proxy routes, and the codex account view. Secret values never cross
-    /// the wire — only configured/source/hint views.
+    /// Login page state: the model providers (API-key entries) and the saved
+    /// proxy routes. Secret values never cross the wire — only
+    /// configured/source/hint views.
     Login {
         /// Providers that authenticate with an API key, in roster order.
         #[serde(default)]
@@ -938,23 +934,7 @@ pub enum ServerMessage {
         /// Custom proxy provider routes the user has added.
         #[serde(default)]
         proxies: Vec<ProxyInfo>,
-        /// OpenAI Codex (ChatGPT subscription) account view.
-        #[serde(default)]
-        codex: Option<CodexInfo>,
         /// Message of the last rejected write (absent after a success).
-        #[serde(default)]
-        error: Option<String>,
-    },
-    /// Live OpenAI Codex device-login progress.
-    LoginCodex {
-        /// "pending" | "done" | "error".
-        status: String,
-        #[serde(default)]
-        user_code: Option<String>,
-        #[serde(default)]
-        verification_uri: Option<String>,
-        #[serde(default)]
-        account_id: Option<String>,
         #[serde(default)]
         error: Option<String>,
     },
@@ -1076,15 +1056,6 @@ pub struct ProxyInfo {
     pub base_url: String,
     pub protocol: String,
     pub model: String,
-}
-
-/// OpenAI Codex (ChatGPT subscription) account view.
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct CodexInfo {
-    pub logged_in: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub account_id: Option<String>,
 }
 
 /// One model provider in the `/model` picker, with its model catalog.
@@ -1499,16 +1470,15 @@ mod tests {
     }
 
     #[test]
-    fn login_frame_parses_providers_proxies_codex() {
+    fn login_frame_parses_providers_proxies() {
         let msg = ServerMessage::from_wire(
-            r#"{"type":"login","providers":[{"id":"deepseek","name":"DeepSeek","apiKeyConfigured":true,"apiKeyWritable":true,"apiKeyHint":"…1234"}],"proxies":[{"id":"proxy-1","name":"我的代理","baseUrl":"https://example.com/v1","protocol":"openai-completions","model":"gpt-4o"}],"codex":{"loggedIn":false}}"#,
+            r#"{"type":"login","providers":[{"id":"deepseek","name":"DeepSeek","apiKeyConfigured":true,"apiKeyWritable":true,"apiKeyHint":"…1234"}],"proxies":[{"id":"proxy-1","name":"我的代理","baseUrl":"https://example.com/v1","protocol":"openai-completions","model":"gpt-4o"}]}"#,
         )
         .expect("login parses");
         match msg {
             ServerMessage::Login {
                 providers,
                 proxies,
-                codex,
                 error,
             } => {
                 assert_eq!(providers.len(), 1);
@@ -1516,7 +1486,6 @@ mod tests {
                 assert_eq!(providers[0].api_key_hint.as_deref(), Some("…1234"));
                 assert_eq!(proxies.len(), 1);
                 assert_eq!(proxies[0].protocol, "openai-completions");
-                assert!(!codex.unwrap().logged_in);
                 assert_eq!(error, None);
             }
             other => panic!("wrong variant: {other:?}"),
@@ -1552,41 +1521,10 @@ mod tests {
         assert_eq!(v["type"], "login-proxy-create");
         assert_eq!(v["baseUrl"], "https://x/v1");
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(
-                &ClientMessage::LoginCodexStart.to_wire().unwrap()
-            )
-            .unwrap()["type"],
-            "login-codex-start"
-        );
-        assert_eq!(
             serde_json::from_str::<serde_json::Value>(&ClientMessage::LoginGet.to_wire().unwrap())
                 .unwrap()["type"],
             "login-get"
         );
-    }
-
-    #[test]
-    fn login_codex_frame_parses() {
-        let msg = ServerMessage::from_wire(
-            r#"{"type":"login-codex","status":"pending","userCode":"ABCD-EFGH","verificationUri":"https://auth.openai.com/codex/device"}"#,
-        )
-        .expect("login-codex parses");
-        match msg {
-            ServerMessage::LoginCodex {
-                status,
-                user_code,
-                verification_uri,
-                ..
-            } => {
-                assert_eq!(status, "pending");
-                assert_eq!(user_code.as_deref(), Some("ABCD-EFGH"));
-                assert_eq!(
-                    verification_uri.as_deref(),
-                    Some("https://auth.openai.com/codex/device")
-                );
-            }
-            other => panic!("wrong variant: {other:?}"),
-        }
     }
 
     #[test]

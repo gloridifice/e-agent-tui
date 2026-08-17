@@ -13,7 +13,7 @@
  *         | event{event} | status{status} | presets{presets[]} | title{title}
  *         | commands{commands[]} | command-result{commandId,kind,text?}
  *         | login{apiKeyConfigured,apiKeyWritable,apiKeySource?,apiKeyHint?,
- *                account?,proxy?,error?} | error{code,message} | pong{}
+ *                proxy?,error?} | error{code,message} | pong{}
  *
  * Module layout (index.js keeps only the socket/session lifecycle):
  *   trim.js    — payload trimming (pure)

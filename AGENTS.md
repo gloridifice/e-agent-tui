@@ -173,8 +173,8 @@ cargo 走 crates.io 官方源（本机网络已修复）。`client/vendor/` 与
   `PageOutcome`/`PageEffect`，caller 在释放页面借用和状态锁后再 save 或 `.await` 发送。
   浏览态方向键与 `hjkl` 共用稳定焦点图、Enter 执行，文本编辑态 `hjkl` 必须作为普通字符。
   动态 login/model roster 以 provider/model/proxy id 对焦点做 reconcile，空列表不得制造假焦点。
-- **/login 页面**：一层三选一菜单（API key / Account / Proxy）→ 子页面（Menu /
-  Providers / ApiKey / Account / ProxyList / ProxyForm / ProxyDelete）。状态来自桥接 `login`
+- **/login 页面**：一层二选一菜单（API key / Proxy）→ 子页面（Menu /
+  Providers / ApiKey / ProxyList / ProxyForm / ProxyDelete）。状态来自桥接 `login`
   帧；API key 永不回传、编辑态画 ●，不可写 provider 不得获得操作焦点；已有代理 Enter
   必须先进入删除确认页，只有显式选择删除才发送 `login-proxy-delete`。
 - 新增交互键位后同步更新：`ui.rs` 的 `help_overlay`、README 速查表、input 测试。
@@ -263,15 +263,10 @@ cargo 走 crates.io 官方源（本机网络已修复）。`client/vendor/` 与
   `ctx.get('agentDefaultModel').currentSelection()`；web/headless 入口都装，
   桥接不能漏。只 mount preset 不够——这是两个正交的 setup 步骤。
 - **/login 字段落点**（桥接 `login.js`）：上行 `login-get` / `login-set-api-key`
-  / `login-codex-start` / `login-codex-cancel` / `login-proxy-create` /
-  `login-proxy-delete`；下行 `login{providers[],proxies[],codex?,error?}` +
-  `login-codex{status,userCode?,verificationUri?,accountId?,error?}`。
+  / `login-proxy-create` / `login-proxy-delete`；下行 `login{providers[],proxies[],error?}`。
   - API key：`ctx.llm.listProviders()` 列提供商，`providerCredentialRef` 从
     settings 读 `apiKeyEnv`（缺省回退 `<ID>_API_KEY`），走 `ctx.credentials` 的
     `describe/set/unset(ref)`（**值永不回传**，只发 `…末四位` hint，env 来源只读）。
-  - Account（codex）：设备码流程（`auth.openai.com` usercode→轮询 token→换
-    OAuth token），凭证存 `%DSH_HOME%\dsh-tui-codex.json`；**端到端生效还需宿主
-    `dsh-llm-pi-ai` 接持久化 OAuth 凭证**（当前 `InMemoryCredentialStore`）。
   - Proxy：存 `%DSH_HOME%\dsh-tui-proxies.json`（api key 不回传）。
   写失败经同一 `login` 帧的 `error` 回给面板，不走 transcript 错误流。
 - **/model（桥接）**：上行 `model-get` / `model-set{provider,model}`；下行

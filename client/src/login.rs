@@ -1,11 +1,8 @@
-//! /login panel (D33): the input bar becomes a login page with a three-way
-//! menu — API key / Account / Proxy — each opening a sub-page.
+//! /login panel (D33): the input bar becomes a login page with a two-way
+//! menu — API key / Proxy — each opening a sub-page.
 //!
 //! - API key: lists the model providers; Enter opens that provider's API key
 //!   entry (the secret is typed fresh, never prefilled or read back).
-//! - Account: OpenAI Codex (ChatGPT subscription) web login via the device
-//!   code flow — the panel shows the verification URL + user code and polls
-//!   the bridge until the login completes.
 //! - Proxy: lists saved proxy routes plus `+ New`; the create form collects
 //!   base URL, API key, protocol (three choices) and model name — none of
 //!   which is mandatory except a non-empty base URL.
@@ -14,7 +11,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::{
     input_page::{handle_text_editor, TextEditResult, TextEditor},
-    protocol::{ClientMessage, CodexInfo, ProviderInfo, ProxyInfo},
+    protocol::{ClientMessage, ProviderInfo, ProxyInfo},
 };
 
 /// Wire protocols a custom proxy route may speak (first = default).
@@ -30,14 +27,12 @@ pub const PROXY_SAVE_ROW: usize = 4;
 /// The sub-page currently shown.
 #[derive(Debug, PartialEq)]
 pub enum Page {
-    /// 三选一: API key / Account / Proxy.
+    /// 二选一: API key / Proxy.
     Menu,
     /// API key: the provider list.
     Providers,
     /// Typing one provider's API key.
     ApiKey { provider: String, buf: String },
-    /// Account: the Codex web-login page.
-    Account,
     /// Proxy: saved routes + `+ New`.
     ProxyList,
     /// Proxy create form: 4 fields + a save row.
@@ -79,11 +74,6 @@ pub struct LoginState {
     // ---- bridge-synced state (the `login` frame) ----
     pub providers: Vec<ProviderInfo>,
     pub proxies: Vec<ProxyInfo>,
-    pub codex: Option<CodexInfo>,
-    // ---- live Codex device login (the `login-codex` frame) ----
-    pub codex_pending: bool,
-    pub codex_user_code: Option<String>,
-    pub codex_verification_uri: Option<String>,
     /// Proxy create form draft.
     pub draft: ProxyDraft,
 }
@@ -98,31 +88,15 @@ impl Default for LoginState {
             loading: true,
             providers: Vec::new(),
             proxies: Vec::new(),
-            codex: None,
-            codex_pending: false,
-            codex_user_code: None,
-            codex_verification_uri: None,
             draft: ProxyDraft::default(),
         }
     }
 }
-
 /// One bridge `login` frame — the value VIEW only: secrets never cross the wire.
 #[derive(Debug, Clone, Default)]
 pub struct LoginView {
     pub providers: Vec<ProviderInfo>,
     pub proxies: Vec<ProxyInfo>,
-    pub codex: Option<CodexInfo>,
-    pub error: Option<String>,
-}
-
-/// One bridge `login-codex` frame.
-#[derive(Debug, Clone, Default)]
-pub struct CodexView {
-    pub status: String,
-    pub user_code: Option<String>,
-    pub verification_uri: Option<String>,
-    pub account_id: Option<String>,
     pub error: Option<String>,
 }
 
@@ -151,7 +125,6 @@ impl LoginState {
         };
         self.providers = view.providers;
         self.proxies = view.proxies;
-        self.codex = view.codex;
         self.error = view.error;
         self.loading = false;
 
@@ -177,53 +150,23 @@ impl LoginState {
         self.clamp_to_actionable();
     }
 
-    /// Apply one bridge `login-codex` frame.
-    pub fn apply_codex(&mut self, view: CodexView) {
-        match view.status.as_str() {
-            "pending" => {
-                self.codex_pending = true;
-                self.codex_user_code = view.user_code;
-                self.codex_verification_uri = view.verification_uri;
-            }
-            "done" => {
-                self.codex_pending = false;
-                self.codex_user_code = None;
-                self.codex_verification_uri = None;
-                self.codex = Some(CodexInfo {
-                    logged_in: true,
-                    account_id: view.account_id,
-                });
-            }
-            _ => {
-                self.codex_pending = false;
-                self.codex_user_code = None;
-                self.codex_verification_uri = None;
-                if let Some(err) = view.error {
-                    self.error = Some(err);
-                }
-            }
-        }
-    }
-
     /// Number of selectable rows on the current list page (menu/providers/
     /// proxy-list). Proxy-list has one extra `+ New` row.
     fn list_len(&self) -> usize {
         match self.page {
-            Page::Menu => 3,
+            Page::Menu => 2,
             Page::Providers => self.providers.len(),
             Page::ProxyList => self.proxies.len() + 1,
             Page::ProxyDelete { .. } => 2,
             _ => 1,
         }
     }
-
     fn actionable(&self, index: usize) -> bool {
         match self.page {
             Page::Providers => self
                 .providers
                 .get(index)
                 .is_some_and(|provider| provider.api_key_writable),
-            Page::Account => !self.codex_pending && !self.codex_logged_in(),
             _ => index < self.list_len(),
         }
     }
@@ -238,8 +181,6 @@ impl LoginState {
             self.pos = 0;
         }
     }
-
-    /// Move the selection between actionable rows, clamped to the list.
     fn move_pos(&mut self, delta: i32) {
         if self.list_len() == 0 {
             self.pos = 0;
@@ -262,7 +203,6 @@ impl LoginState {
     fn open_menu_item(&mut self) {
         match self.pos {
             0 => self.page = Page::Providers,
-            1 => self.page = Page::Account,
             _ => self.page = Page::ProxyList,
         }
         self.pos = 0;
@@ -350,7 +290,7 @@ impl LoginState {
                 LoginAction::None
             }
             (Page::Menu, KeyCode::Down | KeyCode::Char('j')) => {
-                self.pos = (self.pos + 1).min(2);
+                self.pos = (self.pos + 1).min(1);
                 LoginAction::None
             }
             (Page::Menu, KeyCode::Enter) => {
@@ -387,22 +327,6 @@ impl LoginState {
             }
 
             (Page::ApiKey { .. }, _) => LoginAction::None,
-
-            (Page::Account, KeyCode::Esc | KeyCode::Char('q')) => {
-                if self.codex_pending {
-                    let action = LoginAction::Send(ClientMessage::LoginCodexCancel);
-                    self.codex_pending = false;
-                    action
-                } else {
-                    self.page = Page::Menu;
-                    self.pos = 0;
-                    LoginAction::None
-                }
-            }
-            (Page::Account, KeyCode::Enter) if !self.codex_pending && !self.codex_logged_in() => {
-                LoginAction::Send(ClientMessage::LoginCodexStart)
-            }
-            (Page::Account, _) => LoginAction::None,
 
             (Page::ProxyList, KeyCode::Esc) => {
                 self.page = Page::Menu;
@@ -507,14 +431,8 @@ impl LoginState {
                     LoginAction::Send(ClientMessage::LoginProxyDelete { id })
                 }
             }
-
             _ => LoginAction::None,
         }
-    }
-
-    /// Whether the Codex account is currently logged in.
-    pub fn codex_logged_in(&self) -> bool {
-        self.codex.as_ref().map_or(false, |c| c.logged_in)
     }
 }
 
@@ -541,10 +459,6 @@ mod tests {
         assert_eq!(s.page, Page::Providers);
         s.handle_key(&key(KeyCode::Esc));
         s.pos = 1;
-        s.handle_key(&key(KeyCode::Enter)); // Account
-        assert_eq!(s.page, Page::Account);
-        s.handle_key(&key(KeyCode::Esc));
-        s.pos = 2;
         s.handle_key(&key(KeyCode::Enter)); // Proxy
         assert_eq!(s.page, Page::ProxyList);
     }
@@ -605,41 +519,6 @@ mod tests {
                 if protocol == "openai-responses"
         ));
         assert_eq!(s.page, Page::ProxyList);
-    }
-
-    #[test]
-    fn codex_enter_starts_login_and_esc_cancels() {
-        let mut s = LoginState::default();
-        s.page = Page::Account;
-        assert!(matches!(
-            s.handle_key(&key(KeyCode::Enter)),
-            LoginAction::Send(ClientMessage::LoginCodexStart)
-        ));
-        s.codex_pending = true;
-        assert!(matches!(
-            s.handle_key(&key(KeyCode::Esc)),
-            LoginAction::Send(ClientMessage::LoginCodexCancel)
-        ));
-    }
-
-    #[test]
-    fn codex_frame_marks_logged_in() {
-        let mut s = LoginState::default();
-        s.apply_codex(CodexView {
-            status: "pending".into(),
-            user_code: Some("ABCD-EFGH".into()),
-            verification_uri: Some("https://auth.openai.com/codex/device".into()),
-            ..Default::default()
-        });
-        assert!(s.codex_pending);
-        assert_eq!(s.codex_user_code.as_deref(), Some("ABCD-EFGH"));
-        s.apply_codex(CodexView {
-            status: "done".into(),
-            account_id: Some("acc-1".into()),
-            ..Default::default()
-        });
-        assert!(!s.codex_pending);
-        assert!(s.codex.as_ref().unwrap().logged_in);
     }
 
     #[test]
@@ -704,7 +583,6 @@ mod tests {
         s.apply(LoginView {
             providers: vec![provider("b"), provider("a")],
             proxies: Vec::new(),
-            codex: None,
             error: None,
         });
         assert_eq!(s.providers[s.pos].id, "b");

@@ -10,7 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::{
     config::Config,
-    login::{CodexView, LoginAction, LoginState, LoginView, Page as LoginPage, PROXY_SAVE_ROW},
+    login::{LoginAction, LoginState, LoginView, Page as LoginPage, PROXY_SAVE_ROW},
     protocol::{ClientMessage, ModelProviderInfo},
     settings::{items_in, ItemKind, SettingsAction, SettingsState, CATEGORIES},
     theme::ThemeFile,
@@ -523,13 +523,6 @@ impl InputPageSession {
         }
     }
 
-    pub fn apply_codex(&mut self, view: CodexView) {
-        if let InputPage::Login(login) = &mut self.page {
-            login.apply_codex(view);
-            self.rebuild_focus();
-        }
-    }
-
     pub fn apply_model(
         &mut self,
         providers: Vec<ModelProviderInfo>,
@@ -707,7 +700,7 @@ fn settings_focus_nodes(settings: &SettingsState) -> Vec<FocusNode> {
 
 fn login_focus_targets(login: &LoginState) -> Vec<(FocusId, usize)> {
     match &login.page {
-        LoginPage::Menu => ["api-key", "account", "proxy"]
+        LoginPage::Menu => ["api-key", "proxy"]
             .into_iter()
             .enumerate()
             .map(|(pos, name)| (FocusId::new(format!("login:menu:{name}")), pos))
@@ -719,9 +712,6 @@ fn login_focus_targets(login: &LoginState) -> Vec<(FocusId, usize)> {
             .filter(|(_, provider)| provider.api_key_writable)
             .map(|(pos, provider)| (FocusId::new(format!("login:provider:{}", provider.id)), pos))
             .collect(),
-        LoginPage::Account if !login.codex_pending && !login.codex_logged_in() => {
-            vec![(FocusId::new("login:account:start"), 0)]
-        }
         LoginPage::ProxyList => login
             .proxies
             .iter()
@@ -739,7 +729,7 @@ fn login_focus_targets(login: &LoginState) -> Vec<(FocusId, usize)> {
             (FocusId::new(format!("login:proxy-delete:{id}:cancel")), 0),
             (FocusId::new(format!("login:proxy-delete:{id}:delete")), 1),
         ],
-        LoginPage::ApiKey { .. } | LoginPage::Account => Vec::new(),
+        LoginPage::ApiKey { .. } => Vec::new(),
     }
 }
 

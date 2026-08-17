@@ -327,32 +327,12 @@ fn handle_msg(
         ServerMessage::Login {
             providers,
             proxies,
-            codex,
             error,
         } => {
             if let Some(page) = ui.input_page.as_mut() {
                 page.apply_login(e::login::LoginView {
                     providers: providers.clone(),
                     proxies: proxies.clone(),
-                    codex: codex.clone(),
-                    error: error.clone(),
-                });
-            }
-            None
-        }
-        ServerMessage::LoginCodex {
-            status,
-            user_code,
-            verification_uri,
-            account_id,
-            error,
-        } => {
-            if let Some(page) = ui.input_page.as_mut() {
-                page.apply_codex(e::login::CodexView {
-                    status: status.clone(),
-                    user_code: user_code.clone(),
-                    verification_uri: verification_uri.clone(),
-                    account_id: account_id.clone(),
                     error: error.clone(),
                 });
             }

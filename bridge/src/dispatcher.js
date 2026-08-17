@@ -1,4 +1,4 @@
-import { createProxy, deleteProxy, runCodexLogin, sendLogin, setProviderApiKey } from './login.js'
+import { createProxy, deleteProxy, sendLogin, setProviderApiKey } from './login.js'
 import { shapeCommandResultFrame } from './command.js'
 import { parseSkillCommand } from './skill.js'
 import { HISTORY_CAP, PROTOCOL_VERSION } from './protocol.js'
@@ -25,7 +25,6 @@ export function createClientDispatcher({
   createUserMessage,
 }) {
   let conn = null
-  let codexAbort = null
 
   async function hello(msg) {
     if (msg.token !== token) {
@@ -154,21 +153,6 @@ export function createClientDispatcher({
     }
   }
 
-  function startCodexLogin() {
-    if (!conn || codexAbort) return
-    codexAbort = new AbortController()
-    runCodexLogin(send, ws, codexAbort.signal)
-      .then(() => {
-        codexAbort = null
-        sendLogin(ctx, send, ws).catch(() => {})
-      })
-      .catch((error) => {
-        codexAbort = null
-        const message = String(error?.message ?? error)
-        if (message !== 'Login cancelled') send(ws, { type: 'login-codex', status: 'error', error: message })
-      })
-  }
-
   async function saveProxy(msg) {
     try {
       createProxy({
@@ -243,8 +227,6 @@ export function createClientDispatcher({
       case 'login-set-api-key':
         if (conn && typeof msg.provider === 'string' && typeof msg.value === 'string') void setApiKey(msg)
         break
-      case 'login-codex-start': startCodexLogin(); break
-      case 'login-codex-cancel': codexAbort?.abort(); codexAbort = null; break
       case 'login-proxy-create': if (conn && typeof msg.baseUrl === 'string') void saveProxy(msg); break
       case 'login-proxy-delete': if (conn && typeof msg.id === 'string') void removeProxy(msg); break
       case 'model-get':
@@ -260,8 +242,6 @@ export function createClientDispatcher({
   }
 
   function close() {
-    codexAbort?.abort()
-    codexAbort = null
     if (conn) detach(conn)
     conn = null
   }

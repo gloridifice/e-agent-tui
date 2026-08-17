@@ -1792,7 +1792,7 @@ fn help_overlay(theme: &Theme) -> Vec<Line<'static>> {
         "Esc 中断   Ctrl+C 清空输入/空闲退出   /exit /q /quit 退出",
         "Ctrl+B 复制模式   Ctrl+N 会话选择器   Ctrl+H 帮助",
         "输入 /：补全内置命令及当前会话自动接入的 DSH/插件命令   Tab/↑↓ 选择",
-        "/settings 设置面板   /login 登录（API key/Account/Proxy）   /new [模式] 新建会话   PgUp/PgDn/滚轮滚动消息",
+        "/settings 设置面板   /login 登录（API key/Proxy）   /new [模式] 新建会话   PgUp/PgDn/滚轮滚动消息",
         "/theme 切换主题   /model 选择模型   /reload 重载配置/主题/技能   /skill:<名称> 注入技能",
         "Input Page: 方向键/hjkl 移动焦点   Enter 执行   Esc 返回；编辑时 hjkl 输入文字",
         "/resume 切换会话（打开选择器）/ /resume <会话ID> 直接切换",
@@ -2445,7 +2445,6 @@ fn render_login_scrolled(
         crate::login::Page::Menu => "登录",
         crate::login::Page::Providers => "API key · 选择提供商",
         crate::login::Page::ApiKey { .. } => "API key · 填写",
-        crate::login::Page::Account => "Account · 网页登录",
         crate::login::Page::ProxyList => "Proxy · 已保存的代理",
         crate::login::Page::ProxyForm => "Proxy · 新建代理",
         crate::login::Page::ProxyDelete { .. } => "Proxy · 删除确认",
@@ -2463,7 +2462,7 @@ fn render_login_scrolled(
     let item_area = regions.body;
     let area = item_area;
     let total_rows = match &login.page {
-        crate::login::Page::Menu => 3,
+        crate::login::Page::Menu => 2,
         crate::login::Page::Providers => login.providers.len(),
         crate::login::Page::ProxyList => login.proxies.len() + 1,
         crate::login::Page::ProxyForm => crate::login::PROXY_ROWS,
@@ -2476,7 +2475,6 @@ fn render_login_scrolled(
         crate::login::Page::Menu => {
             let items: &[(&str, &str)] = &[
                 ("API key", "为各模型提供商填写 API key"),
-                ("Account", "网页登录 Codex（ChatGPT 订阅）"),
                 ("Proxy", "管理自定义代理端点"),
             ];
             for (i, (label, hint)) in items.iter().enumerate().skip(start) {
@@ -2552,54 +2550,6 @@ fn render_login_scrolled(
                 )),
                 item_area.width,
             );
-        }
-        crate::login::Page::Account => {
-            let (status, url) = if login.codex_pending {
-                (
-                    "请在网页登录：",
-                    login.codex_verification_uri.as_deref().unwrap_or(""),
-                )
-            } else if login.codex_logged_in() {
-                let id = login
-                    .codex
-                    .as_ref()
-                    .and_then(|c| c.account_id.as_deref())
-                    .unwrap_or("");
-                ("已登录 Codex", id)
-            } else {
-                ("按 Enter 开始网页登录", "")
-            };
-            buffer.set_line(
-                area.x,
-                item_area.y,
-                &Line::from(Span::styled(
-                    status,
-                    Style::default().fg(theme.fg).bg(theme.bg_soft),
-                )),
-                item_area.width,
-            );
-            if !url.is_empty() {
-                buffer.set_line(
-                    area.x,
-                    item_area.y + 1,
-                    &Line::from(Span::styled(
-                        url,
-                        Style::default().fg(theme.user).bg(theme.bg_soft),
-                    )),
-                    item_area.width,
-                );
-                if let Some(code) = login.codex_user_code.as_deref() {
-                    buffer.set_line(
-                        area.x,
-                        item_area.y + 2,
-                        &Line::from(Span::styled(
-                            format!("用户代码：{code}"),
-                            Style::default().fg(theme.ok).bg(theme.bg_soft),
-                        )),
-                        item_area.width,
-                    );
-                }
-            }
         }
         crate::login::Page::ProxyList => {
             for (i, p) in login.proxies.iter().enumerate().skip(start) {
@@ -2760,7 +2710,6 @@ fn render_login_scrolled(
             crate::login::Page::Menu => "↑/↓ 选择   Enter 进入   Esc 退出".to_string(),
             crate::login::Page::Providers => "↑/↓ 选择   Enter 填写   Esc 返回".to_string(),
             crate::login::Page::ApiKey { .. } => "Enter 保存   Esc 返回 · 密钥不会回显".to_string(),
-            crate::login::Page::Account => "Enter 开始登录   Esc 返回".to_string(),
             crate::login::Page::ProxyList => "↑/↓ 选择   Enter 执行   Esc 返回".to_string(),
             crate::login::Page::ProxyForm => {
                 "↑/↓ 选字段   Enter 编辑/切换   Enter 保存   Esc 返回".to_string()
@@ -4412,7 +4361,6 @@ mod tests {
                 api_key_hint: Some("…1234".into()),
             }],
             proxies: vec![],
-            codex: None,
             error: None,
         });
         let backend = TestBackend::new(80, 24);
@@ -4425,7 +4373,7 @@ mod tests {
                 .collect::<String>()
                 .replace(' ', "")
         };
-        // Menu page: the three choices render.
+        // Menu page: the two choices render.
         terminal
             .draw(|f| {
                 render(
@@ -4451,7 +4399,6 @@ mod tests {
             all.contains("APIkey"),
             "API key menu item (spaces stripped)"
         );
-        assert!(all.contains("Account"), "Account menu item");
         assert!(all.contains("Proxy"), "Proxy menu item");
         // Provider sub-page: the provider row shows the configured-key view.
         login.page = crate::login::Page::Providers;

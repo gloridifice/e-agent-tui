@@ -6,18 +6,18 @@ It connects to the same DSH backend as the Web GUI and shares the same session l
 
 ## Highlights
 
-- **Streaming chat** — live output, thinking lines, spinners, and full Markdown rendering (headings, tables, code blocks, mermaid)
-- **Tool cards** — command summaries with line counts and timing; `str_replace_editor` view/replace/insert operations fold with read/edit activity while create stays a concise workspace-relative row; nested Code Mode and workflow work is shown as parented activity rows
+- **Streaming chat** — live output, thinking lines, spinners, and full Markdown rendering (headings, tables, code blocks, mermaid); inline-code backgrounds stay confined to their chips, while Ferra headings use bold Coral `#`, bold Sage `##`, and plain Blush `###`
+- **Tool cards** — command summaries with line counts and timing stay on one row and ellipsize at the configured page width; `str_replace_editor` view/replace/insert operations fold with read/edit activity while create stays a concise workspace-relative row; nested Code Mode and workflow work is shown as parented activity rows
 - **Event-aware transcript** — model reasoning is folded into a breathing `Thinking...` indicator without adding transcript/copy rows or splitting adjacent activities; context/attachment cards, retries, durable commands, compaction, rich turn outcomes, and DSH surface replacement are projected consistently
 - **Input accessories** — queued prompts, approvals, questions, todos, goals, and plan mode share a bounded area above the editor
 - **Unified Input Pages** — `/settings`, `/login`, `/model`, and `/theme` replace the editor with one borderless, keyboard-navigable page instead of opening floating windows
 - **Model selection** — switch provider and model with `/model`
-- **Themes** — `deepseek-e` (default) and `ferra` built in; custom themes supported
+- **Themes** — `deepseek-e` (default) and `ferra` are embedded from TOML assets; custom themes use an open-ended color palette plus fixed semantic roles
 - **Sessions** — create, switch, and resume conversations with incremental history
 - **Unified commands** — optimized built-ins and commands contributed by DSH/plugins share one fuzzy-completion menu; plugin changes appear live
 - **Responsive input** — queue prompts while the agent runs; queued dispatch and copy-mode navigation do not block the UI; a software cursor stays stable while the hidden terminal cursor anchors IME input
 - **Managed backend lifecycle** — when `dshe` starts its dedicated DSH service, startup-timeout cleanup and last-TUI shutdown terminate the complete Windows command-shim process tree with bounded waiting; failed shutdowns retain retry bookkeeping, while confirmed shutdowns print `dsh 服务器已关闭。`; externally started DSH services are left untouched
-- **Fast** — incremental rendering cache, throttled redraws, only the visible window is drawn
+- **Fast** — terminal input directly wakes an event-driven frame scheduler; synchronized buffered frames prevent half-painted scrolling, animation patches only active transcript rows, streaming updates only the tail layout suffix, and width-aware grapheme layout materializes only the visible window
 
 ## Installation
 
@@ -85,6 +85,26 @@ The two background-free status rows are:
 
 The optional model and cache-hit fields are omitted until values are available; the status line does not render placeholder dashes. The mode is the preset actually mounted for the attached session, including an explicit `/new <mode>` selection.
 
+## Configuration and themes
+
+User configuration is stored in `%APPDATA%\dshe\config.toml`. Repository defaults live in [`client/assets/default_config.toml`](client/assets/default_config.toml), are embedded with `include_str!`, and are parsed as the base configuration. User files may omit fields; their values overlay the embedded defaults, so newly added options remain backward-compatible.
+
+Theme files live in `%APPDATA%\dshe\themes\*.toml`. A theme has two layers: an open-ended `[colors]` palette whose keys are user-defined, and a fixed `[semantics.*]` schema that maps UI roles to palette keys:
+
+```toml
+name = "example"
+
+[colors]
+canvas = "#2b292d"
+accent = "#fecdb2"
+
+[semantics.markdown]
+heading3 = { fg = "accent" }
+inline_code = { fg = "accent", bg = "canvas", bold = true }
+```
+
+Every fixed semantic role requires `fg`; `bg`, `bold`, `italic`, and `underline` are optional. The groups are `surface`, `markdown`, `input` (including status rows), `working_status`, `log`, `activity`, `card`, and `overlay`. See [`client/assets/themes/ferra.toml`](client/assets/themes/ferra.toml) for the complete schema. The built-in TOML files under `client/assets/themes/` are embedded with `include_str!`, parsed by the same validator as user themes, and copied as editable starting points without overwriting existing files.
+
 ## Architecture and protocol
 
 `client/` is the Rust TUI and `bridge/` is the DSH host plugin. Their JSON WebSocket contract has one machine-readable source: [`bridge/protocol-contract.json`](bridge/protocol-contract.json). [`docs/protocol.md`](docs/protocol.md) is generated with:
@@ -97,12 +117,13 @@ The normal WebSocket frame limit is 16 MiB. The bridge enforces it on every outg
 
 DSH events are translated into typed `HostEvent` values at the wire boundary and classified by the event projector. User-visible output uses four shared surfaces: status-bearing activity rows, ordinary transcript blocks, padded content cards, and input accessories. DSH `surfaceOp` append/replace metadata is applied before rendering, including across backward history paging, so compaction does not leave shadowed messages visible. Unknown append-surface events also survive reconnect/history replay through bounded metadata-only envelopes, lifecycle pairs split across page boundaries reconcile when their older start arrives, retry schedule details are merged back into newer started rows, and workflow cancellation stays distinct from failure. Title/session state and audit-only records remain outside the transcript.
 
-The transcript renderer owns its cache, and copy-mode navigation consumes the same layout provenance as the visible transcript, preventing spacing and wrapping drift. Streaming text still dirties only the tail; structural replacements invalidate the transcript once.
+The transcript renderer owns its cache, and copy-mode navigation reuses the same width/generation-aware display-row provenance as the visible transcript, preventing spacing and wrapping drift without rebuilding all copy rows twice per key. Streaming text dirties only the tail and incrementally updates its layout suffix; pure animation updates patch only active message ranges and commits one exact final settle color; structural replacements invalidate the transcript once. Unicode wrapping follows grapheme clusters so combining marks and emoji ZWJ sequences stay intact. Keyboard/mouse/resize events wake the Tokio loop directly; interactive/content/animation frames use separate deadlines, bridge bursts have a fairness budget, and Crossterm output is buffered and bracketed with synchronized-output frames when supported. Set `DSHE_DISABLE_SYNC_OUTPUT=1` only to diagnose an incompatible terminal.
 
 ## Development
 
 ```powershell
 cargo test
+cargo run --release --example timing_frames  # long-history scroll/frame benchmark
 cd bridge; npm test
 node tools/generate-protocol-doc.mjs
 ```

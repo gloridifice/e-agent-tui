@@ -322,7 +322,7 @@ fn render_block(
 ) {
     match kind {
         BlockKind::Paragraph => {
-            let inlines = collect_inlines(theme, raw, Style::default().fg(theme.fg));
+            let inlines = collect_inlines(theme, raw, theme.markdown.text.style());
             for (i, line) in inlines.into_iter().enumerate() {
                 out.push(RenderLine {
                     line,
@@ -348,7 +348,8 @@ fn render_block(
             let inlines = collect_inlines(theme, &stripped, base);
             for (i, line) in inlines.into_iter().enumerate() {
                 let rendered = if level == 1 {
-                    // h1: padded reverse bar (glamour h1 background look).
+                    // h1 keeps horizontal padding; the semantic style decides
+                    // whether that becomes a background bar.
                     let mut spans = vec![Span::styled(" ", base)];
                     spans.extend(
                         line.spans
@@ -379,12 +380,12 @@ fn render_block(
             // keeps its own depth of `│` bars (glamour indent_token).
             for (i, raw_line) in raw.lines().enumerate() {
                 let (depth, content) = quote_depth(raw_line);
-                let inlines = collect_inlines(theme, content, Style::default().fg(theme.fg));
+                let inlines = collect_inlines(theme, content, theme.markdown.text.style());
                 for line in inlines {
                     // One `│ ` pair per level (glamour indent_token).
                     let mut spans = vec![Span::styled(
                         "│ ".repeat(depth),
-                        Style::default().fg(theme.dim),
+                        theme.markdown.quote_marker.style(),
                     )];
                     spans.extend(line.spans);
                     out.push(RenderLine {
@@ -412,7 +413,7 @@ fn render_block(
         }
         BlockKind::Rule => {
             out.push(RenderLine {
-                line: Line::from(Span::styled("─".repeat(32), Style::default().fg(theme.dim))),
+                line: Line::from(Span::styled("─".repeat(32), theme.markdown.rule.style())),
                 unit,
                 raw_line: Some(0),
                 atomic: false,
@@ -424,7 +425,7 @@ fn render_block(
                 out.push(RenderLine {
                     line: Line::from(Span::styled(
                         line.to_string(),
-                        Style::default().fg(theme.dim),
+                        theme.markdown.code_meta.style(),
                     )),
                     unit,
                     raw_line: Some(i),
@@ -452,24 +453,15 @@ fn quote_depth(line: &str) -> (usize, &str) {
     (depth.max(1), rest.trim_start_matches(' '))
 }
 
-/// glamour dark-style heading variants mapped onto the ferra palette:
-/// h1 = reverse bar (fg on user bg), h2 bold orange, h3 bold yellow,
-/// h4 italic pink, h5 peach, h6 dim.
+/// Heading styles come directly from the fixed Markdown semantic roles.
 fn heading_style(theme: &Theme, level: usize) -> Style {
     match level {
-        1 => Style::default()
-            .fg(theme.bg)
-            .bg(theme.user)
-            .add_modifier(Modifier::BOLD),
-        2 => Style::default().fg(theme.user).add_modifier(Modifier::BOLD),
-        3 => Style::default()
-            .fg(theme.running)
-            .add_modifier(Modifier::BOLD),
-        4 => Style::default()
-            .fg(theme.rose)
-            .add_modifier(Modifier::ITALIC),
-        5 => Style::default().fg(theme.link),
-        _ => Style::default().fg(theme.dim),
+        1 => theme.markdown.heading1.style(),
+        2 => theme.markdown.heading2.style(),
+        3 => theme.markdown.heading3.style(),
+        4 => theme.markdown.heading4.style(),
+        5 => theme.markdown.heading5.style(),
+        _ => theme.markdown.heading6.style(),
     }
 }
 
@@ -491,8 +483,8 @@ fn collect_inlines(theme: &Theme, raw: &str, base: Style) -> Vec<Line<'static>> 
         match event {
             Event::Text(t) => push_span(&mut lines, &style, &t),
             Event::Code(t) => {
-                // glamour code: prefix/suffix space, pink on Night bg.
-                let code_style = Style::default().fg(theme.rose).bg(theme.bg);
+                // Inline code owns an independent semantic foreground/background.
+                let code_style = theme.markdown.inline_code.style();
                 let last = lines.last_mut().unwrap();
                 last.push_span(Span::styled(" ", code_style));
                 last.push_span(Span::styled(t.to_string(), code_style));
@@ -505,25 +497,27 @@ fn collect_inlines(theme: &Theme, raw: &str, base: Style) -> Vec<Line<'static>> 
             Event::Start(tag) => match tag {
                 Tag::Emphasis => {
                     stack.push(style);
-                    style = style.fg(theme.rose).add_modifier(Modifier::ITALIC);
+                    style = style.patch(theme.markdown.emphasis.style());
                 }
                 Tag::Strong => {
                     stack.push(style);
-                    style = style.fg(theme.rose).add_modifier(Modifier::BOLD);
+                    style = style.patch(theme.markdown.strong.style());
                 }
                 Tag::Strikethrough => {
                     stack.push(style);
-                    style = style.add_modifier(Modifier::CROSSED_OUT);
+                    style = style
+                        .patch(theme.markdown.strikethrough.style())
+                        .add_modifier(Modifier::CROSSED_OUT);
                 }
                 Tag::Link { dest_url, .. } => {
                     stack.push(style);
                     pending = Some((dest_url.to_string(), lines.last().unwrap().spans.len()));
-                    style = style.fg(theme.rose).add_modifier(Modifier::BOLD);
+                    style = style.patch(theme.markdown.link_text.style());
                 }
                 Tag::Image { dest_url, .. } => {
                     stack.push(style);
                     pending = Some((dest_url.to_string(), lines.last().unwrap().spans.len()));
-                    style = style.fg(theme.link).add_modifier(Modifier::ITALIC);
+                    style = style.patch(theme.markdown.image.style());
                 }
                 _ => {}
             },
@@ -542,12 +536,10 @@ fn collect_inlines(theme: &Theme, raw: &str, base: Style) -> Vec<Line<'static>> 
                                 .collect();
                             if text != url {
                                 lines.last_mut().unwrap().push_span(Span::styled(" ", base));
-                                lines.last_mut().unwrap().push_span(Span::styled(
-                                    url,
-                                    Style::default()
-                                        .fg(theme.link)
-                                        .add_modifier(Modifier::UNDERLINED),
-                                ));
+                                lines
+                                    .last_mut()
+                                    .unwrap()
+                                    .push_span(Span::styled(url, theme.markdown.link_url.style()));
                             }
                         }
                     }
@@ -591,7 +583,7 @@ fn render_mermaid_block(
     } else {
         raw_lines.join("\n")
     };
-    let dim = Style::default().fg(theme.dim);
+    let dim = theme.markdown.code_meta.style();
     // Glow-style header: `  mermaid · N 行` on the filled block.
     out.push(RenderLine {
         line: Line::from(vec![
@@ -616,14 +608,20 @@ fn render_mermaid_block(
                     .iter()
                     .map(|s| {
                         let style = match s.class {
-                            crate::mermaid::MermaidClass::Border => Style::default().fg(theme.dim),
-                            crate::mermaid::MermaidClass::Node => Style::default().fg(theme.fg),
-                            crate::mermaid::MermaidClass::Edge => Style::default().fg(theme.dim),
+                            crate::mermaid::MermaidClass::Border => {
+                                theme.markdown.mermaid_border.style()
+                            }
+                            crate::mermaid::MermaidClass::Node => {
+                                theme.markdown.mermaid_node.style()
+                            }
+                            crate::mermaid::MermaidClass::Edge => {
+                                theme.markdown.mermaid_edge.style()
+                            }
                             crate::mermaid::MermaidClass::EdgeLabel => {
-                                Style::default().fg(theme.link)
+                                theme.markdown.mermaid_edge_label.style()
                             }
                             crate::mermaid::MermaidClass::Title => {
-                                Style::default().fg(theme.user).add_modifier(Modifier::BOLD)
+                                theme.markdown.mermaid_title.style()
                             }
                         };
                         Span::styled(s.text.clone(), style)
@@ -662,7 +660,7 @@ fn render_mermaid_block(
                     Span::styled("  ", dim),
                     Span::styled(
                         format!("(mermaid 渲染失败: {error})"),
-                        Style::default().fg(theme.dim),
+                        theme.markdown.code_meta.style(),
                     ),
                 ]),
                 unit,
@@ -674,7 +672,7 @@ fn render_mermaid_block(
                 out.push(RenderLine {
                     line: Line::from(vec![
                         Span::styled("  ", dim),
-                        Span::styled((*line).to_string(), Style::default().fg(theme.fg)),
+                        Span::styled((*line).to_string(), theme.markdown.code_text.style()),
                     ]),
                     unit,
                     raw_line: Some(i + 1),
@@ -706,7 +704,7 @@ fn render_code_block(
     } else {
         (&raw_lines[..], 0)
     };
-    let dim = Style::default().fg(theme.dim);
+    let dim = theme.markdown.code_meta.style();
     // Glow-style header: `  lang · N 行` — no frame.
     out.push(RenderLine {
         line: Line::from(vec![
@@ -725,7 +723,7 @@ fn render_code_block(
         out.push(RenderLine {
             line: Line::from(vec![
                 Span::styled("  ", dim),
-                Span::styled(content[i].to_string(), Style::default().fg(theme.fg)),
+                Span::styled(content[i].to_string(), theme.markdown.code_text.style()),
             ]),
             unit,
             raw_line: Some(i + fence_offset),
@@ -755,7 +753,7 @@ fn collapse_hint_row(unit: u64, theme: &Theme, hidden: usize) -> RenderLine {
     RenderLine {
         line: Line::from(Span::styled(
             format!("  … 收起 {hidden} 行 [Enter 展开]"),
-            Style::default().fg(theme.dim),
+            theme.markdown.code_meta.style(),
         )),
         unit,
         raw_line: None,
@@ -770,7 +768,7 @@ fn collapse_hint_row(unit: u64, theme: &Theme, hidden: usize) -> RenderLine {
 /// a glamour margin blank at the message end).
 fn block_bottom_pad(unit: u64, theme: &Theme, out: &mut Vec<RenderLine>) {
     out.push(RenderLine {
-        line: Line::from(Span::styled(" ", Style::default().bg(theme.bg))),
+        line: Line::from(Span::styled(" ", theme.markdown.code_background.style())),
         unit,
         raw_line: None,
         atomic: true,
@@ -816,10 +814,7 @@ fn render_table(
         // Fall back: plain lines (should not happen for a real table block).
         for (i, line) in raw.lines().enumerate() {
             out.push(RenderLine {
-                line: Line::from(Span::styled(
-                    line.to_string(),
-                    Style::default().fg(theme.fg),
-                )),
+                line: Line::from(Span::styled(line.to_string(), theme.markdown.text.style())),
                 unit,
                 raw_line: Some(i),
                 atomic: false,
@@ -842,7 +837,7 @@ fn render_table(
             .iter()
             .all(|c| c.chars().all(|ch| ch == '-' || ch == ':'));
 
-    let dim_style = Style::default().fg(theme.dim);
+    let dim_style = theme.markdown.table_border.style();
     let body_rows: Vec<usize> = (0..rows.len())
         .filter(|r| !(*r == 1 && has_header))
         .collect();
@@ -900,9 +895,9 @@ fn push_table_cells(
     theme: &Theme,
 ) {
     let cell_base = if header {
-        Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)
+        theme.markdown.table_header.style()
     } else {
-        Style::default().fg(theme.fg)
+        theme.markdown.text.style()
     };
     let mut spans = vec![Span::styled("│", dim_style)];
     for (i, w) in widths.iter().enumerate() {
@@ -1126,8 +1121,8 @@ fn emit_list_item(
     let indent = "  ".repeat(depth);
     let (marker, marker_style) = match task {
         // glamour task: "[✓]" / "[ ]" followed by the item text.
-        Some(true) => ("[✓] ".to_string(), Style::default().fg(theme.ok)),
-        Some(false) => ("[ ] ".to_string(), Style::default().fg(theme.dim)),
+        Some(true) => ("[✓] ".to_string(), theme.markdown.task_checked.style()),
+        Some(false) => ("[ ] ".to_string(), theme.markdown.task_unchecked.style()),
         None => {
             if ordered.is_some() {
                 while counters.len() <= depth {
@@ -1136,30 +1131,30 @@ fn emit_list_item(
                 counters[depth] += 1;
                 (
                     format!("{}. ", counters[depth]),
-                    Style::default().fg(theme.user),
+                    theme.markdown.list_marker.style(),
                 )
             } else {
-                (
-                    "◦ ".to_string(),
-                    Style::default().fg(if depth == 0 { theme.user } else { theme.dim }),
-                )
+                ("◦ ".to_string(), theme.markdown.list_marker.style())
             }
         }
     };
     counters.truncate(depth + 1);
     // Inline markdown inside items (code, strong, links …).
-    let inlines = collect_inlines(theme, &text, Style::default().fg(theme.fg));
+    let inlines = collect_inlines(theme, &text, theme.markdown.text.style());
     for (li, line) in inlines.into_iter().enumerate() {
         let mut spans = Vec::new();
         if li == 0 {
-            spans.push(Span::styled(indent.clone(), Style::default().fg(theme.dim)));
+            spans.push(Span::styled(
+                indent.clone(),
+                theme.markdown.list_marker.style(),
+            ));
             spans.push(Span::styled(marker.clone(), marker_style));
             spans.extend(line.spans);
         } else {
             // Continuation rows align under the text column.
             spans.push(Span::styled(
                 format!("{indent}  "),
-                Style::default().fg(theme.dim),
+                theme.markdown.list_marker.style(),
             ));
             spans.extend(line.spans);
         }
@@ -1250,8 +1245,9 @@ mod tests {
             .flat_map(|r| r.line.spans.iter())
             .find(|s| s.content == "code")
             .expect("code span rendered");
-        assert_eq!(code.style.bg, Some(Theme::ferra().bg));
-        assert_eq!(code.style.fg, Some(Theme::ferra().rose));
+        let theme = Theme::ferra();
+        assert_eq!(code.style.bg, theme.markdown.inline_code.bg);
+        assert_eq!(code.style.fg, Some(theme.markdown.inline_code.fg));
     }
 
     #[test]
@@ -1302,16 +1298,21 @@ mod tests {
         let text = plain(&lines);
         assert_eq!(text[0], "标题", "glamour hides the # markers");
         let span = &lines[0].line.spans[0];
+        let theme = Theme::ferra();
+        assert_eq!(span.style.fg, Some(theme.markdown.heading2.fg));
         assert!(span.style.add_modifier.contains(Modifier::BOLD));
-        // h1 = reverse bar: fg = bg, bg = user.
+        // h1 keeps horizontal padding while its colors come entirely from
+        // the semantic style (a theme may choose whether to define `bg`).
         let h1 = render("# 一级");
         let span = &h1[0].line.spans[0];
         assert_eq!(span.content, " ", "h1 padded with a leading space");
-        assert_eq!(span.style.bg, Some(Theme::ferra().user));
-        assert_eq!(span.style.fg, Some(Theme::ferra().bg));
-        // h3 = yellow, not bold-pink.
+        assert_eq!(span.style.bg, theme.markdown.heading1.bg);
+        assert_eq!(span.style.fg, Some(theme.markdown.heading1.fg));
+        // h3 = link/blush without bold.
         let h3 = render("### 三级");
-        assert_eq!(h3[0].line.spans[0].style.fg, Some(Theme::ferra().running));
+        let span = &h3[0].line.spans[0];
+        assert_eq!(span.style.fg, Some(theme.markdown.heading3.fg));
+        assert!(!span.style.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]
@@ -1351,7 +1352,7 @@ mod tests {
             .iter()
             .find(|s| s.content == "cargo")
             .expect("code span");
-        assert_eq!(code.style.bg, Some(Theme::ferra().bg));
+        assert_eq!(code.style.bg, Theme::ferra().markdown.inline_code.bg);
         let text: String = lines[0]
             .line
             .spans
@@ -1359,6 +1360,12 @@ mod tests {
             .map(|s| s.content.as_ref())
             .collect();
         assert!(text.contains(" cargo "), "padded spaces: {text}");
+        let suffix = lines[0].line.spans.last().expect("plain suffix span");
+        assert_eq!(suffix.content, " now");
+        assert_eq!(
+            suffix.style.bg, None,
+            "source whitespace after inline code must not inherit chip bg"
+        );
     }
 
     #[test]

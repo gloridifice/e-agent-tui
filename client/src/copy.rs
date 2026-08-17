@@ -53,8 +53,7 @@ pub enum CopyAction {
     Moved(usize),
 }
 
-/// Flatten the assistant transcript into navigable rows.
-pub fn flatten(state: &AppState) -> Vec<CopyRow> {
+fn build_rows(state: &AppState) -> Vec<CopyRow> {
     crate::ui::copy_layout_rows(state)
         .into_iter()
         .map(|row| CopyRow {
@@ -65,6 +64,53 @@ pub fn flatten(state: &AppState) -> Vec<CopyRow> {
             global_row: row.global_row,
         })
         .collect()
+}
+
+/// Width/generation-indexed copy provenance shared by key handling and the
+/// following overlay frame. Invalid or tail-dirty transcript state is rebuilt
+/// eagerly because its generation has not advanced yet.
+#[derive(Default)]
+pub struct CopyRowsCache {
+    generation: u64,
+    width: usize,
+    message_count: usize,
+    initialized: bool,
+    rows: Vec<CopyRow>,
+    #[cfg(test)]
+    rebuilds: usize,
+}
+
+impl CopyRowsCache {
+    pub fn rows<'a>(&'a mut self, state: &AppState) -> &'a [CopyRow] {
+        let transcript = &state.transcript_cache;
+        let reusable = self.initialized
+            && transcript.valid
+            && !transcript.tail_dirty
+            && self.generation == transcript.generation
+            && self.width == transcript.width
+            && self.message_count == state.msgs.len();
+        if !reusable {
+            self.rows = build_rows(state);
+            #[cfg(test)]
+            {
+                self.rebuilds += 1;
+            }
+            self.generation = transcript.generation;
+            self.width = transcript.width;
+            self.message_count = state.msgs.len();
+            self.initialized = true;
+        }
+        &self.rows
+    }
+
+    pub fn invalidate(&mut self) {
+        self.initialized = false;
+    }
+}
+
+/// Flatten the assistant transcript into navigable rows.
+pub fn flatten(state: &AppState) -> Vec<CopyRow> {
+    build_rows(state)
 }
 
 impl CopyMode {
@@ -247,6 +293,7 @@ fn line_selection_text(
 
     let mut out: Vec<String> = Vec::new();
     let mut emitted_units: BTreeSet<u64> = BTreeSet::new();
+    let mut emitted_lines: BTreeSet<(u64, usize)> = BTreeSet::new();
     for row in &rows[lo..=hi] {
         if row.atomic {
             // Whole-block raw source, emitted once (D11).
@@ -256,9 +303,11 @@ fn line_selection_text(
                 }
             }
         } else if let Some(rl) = row.raw_line {
-            if let Some(raw) = units.get(&row.unit) {
-                if let Some(line) = raw.lines().nth(rl) {
-                    out.push(line.to_string());
+            if emitted_lines.insert((row.unit, rl)) {
+                if let Some(raw) = units.get(&row.unit) {
+                    if let Some(line) = raw.lines().nth(rl) {
+                        out.push(line.to_string());
+                    }
                 }
             }
         } else {
@@ -352,6 +401,35 @@ mod tests {
         // User block = 2 padding rows + 3 wrapped rows; the assistant row
         // follows at global row 6 (gap row 5 in between).
         assert_eq!(rows[0].global_row, 6, "wrapped user rows counted");
+    }
+
+    #[test]
+    fn copy_rows_cache_reuses_matching_generation_and_width() {
+        let mut state = state_with("abcdef");
+        state.transcript_cache.valid = true;
+        state.transcript_cache.width = 3;
+        state.transcript_cache.generation = 1;
+        let mut cache = CopyRowsCache::default();
+        assert!(!cache.rows(&state).is_empty());
+        assert!(!cache.rows(&state).is_empty());
+        assert_eq!(cache.rebuilds, 1);
+
+        state.transcript_cache.generation += 1;
+        assert!(!cache.rows(&state).is_empty());
+        assert_eq!(cache.rebuilds, 2);
+    }
+
+    #[test]
+    fn wrapped_source_line_is_copied_once() {
+        let raw = "abcdefghijklmnopqrstuvwxyz";
+        let mut state = state_with(raw);
+        state.transcript_cache.width = 8;
+        let rows = flatten(&state);
+        assert!(rows.len() >= 4, "source line wraps into copy rows");
+        let mut cm = CopyMode::default();
+        cm.anchor = Some(0);
+        cm.cursor = rows.len() - 1;
+        assert_eq!(selection_text(&cm, &rows, &state.units).unwrap(), raw);
     }
 
     #[test]

@@ -19,5 +19,6 @@ pub mod protocol;
 pub mod render;
 pub mod runtime_command;
 pub mod settings;
+pub mod terminal_runtime;
 pub mod theme;
 pub mod ui;

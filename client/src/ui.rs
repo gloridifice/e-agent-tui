@@ -8,9 +8,11 @@ use ratatui::{
     widgets::{Block, Padding, Paragraph},
     Frame,
 };
-use unicode_width::UnicodeWidthStr;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::{
+    cache::MessageLineRange,
     config::Theme,
     display::{
         allocate_accessories, ActivityContinuation, ActivityRow, ActivityState, CardRole,
@@ -455,14 +457,14 @@ fn render_suggest(
         height: visible_rows as u16 + 2,
     };
     frame.render_widget(ratatui::widgets::Clear, rect);
-    let panel = Style::default().bg(theme.bg_soft);
+    let panel = theme.overlay.background.style();
 
     let mut lines: Vec<Line<'static>> = Vec::new();
     lines.push(Line::from(vec![
-        Span::styled("❯ ", Style::default().fg(theme.user)),
+        Span::styled("❯ ", theme.overlay.accent.style()),
         Span::styled(
             if suggest.modes { "模式" } else { "命令" },
-            Style::default().fg(theme.dim),
+            theme.overlay.muted.style(),
         ),
     ]));
     for (i, cmd) in suggest
@@ -480,19 +482,19 @@ fn render_suggest(
             .map(String::as_str)
             .unwrap_or("");
         let row_style = if selected {
-            Style::default().fg(theme.bg).bg(theme.fg)
+            theme.overlay.selection.style()
         } else {
-            Style::default().fg(theme.fg)
+            theme.overlay.text.style()
         };
         let marker_style = if selected {
             row_style
         } else {
-            Style::default().fg(theme.link)
+            theme.overlay.border.style()
         };
         lines.push(Line::from(vec![
             Span::styled(
                 if selected { "❯ " } else { "  " },
-                Style::default().fg(theme.user),
+                theme.overlay.accent.style(),
             ),
             Span::styled(if integrated { "↳ " } else { "" }, marker_style),
             Span::styled(cmd.clone(), row_style),
@@ -501,14 +503,14 @@ fn render_suggest(
                 if selected {
                     row_style
                 } else {
-                    Style::default().fg(theme.dim)
+                    theme.overlay.muted.style()
                 },
             ),
         ]));
     }
     lines.push(Line::from(Span::styled(
         "↑↓ 选择 · Enter 发送 · Esc 关闭 · ↳ 插件命令",
-        Style::default().fg(theme.dim),
+        theme.overlay.muted.style(),
     )));
     frame.render_widget(Paragraph::new(Text::from(lines)).style(panel), rect);
 }
@@ -700,7 +702,7 @@ fn render_status(
     _scroll: &ScrollState,
     theme: &Theme,
 ) {
-    let dim = Style::default().fg(theme.dim);
+    let dim = theme.input.status_hint.style();
     // Running bullet leads the status bar: yellow breathing while the agent
     // is running (or has just been sent work), gray while idle. One space
     // separates it from the elements that follow.
@@ -751,7 +753,7 @@ fn render_status(
 /// right. Overly long titles truncate with an ellipsis so the path stays
 /// visible; the row is blank until the session has either.
 fn render_title(frame: &mut Frame, area: ratatui::layout::Rect, state: &AppState, theme: &Theme) {
-    let style = Style::default().fg(theme.dim);
+    let style = theme.input.status_hint.style();
     frame.render_widget(ratatui::widgets::Clear, area);
     let buffer = frame.buffer_mut();
     let width = area.width as usize;
@@ -843,56 +845,56 @@ fn activity_row_line(
 ) -> Line<'static> {
     let theme = state.theme();
     let color = color_override.unwrap_or_else(|| match row.state {
-        ActivityState::Waiting => theme.dim,
+        ActivityState::Waiting => theme.working_status.waiting.fg,
         ActivityState::Running => breathing_color(&theme, state.breath_phase()),
-        ActivityState::Success => theme.ok,
-        ActivityState::Failure => theme.err,
-        ActivityState::Cancelled => theme.running,
+        ActivityState::Success => theme.working_status.success.fg,
+        ActivityState::Failure => theme.working_status.failure.fg,
+        ActivityState::Cancelled => theme.working_status.cancelled.fg,
     });
     let mut spans = vec![
         Span::styled(
             " ".repeat(2 + usize::from(row.depth) * 2),
-            Style::default().fg(theme.dim),
+            theme.activity.detail.style(),
         ),
         Span::styled("•", Style::default().fg(color)),
-        Span::styled(" ", Style::default().fg(theme.dim)),
-        Span::styled(row.label.clone(), Style::default().fg(theme.selection)),
+        Span::styled(" ", theme.activity.detail.style()),
+        Span::styled(row.label.clone(), theme.activity.label.style()),
     ];
     if !row.summary.is_empty() {
-        spans.push(Span::styled(" ", Style::default().fg(theme.dim)));
+        spans.push(Span::styled(" ", theme.activity.detail.style()));
         spans.push(Span::styled(
             row.summary.clone(),
-            Style::default().fg(theme.dim),
+            theme.activity.detail.style(),
         ));
     }
     for continuation in &row.continuations {
         spans.push(Span::styled(
             continuation.separator.clone(),
-            Style::default().fg(theme.dim),
+            theme.activity.detail.style(),
         ));
         spans.push(Span::styled(
             continuation.label.clone(),
-            Style::default().fg(theme.selection),
+            theme.activity.label.style(),
         ));
         if !continuation.summary.is_empty() {
-            spans.push(Span::styled(" ", Style::default().fg(theme.dim)));
+            spans.push(Span::styled(" ", theme.activity.detail.style()));
             spans.push(Span::styled(
                 continuation.summary.clone(),
-                Style::default().fg(theme.dim),
+                theme.activity.detail.style(),
             ));
         }
     }
     if row.count > 1 {
         spans.push(Span::styled(
             format!(" x{}", row.count),
-            Style::default().fg(theme.dim),
+            theme.activity.metadata.style(),
         ));
     }
     if state.config.show_tool_duration {
         if let Some(duration_ms) = row.duration_ms {
             spans.push(Span::styled(
                 format!(" · {:.1}s", duration_ms as f64 / 1000.0),
-                Style::default().fg(theme.dim),
+                theme.activity.metadata.style(),
             ));
         }
     }
@@ -902,10 +904,11 @@ fn activity_row_line(
 fn transcript_block_lines(block: &TranscriptBlock, state: &AppState) -> Vec<Line<'static>> {
     let theme = state.theme();
     let color = match block.tone {
-        DisplayTone::Normal => theme.fg,
-        DisplayTone::Dim | DisplayTone::Info => theme.dim,
-        DisplayTone::Warning => theme.running,
-        DisplayTone::Error => theme.err,
+        DisplayTone::Normal => theme.surface.primary_text.fg,
+        DisplayTone::Dim => theme.surface.muted_text.fg,
+        DisplayTone::Info => theme.log.info.fg,
+        DisplayTone::Warning => theme.log.warning.fg,
+        DisplayTone::Error => theme.log.error.fg,
     };
     let prefix = if block.tone == DisplayTone::Error {
         "✗ "
@@ -933,10 +936,14 @@ fn content_card_lines(
     let theme = state.theme();
     let gutter = card.horizontal_padding.min(area_width);
     let avail = area_width.saturating_sub(gutter).max(1);
-    let (fg, bg) = match card.role {
-        CardRole::User => (theme.fg, theme.bg_soft),
-        CardRole::Context | CardRole::Detail | CardRole::Attachment => (theme.dim, theme.bg_soft),
+    let style = match card.role {
+        CardRole::User => theme.card.user,
+        CardRole::Context => theme.card.context,
+        CardRole::Detail => theme.card.detail,
+        CardRole::Attachment => theme.card.attachment,
     };
+    let fg = style.fg;
+    let bg = style.bg.unwrap_or(theme.bg_soft);
     let fill_row = || {
         Line::from(Span::styled(
             " ".repeat(area_width),
@@ -1272,138 +1279,157 @@ fn next_visible_is_activity(msgs: &[Msg], index: usize) -> bool {
         .is_some_and(is_activity_msg)
 }
 
-/// Take up to `limit` display columns worth of leading chars from `text`.
-fn take_width(text: &str, limit: usize) -> (&str, &str) {
-    let mut used = 0;
-    let mut end = 0;
-    for (idx, ch) in text.char_indices() {
-        let cw = UnicodeWidthStr::width(ch.to_string().as_str());
-        if used + cw > limit {
-            break;
-        }
-        used += cw;
-        end = idx + ch.len_utf8();
-    }
-    text.split_at(end)
+trait WrapSink {
+    fn segment(&mut self, text: &str, style: Style);
+    fn end_row(&mut self, base: Style);
 }
 
-/// Split one line into wrapped rows at `width` columns. Ratatui's WordWrapper
-/// emits a phantom empty row whenever a line is EXACTLY as wide as the area
-/// (trailing whitespace flushes first), which left background-less gaps in
-/// solid fill rows (user blocks, code blocks). Splitting ourselves avoids
-/// that entirely.
+#[derive(Default)]
+struct CountWrapSink {
+    rows: usize,
+}
+
+impl WrapSink for CountWrapSink {
+    fn segment(&mut self, _text: &str, _style: Style) {}
+
+    fn end_row(&mut self, _base: Style) {
+        self.rows += 1;
+    }
+}
+
+#[derive(Default)]
+struct LineWrapSink {
+    current: Vec<Span<'static>>,
+    rows: Vec<Line<'static>>,
+}
+
+impl WrapSink for LineWrapSink {
+    fn segment(&mut self, text: &str, style: Style) {
+        if !text.is_empty() {
+            self.current.push(Span::styled(text.to_owned(), style));
+        }
+    }
+
+    fn end_row(&mut self, base: Style) {
+        self.rows
+            .push(Line::from(std::mem::take(&mut self.current)).patch_style(base));
+    }
+}
+
+/// One linear grapheme/display-width scan shared by row counting and
+/// materializing. Flattening span text for segmentation keeps combining marks
+/// and emoji ZWJ sequences together even when a style boundary bisects one.
+fn scan_wrapped<S: WrapSink>(line: &Line<'static>, width: usize, sink: &mut S) {
+    let base = line.style;
+    let mut text = String::new();
+    let mut styles = Vec::with_capacity(line.spans.len());
+    for span in &line.spans {
+        let start = text.len();
+        text.push_str(span.content.as_ref());
+        styles.push((start, text.len(), span.style));
+    }
+    let emit = |start: usize, end: usize, sink: &mut S| {
+        for (style_start, style_end, style) in &styles {
+            let from = start.max(*style_start);
+            let to = end.min(*style_end);
+            if from < to {
+                sink.segment(&text[from..to], *style);
+            }
+        }
+    };
+
+    let mut used = 0usize;
+    let mut have = false;
+    for (start, grapheme) in text.grapheme_indices(true) {
+        let end = start + grapheme.len();
+        let grapheme_width = UnicodeWidthStr::width(grapheme);
+        if grapheme_width > width {
+            if have {
+                sink.end_row(base);
+            }
+            emit(start, end, sink);
+            sink.end_row(base);
+            used = 0;
+            have = false;
+            continue;
+        }
+        if have && used + grapheme_width > width {
+            sink.end_row(base);
+            used = 0;
+        }
+        emit(start, end, sink);
+        used += grapheme_width;
+        have = true;
+        if used == width {
+            sink.end_row(base);
+            used = 0;
+            have = false;
+        }
+    }
+    if have {
+        sink.end_row(base);
+    }
+}
+
+/// Split one line into wrapped rows without Ratatui's exact-width phantom row.
 fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
     if width == 0 || line.width() <= width {
         return vec![line];
     }
-    let base = line.style;
-    let mut out: Vec<Line<'static>> = Vec::new();
-    let mut current: Vec<Span<'static>> = Vec::new();
-    let mut used = 0usize;
-    for span in line.spans {
-        let mut rest: &str = span.content.as_ref();
-        loop {
-            let available = width.saturating_sub(used);
-            let rest_w = UnicodeWidthStr::width(rest);
-            if rest_w <= available {
-                if !rest.is_empty() {
-                    current.push(Span::styled(rest.to_string(), span.style));
-                    used += rest_w;
-                }
-                break;
-            }
-            // The next char does not fit in the remaining columns
-            // (e.g. a 2-wide CJK glyph with 1 column left): flush the
-            // current row first, then retry with a full row.
-            let first_w = rest
-                .chars()
-                .next()
-                .map(|c| UnicodeWidthStr::width(c.to_string().as_str()))
-                .unwrap_or(0);
-            if first_w > available {
-                if first_w > width {
-                    // A single glyph wider than the whole row can never be
-                    // placed — skip it instead of looping forever.
-                    if let Some(c) = rest.chars().next() {
-                        rest = &rest[c.len_utf8()..];
-                    } else {
-                        break;
-                    }
-                    continue;
-                }
-                if !current.is_empty() {
-                    out.push(Line::from(std::mem::take(&mut current)).patch_style(base));
-                }
-                used = 0;
-                continue;
-            }
-            let (chunk, rem) = take_width(rest, available);
-            current.push(Span::styled(chunk.to_string(), span.style));
-            out.push(Line::from(std::mem::take(&mut current)).patch_style(base));
-            used = 0;
-            rest = rem;
-        }
+    let mut sink = LineWrapSink::default();
+    scan_wrapped(&line, width, &mut sink);
+    if sink.rows.is_empty() {
+        vec![Line::default().patch_style(line.style)]
+    } else {
+        sink.rows
     }
-    if !current.is_empty() {
-        out.push(Line::from(current).patch_style(base));
-    }
-    out
 }
 
-/// Number of display rows `wrap_line` emits for one cache row. Mirrors the
-/// splitter above exactly (same flush rules) so the viewport math and the
-/// rendered rows can never disagree.
 fn wrapped_rows(line: &Line<'static>, width: usize) -> usize {
     if width == 0 || line.width() <= width {
         return 1;
     }
-    let mut rows = 0usize;
+    let mut sink = CountWrapSink::default();
+    scan_wrapped(line, width, &mut sink);
+    sink.rows.max(1)
+}
+
+/// Keep an activity card on one display row. Truncation happens here, where
+/// `width` is the resolved page width (including `page_max_width`), rather
+/// than earlier in the model where only the terminal-sized payload is known.
+fn truncate_activity_line(line: Line<'static>, width: usize) -> Line<'static> {
+    if line.width() <= width {
+        return line;
+    }
+    let base = line.style;
+    if width == 0 {
+        return Line::default().patch_style(base);
+    }
+
+    let budget = width - 1; // reserve one display column for `…`
     let mut used = 0usize;
-    let mut have = false;
-    for span in &line.spans {
-        let mut rest: &str = span.content.as_ref();
-        loop {
-            let available = width.saturating_sub(used);
-            let rest_w = UnicodeWidthStr::width(rest);
-            if rest_w <= available {
-                if !rest.is_empty() {
-                    have = true;
-                    used += rest_w;
+    let mut spans = Vec::new();
+    let mut ellipsis_style = Style::default();
+    'outer: for span in line.spans {
+        let mut kept = String::new();
+        ellipsis_style = span.style;
+        for ch in span.content.chars() {
+            let char_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if used + char_width > budget {
+                if !kept.is_empty() {
+                    spans.push(Span::styled(kept, span.style));
                 }
-                break;
+                break 'outer;
             }
-            let first_w = rest
-                .chars()
-                .next()
-                .map(|c| UnicodeWidthStr::width(c.to_string().as_str()))
-                .unwrap_or(0);
-            if first_w > available {
-                if first_w > width {
-                    if let Some(c) = rest.chars().next() {
-                        rest = &rest[c.len_utf8()..];
-                    } else {
-                        break;
-                    }
-                    continue;
-                }
-                if have {
-                    rows += 1;
-                    have = false;
-                }
-                used = 0;
-                continue;
-            }
-            let (_, rem) = take_width(rest, available);
-            rows += 1;
-            have = false;
-            used = 0;
-            rest = rem;
+            kept.push(ch);
+            used += char_width;
+        }
+        if !kept.is_empty() {
+            spans.push(Span::styled(kept, span.style));
         }
     }
-    if have {
-        rows += 1;
-    }
-    rows
+    spans.push(Span::styled("…", ellipsis_style));
+    Line::from(spans).patch_style(base)
 }
 
 /// One message rendered to transcript lines, including the full-width soft
@@ -1420,13 +1446,11 @@ fn styled_msg_lines(msg: &Msg, state: &AppState, area_width: usize) -> Vec<Line<
             .map(|r| {
                 let mut line = r.line.clone();
                 if r.fill {
-                    line = line.patch_style(Style::default().fg(theme.fg).bg(theme.bg));
+                    let fill_style = theme.markdown.code_background.style();
+                    line = line.patch_style(fill_style);
                     let width = line.width();
                     if width < area_width {
-                        line.push_span(Span::styled(
-                            " ".repeat(area_width - width),
-                            Style::default().fg(theme.fg).bg(theme.bg),
-                        ));
+                        line.push_span(Span::styled(" ".repeat(area_width - width), fill_style));
                     }
                 }
                 line
@@ -1449,11 +1473,15 @@ fn styled_msg_lines(msg: &Msg, state: &AppState, area_width: usize) -> Vec<Line<
         };
         return content_card_lines(&card, state, area_width);
     }
-    let mut out = Vec::new();
-    for line in msg_lines(msg, state) {
-        out.push(line);
+    let lines = msg_lines(msg, state);
+    if is_activity_msg(msg) {
+        lines
+            .into_iter()
+            .map(|line| truncate_activity_line(line, area_width))
+            .collect()
+    } else {
+        lines
     }
-    out
 }
 
 /// Copy/navigation provenance derived from the exact same message layout used
@@ -1477,20 +1505,21 @@ pub fn copy_layout_rows(state: &AppState) -> Vec<CopyLayoutRow> {
         }
         let layout_lines = styled_msg_lines(msg, state, width);
         if let Msg::Assistant { lines, .. } = msg {
-            for (render_line, _) in lines.iter().zip(layout_lines.iter()) {
-                rows.push(CopyLayoutRow {
-                    unit: render_line.unit,
-                    raw_line: render_line.raw_line,
-                    atomic: render_line.atomic,
-                    text: render_line
-                        .line
-                        .spans
-                        .iter()
-                        .map(|span| span.content.as_ref())
-                        .collect(),
-                    global_row,
-                });
-                global_row += 1;
+            for (render_line, layout_line) in lines.iter().zip(layout_lines.iter()) {
+                for wrapped in wrap_line(layout_line.clone(), width) {
+                    rows.push(CopyLayoutRow {
+                        unit: render_line.unit,
+                        raw_line: render_line.raw_line,
+                        atomic: render_line.atomic,
+                        text: wrapped
+                            .spans
+                            .iter()
+                            .map(|span| span.content.as_ref())
+                            .collect(),
+                        global_row,
+                    });
+                    global_row += 1;
+                }
             }
         } else if let Some(unit) = match msg {
             Msg::Block(block) => block.unit,
@@ -1498,21 +1527,26 @@ pub fn copy_layout_rows(state: &AppState) -> Vec<CopyLayoutRow> {
             _ => None,
         } {
             for (raw_line, line) in layout_lines.iter().enumerate() {
-                rows.push(CopyLayoutRow {
-                    unit,
-                    raw_line: Some(raw_line),
-                    atomic: false,
-                    text: line
-                        .spans
-                        .iter()
-                        .map(|span| span.content.as_ref())
-                        .collect(),
-                    global_row,
-                });
-                global_row += 1;
+                for wrapped in wrap_line(line.clone(), width) {
+                    rows.push(CopyLayoutRow {
+                        unit,
+                        raw_line: Some(raw_line),
+                        atomic: false,
+                        text: wrapped
+                            .spans
+                            .iter()
+                            .map(|span| span.content.as_ref())
+                            .collect(),
+                        global_row,
+                    });
+                    global_row += 1;
+                }
             }
         } else {
-            global_row += layout_lines.len();
+            global_row += layout_lines
+                .iter()
+                .map(|line| wrapped_rows(line, width))
+                .sum::<usize>();
         }
         let next_is_activity = next_visible_is_activity(&state.msgs, index);
         if !(is_activity_msg(msg) && next_is_activity) {
@@ -1520,6 +1554,131 @@ pub fn copy_layout_rows(state: &AppState) -> Vec<CopyLayoutRow> {
         }
     }
     rows
+}
+
+fn rebuild_transcript_cache(state: &mut AppState, width: usize) {
+    let _zone = crate::tracy_zone!("transcript rebuild");
+    let mut base = Vec::new();
+    let mut ranges = vec![None; state.msgs.len()];
+    let mut tail_len = 0usize;
+    for (index, msg) in state.msgs.iter().enumerate() {
+        if is_hidden_msg(msg) {
+            continue;
+        }
+        let start = base.len();
+        let lines = styled_msg_lines(msg, state, width);
+        let line_count = lines.len();
+        base.extend(lines);
+        let next_is_activity = next_visible_is_activity(&state.msgs, index);
+        let gap = !(is_activity_msg(msg) && next_is_activity);
+        ranges[index] = Some(MessageLineRange {
+            start,
+            end: start + line_count,
+            owns_gap: gap,
+        });
+        tail_len = line_count + usize::from(gap);
+        if gap {
+            base.push(Line::default());
+        }
+    }
+    let cache = &mut state.transcript_cache;
+    cache.lines = base;
+    cache.message_ranges = ranges;
+    cache.tail_len = tail_len;
+    cache.valid = true;
+    cache.tail_dirty = false;
+    cache.dirty_messages.clear();
+    cache.structural_rebuilt();
+}
+
+fn refresh_transcript_cache(state: &mut AppState, width: usize) {
+    if state.transcript_cache.width != width {
+        state.transcript_cache.width = width;
+        state.transcript_cache.invalidate();
+    }
+    crate::presentation::materialize_assistants(state);
+    if !state.transcript_cache.valid {
+        rebuild_transcript_cache(state, width);
+        return;
+    }
+
+    if state.transcript_cache.tail_dirty {
+        let keep = state
+            .transcript_cache
+            .lines
+            .len()
+            .saturating_sub(state.transcript_cache.tail_len);
+        let last_index = state.msgs.len().checked_sub(1);
+        let rendered = last_index.map(|index| styled_msg_lines(&state.msgs[index], state, width));
+        let cache = &mut state.transcript_cache;
+        cache.lines.truncate(keep);
+        if let (Some(index), Some(lines)) = (last_index, rendered) {
+            let count = lines.len();
+            cache.lines.extend(lines);
+            cache.lines.push(Line::default());
+            cache.tail_len = count + 1;
+            if cache.message_ranges.len() != state.msgs.len() {
+                cache.message_ranges.resize(state.msgs.len(), None);
+            }
+            cache.message_ranges[index] = Some(MessageLineRange {
+                start: keep,
+                end: keep + count,
+                owns_gap: true,
+            });
+            cache.dirty_messages.remove(&index);
+        } else {
+            cache.tail_len = 0;
+        }
+        cache.tail_dirty = false;
+        let tail_row_counts = cache.lines[keep..]
+            .iter()
+            .map(|line| wrapped_rows(line, width))
+            .collect::<Vec<_>>();
+        cache.structural_tail_updated(keep, width, &tail_row_counts);
+    }
+
+    if !state.transcript_cache.dirty_messages.is_empty() {
+        let indices = state
+            .transcript_cache
+            .dirty_messages
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        let patches = indices
+            .iter()
+            .filter_map(|index| {
+                state
+                    .msgs
+                    .get(*index)
+                    .map(|msg| (*index, styled_msg_lines(msg, state, width)))
+            })
+            .collect::<Vec<_>>();
+        let mut fallback = false;
+        let mut applied = 0usize;
+        for (index, lines) in patches {
+            let Some(range) = state
+                .transcript_cache
+                .message_ranges
+                .get(index)
+                .and_then(|range| *range)
+            else {
+                fallback = true;
+                break;
+            };
+            if range.len() != lines.len() {
+                fallback = true;
+                break;
+            }
+            state.transcript_cache.lines[range.start..range.end].clone_from_slice(&lines);
+            applied += 1;
+        }
+        if fallback {
+            rebuild_transcript_cache(state, width);
+        } else {
+            state.transcript_cache.dirty_messages.clear();
+            state.transcript_cache.patched(applied);
+        }
+    }
 }
 
 fn render_transcript(
@@ -1533,123 +1692,63 @@ fn render_transcript(
 ) {
     let visible = area.height as usize;
     let width = area.width as usize;
-    // Remember the content width for copy-mode row math (wrapped user
-    // blocks count by wrapped rows).
-    state.transcript_cache.width = width;
-    crate::presentation::materialize_assistants(state);
-    // Rebuild the base lines only when the transcript changed structurally;
-    // streaming chunks splice just the tail; copy-mode overlays patch a
-    // clone of the visible window each frame.
-    if !state.transcript_cache.valid {
-        let mut base: Vec<Line<'static>> = Vec::new();
-        let mut tail_len = 0usize;
-        for (idx, msg) in state.msgs.iter().enumerate() {
-            if is_hidden_msg(msg) {
-                continue;
-            }
-            let lines = styled_msg_lines(msg, state, width);
-            let n = lines.len();
-            base.extend(lines);
-            // One-row gap between messages (and before the input bar) —
-            // except between consecutive tool/file-group activity rows,
-            // which stay glued with no spacing.
-            let next_is_activity = next_visible_is_activity(&state.msgs, idx);
-            let gap = !(is_activity_msg(msg) && next_is_activity);
-            tail_len = n + usize::from(gap);
-            if gap {
-                base.push(Line::default());
-            }
-        }
-        state.transcript_cache.lines = base;
-        state.transcript_cache.tail_len = tail_len;
-        state.transcript_cache.valid = true;
-        state.transcript_cache.tail_dirty = false;
-    } else if state.transcript_cache.tail_dirty {
-        // Streaming chunk(s): drop the previous tail (its lines plus the
-        // trailing gap) and re-render only the last message.
-        let keep = state
-            .transcript_cache
-            .lines
-            .len()
-            .saturating_sub(state.transcript_cache.tail_len);
-        state.transcript_cache.lines.truncate(keep);
-        if let Some(last) = state.msgs.last() {
-            let lines = styled_msg_lines(last, state, width);
-            state.transcript_cache.tail_len = lines.len() + 1;
-            state.transcript_cache.lines.extend(lines);
-            state.transcript_cache.lines.push(Line::default());
-        } else {
-            state.transcript_cache.tail_len = 0;
-        }
-        state.transcript_cache.tail_dirty = false;
-    }
-    // History prepend: keep the viewport on the previously visible content
-    // by shifting the offset by the newly added lines above it.
+    refresh_transcript_cache(state, width);
+    state.transcript_cache.ensure_layout(width, wrapped_rows);
+    // History prepend anchors are display-row totals, not unwrapped base lines.
     if let Some(anchor) = state.transcript_cache.prepend_anchor.take() {
-        let delta = state.transcript_cache.lines.len().saturating_sub(anchor);
+        let delta = state
+            .transcript_cache
+            .layout
+            .total_rows()
+            .saturating_sub(anchor);
         scroll.offset = scroll.offset.saturating_add(delta);
     }
-    // Display-only rows (scroll-back hint) take viewport rows away from the
-    // transcript window so nothing below them gets truncated.
-    let len = state.transcript_cache.lines.len();
+    let len = state.transcript_cache.layout.total_rows();
     let mut available = visible;
-    // Wrap-aware viewport: cache rows hold UNWRAPPED lines (a long paragraph
-    // is one cache row), so the window must be chosen by DISPLAY rows, not
-    // cache rows — and the wrapped overflow trimmed from the TOP. The old
-    // bottom-truncation pushed the wrapped tail and the trailing gap row off
-    // the screen (the input bar then sat flush against the transcript).
-    let (start, show_hint) = if scroll.follow {
-        // Pin the bottom: walk back from the trailing gap row until enough
-        // display rows are covered; the earliest rows are the overflow.
-        let mut s = len;
-        let mut acc = 0usize;
-        while s > 0 && acc < available {
-            s -= 1;
-            acc += wrapped_rows(&state.transcript_cache.lines[s], width);
-        }
-        scroll.offset = s;
-        (s, false)
+    let show_hint = !scroll.follow && scroll.offset == 0;
+    if show_hint {
+        available = available.saturating_sub(1).max(1);
+    }
+    let start = if scroll.follow {
+        len.saturating_sub(available)
     } else {
-        let s = scroll.offset.min(len);
-        let hint = s == 0;
-        if hint {
-            available = available.saturating_sub(1).max(1);
-        }
-        (s, hint)
+        scroll.offset.min(len.saturating_sub(1))
     };
-    let mut display: Vec<Line<'static>> = Vec::new();
-    let mut i = start;
-    while i < len {
-        // Only wrap as much as the viewport can hold (perf: never wrap the
-        // whole cache). Follow mode needs the exact window the walk picked,
-        // so it keeps going to `len` and trims the front overflow below.
-        if !scroll.follow && display.len() >= available {
-            break;
-        }
-        let mut line = state.transcript_cache.lines[i].clone();
-        if let Some(ov) = overlay {
-            let mut style = Style::default();
-            if let Some((lo, hi)) = ov.sel {
-                if i >= lo && i <= hi {
+    scroll.offset = start;
+    let end = start.saturating_add(available).min(len);
+    let (mut base_index, _) = state.transcript_cache.layout.locate(start);
+    let mut display: Vec<Line<'static>> = Vec::with_capacity(available);
+    while base_index < state.transcript_cache.lines.len() && display.len() < available {
+        let base_start = state.transcript_cache.layout.prefix[base_index];
+        let wrapped = wrap_line(state.transcript_cache.lines[base_index].clone(), width);
+        for (row_index, mut row) in wrapped.into_iter().enumerate() {
+            let global_row = base_start + row_index;
+            if global_row < start {
+                continue;
+            }
+            if global_row >= end {
+                break;
+            }
+            if let Some(overlay) = overlay {
+                let mut style = Style::default();
+                if overlay
+                    .sel
+                    .is_some_and(|(lo, hi)| global_row >= lo && global_row <= hi)
+                {
                     style = style.bg(theme.selection);
                 }
+                if overlay.cursor_row == global_row {
+                    style = style.fg(theme.bg).bg(theme.fg);
+                }
+                if style != Style::default() {
+                    row = row.patch_style(style);
+                }
             }
-            if ov.cursor_row == i {
-                style = style.fg(theme.bg).bg(theme.fg);
-            }
-            if style != Style::default() {
-                line = line.patch_style(style);
-            }
-        }
-        // Rows carrying a background (user blocks, code fills) keep it
-        // solid: pad every wrapped row to the full width.
-        for row in wrap_line(line, width) {
-            let bg = row
-                .style
-                .bg
-                .or_else(|| row.spans.iter().find_map(|s| s.style.bg));
-            let mut row = row;
-            if let Some(bg) = bg {
+            // Only an explicit row-level background makes a solid row.
+            // Span backgrounds (notably inline-code chips) must stay local;
+            // treating any span bg as a row fill leaks that color through the
+            // source separator and every trailing terminal cell.
+            if let Some(bg) = row.style.bg {
                 let used = row.width();
                 if used < width {
                     row.push_span(Span::styled(
@@ -1660,19 +1759,11 @@ fn render_transcript(
             }
             display.push(row);
         }
-        i += 1;
+        base_index += 1;
     }
-    if scroll.follow {
-        // The walk over-satisfies `available` whenever a line wraps: drop
-        // the excess from the TOP so the bottom rows (wrapped tail + the
-        // trailing gap row before the input bar) always stay on screen.
-        let excess = display.len().saturating_sub(available);
-        if excess > 0 {
-            display.drain(..excess);
-        }
-    } else {
-        display.truncate(available);
-    }
+    state
+        .transcript_cache
+        .record_materialized_rows(display.len());
     if help_visible {
         display.extend(help_overlay(theme));
     }
@@ -1729,7 +1820,7 @@ fn render_input(
     padding: u16,
 ) -> Option<Position> {
     let block = Block::default()
-        .style(Style::default().bg(theme.bg_soft))
+        .style(theme.input.background.style())
         // Configurable horizontal gutter + 1-row vertical padding.
         .padding(Padding::new(padding, padding, 1, 1));
     let inner = block.inner(area);
@@ -1740,11 +1831,15 @@ fn render_input(
         let hint = Line::from(vec![
             Span::styled(
                 "-- COPY -- ",
-                Style::default().fg(theme.user).add_modifier(Modifier::BOLD),
+                theme
+                    .input
+                    .status_accent
+                    .style()
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 "[hjkl]移动 [V]行选 [Ctrl+V]块选 [y]复制 [Enter]展开 [Esc]退出",
-                Style::default().fg(theme.dim),
+                theme.input.status_hint.style(),
             ),
         ]);
         frame.render_widget(Paragraph::new(Text::from(vec![hint])), inner);
@@ -1759,13 +1854,13 @@ fn render_input(
             .map(|m| m.chars().take(60).collect::<String>())
             .unwrap_or_default();
         let line = Line::from(vec![
-            Span::styled("search: ", Style::default().fg(theme.user)),
-            Span::styled(search.query.clone(), Style::default().fg(theme.fg)),
-            Span::styled(" ▏ ", Style::default().fg(theme.dim)),
-            Span::styled(preview, Style::default().fg(theme.dim)),
+            Span::styled("search: ", theme.input.prompt.style()),
+            Span::styled(search.query.clone(), theme.input.text.style()),
+            Span::styled(" ▏ ", theme.input.hint.style()),
+            Span::styled(preview, theme.input.hint.style()),
             Span::styled(
                 format!("  ({}/{})", search.sel + 1, matches.len()),
-                Style::default().fg(theme.dim),
+                theme.input.hint.style(),
             ),
         ]);
         frame.render_widget(Paragraph::new(Text::from(vec![line])), inner);
@@ -1775,7 +1870,7 @@ fn render_input(
     if let Some(toast_text) = toast {
         let line = Line::from(Span::styled(
             format!("❯ {toast_text}"),
-            Style::default().fg(theme.ok),
+            theme.working_status.success.style(),
         ));
         frame.render_widget(Paragraph::new(Text::from(vec![line])), inner);
         return None;
@@ -1829,13 +1924,10 @@ fn render_input(
         if placeholder {
             let mut spans = vec![Span::styled(
                 (*text).clone(),
-                Style::default().fg(theme.rose).add_modifier(Modifier::BOLD),
+                theme.input.placeholder.style(),
             )];
             if i == cursor_row {
-                spans.push(Span::styled(
-                    " ",
-                    Style::default().fg(theme.bg).bg(theme.fg),
-                ));
+                spans.push(Span::styled(" ", theme.input.cursor.style()));
             }
             rendered.push(Line::from(spans));
             continue;
@@ -1851,18 +1943,18 @@ fn render_input(
                 .unwrap_or_else(|| " ".into());
             let after: String = text.chars().skip(cur + 1).collect();
             rendered.push(Line::from(vec![
-                Span::styled(before, Style::default().fg(theme.fg)),
-                Span::styled(at, Style::default().fg(theme.bg).bg(theme.fg)),
-                Span::styled(after, Style::default().fg(theme.fg)),
+                Span::styled(before, theme.input.text.style()),
+                Span::styled(at, theme.input.cursor.style()),
+                Span::styled(after, theme.input.text.style()),
             ]));
         } else {
             rendered.push(Line::from(Span::styled(
                 (*text).clone(),
-                Style::default().fg(theme.fg),
+                theme.input.text.style(),
             )));
         }
     }
-    let paragraph = Paragraph::new(Text::from(rendered)).style(Style::default().bg(theme.bg_soft));
+    let paragraph = Paragraph::new(Text::from(rendered)).style(theme.input.background.style());
     frame.render_widget(paragraph, inner);
     // Place the terminal cursor into the input bar for IME-friendly input.
     // x = display width of the wrapped row up to the cursor. CJK glyphs
@@ -2005,9 +2097,9 @@ pub fn render_picker(frame: &mut Frame, picker: &PickerState, theme: &Theme) {
     };
     let block = Block::default()
         .borders(ratatui::widgets::Borders::ALL)
-        .border_style(Style::default().fg(theme.user))
+        .border_style(theme.overlay.border.style())
         .title(" 会话选择 · Ctrl+N ")
-        .style(Style::default().bg(theme.bg_soft));
+        .style(theme.overlay.background.style());
     let inner = block.inner(rect);
     // Wipe the transcript cells underneath so short rows don't bleed.
     frame.render_widget(ratatui::widgets::Clear, rect);
@@ -2016,13 +2108,13 @@ pub fn render_picker(frame: &mut Frame, picker: &PickerState, theme: &Theme) {
     let filtered = picker.filtered();
     let mut rows: Vec<Line<'static>> = vec![
         Line::from(vec![
-            Span::styled("> ", Style::default().fg(theme.user)),
-            Span::styled(picker.query.clone(), Style::default().fg(theme.fg)),
-            Span::styled("█", Style::default().fg(theme.user)),
+            Span::styled("> ", theme.overlay.accent.style()),
+            Span::styled(picker.query.clone(), theme.overlay.text.style()),
+            Span::styled("█", theme.overlay.accent.style()),
         ]),
         Line::from(Span::styled(
             "─".repeat(width.saturating_sub(2) as usize),
-            Style::default().fg(theme.dim),
+            theme.overlay.muted.style(),
         )),
     ];
     let list_height = inner.height.saturating_sub(4) as usize;
@@ -2042,35 +2134,39 @@ pub fn render_picker(frame: &mut Frame, picker: &PickerState, theme: &Theme) {
             &s.title
         };
         let mut spans = vec![
-            Span::styled(marker.to_string(), Style::default().fg(theme.user)),
+            Span::styled(marker.to_string(), theme.overlay.accent.style()),
             Span::styled(
                 format!("{live} "),
-                Style::default().fg(if s.live { theme.ok } else { theme.dim }),
+                if s.live {
+                    theme.overlay.selected_marker.style()
+                } else {
+                    theme.overlay.muted.style()
+                },
             ),
             Span::styled(
                 trim_to_width(title, width.saturating_sub(28) as usize),
                 if i + start == picker.sel {
-                    Style::default().fg(theme.bg).bg(theme.fg)
+                    theme.overlay.selection.style()
                 } else {
-                    Style::default().fg(theme.fg)
+                    theme.overlay.text.style()
                 },
             ),
         ];
         spans.push(Span::styled(
             format!("  {}", &s.id[..s.id.len().min(24)]),
-            Style::default().fg(theme.dim),
+            theme.overlay.muted.style(),
         ));
         rows.push(Line::from(spans));
     }
     if filtered.is_empty() {
         rows.push(Line::from(Span::styled(
             "（无匹配会话）",
-            Style::default().fg(theme.dim),
+            theme.overlay.muted.style(),
         )));
     }
     rows.push(Line::from(Span::styled(
         "↑↓ 选择   Enter 切换   Esc 退出",
-        Style::default().fg(theme.dim),
+        theme.overlay.muted.style(),
     )));
     frame.render_widget(Paragraph::new(Text::from(rows)), inner);
 }
@@ -3009,7 +3105,6 @@ pub fn wrap_text(text: &str, width: usize) -> Vec<String> {
 /// Trim `text` to at most `width` display columns, appending `…` when it
 /// overflows (the ellipsis itself counts against the budget).
 fn trim_to_width(text: &str, width: usize) -> String {
-    use unicode_width::UnicodeWidthStr;
     let mut out = String::new();
     let mut used = 0;
     for ch in text.chars() {
@@ -4926,6 +5021,72 @@ mod tests {
         );
     }
 
+    /// Activity rows use the configured page width for their ellipsis. A
+    /// narrower page must not wrap a tool summary that still fits the terminal.
+    #[test]
+    fn tool_row_truncates_at_page_width_without_wrapping() {
+        use crate::model::{ToolCard, ToolState};
+        use ratatui::backend::TestBackend;
+
+        let mut config = crate::config::Config::default();
+        config.resolved_theme = Theme::ferra();
+        config.page_max_width = 40;
+        let mut s = AppState::default();
+        s.config = config.clone();
+        s.msgs.push(Msg::Tool(ToolCard {
+            call_id: "wide-tool".into(),
+            name: "bash".into(),
+            summary: "x".repeat(70),
+            state: ToolState::Running,
+            frame: 0,
+            start_ms: 0,
+            done_since: None,
+            done_from: None,
+        }));
+        let input = InputState::new(&config);
+        let mut scroll = ScrollState::default();
+        let theme = Theme::ferra();
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                render(
+                    f,
+                    &mut s,
+                    &input,
+                    &mut scroll,
+                    &theme,
+                    RenderOverlays {
+                        input_page: None,
+                        help_visible: false,
+                        overlay: None,
+                        toast: None,
+                        settings: None,
+                        login: None,
+                    },
+                )
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        let tool_row: String = (20..60)
+            .map(|x| buf[(x, 0)].symbol().chars().next().unwrap_or(' '))
+            .collect();
+        let next_row: String = (20..60)
+            .map(|x| buf[(x, 1)].symbol().chars().next().unwrap_or(' '))
+            .collect();
+        assert_eq!(tool_row.width(), 40);
+        assert!(
+            tool_row.ends_with('…'),
+            "ellipsis uses the 40-column page edge: {tool_row:?}"
+        );
+        assert!(
+            next_row.trim().is_empty(),
+            "tool activity remains a single display row: {next_row:?}"
+        );
+        assert_eq!(s.transcript_cache.display_len(), 2, "row plus message gap");
+    }
+
     /// The Thinking row renders like a tool card: colored (breathing) bullet
     /// while running, green once the phase completes.
     #[test]
@@ -5025,6 +5186,76 @@ mod tests {
                 assert_eq!(last.style.bg, Some(theme.bg), "pad span carries the bg");
             }
         }
+    }
+
+    #[test]
+    fn inline_code_background_does_not_fill_the_rest_of_the_row() {
+        use ratatui::backend::TestBackend;
+
+        let mut theme = Theme::ferra();
+        let chip_bg = Color::Rgb(1, 2, 3);
+        theme.markdown.inline_code.bg = Some(chip_bg);
+        let mut next_unit = 0;
+        let mut units = std::collections::HashMap::new();
+        let lines = crate::render::render_markdown(
+            "foo `hello` bar",
+            &theme,
+            &mut next_unit,
+            &crate::render::RenderOptions::default(),
+            &mut units,
+        );
+        let mut config = crate::config::Config::default();
+        config.resolved_theme = theme;
+        let mut state = AppState::default();
+        state.config = config.clone();
+        state.msgs.push(Msg::Assistant {
+            text: "foo `hello` bar".into(),
+            lines,
+            unit_start: 0,
+        });
+        let input = InputState::new(&config);
+        let mut scroll = ScrollState::default();
+        let backend = TestBackend::new(40, 12);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render_with_cursor(
+                    frame,
+                    &mut state,
+                    &input,
+                    &mut scroll,
+                    &theme,
+                    RenderOverlays {
+                        input_page: None,
+                        help_visible: false,
+                        overlay: None,
+                        toast: None,
+                        settings: None,
+                        login: None,
+                    },
+                );
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let (start_x, y) = (0..12)
+            .find_map(|y| {
+                let row: String = (0..40).map(|x| buffer[(x, y)].symbol()).collect();
+                row.find("foo").map(|x| (x as u16, y))
+            })
+            .expect("markdown row is visible");
+        assert_eq!(buffer[(start_x + 4, y)].bg, chip_bg, "chip leading pad");
+        assert_eq!(buffer[(start_x + 10, y)].bg, chip_bg, "chip trailing pad");
+        let row_bg = buffer[(start_x + 11, y)].bg;
+        assert_ne!(
+            row_bg, chip_bg,
+            "source separator after the chip must not inherit chip bg"
+        );
+        assert_eq!(
+            buffer[(start_x + 15, y)].bg,
+            row_bg,
+            "cells after the paragraph keep the ordinary row background"
+        );
     }
 
     /// Consecutive activity rows (tool cards + read/edit groups) render
@@ -5184,6 +5415,51 @@ mod tests {
         let out = wrap_line(fill.clone(), 40);
         assert_eq!(out.len(), 1, "exact-width rows must not split");
         assert_eq!(out[0].width(), 40);
+    }
+
+    #[test]
+    fn wrap_line_keeps_combining_and_zwj_graphemes_intact() {
+        let combining = Line::from(vec![
+            Span::styled("a", Style::default().fg(Theme::ferra().fg)),
+            Span::styled("\u{301}b", Style::default().fg(Theme::ferra().dim)),
+        ]);
+        let rows = wrap_line(combining, 1);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0]
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>(),
+            "a\u{301}"
+        );
+        assert_eq!(
+            rows[1]
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>(),
+            "b"
+        );
+
+        let rows = wrap_line(Line::from("👩‍💻x"), 2);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0]
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>(),
+            "👩‍💻"
+        );
+        assert_eq!(
+            rows[1]
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>(),
+            "x"
+        );
     }
 
     /// The wrapped-row counter must agree with the splitter for every case
@@ -5648,6 +5924,163 @@ mod tests {
             crate::model::file_group_line_count(&group),
             1,
             "copy-mode row math matches the collapsed line"
+        );
+    }
+
+    #[test]
+    fn animation_patches_only_the_active_message_in_a_long_transcript() {
+        use ratatui::backend::TestBackend;
+
+        let mut state = AppState::default();
+        for index in 0..500 {
+            state.msgs.push(Msg::System {
+                text: format!("settled {index}"),
+            });
+        }
+        state.start_thinking();
+        let active_index = state.msgs.len() - 1;
+        state.msgs.push(Msg::Block(TranscriptBlock {
+            id: DisplayId::event(9_999, "reasoning"),
+            unit: None,
+            content: "hidden stream".into(),
+            format: TranscriptFormat::Reasoning,
+            tone: DisplayTone::Dim,
+            copy_source: "hidden stream".into(),
+            streaming: true,
+        }));
+        let mut scroll = ScrollState::default();
+        let theme = state.theme();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let area = ratatui::layout::Rect::new(0, 0, 80, 20);
+        terminal
+            .draw(|frame| {
+                render_transcript(frame, area, &mut state, &mut scroll, &theme, false, None)
+            })
+            .unwrap();
+        state.transcript_cache.take_work_stats();
+        let settled_prefix = state.transcript_cache.lines[..20].to_vec();
+
+        assert!(crate::model::tick_spinners(
+            &mut state,
+            std::time::Instant::now()
+        ));
+        assert!(state.transcript_cache.valid);
+        assert_eq!(
+            state
+                .transcript_cache
+                .dirty_messages
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![active_index]
+        );
+        terminal
+            .draw(|frame| {
+                render_transcript(frame, area, &mut state, &mut scroll, &theme, false, None)
+            })
+            .unwrap();
+        let work = state.transcript_cache.take_work_stats();
+        assert_eq!(work.rebuilds, 0);
+        assert_eq!(work.patches, 1);
+        assert_eq!(
+            &state.transcript_cache.lines[..20],
+            settled_prefix.as_slice()
+        );
+    }
+
+    #[test]
+    fn dirty_message_line_count_mismatch_falls_back_to_rebuild() {
+        use ratatui::backend::TestBackend;
+
+        let mut state = AppState::default();
+        state.start_thinking();
+        let mut scroll = ScrollState::default();
+        let theme = state.theme();
+        let backend = TestBackend::new(20, 10);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let area = ratatui::layout::Rect::new(0, 0, 20, 8);
+        terminal
+            .draw(|frame| {
+                render_transcript(frame, area, &mut state, &mut scroll, &theme, false, None)
+            })
+            .unwrap();
+        state.transcript_cache.take_work_stats();
+        state.msgs[0] = Msg::User {
+            text: "x".repeat(80),
+        };
+        state.transcript_cache.mark_message_dirty(0);
+        terminal
+            .draw(|frame| {
+                render_transcript(frame, area, &mut state, &mut scroll, &theme, false, None)
+            })
+            .unwrap();
+        let work = state.transcript_cache.take_work_stats();
+        assert_eq!(work.rebuilds, 1);
+        assert_eq!(work.patches, 0);
+        assert!(state.transcript_cache.valid);
+    }
+
+    #[test]
+    fn wrapped_layout_scrolls_in_exact_display_rows_and_reflows_on_resize() {
+        use ratatui::backend::TestBackend;
+
+        let mut state = AppState::default();
+        state.msgs.push(Msg::Assistant {
+            text: "你".repeat(200),
+            lines: vec![RenderLine {
+                line: Line::from("你".repeat(200)),
+                unit: 1,
+                raw_line: Some(0),
+                atomic: false,
+                fill: false,
+            }],
+            unit_start: 1,
+        });
+        let theme = state.theme();
+        let mut scroll = ScrollState::default();
+        let backend = TestBackend::new(40, 12);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render_transcript(
+                    frame,
+                    ratatui::layout::Rect::new(0, 0, 40, 8),
+                    &mut state,
+                    &mut scroll,
+                    &theme,
+                    false,
+                    None,
+                )
+            })
+            .unwrap();
+        let wide_rows = state.transcript_cache.display_len();
+        scroll.follow = false;
+        scroll.offset = 0;
+        scroll_lines(&mut scroll, 4, wide_rows, false, 3);
+        assert_eq!(scroll.offset, 3, "one wheel notch = three display rows");
+
+        let backend = TestBackend::new(20, 12);
+        let mut narrow = ratatui::Terminal::new(backend).unwrap();
+        narrow
+            .draw(|frame| {
+                render_transcript(
+                    frame,
+                    ratatui::layout::Rect::new(0, 0, 20, 8),
+                    &mut state,
+                    &mut scroll,
+                    &theme,
+                    false,
+                    None,
+                )
+            })
+            .unwrap();
+        assert_eq!(state.transcript_cache.width, 20);
+        assert!(state.transcript_cache.display_len() > wide_rows);
+        let work = state.transcript_cache.take_work_stats();
+        assert!(
+            work.materialized_rows <= 16,
+            "only viewport-scale rows materialized"
         );
     }
 }

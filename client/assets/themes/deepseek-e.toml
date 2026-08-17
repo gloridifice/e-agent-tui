@@ -1,0 +1,98 @@
+name = "deepseek-e"
+
+[colors]
+midnight = "#141828"
+panel = "#1e2438"
+selection = "#2a3352"
+muted = "#5c6480"
+text = "#d8dceb"
+success = "#7ad88f"
+link = "#7aa2ff"
+accent = "#4d6bfe"
+emphasis = "#c792ea"
+danger = "#ff6b7a"
+warning = "#ffcc66"
+
+[semantics.surface]
+base = { fg = "text", bg = "midnight" }
+panel = { fg = "text", bg = "panel" }
+selection = { fg = "text", bg = "selection" }
+primary_text = { fg = "text" }
+muted_text = { fg = "muted" }
+
+[semantics.markdown]
+text = { fg = "text" }
+heading1 = { fg = "midnight", bg = "accent", bold = true }
+heading2 = { fg = "success", bold = true }
+heading3 = { fg = "link" }
+heading4 = { fg = "emphasis", italic = true }
+heading5 = { fg = "link" }
+heading6 = { fg = "muted" }
+emphasis = { fg = "emphasis", italic = true }
+strong = { fg = "emphasis", bold = true }
+strikethrough = { fg = "text" }
+inline_code = { fg = "emphasis", bg = "midnight" }
+link_text = { fg = "emphasis", bold = true }
+link_url = { fg = "link", underline = true }
+image = { fg = "link", italic = true }
+quote_marker = { fg = "muted" }
+rule = { fg = "muted" }
+code_text = { fg = "text" }
+code_meta = { fg = "muted" }
+code_background = { fg = "text", bg = "midnight" }
+table_border = { fg = "muted" }
+table_header = { fg = "text", bold = true }
+list_marker = { fg = "muted" }
+task_checked = { fg = "success" }
+task_unchecked = { fg = "muted" }
+mermaid_border = { fg = "muted" }
+mermaid_node = { fg = "text" }
+mermaid_edge = { fg = "muted" }
+mermaid_edge_label = { fg = "link" }
+mermaid_title = { fg = "accent", bold = true }
+
+[semantics.input]
+background = { fg = "text", bg = "panel" }
+text = { fg = "text" }
+prompt = { fg = "accent" }
+cursor = { fg = "midnight", bg = "text" }
+hint = { fg = "muted" }
+placeholder = { fg = "emphasis", bold = true }
+selection = { fg = "midnight", bg = "text" }
+status = { fg = "text" }
+status_hint = { fg = "muted" }
+status_accent = { fg = "accent" }
+
+[semantics.working_status]
+idle = { fg = "muted" }
+waiting = { fg = "muted" }
+running = { fg = "warning" }
+success = { fg = "success" }
+failure = { fg = "danger" }
+cancelled = { fg = "warning" }
+
+[semantics.log]
+info = { fg = "muted" }
+warning = { fg = "warning" }
+error = { fg = "danger" }
+
+[semantics.activity]
+label = { fg = "selection" }
+detail = { fg = "muted" }
+metadata = { fg = "muted" }
+
+[semantics.card]
+user = { fg = "text", bg = "panel" }
+context = { fg = "muted", bg = "panel" }
+detail = { fg = "muted", bg = "panel" }
+attachment = { fg = "muted", bg = "panel" }
+
+[semantics.overlay]
+background = { fg = "text", bg = "panel" }
+border = { fg = "accent" }
+text = { fg = "text" }
+muted = { fg = "muted" }
+selection = { fg = "midnight", bg = "text" }
+accent = { fg = "accent" }
+selected_marker = { fg = "success" }
+unselected_marker = { fg = "text" }

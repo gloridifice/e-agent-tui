@@ -3,36 +3,117 @@
 //! e — terminal client for DeepSeek Harness (the `dshe` executable).
 //!
 //! One tokio runtime: a websocket reader forwards bridge messages, a writer
-//! drains outbound commands, and the main loop polls crossterm keys, applies
-//! inbound state, and repaints the ratatui frame on a 50 ms tick.
+//! drains outbound commands, and an event-driven main loop selects terminal
+//! input, bounded inbound batches, animation deadlines, and frame deadlines.
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context};
-use crossterm::{
-    cursor,
-    event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-        MouseEventKind,
-    },
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-};
+use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, MouseEventKind};
 use e::config::Config;
 use e::copy;
 use e::input::{InputAction, InputState, NewMode};
 use e::input_page::{InputPageSession, PageEffect};
-use e::model::{tick_spinners, AgentStatus, AppState, ApprovalCard, Msg, QuestionBatch};
+use e::model::{
+    animation_active, tick_spinners, AgentStatus, AppState, ApprovalCard, Msg, QuestionBatch,
+};
+use e::profile::{FrameMetrics, FrameSample};
 use e::protocol::{ClientMessage, ServerMessage, MAX_WIRE_FRAME_BYTES, WIRE_PROTOCOL_VERSION};
+use e::terminal_runtime::TerminalOwner;
 use e::ui::{
     render_picker, render_with_cursor, scroll_lines, scroll_page, transcript_view_height,
     CopyOverlay, PickerAction, PickerState, ScrollState,
 };
-use tokio::time::MissedTickBehavior;
+use futures_util::StreamExt;
 
 const DSH_SERVER_CLOSED_MESSAGE: &str = "dsh 服务器已关闭。";
+const INTERACTIVE_FRAME_INTERVAL: Duration = Duration::from_millis(16);
+const CONTENT_FRAME_INTERVAL: Duration = Duration::from_millis(30);
+const MIN_ANIMATION_INTERVAL: Duration = Duration::from_millis(16);
+const INBOUND_BATCH_LIMIT: usize = 64;
+const INBOUND_BATCH_BUDGET: Duration = Duration::from_millis(2);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DirtyReason {
+    Interactive,
+    Content,
+    Animation,
+}
+
+#[derive(Debug)]
+struct FrameScheduler {
+    deadline: Option<Instant>,
+    requested_at: Option<Instant>,
+    last_frame: Option<Instant>,
+}
+
+impl FrameScheduler {
+    fn new(now: Instant) -> Self {
+        Self {
+            deadline: Some(now),
+            requested_at: Some(now),
+            last_frame: None,
+        }
+    }
+
+    fn interval(reason: DirtyReason) -> Duration {
+        match reason {
+            DirtyReason::Interactive => INTERACTIVE_FRAME_INTERVAL,
+            DirtyReason::Content => CONTENT_FRAME_INTERVAL,
+            DirtyReason::Animation => INTERACTIVE_FRAME_INTERVAL,
+        }
+    }
+
+    fn request(&mut self, reason: DirtyReason, now: Instant) {
+        let due = self
+            .last_frame
+            .map(|last| (last + Self::interval(reason)).max(now))
+            .unwrap_or(now);
+        self.deadline = Some(self.deadline.map_or(due, |current| current.min(due)));
+        self.requested_at = Some(
+            self.requested_at
+                .map_or(now, |requested| requested.min(now)),
+        );
+    }
+
+    fn deadline(&self) -> Option<Instant> {
+        self.deadline
+    }
+
+    fn take_due(&mut self, now: Instant) -> Option<Instant> {
+        if self.deadline.is_some_and(|deadline| deadline <= now) {
+            self.deadline = None;
+            return self.requested_at.take();
+        }
+        None
+    }
+
+    fn complete(&mut self, now: Instant) {
+        self.last_frame = Some(now);
+    }
+}
+
+async fn wait_for_deadline(deadline: Option<Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
+        None => std::future::pending::<()>().await,
+    }
+}
+
+fn animation_interval(state: &AppState) -> Duration {
+    Duration::from_millis(
+        state
+            .config
+            .spinner_frame_ms
+            .max(MIN_ANIMATION_INTERVAL.as_millis() as u64),
+    )
+}
+
+fn inbound_budget_remaining(count: usize, elapsed: Duration) -> bool {
+    count < INBOUND_BATCH_LIMIT && elapsed < INBOUND_BATCH_BUDGET
+}
 
 fn token_path() -> PathBuf {
     e::launcher::dsh_home().join("dsh-tui.token")
@@ -84,19 +165,6 @@ async fn main() -> anyhow::Result<()> {
     drop(_z);
     phases.mark("read token");
 
-    // ---- terminal setup ----
-    enable_raw_mode().context("enable raw mode")?;
-    let mut stdout = std::io::stdout();
-    execute!(
-        stdout,
-        crossterm::event::EnableBracketedPaste,
-        EnableMouseCapture,
-        EnterAlternateScreen,
-        cursor::Hide
-    )
-    .context("enter alternate screen")?;
-    phases.mark("terminal setup");
-
     let result = run(url, token, resume_session_id, &mut phases).await;
 
     // On TUI exit: release the launcher bookkeeping. A dshe-spawned service
@@ -105,15 +173,6 @@ async fn main() -> anyhow::Result<()> {
     // screen so it remains visible in the caller's terminal.
     let dsh_server_closed = e::launcher::release(&mut dsh_session);
 
-    disable_raw_mode().ok();
-    execute!(
-        stdout,
-        LeaveAlternateScreen,
-        cursor::Show,
-        DisableMouseCapture,
-        crossterm::event::DisableBracketedPaste
-    )
-    .ok();
     if dsh_server_closed {
         println!("{DSH_SERVER_CLOSED_MESSAGE}");
     }
@@ -384,10 +443,11 @@ fn prepare_next_queued_prompt(state_r: &std::sync::Mutex<AppState>) -> Option<St
 fn copy_key_action(
     state_r: &std::sync::Mutex<AppState>,
     copy_mode: &mut copy::CopyMode,
+    rows_cache: &mut copy::CopyRowsCache,
     key: &crossterm::event::KeyEvent,
-    rows: &[copy::CopyRow],
 ) -> copy::CopyAction {
     let state = state_r.lock().unwrap();
+    let rows = rows_cache.rows(&state);
     copy_mode.handle_key(key, rows, &state)
 }
 
@@ -436,6 +496,7 @@ async fn run(
     let mut scroll = ScrollState::default();
     let mut help_visible = false;
     let mut copy_mode: Option<copy::CopyMode> = None;
+    let mut copy_rows_cache = copy::CopyRowsCache::default();
     let mut copy_toast: Option<(String, std::time::Instant)> = None;
     let mut picker: Option<PickerState> = None;
     let mut input_page: Option<InputPageSession> = None;
@@ -465,35 +526,71 @@ async fn run(
     let tx_out = bridge_io.outbound.clone();
     let state_r = Arc::clone(&state);
 
-    // ---- main loop ----
-    let mut tick = tokio::time::interval(Duration::from_millis(50));
-    tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
-
-    let mut terminal = ratatui::init();
-    // The UI paints its own block cursor. Keep the hardware cursor hidden so
-    // crossterm's diff writer cannot visibly drag it through animated cells;
-    // after each frame we only move its hidden position for IME anchoring.
-    terminal.hide_cursor()?;
+    // ---- event-driven main loop ----
+    let mut terminal = TerminalOwner::new().context("initialize terminal")?;
+    phases.mark("terminal setup");
+    let mut events = EventStream::new();
+    let mut scheduler = FrameScheduler::new(Instant::now());
+    let mut animation_deadline: Option<Instant> = None;
+    let mut frame_metrics = FrameMetrics::from_env();
+    let mut pending_update_elapsed = Duration::ZERO;
     let mut fatal: Option<String> = None;
-    // Redraw throttle: at most one frame per 30 ms, and only when something
-    // changed (events, keys, spinner frames). Streaming chunks arrive at
-    // high frequency; drawing per chunk made output crawl.
-    let mut dirty = true;
-    let mut last_render: Option<std::time::Instant> = None;
     let mut first_draw_done = false;
 
     'outer: loop {
+        let _main_loop_zone = e::tracy_zone!("main loop");
+        let mut pending_event = None;
+        let mut first_inbound = None;
+        let frame_deadline = scheduler.deadline();
         tokio::select! {
-            _ = tick.tick() => {}
             maybe = bridge_io.inbound.recv() => {
                 let Some(msg) = maybe else {
                     fatal = Some("bridge disconnected".into());
                     break 'outer;
                 };
+                first_inbound = Some(msg);
+            }
+            event = events.next() => {
+                match event {
+                    Some(Ok(event)) => {
+                        pending_event = Some(event);
+                        scheduler.request(DirtyReason::Interactive, Instant::now());
+                    }
+                    Some(Err(error)) => {
+                        fatal = Some(format!("terminal event stream failed: {error}"));
+                        break 'outer;
+                    }
+                    None => {
+                        fatal = Some("terminal event stream closed".into());
+                        break 'outer;
+                    }
+                }
+            }
+            _ = wait_for_deadline(frame_deadline) => {}
+            _ = wait_for_deadline(animation_deadline) => {
+                let now = Instant::now();
+                let mut state = state_r.lock().unwrap();
+                let redraw = tick_spinners(&mut state, now);
+                if redraw {
+                    scheduler.request(DirtyReason::Animation, now);
+                }
+                animation_deadline = animation_active(&state, now)
+                    .then(|| now + animation_interval(&state));
+            }
+        }
+
+        if let Some(first) = first_inbound {
+            let _batch_zone = e::tracy_zone!("inbound batch");
+            let batch_started = Instant::now();
+            let mut next = Some(first);
+            let mut count = 0usize;
+            while let Some(msg) = next.take() {
+                count += 1;
                 let is_snapshot = matches!(&msg, ServerMessage::Snapshot { .. });
                 if is_snapshot {
                     phases.mark("snapshot received");
                 }
+                let update_started = Instant::now();
                 let mut ui = UiChannels {
                     picker: &mut picker,
                     scroll: &mut scroll,
@@ -505,54 +602,38 @@ async fn run(
                     fatal = Some(reason);
                     break 'outer;
                 }
+                pending_update_elapsed += update_started.elapsed();
                 if is_snapshot {
                     phases.mark("snapshot applied");
                 }
-                dirty = true;
-            }
-        }
-
-        // Drain any backlog so event bursts coalesce into a single redraw
-        // instead of one full frame per chunk.
-        loop {
-            match bridge_io.inbound.try_recv() {
-                Ok(msg) => {
-                    let mut ui = UiChannels {
-                        picker: &mut picker,
-                        scroll: &mut scroll,
-                        copy_mode: &mut copy_mode,
-                        input: &mut input,
-                        input_page: &mut input_page,
-                    };
-                    if let Some(reason) = handle_msg(msg, &state_r, &mut ui) {
-                        fatal = Some(reason);
+                if !inbound_budget_remaining(count, batch_started.elapsed()) {
+                    break;
+                }
+                next = match bridge_io.inbound.try_recv() {
+                    Ok(msg) => Some(msg),
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => None,
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                        fatal = Some("bridge disconnected".into());
                         break 'outer;
                     }
-                    dirty = true;
-                }
-                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
-                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                    fatal = Some("bridge disconnected".into());
-                    break 'outer;
-                }
+                };
             }
+            scheduler.request(DirtyReason::Content, Instant::now());
         }
 
         // ---- queued prompts: auto-dispatch the next one now that the agent
         // ---- is idle (one at a time — each dispatch keeps it busy again).
         if let Some(text) = prepare_next_queued_prompt(&state_r) {
             let _ = tx_out.send(ClientMessage::Input { text }).await;
-            dirty = true;
+            scheduler.request(DirtyReason::Content, Instant::now());
         }
 
-        // ---- key events ----
-        while event::poll(Duration::ZERO).unwrap_or(false) {
-            let Ok(ev) = event::read() else { continue };
+        // ---- directly-woken terminal event ----
+        if let Some(ev) = pending_event {
             if let Event::Mouse(mouse) = &ev {
                 let up = matches!(mouse.kind, MouseEventKind::ScrollUp);
                 let down = matches!(mouse.kind, MouseEventKind::ScrollDown);
                 if up || down {
-                    dirty = true;
                     let terminal_height = terminal.size().map(|size| size.height).unwrap_or(40);
                     let input_page_open = input_page.is_some();
                     let before = {
@@ -566,7 +647,7 @@ async fn run(
                         scroll_lines(
                             &mut scroll,
                             height,
-                            state.transcript_cache.lines.len(),
+                            state.transcript_cache.display_len(),
                             up,
                             3,
                         );
@@ -601,7 +682,6 @@ async fn run(
                 // Bracketed paste: route into an Input Page editor, the
                 // free-text question draft, or the ordinary input bar.
                 if let Event::Paste(text) = ev {
-                    dirty = true;
                     if input_page.as_mut().is_some_and(|page| page.paste(&text)) {
                         continue;
                     }
@@ -623,7 +703,6 @@ async fn run(
             if key.kind == KeyEventKind::Release {
                 continue;
             }
-            dirty = true;
             if help_visible {
                 if key.code == KeyCode::Char('q')
                     || key.code == KeyCode::Esc
@@ -650,7 +729,12 @@ async fn run(
                     let mut state = state_r.lock().unwrap();
                     let height =
                         transcript_view_height(terminal_height, &state, &input, input_page_open);
-                    scroll_page(&mut scroll, height, state.transcript_cache.lines.len(), up);
+                    scroll_page(
+                        &mut scroll,
+                        height,
+                        state.transcript_cache.display_len(),
+                        up,
+                    );
                     if up
                         && scroll.offset == 0
                         && !scroll.follow
@@ -771,8 +855,7 @@ async fn run(
 
             // ---- copy mode owns the keys while active ----
             if let Some(cm) = copy_mode.as_mut() {
-                let rows = copy::flatten(&state_r.lock().unwrap());
-                let action = copy_key_action(&state_r, cm, &key, &rows);
+                let action = copy_key_action(&state_r, cm, &mut copy_rows_cache, &key);
                 match action {
                     copy::CopyAction::None => {}
                     copy::CopyAction::Exit => copy_mode = None,
@@ -898,78 +981,90 @@ async fn run(
             }
         }
 
-        // ---- render (throttled: ≤1 frame/30 ms, only when dirty) ----
-        let now = std::time::Instant::now();
-        {
-            let mut state = state_r.lock().unwrap();
-            if tick_spinners(&mut state, now) {
-                dirty = true;
+        // Start the animation clock only while a running/settling indicator
+        // exists. Idle clients have no periodic wakeup.
+        if animation_deadline.is_none() {
+            let now = Instant::now();
+            let state = state_r.lock().unwrap();
+            if animation_active(&state, now) {
+                animation_deadline = Some(now);
             }
         }
-        let draw_due =
-            last_render.map_or(true, |t| now.duration_since(t) >= Duration::from_millis(30));
-        if dirty && draw_due {
-            {
-                let mut state = state_r.lock().unwrap();
-                // Copy-mode overlay: cursor + selection as global row ranges.
-                let overlay = copy_mode.as_ref().and_then(|cm| {
-                    let rows = copy::flatten(&state);
-                    if rows.is_empty() {
-                        return None;
-                    }
-                    let cursor_row = rows[cm.cursor.min(rows.len() - 1)].global_row;
-                    let sel = cm
-                        .selection_range(&rows)
-                        .map(|(lo, hi)| (rows[lo].global_row, rows[hi].global_row));
-                    Some(CopyOverlay { cursor_row, sel })
-                });
-                let toast = copy_toast.as_ref().map(|(t, _)| t.as_str());
-                let first_frame = !first_draw_done;
-                let _z = if first_frame {
-                    e::tracy_zone!("first frame")
-                } else {
-                    None
-                };
-                let mut cursor_anchor = None;
-                terminal.draw(|frame| {
-                    cursor_anchor = render_with_cursor(
-                        frame,
-                        &mut state,
-                        &input,
-                        &mut scroll,
-                        &theme,
-                        e::ui::RenderOverlays {
-                            help_visible,
-                            overlay: overlay.as_ref(),
-                            toast,
-                            input_page: input_page.as_mut(),
-                            settings: None,
-                            login: None,
-                        },
-                    );
-                    if let Some(p) = picker.as_ref() {
-                        render_picker(frame, p, &theme);
-                        cursor_anchor = None;
-                    }
-                })?;
-                if let Some(position) = cursor_anchor {
-                    // Moving a hidden cursor preserves the Windows IME anchor
-                    // without exposing diff-writer cursor travel on screen.
-                    terminal.set_cursor_position(position)?;
+
+        let now = Instant::now();
+        if let Some(requested_at) = scheduler.take_due(now) {
+            let mut state = state_r.lock().unwrap();
+            // Copy-mode overlay: cursor + selection as global row ranges.
+            let overlay = copy_mode.as_ref().and_then(|cm| {
+                let rows = copy_rows_cache.rows(&state);
+                if rows.is_empty() {
+                    return None;
                 }
-                if first_frame {
-                    drop(_z);
-                    first_draw_done = true;
-                    phases.mark("first frame");
+                let cursor_row = rows[cm.cursor.min(rows.len() - 1)].global_row;
+                let sel = cm
+                    .selection_range(rows)
+                    .map(|(lo, hi)| (rows[lo].global_row, rows[hi].global_row));
+                Some(CopyOverlay { cursor_row, sel })
+            });
+            let toast = copy_toast.as_ref().map(|(t, _)| t.as_str());
+            let first_frame = !first_draw_done;
+            let _first_zone = if first_frame {
+                e::tracy_zone!("first frame")
+            } else {
+                None
+            };
+            let transaction = terminal.draw(|frame| {
+                let mut cursor_anchor = render_with_cursor(
+                    frame,
+                    &mut state,
+                    &input,
+                    &mut scroll,
+                    &theme,
+                    e::ui::RenderOverlays {
+                        help_visible,
+                        overlay: overlay.as_ref(),
+                        toast,
+                        input_page: input_page.as_mut(),
+                        settings: None,
+                        login: None,
+                    },
+                );
+                if let Some(p) = picker.as_ref() {
+                    render_picker(frame, p, &theme);
+                    cursor_anchor = None;
                 }
+                cursor_anchor
+            })?;
+            scheduler.complete(Instant::now());
+            let io = transaction.io;
+            let cache_work = state.transcript_cache.take_work_stats();
+            let report = frame_metrics.record(FrameSample {
+                scheduler_delay: now.saturating_duration_since(requested_at),
+                update: pending_update_elapsed,
+                render: transaction.render,
+                draw: Duration::from_nanos(io.draw_ns),
+                flush: Duration::from_nanos(io.flush_ns),
+                total: transaction.total,
+                changed_cells: io.changed_cells,
+                emitted_bytes: io.emitted_bytes,
+                cache_rebuilds: cache_work.rebuilds,
+                cache_patches: cache_work.patches,
+                materialized_rows: cache_work.materialized_rows,
+            });
+            pending_update_elapsed = Duration::ZERO;
+            if let Some(report) = report {
+                eprintln!("{report}");
             }
-            last_render = Some(now);
-            dirty = false;
+            if first_frame {
+                drop(_first_zone);
+                first_draw_done = true;
+                phases.mark("first frame");
+            }
         }
     }
 
     bridge_io.shutdown();
-    ratatui::restore();
+    terminal.restore().ok();
     if let Some(reason) = fatal {
         bail!("{reason}");
     }
@@ -1020,28 +1115,90 @@ mod tests {
     }
 
     #[test]
+    fn scheduler_is_idle_after_due_frame_completes() {
+        let now = Instant::now();
+        let mut scheduler = FrameScheduler::new(now);
+        assert_eq!(scheduler.take_due(now), Some(now));
+        scheduler.complete(now);
+        assert_eq!(scheduler.deadline(), None);
+    }
+
+    #[test]
+    fn interactive_request_preempts_content_deadline() {
+        let now = Instant::now();
+        let mut scheduler = FrameScheduler::new(now);
+        scheduler.take_due(now);
+        scheduler.complete(now);
+        scheduler.request(DirtyReason::Content, now + Duration::from_millis(1));
+        assert_eq!(scheduler.deadline(), Some(now + CONTENT_FRAME_INTERVAL));
+        scheduler.request(DirtyReason::Interactive, now + Duration::from_millis(2));
+        assert_eq!(scheduler.deadline(), Some(now + INTERACTIVE_FRAME_INTERVAL));
+    }
+
+    #[test]
+    fn repeated_interaction_coalesces_at_one_deadline() {
+        let now = Instant::now();
+        let mut scheduler = FrameScheduler::new(now);
+        scheduler.take_due(now);
+        scheduler.complete(now);
+        for millis in 1..10 {
+            scheduler.request(
+                DirtyReason::Interactive,
+                now + Duration::from_millis(millis),
+            );
+        }
+        assert_eq!(scheduler.deadline(), Some(now + INTERACTIVE_FRAME_INTERVAL));
+    }
+
+    #[test]
+    fn inbound_batch_stops_on_count_or_time_budget() {
+        assert!(inbound_budget_remaining(1, Duration::ZERO));
+        assert!(!inbound_budget_remaining(
+            INBOUND_BATCH_LIMIT,
+            Duration::ZERO
+        ));
+        assert!(!inbound_budget_remaining(1, INBOUND_BATCH_BUDGET));
+    }
+
+    #[test]
+    fn animation_interval_honors_config_with_safe_floor() {
+        let mut state = AppState::default();
+        state.config.spinner_frame_ms = 120;
+        assert_eq!(animation_interval(&state), Duration::from_millis(120));
+        state.config.spinner_frame_ms = 0;
+        assert_eq!(animation_interval(&state), MIN_ANIMATION_INTERVAL);
+    }
+
+    #[test]
     fn copy_key_evaluation_releases_the_state_lock() {
-        let state = std::sync::Mutex::new(AppState::default());
-        let rows = vec![
-            copy::CopyRow {
-                unit: 0,
-                raw_line: None,
-                atomic: false,
-                text: "a".into(),
-                global_row: 0,
-            },
-            copy::CopyRow {
-                unit: 0,
-                raw_line: None,
-                atomic: false,
-                text: "b".into(),
-                global_row: 1,
-            },
-        ];
+        let mut app = AppState::default();
+        app.msgs.push(Msg::Assistant {
+            text: "a\nb".into(),
+            lines: vec![
+                e::render::RenderLine {
+                    line: ratatui::text::Line::from("a"),
+                    unit: 1,
+                    raw_line: Some(0),
+                    atomic: false,
+                    fill: false,
+                },
+                e::render::RenderLine {
+                    line: ratatui::text::Line::from("b"),
+                    unit: 1,
+                    raw_line: Some(1),
+                    atomic: false,
+                    fill: false,
+                },
+            ],
+            unit_start: 1,
+        });
+        app.transcript_cache.width = 80;
+        let state = std::sync::Mutex::new(app);
+        let mut rows_cache = copy::CopyRowsCache::default();
         let mut copy_mode = copy::CopyMode::default();
         let key = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
 
-        let action = copy_key_action(&state, &mut copy_mode, &key, &rows);
+        let action = copy_key_action(&state, &mut copy_mode, &mut rows_cache, &key);
         assert!(matches!(action, copy::CopyAction::Moved(1)));
         assert!(
             state.try_lock().is_ok(),

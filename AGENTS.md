@@ -18,7 +18,9 @@ DeepSeek Harness（DSH）的终端客户端（项目名 **e**，可执行文件 
 `bridge/protocol-contract.json`（`client/build.rs` 生成 Rust 常量，`bridge/src/protocol.js`
 运行时读取，`tools/generate-protocol-doc.mjs` 生成 `docs/protocol.md`）。token 认证，token
 在 `%DSH_HOME%\dsh-tui.token`。
-客户端配置在 `%APPDATA%\dshe\config.toml`，主题在 `%APPDATA%\dshe\themes\`。
+客户端配置在 `%APPDATA%\dshe\config.toml`，默认配置源是
+`client/assets/default_config.toml`（`include_str!` 嵌入并解析，用户文件作为缺字段可继承的覆盖层）；
+主题在 `%APPDATA%\dshe\themes\`。
 
 ## 常用命令（Windows / PowerShell）
 
@@ -55,6 +57,7 @@ node tools/hello-test.mjs         # 发 hello 打印全部帧（验证启动路�
 node tools/probe-startup.mjs      # attach 延迟/快照大小
 node tools/dump-snapshot.mjs      # 抓快照样本 → tools/cache/snapshot-sample.json
 cargo run --release --example timing_snapshot -- tools/cache/snapshot-sample.json
+cargo run --release --example timing_frames # 1002 消息持续滚动/流式/动画帧基准
 cargo run --example smoke_snapshot -- tools/cache/snapshot-sample.json
 ```
 
@@ -81,7 +84,9 @@ cargo 走 crates.io 官方源（本机网络已修复）。`client/vendor/` 与
 - **文件活动折叠**：`FileGroup` 用统一 `FileItem + FileAction` 保留 `read/view/edit/replace/insert`
   标签，连续的 `str_replace_editor` view/str_replace/insert 与 read/edit 进入同一折叠活动行；编辑器
   的绝对路径按 `session_cwd` 转成工作区相对路径。create 不进入 FileGroup，单独显示为
-  `<指示灯> create <相对路径>`，完成后也不追加输出行数/耗时。
+  `<指示灯> create <相对路径>`，完成后也不追加输出行数/耗时。所有活动行保持单显示行，超宽时在
+  `styled_msg_lines` 按已解析的页面内容宽度（含 `page_max_width`）截断并追加 `…`，不得按终端宽度
+  预截断后在较窄页面中折行。
 - **Surface 语义**：`HostEvent` 解析事件顶层 `time`、`surfaceOp`、`sourceEventSeqs`；replace
   必须先移除 shadowed surface owner，再在原 surface 位置插入替代节点。未知但带 `surfaceOp` 的事件
   也必须进入快照/历史兼容路径。历史前插时保存 shadowed seq，后到的旧页不得复活压缩内容；被分页
@@ -91,12 +96,19 @@ cargo 走 crates.io 官方源（本机网络已修复）。`client/vendor/` 与
   outcome 并映射到 Success/Failure/Cancelled。compaction 的 log-only summary 不单独画卡，唯一 summary
   card 由 replacement 创建并拥有，确保后续 replace 能精确删除。
 - **渲染缓存**（`cache.rs::TranscriptRenderCache` + `ui.rs`）：只有结构性事件使缓存
-  失效并全量重建；流式 chunk 只标记 `tail_dirty`，渲染时**尾部拼接**；spinner
-  帧推进也会触发重建。复制行号由 `ui.rs::copy_layout_rows` 从同一个
-  `styled_msg_lines` 布局过程产生，`copy.rs::flatten` 只投影 provenance——禁止重新
-  实现 padding/折行/活动卡间距。
-- **性能红线**（都有回归测试）：每事件不得全量重渲染；重绘 ≤30ms 一帧且只在
-  dirty 时；每帧只克隆可见窗口。新功能别破坏 `cache_valid/tail_dirty` 语义。
+  失效并全量重建；流式 chunk 只标记 `tail_dirty`，渲染时**尾部拼接**并仅重算 tail
+  display-row suffix/prefix，不得清空整份 layout；spinner/settle 只 patch 活动 range，settle
+  到期必须再提交一次精确目标色 patch 后才停钟。复制行号由 `ui.rs::copy_layout_rows` 从同一个
+  `styled_msg_lines` 布局过程产生，主循环用 `CopyRowsCache` 按 width/generation 复用 provenance，
+  禁止每个 copy 按键和随后绘帧各自全量 `flatten`。折行扫描按 Unicode grapheme cluster 计算显示宽度，
+  combining mark/emoji ZWJ 即使跨 style span 也不得拆开。
+- **性能红线**（都有回归测试）：终端输入通过 `EventStream` 直接唤醒主循环，禁止恢复固定
+  ticker 轮询；交互/内容/动画 deadline 分离，bridge backlog 每轮受条数+时间预算约束。终端由
+  `terminal_runtime.rs::TerminalOwner` 单点初始化/恢复，帧用 64KiB `BufWriter` + DEC 2026
+  synchronized output 原子提交（`DSHE_DISABLE_SYNC_OUTPUT=1` 仅作兼容诊断）。每事件不得全量
+  重渲染；重绘 P95 ≤30ms 且只在 dirty/deadline 到期时；动画只 patch 活动消息 range，流式只
+  splice tail；display-row layout 按 width/generation 缓存，每帧只物化/克隆可见窗口。禁止破坏
+  `valid/tail_dirty/dirty_messages`、history display-row anchor 与 copy provenance 共用布局语义。
 - **主循环锁纪律**：Rust 2021 的 `if let`/`match` scrutinee 临时值会活到整个表达式
   结束；不得把 `state_r.lock()` 直接写进 scrutinee 后又在分支中重锁或 `.await`，否则
   会自死锁、表现为 TUI 完全无法输入。先在独立作用域算出普通值/动作再匹配，或像
@@ -120,6 +132,11 @@ cargo 走 crates.io 官方源（本机网络已修复）。`client/vendor/` 与
 - **copy 语义**：复制永远取原始 markdown（`units` 表）；表格/代码/mermaid 是
   原子块（`RenderLine.atomic`）。渲染单元 id 在重渲染时复用（`unit_start`），
   别重新分配。
+- **Markdown 标题与局部背景**：标题直接使用固定语义 `semantics.markdown.heading1..6`；当前
+  ferra 的一级为 Coral `#ffa07a` 粗体（无背景），二级为 Sage `#b1b695` 粗体，三级为
+  Blush `#fecdb2` 非粗体。inline code 的 `bg` 只能作用于 chip span；`render_transcript` 只允许
+  `Line.style.bg` 触发整行补色，禁止从任意 span 的背景推断整行背景，否则会污染源码分隔空格与
+  行尾空白。修改这些样式须同步内置主题 TOML、`render.rs` 与 TestBackend 回归测试。
 - **表格单元格**：必须经 `cell_spans()`（`render.rs`）做行内渲染 + 显示列宽
   截断/补齐，不能塞裸字符串。
 - **历史分页**：`min_seq`/`history_loading`/`history_exhausted`；前插走
@@ -271,10 +288,17 @@ cargo 走 crates.io 官方源（本机网络已修复）。`client/vendor/` 与
   （`<skill_content>` 块）以 `createUserMessage` + `source:{kind:"skill-invocation"}`
   `followup` 进会话（镜像 dsh-tool-skill 的用户显式调用注入）；未知名回
   `error{code:"skill-unknown"}`。跨 await 后要校验 `conns.has(current)`。
-- **主题/启动器（客户端）**：配置 `%APPDATA%\dshe\config.toml`（`Config.theme`
-  存主题名，`resolved_theme` 为 `#[serde(skip)]` 的解析结果缓存，渲染期零磁盘读）；
-  主题文件在 `%APPDATA%\dshe\themes\*.toml`（`theme.rs` 扫描/校验/内置
-  deepseek-e + ferra）。`launcher.rs`：`probe(url)` TCP 探测 → 无 dsh 则 spawn
+- **配置/主题/启动器（客户端）**：配置默认值只维护在
+  `client/assets/default_config.toml`，由 `config.rs` 用 `include_str!` 嵌入并解析；
+  `%APPDATA%\dshe\config.toml` 经 `PartialConfig` 覆盖嵌入默认值，须继续兼容旧文件缺少新字段，
+  `Config::default()` 不得恢复 Rust 字段字面量。`Config.theme` 存主题名，`resolved_theme` 为
+  `#[serde(skip)]` 的解析结果缓存，渲染期零磁盘读。主题是两层
+  TOML：开放 `[colors]` 允许任意色名，固定 `[semantics.*]`（surface/markdown/input/
+  working_status/log/activity/card/overlay）把语义样式链接到色名；每个样式仅 `fg` 必填，`bg`/
+  `bold`/`italic`/`underline` 可选，未知引用、缺少固定字段或非法 hex 整个文件拒绝。内置
+  `deepseek-e`/`ferra` 源文件在 `client/assets/themes/`，由 `include_str!` 嵌入并走与用户文件
+  相同的解析器，同时无覆盖地复制到 `%APPDATA%\dshe\themes\`；合法同名用户文件优先，非法
+  旧文件不得遮蔽嵌入回退。`launcher.rs`：`probe(url)` TCP 探测 → 无 dsh 则 spawn
   `dsh --profile dshe`（`dsh` 或 `npx @deepseek-ai/dsh`）→ `%DSH_HOME%\dsh-tui.lock`
   计数「最后一个 tui 关闭时关 dsh」；Windows 的 child handle 指向 `cmd /C` shim，正常关闭和启动超时
   清理都必须 `taskkill /T` 整棵进程树，禁止只 `Child::kill` 留下孤儿 Node；子进程回收必须有界，终止失败时

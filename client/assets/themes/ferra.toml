@@ -1,0 +1,100 @@
+name = "ferra"
+
+# The palette is intentionally open-ended. Add any named colors here and
+# reference them from the fixed semantic roles below.
+[colors]
+night = "#2b292d"
+ash = "#383539"
+umber = "#4d424b"
+bark = "#6f5d63"
+mist = "#d1d1e0"
+sage = "#b1b695"
+blush = "#fecdb2"
+coral = "#ffa07a"
+rose = "#f6b6c9"
+ember = "#e06b75"
+honey = "#f5d76e"
+
+[semantics.surface]
+base = { fg = "mist", bg = "night" }
+panel = { fg = "mist", bg = "ash" }
+selection = { fg = "mist", bg = "umber" }
+primary_text = { fg = "mist" }
+muted_text = { fg = "bark" }
+
+[semantics.markdown]
+text = { fg = "mist" }
+heading1 = { fg = "coral", bold = true }
+heading2 = { fg = "sage", bold = true }
+heading3 = { fg = "blush" }
+heading4 = { fg = "rose", italic = true }
+heading5 = { fg = "blush" }
+heading6 = { fg = "bark" }
+emphasis = { fg = "mist", italic = true }
+strong = { fg = "mist", bold = true }
+strikethrough = { fg = "mist" }
+inline_code = { fg = "rose", bg = "night" }
+link_text = { fg = "rose", bold = true }
+link_url = { fg = "blush", underline = true }
+image = { fg = "blush", italic = true }
+quote_marker = { fg = "bark" }
+rule = { fg = "bark" }
+code_text = { fg = "mist" }
+code_meta = { fg = "bark" }
+code_background = { fg = "mist", bg = "night" }
+table_border = { fg = "bark" }
+table_header = { fg = "mist", bold = true }
+list_marker = { fg = "bark" }
+task_checked = { fg = "sage" }
+task_unchecked = { fg = "bark" }
+mermaid_border = { fg = "bark" }
+mermaid_node = { fg = "mist" }
+mermaid_edge = { fg = "bark" }
+mermaid_edge_label = { fg = "blush" }
+mermaid_title = { fg = "coral", bold = true }
+
+[semantics.input]
+background = { fg = "mist", bg = "ash" }
+text = { fg = "mist" }
+prompt = { fg = "coral" }
+cursor = { fg = "night", bg = "mist" }
+hint = { fg = "bark" }
+placeholder = { fg = "rose", bold = true }
+selection = { fg = "night", bg = "mist" }
+status = { fg = "mist" }
+status_hint = { fg = "bark" }
+status_accent = { fg = "coral" }
+
+[semantics.working_status]
+idle = { fg = "bark" }
+waiting = { fg = "bark" }
+running = { fg = "honey" }
+success = { fg = "sage" }
+failure = { fg = "ember" }
+cancelled = { fg = "honey" }
+
+[semantics.log]
+info = { fg = "bark" }
+warning = { fg = "honey" }
+error = { fg = "ember" }
+
+[semantics.activity]
+label = { fg = "umber" }
+detail = { fg = "bark" }
+metadata = { fg = "bark" }
+
+[semantics.card]
+user = { fg = "mist", bg = "ash" }
+context = { fg = "bark", bg = "ash" }
+detail = { fg = "bark", bg = "ash" }
+attachment = { fg = "bark", bg = "ash" }
+
+[semantics.overlay]
+background = { fg = "mist", bg = "ash" }
+border = { fg = "coral" }
+text = { fg = "mist" }
+muted = { fg = "bark" }
+selection = { fg = "night", bg = "mist" }
+accent = { fg = "coral" }
+selected_marker = { fg = "sage" }
+unselected_marker = { fg = "mist" }

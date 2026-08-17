@@ -1,0 +1,29 @@
+# Embedded defaults for dshe. User overrides are loaded from
+# %APPDATA%\dshe\config.toml; omitted fields inherit these values.
+
+# Appearance
+spinner_style = "A"
+spinner_frame_ms = 120
+theme = "deepseek-e"
+plain_color = false
+
+# Behavior
+remember_last_session = false
+default_mode = "standard"
+# Kept for compatibility with older config files; Enter always sends.
+enter_sends = true
+paste_placeholder_chars = 64
+long_content_lines = 20
+atomic_collapse_rows = 40
+copy_toast_secs = 2
+history_limit = 1000
+
+# Display
+show_model_in_status = true
+show_tool_duration = true
+read_merge = true
+show_timestamps = false
+mermaid_enabled = true
+user_input_padding = 2
+# 0 = unlimited (terminal width minus side margins).
+page_max_width = 0

@@ -43,11 +43,15 @@ pub fn lerp_color(from: Color, to: Color, t: f64) -> Color {
     }
 }
 
-/// Breathing color of the running indicator: gray (`dim`) at phase 0,
-/// yellow (`running`) at 0.5, gray again at 1 (one cosine breath per cycle).
+/// Breathing color of the running indicator: `working_status.idle` at phase
+/// 0, `working_status.running` at 0.5, then idle again at 1.
 pub fn breathing_color(theme: &Theme, phase: f64) -> Color {
     let t = (1.0 - (phase * std::f64::consts::TAU).cos()) / 2.0;
-    lerp_color(theme.dim, theme.running, t)
+    lerp_color(
+        theme.working_status.idle.fg,
+        theme.working_status.running.fg,
+        t,
+    )
 }
 
 /// Interpolate from the captured breathing color to the settled color over
@@ -1800,7 +1804,7 @@ impl AppState {
         self.apply_pending_activity_enrichments();
         self.transcript_cache.invalidate();
         self.transcript_cache.tail_dirty = false;
-        self.transcript_cache.prepend_anchor = Some(self.transcript_cache.lines.len());
+        self.transcript_cache.prepend_anchor = Some(self.transcript_cache.display_len());
         added
     }
 }
@@ -1863,49 +1867,102 @@ fn trim_to(text: &str, max_chars: usize) -> String {
     out.replace(['\r', '\n'], " ")
 }
 
-/// Drive the breathing/transition animation clock. Returns true while any
-/// running indicator is visible or a settle transition is still animating
-/// (the caller uses it to schedule a redraw). Colors are baked into the
-/// cached lines, so animation invalidates the cache — the renderer rebuilds
-/// with fresh colors on the next draw.
-pub fn tick_spinners(state: &mut AppState, now: std::time::Instant) -> bool {
+/// Whether an animation deadline is needed. This is separate from advancing
+/// the clock so the event-driven main loop can remain asleep when idle.
+pub fn animation_active(state: &AppState, _now: std::time::Instant) -> bool {
     let any_pending = state.msgs.iter().any(|m| match m {
         Msg::Tool(card) => card.state == ToolState::Running,
         Msg::FileGroup(group) => group.pending(),
         Msg::Thinking(card) => card.state == ThinkState::Running,
         Msg::Activity(row) => row.state.is_active(),
-        Msg::Block(block) => block.streaming,
+        Msg::Block(block) => block.streaming && block.format != TranscriptFormat::Reasoning,
         _ => false,
     }) || matches!(state.msgs.last(), Some(Msg::Streaming { .. }))
         || state.working
         || state.status == AgentStatus::Running;
+    // A transition marker remains active until `tick_spinners` submits one
+    // final target-color patch and clears it, even if the process slept past
+    // the nominal transition deadline.
+    let transitioning = state.msgs.iter().any(|m| match m {
+        Msg::Tool(card) => card.done_since.is_some() && card.done_from.is_some(),
+        Msg::FileGroup(group) => group.done_since.is_some() && group.done_from.is_some(),
+        Msg::Thinking(card) => card.done_since.is_some() && card.done_from.is_some(),
+        _ => false,
+    });
+    any_pending || transitioning
+}
 
-    if any_pending {
-        if state.activity_epoch.is_none() {
-            state.activity_epoch = Some(now);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransitionTick {
+    None,
+    Active,
+    Finalize,
+}
+
+fn advance_transition(
+    done_since: &mut Option<std::time::Instant>,
+    done_from: &mut Option<Color>,
+    now: std::time::Instant,
+) -> TransitionTick {
+    let (Some(at), Some(_)) = (*done_since, *done_from) else {
+        return TransitionTick::None;
+    };
+    if now.saturating_duration_since(at).as_millis() < SETTLE_TRANSITION_MS {
+        TransitionTick::Active
+    } else {
+        // Clearing the source before the patch makes the renderer choose the
+        // exact target color. Keep `done_since` as the lifecycle sentinel so a
+        // duplicate file result cannot restart an already-finished transition.
+        *done_from = None;
+        TransitionTick::Finalize
+    }
+}
+
+/// Advance the breathing/transition animation clock and mark only visible
+/// message ranges whose color can change. Status-only activity still requests
+/// a frame but does not dirty transcript lines.
+pub fn tick_spinners(state: &mut AppState, now: std::time::Instant) -> bool {
+    let mut any_pending = state.working || state.status == AgentStatus::Running;
+    let mut animation_changed = false;
+    let msg_len = state.msgs.len();
+    let mut dirty = Vec::new();
+    for (index, msg) in state.msgs.iter_mut().enumerate() {
+        let (pending, transition) = match msg {
+            Msg::Tool(card) => (
+                card.state == ToolState::Running,
+                advance_transition(&mut card.done_since, &mut card.done_from, now),
+            ),
+            Msg::FileGroup(group) => (
+                group.pending(),
+                advance_transition(&mut group.done_since, &mut group.done_from, now),
+            ),
+            Msg::Thinking(card) => (
+                card.state == ThinkState::Running,
+                advance_transition(&mut card.done_since, &mut card.done_from, now),
+            ),
+            Msg::Activity(row) => (row.state.is_active(), TransitionTick::None),
+            Msg::Block(block) => (
+                block.streaming && block.format != TranscriptFormat::Reasoning,
+                TransitionTick::None,
+            ),
+            Msg::Streaming { .. } if index + 1 == msg_len => (true, TransitionTick::None),
+            _ => (false, TransitionTick::None),
+        };
+        any_pending |= pending;
+        if pending || transition != TransitionTick::None {
+            dirty.push(index);
+            animation_changed = true;
         }
+    }
+    if any_pending {
+        state.activity_epoch.get_or_insert(now);
     } else {
         state.activity_epoch = None;
     }
-
-    // Settle transitions keep animating briefly after the task ends.
-    let transitioning = state.msgs.iter().any(|m| match m {
-        Msg::Tool(card) => card
-            .done_since
-            .map_or(false, |t| t.elapsed().as_millis() < SETTLE_TRANSITION_MS),
-        Msg::FileGroup(group) => group
-            .done_since
-            .map_or(false, |t| t.elapsed().as_millis() < SETTLE_TRANSITION_MS),
-        Msg::Thinking(card) => card
-            .done_since
-            .map_or(false, |t| t.elapsed().as_millis() < SETTLE_TRANSITION_MS),
-        _ => false,
-    });
-
-    if any_pending || transitioning {
-        state.transcript_cache.valid = false;
+    for index in dirty {
+        state.transcript_cache.mark_message_dirty(index);
     }
-    any_pending || transitioning
+    any_pending || animation_changed
 }
 
 fn host_event_time(event: &HostEvent) -> u64 {
@@ -2422,8 +2479,13 @@ mod tests {
             }
         }
         assert!(
+            tick_spinners(&mut s, std::time::Instant::now()),
+            "expired settle transition emits its final target-color patch"
+        );
+        s.transcript_cache.dirty_messages.clear();
+        assert!(
             !tick_spinners(&mut s, std::time::Instant::now()),
-            "animation clock stops after the settle transition"
+            "animation clock stops after the final patch"
         );
     }
 
@@ -3239,12 +3301,17 @@ mod tests {
             done_from: None,
         };
         s.msgs.push(Msg::Tool(card.clone()));
+        s.transcript_cache.valid = true;
         assert!(
             tick_spinners(&mut s, std::time::Instant::now()),
             "running drives redraws"
         );
         assert!(s.activity_epoch.is_some(), "epoch set while running");
-        assert!(!s.transcript_cache.valid, "animation invalidates the cache");
+        assert!(s.transcript_cache.valid, "animation keeps the base cache");
+        assert!(
+            s.transcript_cache.dirty_messages.contains(&0),
+            "only the running message is dirty"
+        );
         // Settle: the transition still drives redraws.
         card.state = ToolState::Done {
             ok: true,
@@ -3256,26 +3323,63 @@ mod tests {
         card.done_from = Some(Theme::ferra().dim);
         s.msgs[0] = Msg::Tool(card.clone());
         s.transcript_cache.valid = true;
+        s.transcript_cache.dirty_messages.clear();
         assert!(
             tick_spinners(&mut s, std::time::Instant::now()),
             "transition animates"
         );
-        // Long-settled: the clock stops.
+        assert!(s.transcript_cache.dirty_messages.contains(&0));
+        // An expired transition gets one exact target-color patch, then the
+        // clock stops without an extra animation deadline.
         card.done_since = Some(
             std::time::Instant::now()
                 - std::time::Duration::from_millis(SETTLE_TRANSITION_MS as u64 + 10),
         );
         s.msgs[0] = Msg::Tool(card);
         s.transcript_cache.valid = true;
+        s.transcript_cache.dirty_messages.clear();
         assert!(
-            !tick_spinners(&mut s, std::time::Instant::now()),
-            "settled card stops redraws"
+            tick_spinners(&mut s, std::time::Instant::now()),
+            "expired transition submits its final patch"
         );
-        assert!(
-            s.transcript_cache.valid,
-            "no invalidation when nothing animates"
-        );
+        assert!(s.transcript_cache.dirty_messages.contains(&0));
+        assert!(matches!(
+            &s.msgs[0],
+            Msg::Tool(card) if card.done_since.is_some() && card.done_from.is_none()
+        ));
+        s.transcript_cache.dirty_messages.clear();
+        assert!(!tick_spinners(&mut s, std::time::Instant::now()));
+        assert!(s.transcript_cache.valid);
         assert!(s.activity_epoch.is_none(), "epoch cleared when idle");
+    }
+
+    #[test]
+    fn final_file_group_patch_does_not_restart_on_duplicate_result() {
+        let completed_at = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        let mut state = AppState::default();
+        state.msgs.push(Msg::FileGroup(FileGroup {
+            items: vec![FileItem {
+                action: FileAction::Read,
+                call_id: "r1".into(),
+                file: "a.rs".into(),
+                ok: Some(true),
+            }],
+            frame: 0,
+            done_since: Some(completed_at),
+            done_from: Some(Theme::ferra().dim),
+        }));
+        state.transcript_cache.valid = true;
+        assert!(tick_spinners(&mut state, std::time::Instant::now()));
+        let Msg::FileGroup(group) = &mut state.msgs[0] else {
+            unreachable!()
+        };
+        assert_eq!(group.done_since, Some(completed_at));
+        assert!(group.done_from.is_none());
+        settle_group(group, Theme::ferra().dim);
+        assert!(
+            group.done_from.is_none(),
+            "duplicate result must not restart settle"
+        );
     }
 
     /// Running status alone (no tool/thinking/streaming, `working` false)
@@ -3292,7 +3396,11 @@ mod tests {
             "running drives redraws"
         );
         assert!(s.activity_epoch.is_some(), "epoch set while running");
-        assert!(!s.transcript_cache.valid, "animation invalidates the cache");
+        assert!(
+            s.transcript_cache.valid,
+            "status-only animation does not dirty transcript rows"
+        );
+        assert!(s.transcript_cache.dirty_messages.is_empty());
         // Idle with nothing animating stops the clock again.
         s.status = AgentStatus::Idle;
         assert!(

@@ -41,7 +41,7 @@
 | D24 | 粘贴超长占位 | 粘贴超过配置阈值显示 Rose 色 `[N text pasted]`；发送原样完整内容；普通文本用 `Shift+Enter` 插入换行 |
 | D25 | spinner 可配置 | 默认 A 半月旋转 `◐◓◑◒`（~120ms/帧）；帧序做成可配置枚举（`config.toml` 可换 B/C/D/E）；字体缺字形自动降级 ASCII `\|/-\` |
 | D26 | Input Page | `/settings` `/login` `/model` `/theme` 统一替代输入区（非浮窗）；上下 1 行、左右 2 列内边距；单焦点用方向键/`hjkl` 移动、`Enter` 执行、`Esc` 返回 |
-| D27 | 配置存储 | `%APPDATA%\dshe\config.toml`（toml+serde）；优先级 默认值 < 文件 < 运行时；**即改即存、即时生效**，修改过的值 Honey 短暂高亮 |
+| D27 | 配置存储 | 默认值唯一来源为 `client/assets/default_config.toml`（`include_str!` 嵌入并解析）；`%APPDATA%\dshe\config.toml` 是允许缺字段的覆盖层；优先级 嵌入默认值 < 用户文件 < 运行时；**即改即存、即时生效** |
 | D28 | TUI 内可改项 | 见 §4.7 清单：外观/行为/显示三类全部可改，高级类只读 |
 | D29 | 不提供 TUI 修改 | 连接参数（启动 flag）、字体字号（终端侧）、剪贴板后端（平台）、键位重绑定（v2）、语法高亮主题（二期） |
 | D30 | 发送键语义 | 固定 `Enter` 发送、`Shift+Enter` 换行；旧配置 `enter_sends` 仅保留反序列化兼容，不再改变交互 |
@@ -165,7 +165,7 @@ RenderUnit { kind, source: { blockType, raw: String }, cells: RenderedCells }
 ✗ npm run build · 64 行         ← exit 非 0：Ember 红 x
 ```
 
-- 运行中不展示输出正文，行数随输出实时增长；命令文本超一行截断（尾部 `…`）。
+- 运行中不展示输出正文，行数随输出实时增长；命令文本超一行截断（尾部 `…`），截断列数按居中页面的实际内容宽度计算（含“页面最大宽度”设置），不得按外层终端宽度计算后再在窄页面内折行。
 - 结束：`✓`/`✗` 颜色即退出码语义；**用户要求的"红 x"** 即非零退出码的 `✗`。
 - 展开（Enter）：查看完整命令与输出/stderr（含折叠规则见下）。
 
@@ -192,13 +192,43 @@ RenderUnit { kind, source: { blockType, raw: String }, cells: RenderedCells }
 
 - Markdown：标题、粗体、斜体、行内代码、围栏代码块（语言标签 + 纯色；syntect 仍属后续）、
   有序/无序列表、引用、分隔线、**表格**（框线渲染，列宽自适应，超宽截断标注）、**mermaid**。
+  标题直接使用 `semantics.markdown.heading1..6`；ferra 下一级为 Coral `#ffa07a` 粗体且
+  无背景，二级为 Sage `#b1b695` 粗体，三级为 Blush `#fecdb2` 非粗体。
+- 行内代码：背景色严格限制在 inline-code chip 自身（含 chip 内边距）；源码中的后续分隔空格和
+  行尾未使用单元保持普通行背景。整行背景补齐只认行级 `Line.style.bg`，不得从局部 span 推断。
 - 代码块：左侧竖线边框 + 顶部语言标签；v1 超宽折行，横向滚动 v2。
 - mermaid：grok-mermaid WASM 渲染为 Unicode 框图，渲染失败时降级显示源码围栏块（可复制）。
 - 长内容折叠：普通长文本/工具结果 > N 行（默认 20）折叠，显示头尾 + `… [Enter] 展开`。
   （原子块表格/mermaid/代码块不折叠，见 O12 是否例外）
 - 流式渲染：token 级追加；未上翻自动跟随底部，上翻暂停跟随并显示 `↓ 新消息` 指示。
 
-### 3.4 ferra 色板（来源：casperstorm/ferra README）
+### 3.4 两层主题系统与 ferra 色板
+
+主题 TOML 分为两层：
+
+1. `[colors]` 是开放色盘，键名完全由主题作者定义，值必须是 6 位十六进制颜色；运行时不依赖
+   `night`、`ok` 等固定色名。
+2. `[semantics.*]` 是固定语义 schema，包含 `surface`、`markdown`、`input`（含状态栏）、
+   `working_status`、`log`、`activity`、`card`、`overlay`。每个固定角色是样式对象，仅 `fg`
+   必填，`bg`、`bold`、`italic`、`underline` 可选，颜色值引用 `[colors]` 中的用户色名。
+
+```toml
+[colors]
+night = "#2b292d"
+blush = "#fecdb2"
+
+[semantics.markdown]
+heading3 = { fg = "blush" }
+inline_code = { fg = "blush", bg = "night" }
+```
+
+缺少固定语义字段、出现未知语义字段、引用不存在的色名或使用非法颜色时，整个主题文件无效并
+从主题目录中跳过。内置 `deepseek-e` 与 `ferra` 也不是 Rust 硬编码色板：源文件位于
+`client/assets/themes/`，通过 `include_str!` 编译进程序并使用同一个解析器；首次加载时原样复制到
+`%APPDATA%\dshe\themes\`，不覆盖用户已有文件。合法同名用户主题优先于嵌入版本，非法旧文件不会
+遮蔽内置回退。解析后的固定语义样式缓存在 `Config.resolved_theme`，渲染期不读取磁盘。
+
+Ferra 色板来源于 casperstorm/ferra README：
 
 | 名称 | Hex | 用途（客户端） |
 |------|-----|----------------|
@@ -207,9 +237,9 @@ RenderUnit { kind, source: { blockType, raw: String }, cells: RenderedCells }
 | Umber | `#4d424b` | 选区底色（原子块选中） |
 | Bark | `#6f5d63` | 次要文本 / 工具卡 |
 | Mist | `#d1d1e0` | 正文前景 |
-| Sage | `#b1b695` | assistant 色条 / 成功 |
-| Blush | `#fecdb2` | 链接 |
-| Coral | `#ffa07a` | 用户 `❯` / 用户高亮 |
+| Sage | `#b1b695` | assistant 色条 / 成功 / 二级标题（粗体） |
+| Blush | `#fecdb2` | 链接 / 三级标题（非粗体） |
+| Coral | `#ffa07a` | 用户 `❯` / 用户高亮 / 一级标题（粗体、无背景） |
 | Rose | `#f6b6c9` | 强调 / 行内代码 |
 | Ember | `#e06b75` | 错误 / 失败 |
 | Honey | `#f5d76e` | 运行中 / 审批卡 / 警告 |
@@ -423,6 +453,9 @@ assistant 消息顶部。**复制的永远是原始 markdown 源码**（经 §2.
   底）；选择类编辑时 `←/→` 移动光标，光标所在选项 Night 底。
 - **编辑语义**：`Enter` 确认修改、`Esc` 取消退回；编辑期间按键不外泄。退出面板
   后消息流/输入栏状态原样恢复。
+- 默认配置：`client/assets/default_config.toml` 通过 `include_str!` 编译进单 exe，启动时解析为
+  `Config::default()`；默认值不得在 Rust 中维护平行字面量。用户配置按字段覆盖该基线，旧文件
+  缺少后来新增字段时自动继承嵌入默认值。
 - 保存：**即改即存**写入 `%APPDATA%\dshe\config.toml` 并即时生效。
 
 **可配置项清单（TUI 内可改）**
@@ -431,7 +464,7 @@ assistant 消息顶部。**复制的永远是原始 markdown 源码**（经 §2.
 |------|------|------|------|
 | 外观 | spinner 样式（A/B/C/D/E） | 枚举 | A 半月旋转 |
 | 外观 | spinner 帧率 | 数值 ms | 120 |
-| 外观 | 主题色（ferra 预设 / 自定义十六进制：背景、前景、用户、assistant、成功、失败、运行中、警告、次要文本、输入栏底） | 枚举+颜色 | ferra 预设 |
+| 外观 | 主题（从 `%APPDATA%\dshe\themes\*.toml` 选择；色盘与语义映射在两层 TOML 中编辑） | 枚举 | deepseek-e |
 | 外观 | 纯色模式（NO_COLOR） | 布尔 | 关 |
 | 行为 | 记住上次会话 | 布尔 | **关**（新进程默认新建会话） |
 | 行为 | 默认模式（新进程建会话使用的 preset，来自桥接 `presets` roster；配置值已失效时仍可显示/选择，桥接回退 standard） | 枚举 | standard |
@@ -558,22 +591,34 @@ cancelled 保留为独立状态。retry schedule 晚于已加载 retry-started �
 context 与策略状态只更新页面/会话状态；`request/header`、`session/end-seed`、approval audit、
 title/search request 等默认忽略。
 
-Markdown/source map 仍在客户端本地完成；渲染缓存封装为 `TranscriptRenderCache`，复制模式直接
-消费 UI 同一布局过程产生的行 provenance，不再重复推导 padding/折行/间距。流式 text delta
-只置 `tail_dirty`，surface replace 等结构变更只做一次结构失效。
+Markdown/source map 仍在客户端本地完成；渲染缓存封装为 `TranscriptRenderCache`，复制模式通过
+`CopyRowsCache` 复用 UI 同一 width/generation display-row 布局产生的 provenance，不再在按键处理与随后
+绘帧中各自全量推导 padding/折行/间距。滚轮、翻页、follow、历史前插 anchor 与 copy overlay 都使用
+折行后的 display-row 坐标；row count 由线性 Unicode grapheme-width 扫描建立 prefix，combining mark 与
+emoji ZWJ 跨 style span 也保持同一 grapheme，帧内只物化可见行。流式 text delta 只置 `tail_dirty`，
+尾部拼接后只替换 tail row-count suffix 并增量续写 prefix；纯呼吸/settle 动画只 patch 活动消息的稳定
+line range，settle 到期先清插值 source marker（保留完成时间哨兵）并提交精确目标色 patch，再停止 deadline。range 行数变化
+则安全回退全量 rebuild；surface replace 等结构变更只做一次结构失效。
+
+主循环用 Crossterm `EventStream` 将键盘/鼠标/paste/resize 直接接入 `tokio::select!`，不再依赖 50ms
+输入轮询；交互帧 16ms、内容帧约 30ms、动画按 `spinner_frame_ms` deadline 合帧，空闲零周期唤醒。
+bridge 入站 burst 每轮最多 64 条或约 2ms，避免饿死输入/到期帧。`TerminalOwner` 单点管理 raw mode、
+alternate screen 与恢复，CrosstermBackend 使用 64KiB BufWriter；每帧以 DEC private mode 2026
+Begin/End synchronized output 包住 diff、隐藏 IME anchor 与 flush，不支持该扩展的终端忽略序列继续
+普通差量输出，`DSHE_DISABLE_SYNC_OUTPUT=1` 可显式诊断关闭。
 
 ## 6. Rust 技术栈
 
 | 层 | 选型 | 备注 |
 |----|------|------|
-| TUI | ratatui + crossterm | 双缓冲 diff、resize、鼠标 |
+| TUI | ratatui + crossterm EventStream | 双缓冲 diff、事件驱动输入、缓冲/同步帧、resize、鼠标 |
 | 异步/WS | tokio + tokio-tungstenite | 连桥接端点 |
 | 协议 | serde + serde_json | 与 §5 严格对齐 |
 | Markdown | pulldown-cmark | 保留块区间做 source map |
 | Mermaid | **wasmi + grok-mermaid WASM** | 进程内解释执行；失败降级源码围栏 |
 | 代码高亮 | 纯色 + 语言标签 | syntect 延后 |
 | 剪贴板 | arboard（系统剪贴板） | Windows 直写剪贴板 |
-| 配置 | toml + serde（`%APPDATA%\dshe\config.toml`） | 即改即存（§4.7） |
+| 配置 | toml + serde（嵌入 `client/assets/default_config.toml` + `%APPDATA%\dshe\config.toml` 覆盖层） | 缺字段继承默认值、即改即存（§4.7） |
 | 宽字符 | unicode-width | 中文/emoji 宽度 |
 | 分发 | 单 exe（仓库根为 Cargo workspace，根目录 `cargo run` 即启动） | 客户端运行时无 Node 依赖；首次安装/更新桥接需要 Node.js/DSH |
 
@@ -594,7 +639,7 @@ Git、Node.js/npm 与 Rust/Cargo，全局安装 `@deepseek-ai/dsh`，把 `bridge
 - Windows 为主目标：crossterm 原生支持 Windows Terminal / ConPTY；宽度用 unicode-width。
 - 不做：终端内图片内联（无 iTerm2/kitty 协议），附件以引用行展示。
 - 不做（v1）：横向滚动、文件路径补全、多列布局、键位重绑定、块内局部选择（表格/mermaid/代码块）。
-- 主题自定义（含色板 UI）已纳入设置面板（§4.7），不再是 v1 排除项。
+- 主题选择已纳入设置面板（§4.7）；开放色盘与固定语义映射目前通过主题 TOML 编辑。
 
 ## 8. 决策收尾
 

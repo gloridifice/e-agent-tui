@@ -963,6 +963,9 @@ fn content_card_lines(
 fn msg_lines(msg: &Msg, state: &AppState) -> Vec<Line<'static>> {
     let theme = state.theme();
     match msg {
+        // Thinking output collapses into the breathing `• Thinking... xN`
+        // row; `is_hidden_msg` also skips it in the cache and copy layout.
+        Msg::Block(_) if is_hidden_msg(msg) => Vec::new(),
         Msg::Block(block) => transcript_block_lines(block, state),
         // Cards are built width-aware in styled_msg_lines.
         Msg::Card(_) => Vec::new(),
@@ -1225,6 +1228,25 @@ fn is_activity_msg(msg: &Msg) -> bool {
     )
 }
 
+/// Thinking output (reasoning blocks) is collapsed into the breathing
+/// `• Thinking... xN` row: it contributes zero transcript rows and zero
+/// inter-message gap, so the cache builder and copy provenance must skip it.
+fn is_hidden_msg(msg: &Msg) -> bool {
+    matches!(
+        msg,
+        Msg::Block(block) if block.format == TranscriptFormat::Reasoning
+    )
+}
+
+/// Whether the next visible message is another activity row. Hidden messages
+/// are transparent to layout adjacency, just as they are to rendering/copy.
+fn next_visible_is_activity(msgs: &[Msg], index: usize) -> bool {
+    msgs.iter()
+        .skip(index + 1)
+        .find(|msg| !is_hidden_msg(msg))
+        .is_some_and(is_activity_msg)
+}
+
 /// Take up to `limit` display columns worth of leading chars from `text`.
 fn take_width(text: &str, limit: usize) -> (&str, &str) {
     let mut used = 0;
@@ -1425,6 +1447,9 @@ pub fn copy_layout_rows(state: &AppState) -> Vec<CopyLayoutRow> {
     let mut global_row = 0usize;
     let width = state.transcript_cache.width.max(1);
     for (index, msg) in state.msgs.iter().enumerate() {
+        if is_hidden_msg(msg) {
+            continue;
+        }
         let layout_lines = styled_msg_lines(msg, state, width);
         if let Msg::Assistant { lines, .. } = msg {
             for (render_line, _) in lines.iter().zip(layout_lines.iter()) {
@@ -1464,7 +1489,7 @@ pub fn copy_layout_rows(state: &AppState) -> Vec<CopyLayoutRow> {
         } else {
             global_row += layout_lines.len();
         }
-        let next_is_activity = state.msgs.get(index + 1).map_or(false, is_activity_msg);
+        let next_is_activity = next_visible_is_activity(&state.msgs, index);
         if !(is_activity_msg(msg) && next_is_activity) {
             global_row += 1;
         }
@@ -1494,13 +1519,16 @@ fn render_transcript(
         let mut base: Vec<Line<'static>> = Vec::new();
         let mut tail_len = 0usize;
         for (idx, msg) in state.msgs.iter().enumerate() {
+            if is_hidden_msg(msg) {
+                continue;
+            }
             let lines = styled_msg_lines(msg, state, width);
             let n = lines.len();
             base.extend(lines);
             // One-row gap between messages (and before the input bar) —
             // except between consecutive tool/file-group activity rows,
             // which stay glued with no spacing.
-            let next_is_activity = state.msgs.get(idx + 1).map_or(false, is_activity_msg);
+            let next_is_activity = next_visible_is_activity(&state.msgs, idx);
             let gap = !(is_activity_msg(msg) && next_is_activity);
             tail_len = n + usize::from(gap);
             if gap {
@@ -2969,6 +2997,70 @@ mod tests {
     use super::*;
     use crate::model::{AppState, Msg};
     use crate::render::RenderLine;
+    use ratatui::backend::Backend;
+
+    struct CursorTrackingBackend {
+        inner: ratatui::backend::TestBackend,
+        visible: bool,
+        show_calls: usize,
+        draw_while_visible: bool,
+    }
+
+    impl CursorTrackingBackend {
+        fn new(width: u16, height: u16) -> Self {
+            Self {
+                inner: ratatui::backend::TestBackend::new(width, height),
+                visible: false,
+                show_calls: 0,
+                draw_while_visible: false,
+            }
+        }
+    }
+
+    impl Backend for CursorTrackingBackend {
+        fn draw<'a, I>(&mut self, content: I) -> std::io::Result<()>
+        where
+            I: Iterator<Item = (u16, u16, &'a ratatui::buffer::Cell)>,
+        {
+            self.draw_while_visible |= self.visible;
+            self.inner.draw(content)
+        }
+
+        fn hide_cursor(&mut self) -> std::io::Result<()> {
+            self.visible = false;
+            self.inner.hide_cursor()
+        }
+
+        fn show_cursor(&mut self) -> std::io::Result<()> {
+            self.visible = true;
+            self.show_calls += 1;
+            self.inner.show_cursor()
+        }
+
+        fn get_cursor_position(&mut self) -> std::io::Result<Position> {
+            self.inner.get_cursor_position()
+        }
+
+        fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> std::io::Result<()> {
+            self.inner.set_cursor_position(position)
+        }
+
+        fn clear(&mut self) -> std::io::Result<()> {
+            self.inner.clear()
+        }
+
+        fn size(&self) -> std::io::Result<ratatui::layout::Size> {
+            self.inner.size()
+        }
+
+        fn window_size(&mut self) -> std::io::Result<ratatui::backend::WindowSize> {
+            self.inner.window_size()
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.inner.flush()
+        }
+    }
 
     fn state_with(msgs: Vec<Msg>) -> AppState {
         let mut s = AppState::default();
@@ -2977,7 +3069,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_card_and_reasoning_block_use_layout_copy_provenance() {
+    fn reasoning_blocks_are_hidden_but_cards_keep_copy_provenance() {
         let mut s = AppState::default();
         s.units.insert(10, "reason source".into());
         s.units.insert(11, "card source".into());
@@ -3000,11 +3092,17 @@ mod tests {
             horizontal_padding: 2,
             copy_source: "card source".into(),
         }));
+        // Thinking output never renders to the transcript.
+        assert!(
+            styled_msg_lines(&s.msgs[0], &s, 80).is_empty(),
+            "reasoning block renders nothing"
+        );
         let card_lines = styled_msg_lines(&s.msgs[1], &s, 20);
         assert!(card_lines.len() >= 4);
         assert!(card_lines.iter().all(|line| line.width() == 20));
         let rows = copy_layout_rows(&s);
-        assert!(rows.iter().any(|row| row.unit == 10));
+        // Hidden reasoning is not copyable; the visible card still is.
+        assert!(!rows.iter().any(|row| row.unit == 10));
         assert!(rows.iter().any(|row| row.unit == 11));
     }
 
@@ -4944,6 +5042,61 @@ mod tests {
             s.transcript_cache.lines[2].width(),
             0,
             "gap before the input bar"
+        );
+
+        // A hidden reasoning block is transparent: it must not split two
+        // visible activity rows in either render or copy provenance layout.
+        let mut hidden = AppState::default();
+        hidden.config = crate::config::Config::default();
+        hidden.msgs.push(tool());
+        hidden.msgs.push(Msg::Block(TranscriptBlock {
+            id: DisplayId::event(90, "reasoning"),
+            unit: None,
+            content: "hidden".into(),
+            format: TranscriptFormat::Reasoning,
+            tone: DisplayTone::Dim,
+            copy_source: "hidden".into(),
+            streaming: false,
+        }));
+        hidden.msgs.push(group());
+        hidden.msgs.push(Msg::Card(ContentCard {
+            id: DisplayId::event(91, "context"),
+            unit: Some(91),
+            header: None,
+            content: "visible card".into(),
+            role: CardRole::Detail,
+            tone: DisplayTone::Normal,
+            horizontal_padding: 0,
+            copy_source: "visible card".into(),
+        }));
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut hidden_scroll = ScrollState::default();
+        terminal
+            .draw(|f| {
+                render_transcript(
+                    f,
+                    area,
+                    &mut hidden,
+                    &mut hidden_scroll,
+                    &theme,
+                    false,
+                    None,
+                )
+            })
+            .unwrap();
+        assert!(
+            hidden.transcript_cache.lines[1].width() > 0,
+            "hidden reasoning does not insert a gap between activities"
+        );
+        let card_start = copy_layout_rows(&hidden)
+            .into_iter()
+            .find(|row| row.unit == 91)
+            .unwrap()
+            .global_row;
+        assert_eq!(
+            card_start, 3,
+            "copy layout uses the same visible activity adjacency"
         );
 
         // A user message above the tool keeps its gap row.

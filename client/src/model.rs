@@ -603,13 +603,18 @@ impl AppState {
             return;
         }
         let breath_now = breathing_color(&self.config.theme(), self.breath_phase());
-        if let Some(Msg::Thinking(card)) = self.msgs.last_mut() {
-            if card.state == ThinkState::Running {
-                card.state = ThinkState::Done;
-                card.done_since = Some(std::time::Instant::now());
-                card.done_from = Some(breath_now);
-                self.transcript_cache.valid = false;
-            }
+        // Hidden reasoning chunks accumulate behind the running Thinking row,
+        // so it may no longer be the last message; settle it by walking back.
+        if let Some(Msg::Thinking(card)) = self
+            .msgs
+            .iter_mut()
+            .rev()
+            .find(|msg| matches!(msg, Msg::Thinking(card) if card.state == ThinkState::Running))
+        {
+            card.state = ThinkState::Done;
+            card.done_since = Some(std::time::Instant::now());
+            card.done_from = Some(breath_now);
+            self.transcript_cache.valid = false;
         }
     }
 
@@ -1173,34 +1178,28 @@ impl AppState {
             .iter_mut()
             .find(|msg| matches!(msg, Msg::Block(block) if block.id == id))
         {
+            // Thinking output is folded into the breathing `• Thinking...`
+            // row: it never renders or copies, so it owns no copy unit and
+            // must not invalidate the transcript cache.
             if streaming {
                 block.content.push_str(text);
                 block.copy_source.push_str(text);
-                if let Some(unit) = block.unit {
-                    self.units.insert(unit, block.copy_source.clone());
-                }
             } else {
                 block.content = text.to_owned();
                 block.copy_source = text.to_owned();
                 block.streaming = false;
-                if let Some(unit) = block.unit {
-                    self.units.insert(unit, block.copy_source.clone());
-                }
             }
-            self.transcript_cache.invalidate();
             return;
         }
-        let unit = self.allocate_copy_unit(text);
         self.msgs.push(Msg::Block(TranscriptBlock {
             id,
-            unit: Some(unit),
+            unit: None,
             content: text.to_owned(),
             format: TranscriptFormat::Reasoning,
             tone: DisplayTone::Dim,
             copy_source: text.to_owned(),
             streaming,
         }));
-        self.transcript_cache.invalidate();
     }
 
     /// Compatibility reducer used while existing `Msg` storage migrates to
@@ -1304,14 +1303,17 @@ impl AppState {
                 usage,
             } => {
                 self.record_usage(*turn, *step, *usage);
-                self.stop_thinking();
                 self.settle_retry_activities();
                 if !reasoning.is_empty() {
+                    // Thinking output is folded into the breathing
+                    // `• Thinking...` row, not the transcript; keep that row
+                    // breathing until real answer text arrives.
                     self.upsert_reasoning(*turn, *step, reasoning, true);
                 }
                 if text.is_empty() {
                     return;
                 }
+                self.stop_thinking();
                 match self.msgs.last_mut() {
                     Some(Msg::Streaming { text: buf }) => {
                         buf.push_str(text);
@@ -2560,6 +2562,53 @@ mod tests {
             "turn/end settles the Thinking row"
         );
         assert!(!s.working);
+    }
+
+    /// Thinking output (reasoning) is collapsed into the breathing
+    /// `• Thinking...` row: reasoning chunks keep the row running until real
+    /// answer text arrives, at which point it settles green.
+    #[test]
+    fn reasoning_keeps_thinking_breathing_until_text_arrives() {
+        let mut s = AppState::default();
+        s.apply_event(&event("turn/start", serde_json::json!({})));
+        assert!(
+            matches!(s.msgs.last(), Some(Msg::Thinking(card)) if card.state == ThinkState::Running),
+            "turn/start shows a running Thinking row"
+        );
+        // A reasoning-only chunk keeps the Thinking row breathing and stores
+        // the (hidden) reasoning block behind it.
+        s.apply_event(&event(
+            "assistant/chunk",
+            serde_json::json!({
+                "chunk": {"type": "reasoning-delta", "text": "thinking out loud"}
+            }),
+        ));
+        assert!(s.working, "still working while reasoning streams");
+        assert!(
+            matches!(
+                s.msgs.iter().rev().find(|m| matches!(m, Msg::Thinking(_))),
+                Some(Msg::Thinking(card)) if card.state == ThinkState::Running
+            ),
+            "reasoning keeps the Thinking row running"
+        );
+        assert!(
+            s.msgs.iter().any(|m| matches!(m, Msg::Block(block) if block.format == TranscriptFormat::Reasoning && block.content == "thinking out loud")),
+            "reasoning block is stored (hidden) rather than dropped"
+        );
+        // Real answer text settles the Thinking row green.
+        s.apply_event(&event(
+            "assistant/chunk",
+            serde_json::json!({
+                "chunk": {"type": "text-delta", "text": "hi"}
+            }),
+        ));
+        assert!(
+            matches!(
+                s.msgs.iter().rev().find(|m| matches!(m, Msg::Thinking(_))),
+                Some(Msg::Thinking(card)) if card.state == ThinkState::Done
+            ),
+            "answer text settles the Thinking row green"
+        );
     }
 
     /// Only ADJACENT thinking phases collapse into one row (xN). Any

@@ -82,4 +82,3 @@ macro_rules! tracy_zone {
 #[cfg(not(feature = "tracy"))]
 #[must_use]
 pub struct NoopSpan;
-

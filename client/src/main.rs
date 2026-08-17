@@ -1,3 +1,5 @@
+#![deny(clippy::significant_drop_in_scrutinee)]
+
 //! e — terminal client for DeepSeek Harness (the `dshe` executable).
 //!
 //! One tokio runtime: a websocket reader forwards bridge messages, a writer
@@ -11,23 +13,24 @@ use std::time::Duration;
 use anyhow::{bail, Context};
 use crossterm::{
     cursor,
-    event::{self, Event, KeyCode, KeyEventKind},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+        MouseEventKind,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use e::config::Config;
 use e::copy;
 use e::input::{InputAction, InputState, NewMode};
-use e::login::{LoginAction, LoginState};
+use e::input_page::{InputPageSession, PageEffect};
 use e::model::{tick_spinners, AgentStatus, AppState, ApprovalCard, Msg, QuestionBatch};
-use e::protocol::{ClientMessage, ServerMessage};
-use e::settings;
-use e::ui::{render, render_picker, scroll_page, CopyOverlay, PickerState, ScrollState};
-use futures_util::{SinkExt, StreamExt};
-use tokio::sync::mpsc;
+use e::protocol::{ClientMessage, ServerMessage, MAX_WIRE_FRAME_BYTES, WIRE_PROTOCOL_VERSION};
+use e::ui::{
+    render, render_picker, scroll_lines, scroll_page, transcript_view_height, CopyOverlay,
+    PickerAction, PickerState, ScrollState,
+};
 use tokio::time::MissedTickBehavior;
-use tokio_tungstenite::connect_async_with_config;
-use tokio_tungstenite::tungstenite::Message;
 
 fn token_path() -> PathBuf {
     e::launcher::dsh_home().join("dsh-tui.token")
@@ -69,7 +72,7 @@ async fn main() -> anyhow::Result<()> {
     let resume_session_id = args.next();
 
     // Launcher preamble: ensure a DSH bridge is listening at `url`, spawning
-    // `dsh --profile tui` when none is (global dsh, else npx). `dsh_session`
+    // `dsh --profile dshe` when none is (global dsh, else npx). `dsh_session`
     // records whether this process owns the spawned service so `release`
     // below can shut it down when the last TUI closes.
     let mut dsh_session = e::launcher::acquire(&url, &e::launcher::dsh_home());
@@ -85,6 +88,7 @@ async fn main() -> anyhow::Result<()> {
     execute!(
         stdout,
         crossterm::event::EnableBracketedPaste,
+        EnableMouseCapture,
         EnterAlternateScreen,
         cursor::Hide
     )
@@ -103,6 +107,7 @@ async fn main() -> anyhow::Result<()> {
         stdout,
         LeaveAlternateScreen,
         cursor::Show,
+        DisableMouseCapture,
         crossterm::event::DisableBracketedPaste
     )
     .ok();
@@ -111,13 +116,19 @@ async fn main() -> anyhow::Result<()> {
 
 /// Mutable locals that bridge messages update — grouped so `handle_msg`
 /// keeps a short parameter list instead of five `&mut` tails.
+fn is_help_shortcut(key: &KeyEvent) -> bool {
+    key.code == KeyCode::Char('h')
+        && key
+            .modifiers
+            .contains(crossterm::event::KeyModifiers::CONTROL)
+}
+
 pub struct UiChannels<'a> {
     pub picker: &'a mut Option<PickerState>,
     pub scroll: &'a mut ScrollState,
     pub copy_mode: &'a mut Option<copy::CopyMode>,
-    pub new_modes: &'a mut Vec<NewMode>,
-    pub login: &'a mut Option<LoginState>,
-    pub model_picker: &'a mut Option<e::ui::ModelPicker>,
+    pub input: &'a mut InputState,
+    pub input_page: &'a mut Option<InputPageSession>,
 }
 
 /// Apply one bridge message to the shared state. Returns a fatal reason when
@@ -128,25 +139,38 @@ fn handle_msg(
     ui: &mut UiChannels<'_>,
 ) -> Option<String> {
     match &msg {
-        ServerMessage::Welcome { session_id, status, provider, model, title, cwd } => {
+        ServerMessage::Welcome {
+            session_id,
+            status,
+            provider,
+            model,
+            title,
+            cwd,
+            ..
+        } => {
             let switched = {
                 let mut state = state_r.lock().unwrap();
                 let switched = state.session_id.as_deref() != Some(session_id.as_str());
-                state.apply("welcome", &serde_json::json!({
-                    "sessionId": session_id,
-                    "status": status,
-                    "provider": provider,
-                    "model": model,
-                    "title": title,
-                    "cwd": cwd,
-                }));
+                state.apply(
+                    "welcome",
+                    &serde_json::json!({
+                        "sessionId": session_id,
+                        "status": status,
+                        "provider": provider,
+                        "model": model,
+                        "title": title,
+                        "cwd": cwd,
+                    }),
+                );
                 switched
             };
             if switched {
                 // Fresh transcript (e.g. `/new` or picker attach): the old
-                // viewport and copy-mode rows no longer exist.
+                // viewport/copy rows and agent-scoped command directory no
+                // longer exist. A fresh `commands` frame follows attach.
                 *ui.scroll = ScrollState::default();
                 *ui.copy_mode = None;
+                ui.input.replace_integrated_commands(Vec::new());
             }
             // Remember the attached session (D17).
             let mut state_file = e::config::StateFile::load();
@@ -156,26 +180,26 @@ fn handle_msg(
         }
         ServerMessage::Snapshot { events, truncated } => {
             let _z = e::tracy_zone!("snapshot apply");
-            state_r.lock().unwrap().apply(
-                "snapshot",
-                &serde_json::json!({ "events": events, "truncated": truncated }),
-            );
+            state_r.lock().unwrap().apply_snapshot(events, *truncated);
             None
         }
         ServerMessage::Event { event } => {
-            state_r.lock().unwrap().apply_event(event);
+            state_r.lock().unwrap().apply_host_event(event);
             None
         }
         ServerMessage::History { events, has_more } => {
             let events = events.clone();
             let mut state = state_r.lock().unwrap();
-            state.prepend_events(&events);
+            state.prepend_host_events(&events);
             state.history_loading = false;
             state.history_exhausted = !*has_more;
             None
         }
         ServerMessage::Status { status } => {
-            state_r.lock().unwrap().apply("status", &serde_json::json!({ "status": status }));
+            state_r
+                .lock()
+                .unwrap()
+                .apply("status", &serde_json::json!({ "status": status }));
             None
         }
         ServerMessage::Sessions { sessions } => {
@@ -190,26 +214,57 @@ fn handle_msg(
             // The `/new <mode>` popup feeds off this roster. Broken presets
             // cannot mount — offering one would invite a failed `/new`; the
             // roster order (declared `order`) is kept as-is.
-            ui.new_modes.clear();
-            ui.new_modes.extend(
-                presets
-                    .iter()
-                    .filter(|p| p.broken.is_none())
-                    .map(|p| NewMode {
-                        id: p.id.clone(),
-                        name: p.name.clone(),
-                        description: p.description.clone(),
-                    }),
-            );
+            ui.input.new_modes.clear();
+            ui.input
+                .new_modes
+                .extend(
+                    presets
+                        .iter()
+                        .filter(|p| p.broken.is_none())
+                        .map(|p| NewMode {
+                            id: p.id.clone(),
+                            name: p.name.clone(),
+                            description: p.description.clone(),
+                        }),
+                );
+            if let Some(page) = ui.input_page.as_mut() {
+                page.apply_modes(
+                    ui.input
+                        .new_modes
+                        .iter()
+                        .map(|mode| mode.id.clone())
+                        .collect(),
+                );
+            }
             None
         }
         ServerMessage::Title { title } => {
             state_r.lock().unwrap().session_title = Some(title.clone());
             None
         }
-        ServerMessage::Login { providers, proxies, codex, error } => {
-            if let Some(l) = ui.login.as_mut() {
-                l.apply(e::login::LoginView {
+        ServerMessage::Commands { commands } => {
+            ui.input.replace_integrated_commands(commands.clone());
+            None
+        }
+        ServerMessage::CommandResult {
+            command_id,
+            kind,
+            text,
+        } => {
+            state_r
+                .lock()
+                .unwrap()
+                .apply_command_result(command_id, kind, text.as_deref());
+            None
+        }
+        ServerMessage::Login {
+            providers,
+            proxies,
+            codex,
+            error,
+        } => {
+            if let Some(page) = ui.input_page.as_mut() {
+                page.apply_login(e::login::LoginView {
                     providers: providers.clone(),
                     proxies: proxies.clone(),
                     codex: codex.clone(),
@@ -218,9 +273,15 @@ fn handle_msg(
             }
             None
         }
-        ServerMessage::LoginCodex { status, user_code, verification_uri, account_id, error } => {
-            if let Some(l) = ui.login.as_mut() {
-                l.apply_codex(e::login::CodexView {
+        ServerMessage::LoginCodex {
+            status,
+            user_code,
+            verification_uri,
+            account_id,
+            error,
+        } => {
+            if let Some(page) = ui.input_page.as_mut() {
+                page.apply_codex(e::login::CodexView {
                     status: status.clone(),
                     user_code: user_code.clone(),
                     verification_uri: verification_uri.clone(),
@@ -231,12 +292,13 @@ fn handle_msg(
             None
         }
         ServerMessage::Model { providers, current } => {
-            let cur = current.clone().map(|c| (c.provider.clone(), c.model.clone()));
-            // Populate the open picker (if any). The frame also arrives after
-            // `model-set` — by then the picker is closed, so only the state
-            // below is updated.
-            if let Some(mp) = ui.model_picker.as_mut() {
-                *mp = e::ui::ModelPicker::new(providers.clone(), cur);
+            let cur = current
+                .clone()
+                .map(|c| (c.provider.clone(), c.model.clone()));
+            // Populate the matching open Input Page; late catalog frames are
+            // ignored by other pages while global status still updates.
+            if let Some(page) = ui.input_page.as_mut() {
+                page.apply_model(providers.clone(), cur);
             }
             let mut state = state_r.lock().unwrap();
             if let Some(c) = current {
@@ -245,7 +307,12 @@ fn handle_msg(
             }
             None
         }
-        ServerMessage::Approval { id, tool_name, reason, call_id } => {
+        ServerMessage::Approval {
+            id,
+            tool_name,
+            reason,
+            call_id,
+        } => {
             let _ = call_id;
             state_r.lock().unwrap().approval = Some(ApprovalCard {
                 id: id.clone(),
@@ -254,7 +321,11 @@ fn handle_msg(
             });
             None
         }
-        ServerMessage::Question { rpc_id, session_id, questions } => {
+        ServerMessage::Question {
+            rpc_id,
+            session_id,
+            questions,
+        } => {
             state_r.lock().unwrap().question = Some(QuestionBatch::new(
                 rpc_id.clone(),
                 session_id.clone(),
@@ -262,13 +333,11 @@ fn handle_msg(
             ));
             None
         }
-        ServerMessage::QuestionResolved { question_rpc_id, .. } => {
+        ServerMessage::QuestionResolved {
+            question_rpc_id, ..
+        } => {
             let mut state = state_r.lock().unwrap();
-            if state
-                .question
-                .as_ref()
-                .map(|q| q.rpc_id.as_str())
-                == Some(question_rpc_id.as_str())
+            if state.question.as_ref().map(|q| q.rpc_id.as_str()) == Some(question_rpc_id.as_str())
             {
                 // Settled elsewhere (web GUI, abort…) — drop the selection UI.
                 state.question = None;
@@ -287,6 +356,39 @@ fn handle_msg(
         }
         ServerMessage::Pong => None,
     }
+}
+
+/// Atomically claim the next queued prompt and mark its turn as started.
+///
+/// Keeping both mutations under one guard avoids the self-deadlock caused by
+/// locking `state` again inside an `if let` whose scrutinee still owns the
+/// first `MutexGuard` (Rust 2021 keeps that temporary alive through the body).
+fn prepare_next_queued_prompt(state_r: &std::sync::Mutex<AppState>) -> Option<String> {
+    let mut state = state_r.lock().unwrap();
+    let text = state.take_next_queued()?;
+    state.start_thinking();
+    Some(text)
+}
+
+/// Evaluate a copy-mode key while the state guard is scoped entirely inside
+/// this function. The returned action is processed only after the guard drops,
+/// so actions such as movement and expand may lock `state` safely again.
+fn copy_key_action(
+    state_r: &std::sync::Mutex<AppState>,
+    copy_mode: &mut copy::CopyMode,
+    key: &crossterm::event::KeyEvent,
+    rows: &[copy::CopyRow],
+) -> copy::CopyAction {
+    let state = state_r.lock().unwrap();
+    copy_mode.handle_key(key, rows, &state)
+}
+
+fn wire_frame_limit(legacy_megabytes: Option<&str>) -> usize {
+    legacy_megabytes
+        .and_then(|value| value.parse::<usize>().ok())
+        .and_then(|mb| mb.checked_mul(1024 * 1024))
+        .filter(|bytes| *bytes >= MAX_WIRE_FRAME_BYTES)
+        .unwrap_or(MAX_WIRE_FRAME_BYTES)
 }
 
 async fn run(
@@ -328,93 +430,32 @@ async fn run(
     let mut copy_mode: Option<copy::CopyMode> = None;
     let mut copy_toast: Option<(String, std::time::Instant)> = None;
     let mut picker: Option<PickerState> = None;
-    let mut settings: Option<settings::SettingsState> = None;
-    let mut login: Option<LoginState> = None;
-    let mut theme_picker: Option<e::ui::ThemePicker> = None;
-    let mut model_picker: Option<e::ui::ModelPicker> = None;
+    let mut input_page: Option<InputPageSession> = None;
     let mut theme = theme;
 
-    let (ws, _) = {
-        // Huge session logs: the snapshot frame can exceed tungstenite's
-        // default message cap (bridge-side trimming lands with the next DSH
-        // restart; this keeps large replays working until then).
-        let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
-            max_message_size: Some(512 * 1024 * 1024),
-            max_frame_size: Some(512 * 1024 * 1024),
-            ..Default::default()
-        };
-        let _z = e::tracy_zone!("ws connect");
-        let ws = connect_async_with_config(&url, Some(config), false)
-            .await
-            .with_context(|| format!("connect {url}"))?;
-        drop(_z);
-        ws
-    };
-    phases.mark("ws connect");
-    let (sink, mut stream) = ws.split();
-
-    // ---- outbound queue: ui keys / stdin-independent ----
-    let (tx_out, mut rx_out) = mpsc::channel::<ClientMessage>(128);
-    // The launch directory is "the current directory" for new sessions:
-    // the bridge opens the fresh session's workspace there (the attached
-    // session's header cwd is only the fallback). `mode` names the
-    // configured default preset for the startup session — sent only when
-    // creating one.
+    let max_frame_bytes =
+        wire_frame_limit(std::env::var("DSHE_LEGACY_MAX_FRAME_MB").ok().as_deref());
     let launch_cwd = std::env::current_dir()
         .ok()
-        .map(|p| p.to_string_lossy().into_owned());
-    tx_out
-        .send(ClientMessage::Hello {
-            token,
-            resume_session_id: resume_session_id.clone(),
-            cwd: launch_cwd,
-            mode: if resume_session_id.is_none() {
-                Some(config.default_mode.clone())
-            } else {
-                None
-            },
-        })
-        .await?;
+        .map(|path| path.to_string_lossy().into_owned());
+    let hello = ClientMessage::Hello {
+        token,
+        resume_session_id: resume_session_id.clone(),
+        cwd: launch_cwd,
+        mode: if resume_session_id.is_none() {
+            Some(config.default_mode.clone())
+        } else {
+            None
+        },
+        protocol_version: WIRE_PROTOCOL_VERSION,
+    };
+    let _z = e::tracy_zone!("ws connect");
+    let mut bridge_io = e::bridge_io::BridgeIo::connect(&url, hello, max_frame_bytes).await?;
+    drop(_z);
+    phases.mark("ws connect");
     phases.mark("hello sent");
-    let writer = tokio::spawn(async move {
-        let mut sink = sink;
-        while let Some(msg) = rx_out.recv().await {
-            if sink.send(Message::Text(msg.to_wire().unwrap())).await.is_err() {
-                break;
-            }
-        }
-    });
-
-    // ---- inbound queue: bridge messages -> main loop ----
-    let (tx_in, mut rx_in) = mpsc::channel::<ServerMessage>(512);
+    let tx_out = bridge_io.outbound.clone();
     let state_r = Arc::clone(&state);
-    let reader = tokio::spawn(async move {
-        while let Some(item) = stream.next().await {
-            let item = match item {
-                Ok(item) => item,
-                Err(error) => {
-                    eprintln!("[dshe] websocket stream error: {error}");
-                    break;
-                }
-            };
-            match item {
-                Message::Text(text) => {
-                    if let Some(msg) = ServerMessage::from_wire(&text) {
-                        if tx_in.send(msg).await.is_err() {
-                            break;
-                        }
-                    }
-                }
-                Message::Close(_) => break,
-                _ => {}
-            }
-        }
-        // Signal disconnection through an error message.
-        let _ = tx_in.send(ServerMessage::Error {
-            code: "disconnected".into(),
-            message: "bridge connection closed".into(),
-        }).await;
-    });
 
     // ---- main loop ----
     let mut tick = tokio::time::interval(Duration::from_millis(50));
@@ -432,7 +473,7 @@ async fn run(
     'outer: loop {
         tokio::select! {
             _ = tick.tick() => {}
-            maybe = rx_in.recv() => {
+            maybe = bridge_io.inbound.recv() => {
                 let Some(msg) = maybe else {
                     fatal = Some("bridge disconnected".into());
                     break 'outer;
@@ -445,9 +486,8 @@ async fn run(
                     picker: &mut picker,
                     scroll: &mut scroll,
                     copy_mode: &mut copy_mode,
-                    new_modes: &mut input.new_modes,
-                    login: &mut login,
-                    model_picker: &mut model_picker,
+                    input: &mut input,
+                    input_page: &mut input_page,
                 };
                 if let Some(reason) = handle_msg(msg, &state_r, &mut ui) {
                     fatal = Some(reason);
@@ -463,15 +503,14 @@ async fn run(
         // Drain any backlog so event bursts coalesce into a single redraw
         // instead of one full frame per chunk.
         loop {
-            match rx_in.try_recv() {
+            match bridge_io.inbound.try_recv() {
                 Ok(msg) => {
                     let mut ui = UiChannels {
                         picker: &mut picker,
                         scroll: &mut scroll,
                         copy_mode: &mut copy_mode,
-                        new_modes: &mut input.new_modes,
-                        login: &mut login,
-                        model_picker: &mut model_picker,
+                        input: &mut input,
+                        input_page: &mut input_page,
                     };
                     if let Some(reason) = handle_msg(msg, &state_r, &mut ui) {
                         fatal = Some(reason);
@@ -489,8 +528,7 @@ async fn run(
 
         // ---- queued prompts: auto-dispatch the next one now that the agent
         // ---- is idle (one at a time — each dispatch keeps it busy again).
-        if let Some(text) = state_r.lock().unwrap().take_next_queued() {
-            state_r.lock().unwrap().start_thinking();
+        if let Some(text) = prepare_next_queued_prompt(&state_r) {
             let _ = tx_out.send(ClientMessage::Input { text }).await;
             dirty = true;
         }
@@ -498,17 +536,62 @@ async fn run(
         // ---- key events ----
         while event::poll(Duration::ZERO).unwrap_or(false) {
             let Ok(ev) = event::read() else { continue };
+            if let Event::Mouse(mouse) = &ev {
+                let up = matches!(mouse.kind, MouseEventKind::ScrollUp);
+                let down = matches!(mouse.kind, MouseEventKind::ScrollDown);
+                if up || down {
+                    dirty = true;
+                    let terminal_height = terminal.size().map(|size| size.height).unwrap_or(40);
+                    let input_page_open = input_page.is_some();
+                    let before = {
+                        let mut state = state_r.lock().unwrap();
+                        let height = transcript_view_height(
+                            terminal_height,
+                            &state,
+                            &input,
+                            input_page_open,
+                        );
+                        scroll_lines(
+                            &mut scroll,
+                            height,
+                            state.transcript_cache.lines.len(),
+                            up,
+                            3,
+                        );
+                        if up
+                            && scroll.offset == 0
+                            && !scroll.follow
+                            && !state.history_exhausted
+                            && !state.history_loading
+                        {
+                            if let Some(seq) = state.min_seq {
+                                state.history_loading = true;
+                                Some(seq)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(seq) = before {
+                        let _ = tx_out
+                            .send(ClientMessage::History {
+                                before_seq: seq,
+                                limit: 400,
+                            })
+                            .await;
+                    }
+                }
+                continue;
+            }
             let Event::Key(key) = ev else {
-                // Bracketed paste: route into the settings edit buffer, the
-                // free-text question draft, or the input bar. Pastes over
-                // the threshold become an atomic paste block (input.rs).
+                // Bracketed paste: route into an Input Page editor, the
+                // free-text question draft, or the ordinary input bar.
                 if let Event::Paste(text) = ev {
                     dirty = true;
-                    if let Some(s) = settings.as_mut() {
-                        if let Some(settings::Edit::Input { buf }) = &mut s.editing {
-                            buf.push_str(&text);
-                            continue;
-                        }
+                    if input_page.as_mut().is_some_and(|page| page.paste(&text)) {
+                        continue;
                     }
                     {
                         let mut state = state_r.lock().unwrap();
@@ -530,181 +613,141 @@ async fn run(
             }
             dirty = true;
             if help_visible {
-                if key.code == KeyCode::Char('q') || key.code == KeyCode::Esc || key.code == KeyCode::Char('h') {
+                if key.code == KeyCode::Char('q')
+                    || key.code == KeyCode::Esc
+                    || key.code == KeyCode::Char('h')
+                {
                     help_visible = false;
                 }
                 continue;
             }
 
-            // ---- /settings overlay owns the keys while open ----
-            if let Some(s) = settings.as_mut() {
-                match s.handle_key(&key, &mut config) {
-                    settings::SettingsAction::None => {}
-                    settings::SettingsAction::Exit => settings = None,
-                    settings::SettingsAction::Changed => {
-                        // The theme name may have changed via /settings —
-                        // resolve it against the theme registry before saving.
-                        config.resolved_theme = e::theme::resolve(&config.theme, &themes);
-                        if let Err(error) = config.save() {
-                            state_r.lock().unwrap().msgs.push(Msg::Error {
-                                text: format!("设置保存失败: {error}"),
-                            });
+            // Help is global even while an Input Page owns ordinary input.
+            if is_help_shortcut(&key) {
+                help_visible = true;
+                continue;
+            }
+
+            // PageUp/PageDown always operate the transcript, even while an
+            // Input Page owns the bottom area.
+            if matches!(key.code, KeyCode::PageUp | KeyCode::PageDown) {
+                let up = key.code == KeyCode::PageUp;
+                let terminal_height = terminal.size().map(|size| size.height).unwrap_or(40);
+                let input_page_open = input_page.is_some();
+                let before = {
+                    let mut state = state_r.lock().unwrap();
+                    let height =
+                        transcript_view_height(terminal_height, &state, &input, input_page_open);
+                    scroll_page(&mut scroll, height, state.transcript_cache.lines.len(), up);
+                    if up
+                        && scroll.offset == 0
+                        && !scroll.follow
+                        && !state.history_exhausted
+                        && !state.history_loading
+                    {
+                        if let Some(seq) = state.min_seq {
+                            state.history_loading = true;
+                            Some(seq)
+                        } else {
+                            None
                         }
-                        {
-                            let mut state = state_r.lock().unwrap();
-                            state.config = config.clone();
-                            // Padding/theme changes are baked into the cached
-                            // lines — rebuild on the next draw.
-                            state.cache_valid = false;
-                        }
-                        theme = config.theme();
-                        input.paste_placeholder_chars = config.paste_placeholder_chars;
-                        input.enter_sends = config.enter_sends;
-                        input.history_limit = config.history_limit;
+                    } else {
+                        None
                     }
+                };
+                if let Some(seq) = before {
+                    let _ = tx_out
+                        .send(ClientMessage::History {
+                            before_seq: seq,
+                            limit: 400,
+                        })
+                        .await;
                 }
                 continue;
             }
 
-            // ---- /login panel owns the keys while open ----
-            if let Some(l) = login.as_mut() {
-                match l.handle_key(&key) {
-                    LoginAction::None => {}
-                    LoginAction::Exit => login = None,
-                    LoginAction::Send(msg) => {
-                        // Every confirmed action goes to the bridge; the
-                        // refreshed `login`/`login-codex` frame updates the panel.
-                        let _ = tx_out.send(msg).await;
+            // ---- the active Input Page owns all remaining keys ----
+            if input_page.is_some() {
+                let outcome = input_page
+                    .as_mut()
+                    .expect("checked above")
+                    .handle_key(&key, &mut config);
+                for effect in outcome.effects {
+                    match effect {
+                        PageEffect::Send(message) => {
+                            let _ = tx_out.send(message).await;
+                        }
+                        PageEffect::ConfigChanged => {
+                            config.resolved_theme = e::theme::resolve(&config.theme, &themes);
+                            if let Err(error) = config.save() {
+                                let mut state = state_r.lock().unwrap();
+                                state.msgs.push(Msg::Error {
+                                    text: format!("设置保存失败: {error}"),
+                                });
+                                state.transcript_cache.invalidate();
+                            }
+                            {
+                                let mut state = state_r.lock().unwrap();
+                                state.config = config.clone();
+                                state.transcript_cache.invalidate();
+                            }
+                            theme = config.theme();
+                            input.paste_placeholder_chars = config.paste_placeholder_chars;
+                            input.history_limit = config.history_limit;
+                        }
                     }
+                }
+                if outcome.close {
+                    input_page = None;
                 }
                 continue;
             }
 
             // ---- session picker owns the keys while open ----
             if let Some(p) = picker.as_mut() {
-                match key.code {
-                    KeyCode::Esc | KeyCode::Char('q') => picker = None,
-                    KeyCode::Up => {
-                        p.sel = p.sel.saturating_sub(1);
+                match p.handle_key(&key) {
+                    PickerAction::None => {}
+                    PickerAction::Close => picker = None,
+                    PickerAction::Select(id) => {
+                        picker = None;
+                        let _ = tx_out.send(ClientMessage::Attach { session_id: id }).await;
                     }
-                    KeyCode::Down => {
-                        let n = p.filtered().len();
-                        if n > 0 {
-                            p.sel = (p.sel + 1).min(n - 1);
-                        }
-                    }
-                    KeyCode::Enter => {
-                        let filtered = p.filtered();
-                        if let Some(&idx) = filtered.get(p.sel) {
-                            let id = p.sessions[idx].id.clone();
-                            picker = None;
-                            let _ = tx_out.send(ClientMessage::Attach { session_id: id }).await;
-                        }
-                    }
-                    KeyCode::Char(c) => {
-                        if c == ' ' || (!c.is_ascii_control()) {
-                            p.query.push(c);
-                            p.sel = 0;
-                        }
-                    }
-                    KeyCode::Backspace => {
-                        p.query.pop();
-                        p.sel = 0;
-                    }
-                    _ => {}
                 }
                 continue;
             }
 
-            // ---- /theme picker owns the keys while open ----
-            if let Some(tp) = theme_picker.as_mut() {
-                match key.code {
-                    KeyCode::Esc | KeyCode::Char('q') => theme_picker = None,
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        tp.sel = tp.sel.saturating_sub(1);
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        let n = tp.themes.len();
-                        if n > 0 {
-                            tp.sel = (tp.sel + 1).min(n - 1);
-                        }
-                    }
-                    KeyCode::Enter => {
-                        if let Some(name) = tp.themes.get(tp.sel).map(|t| t.name.clone()) {
-                            // Apply: persist the name, resolve the palette,
-                            // and rebuild the cached transcript with it.
-                            config.theme = name;
-                            config.resolved_theme = e::theme::resolve(&config.theme, &themes);
-                            if let Err(error) = config.save() {
-                                state_r.lock().unwrap().msgs.push(Msg::Error {
-                                    text: format!("主题保存失败: {error}"),
-                                });
-                            }
-                            {
-                                let mut state = state_r.lock().unwrap();
-                                state.config = config.clone();
-                                state.cache_valid = false;
-                            }
-                            theme = config.theme();
-                            theme_picker = None;
-                        }
-                    }
-                    _ => {}
-                }
-                continue;
-            }
-
-            // ---- /model picker owns the keys while open ----
-            if let Some(mp) = model_picker.as_mut() {
-                match key.code {
-                    KeyCode::Esc | KeyCode::Char('q') => model_picker = None,
-                    KeyCode::Left | KeyCode::Char('h') => {
-                        if mp.prov_sel > 0 {
-                            mp.prov_sel -= 1;
-                            mp.model_sel = 0;
-                        }
-                    }
-                    KeyCode::Right | KeyCode::Char('l') => {
-                        if mp.prov_sel + 1 < mp.providers.len() {
-                            mp.prov_sel += 1;
-                            mp.model_sel = 0;
-                        }
-                    }
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        mp.model_sel = mp.model_sel.saturating_sub(1);
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        let n = mp.providers.get(mp.prov_sel).map(|p| p.models.len()).unwrap_or(0);
-                        if n > 0 {
-                            mp.model_sel = (mp.model_sel + 1).min(n - 1);
-                        }
-                    }
-                    KeyCode::Enter => {
-                        if let Some((provider, model)) = mp.selected() {
-                            model_picker = None;
-                            let _ = tx_out.send(ClientMessage::ModelSet { provider, model }).await;
-                        }
-                    }
-                    _ => {}
-                }
-                continue;
-            }
-
-            // ---- approval answer keys (design §4.4) ----
+            // ---- focused blocking input accessory ----
+            // Question has higher focus priority than approval; informational
+            // accessories never consume keys.
             {
-                let pending = state_r.lock().unwrap().approval.clone();
+                let pending = {
+                    let state = state_r.lock().unwrap();
+                    let focused = e::display::focused_blocking_accessory(
+                        state.question.is_some(),
+                        state.approval.is_some(),
+                    );
+                    (focused == Some(e::display::InputAccessoryKind::Approval))
+                        .then(|| state.approval.clone())
+                        .flatten()
+                };
                 if let Some(card) = pending {
                     match key.code {
                         KeyCode::Char('y') | KeyCode::Char('Y') => {
                             let _ = tx_out
-                                .send(ClientMessage::ApprovalAnswer { id: card.id, allow: true })
+                                .send(ClientMessage::ApprovalAnswer {
+                                    id: card.id,
+                                    allow: true,
+                                })
                                 .await;
                             state_r.lock().unwrap().approval = None;
                             continue;
                         }
                         KeyCode::Char('n') | KeyCode::Char('N') => {
                             let _ = tx_out
-                                .send(ClientMessage::ApprovalAnswer { id: card.id, allow: false })
+                                .send(ClientMessage::ApprovalAnswer {
+                                    id: card.id,
+                                    allow: false,
+                                })
                                 .await;
                             state_r.lock().unwrap().approval = None;
                             continue;
@@ -717,7 +760,8 @@ async fn run(
             // ---- copy mode owns the keys while active ----
             if let Some(cm) = copy_mode.as_mut() {
                 let rows = copy::flatten(&state_r.lock().unwrap());
-                match cm.handle_key(&key, &rows, &state_r.lock().unwrap()) {
+                let action = copy_key_action(&state_r, cm, &key, &rows);
+                match action {
                     copy::CopyAction::None => {}
                     copy::CopyAction::Exit => copy_mode = None,
                     copy::CopyAction::Copy(text) => {
@@ -738,7 +782,7 @@ async fn run(
                         copy_mode = None;
                     }
                     copy::CopyAction::ToggleExpand(unit) => {
-                        state_r.lock().unwrap().toggle_expand(unit);
+                        e::presentation::toggle_expand(&mut state_r.lock().unwrap(), unit);
                     }
                     copy::CopyAction::Moved(global_row) => {
                         let height = terminal.size().map(|s| s.height).unwrap_or(40) as usize;
@@ -764,108 +808,24 @@ async fn run(
                 continue;
             }
 
-            // ---- user-question mode: the selection bar owns ←→/Enter/Esc ----
-            // (design §4.4: Enter picks the highlighted option and moves to
-            // the next question; on the last question Enter confirms. Esc
-            // cancels the whole batch. Free-text questions collect typed
-            // characters instead.)
-            {
-                let mut out: Option<ClientMessage> = None;
-                let mut handled = false;
-                {
-                    let mut state = state_r.lock().unwrap();
-                    if let Some(q) = state.question.as_mut() {
-                        match key.code {
-                            KeyCode::Left => {
-                                q.step(-1);
-                                handled = true;
-                            }
-                            KeyCode::Right => {
-                                q.step(1);
-                                handled = true;
-                            }
-                            KeyCode::Enter => {
-                                if let Some(answers) = q.enter() {
-                                    out = Some(ClientMessage::AnswerQuestions {
-                                        rpc_id: q.rpc_id.clone(),
-                                        answers,
-                                    });
-                                    state.question = None;
-                                }
-                                handled = true;
-                            }
-                            KeyCode::Esc => {
-                                out = Some(ClientMessage::CancelQuestions {
-                                    rpc_id: q.rpc_id.clone(),
-                                });
-                                state.question = None;
-                                handled = true;
-                            }
-                            KeyCode::Backspace => {
-                                q.backspace();
-                                handled = true;
-                            }
-                            KeyCode::Char(c)
-                                if key.modifiers.is_empty()
-                                    || key.modifiers
-                                        == crossterm::event::KeyModifiers::SHIFT =>
-                            {
-                                if c == ' ' || !c.is_ascii_control() {
-                                    q.push_char(c);
-                                }
-                                handled = true;
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                if let Some(msg) = out {
-                    let _ = tx_out.send(msg).await;
-                }
-                if handled {
-                    continue;
-                }
+            // ---- user-question mode ----
+            let question_action = {
+                let mut state = state_r.lock().unwrap();
+                e::input::handle_question_key(&mut state, &key)
+            };
+            if let Some(message) = question_action.outbound {
+                let _ = tx_out.send(message).await;
+            }
+            if question_action.handled {
+                continue;
             }
 
             match key.code {
-                KeyCode::PageUp => {
-                    let height = terminal.size().map(|s| s.height).unwrap_or(40) as usize;
-                    // Lazy scroll-back: at the very top with older history
-                    // still available, request the previous page.
-                    let before = {
-                        let mut state = state_r.lock().unwrap();
-                        scroll_page(&mut scroll, height, state.render_cache.len(), true);
-                        if scroll.offset == 0
-                            && !scroll.follow
-                            && !state.history_exhausted
-                            && !state.history_loading
-                        {
-                            state.min_seq.map(|seq| {
-                                state.history_loading = true;
-                                seq
-                            })
-                        } else {
-                            None
-                        }
-                    };
-                    if let Some(seq) = before {
-                        let _ = tx_out
-                            .send(ClientMessage::History { before_seq: seq, limit: 400 })
-                            .await;
-                    }
-                    continue;
-                }
-                KeyCode::PageDown => {
-                    let height = terminal.size().map(|s| s.height).unwrap_or(40) as usize;
-                    let total = state_r.lock().unwrap().render_cache.len();
-                    scroll_page(&mut scroll, height, total, false);
-                    continue;
-                }
-                KeyCode::Char('h') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                    help_visible = true;
-                    continue;
-                }
-                KeyCode::Char('n') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                KeyCode::Char('n')
+                    if key
+                        .modifiers
+                        .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                {
                     // Open the session picker (design §3.6): fetch the list,
                     // then overlay. Data lands via ServerMessage::Sessions.
                     picker = Some(PickerState::default());
@@ -889,68 +849,24 @@ async fn run(
                     }
                 }
                 InputAction::Command(line) => {
-                    // Local commands never leave the client.
-                    if line == "/settings" {
-                        let mut s = settings::SettingsState::default();
-                        // 默认模式 choice feeds off the live roster.
-                        s.modes = input.new_modes.iter().map(|m| m.id.clone()).collect();
-                        // 主题 choice feeds off the discovered theme files.
-                        s.themes = themes.iter().map(|t| t.name.clone()).collect();
-                        settings = Some(s);
-                    } else if line == "/login" {
-                        // The input bar becomes the login settings page;
-                        // its state comes from the bridge (`login` frame).
-                        login = Some(LoginState::default());
-                        let _ = tx_out.send(ClientMessage::LoginGet).await;
-                    } else if line == "/theme" {
-                        // Theme selector: discovered theme files with a
-                        // color swatch; Enter applies and persists the name.
-                        theme_picker = Some(e::ui::ThemePicker::from_themes(&themes, &config.theme));
-                    } else if line == "/model" {
-                        // Model selector: providers × models fed by the
-                        // bridge's `model` frame; Enter applies to the session.
-                        model_picker = Some(e::ui::ModelPicker::new(Vec::new(), None));
-                        let _ = tx_out.send(ClientMessage::ModelGet).await;
-                    } else if line == "/reload" {
-                        // Re-read config + rescan the theme registry (and
-                        // later skills); keep the current session attached.
-                        config = Config::load();
-                        themes = e::theme::load_themes(&Config::themes_dir());
-                        config.resolved_theme = e::theme::resolve(&config.theme, &themes);
-                        {
-                            let mut state = state_r.lock().unwrap();
-                            state.config = config.clone();
-                            state.cache_valid = false;
-                        }
-                        theme = config.theme();
-                        input.paste_placeholder_chars = config.paste_placeholder_chars;
-                        input.enter_sends = config.enter_sends;
-                        input.history_limit = config.history_limit;
-                        state_r.lock().unwrap().msgs.push(Msg::System {
-                            text: "已重载配置、主题与技能".into(),
-                        });
-                    } else if line == "/help" {
-                        help_visible = true;
-                    } else if line == "/copy" {
-                        copy_mode = Some(copy::CopyMode::default());
-                    } else if line == "/exit" || line == "/q" || line == "/quit" {
-                        // Quit the TUI only — the conversation keeps running
-                        // in DSH (the agent is not interrupted).
+                    let outcome = e::runtime_command::handle_local_command(
+                        line,
+                        e::runtime_command::LocalCommandContext {
+                            input_page: &mut input_page,
+                            picker: &mut picker,
+                            help_visible: &mut help_visible,
+                            copy_mode: &mut copy_mode,
+                            config: &mut config,
+                            themes: &mut themes,
+                            input: &mut input,
+                            theme: &mut theme,
+                            state: &state_r,
+                            outbound: &tx_out,
+                        },
+                    )
+                    .await;
+                    if matches!(outcome, e::runtime_command::CommandOutcome::Quit) {
                         break 'outer;
-                    } else if line == "/resume" {
-                        // Open the session picker (same overlay as Ctrl+N).
-                        picker = Some(PickerState::default());
-                        let _ = tx_out.send(ClientMessage::ListSessions).await;
-                    } else if let Some(id) = line.strip_prefix("/resume ") {
-                        let id = id.trim();
-                        if !id.is_empty() {
-                            let _ = tx_out
-                                .send(ClientMessage::Attach { session_id: id.to_string() })
-                                .await;
-                        }
-                    } else {
-                        state_r.lock().unwrap().start_thinking();
-                        let _ = tx_out.send(ClientMessage::Command { line }).await;
                     }
                 }
                 InputAction::Interrupt => {
@@ -978,9 +894,8 @@ async fn run(
                 dirty = true;
             }
         }
-        let draw_due = last_render.map_or(true, |t| {
-            now.duration_since(t) >= Duration::from_millis(30)
-        });
+        let draw_due =
+            last_render.map_or(true, |t| now.duration_since(t) >= Duration::from_millis(30));
         if dirty && draw_due {
             {
                 let mut state = state_r.lock().unwrap();
@@ -991,9 +906,9 @@ async fn run(
                         return None;
                     }
                     let cursor_row = rows[cm.cursor.min(rows.len() - 1)].global_row;
-                    let sel = cm.selection_range(&rows).map(|(lo, hi)| {
-                        (rows[lo].global_row, rows[hi].global_row)
-                    });
+                    let sel = cm
+                        .selection_range(&rows)
+                        .map(|(lo, hi)| (rows[lo].global_row, rows[hi].global_row));
                     Some(CopyOverlay { cursor_row, sel })
                 });
                 let toast = copy_toast.as_ref().map(|(t, _)| t.as_str());
@@ -1004,21 +919,23 @@ async fn run(
                     None
                 };
                 terminal.draw(|frame| {
-                    render(frame, &mut state, &input, &mut scroll, &theme, e::ui::RenderOverlays {
-                        help_visible,
-                        overlay: overlay.as_ref(),
-                        toast,
-                        settings: settings.as_mut(),
-                        login: login.as_mut(),
-                    });
+                    render(
+                        frame,
+                        &mut state,
+                        &input,
+                        &mut scroll,
+                        &theme,
+                        e::ui::RenderOverlays {
+                            help_visible,
+                            overlay: overlay.as_ref(),
+                            toast,
+                            input_page: input_page.as_mut(),
+                            settings: None,
+                            login: None,
+                        },
+                    );
                     if let Some(p) = picker.as_ref() {
                         render_picker(frame, p, &theme);
-                    }
-                    if let Some(tp) = theme_picker.as_ref() {
-                        e::ui::render_theme_picker(frame, tp, &theme);
-                    }
-                    if let Some(mp) = model_picker.as_ref() {
-                        e::ui::render_model_picker(frame, mp, &theme);
                     }
                 })?;
                 if first_frame {
@@ -1032,11 +949,79 @@ async fn run(
         }
     }
 
-    writer.abort();
-    reader.abort();
+    bridge_io.shutdown();
     ratatui::restore();
     if let Some(reason) = fatal {
         bail!("{reason}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyEvent, KeyModifiers};
+
+    #[test]
+    fn help_shortcut_is_global_input() {
+        assert!(is_help_shortcut(&KeyEvent::new(
+            KeyCode::Char('h'),
+            KeyModifiers::CONTROL,
+        )));
+        assert!(!is_help_shortcut(&KeyEvent::new(
+            KeyCode::Char('h'),
+            KeyModifiers::NONE,
+        )));
+    }
+
+    #[test]
+    fn normal_frames_are_bounded_and_legacy_growth_is_explicit() {
+        assert_eq!(wire_frame_limit(None), MAX_WIRE_FRAME_BYTES);
+        assert_eq!(wire_frame_limit(Some("64")), 64 * 1024 * 1024);
+        assert_eq!(wire_frame_limit(Some("1")), MAX_WIRE_FRAME_BYTES);
+        assert_eq!(wire_frame_limit(Some("not-a-number")), MAX_WIRE_FRAME_BYTES);
+    }
+
+    #[test]
+    fn queued_dispatch_releases_the_state_lock() {
+        let state = std::sync::Mutex::new(AppState::default());
+        state.lock().unwrap().queue.push("next".into());
+
+        assert_eq!(prepare_next_queued_prompt(&state).as_deref(), Some("next"));
+        let guard = state
+            .try_lock()
+            .expect("dispatch must not retain the mutex guard");
+        assert!(guard.working);
+        assert!(guard.queue.is_empty());
+    }
+
+    #[test]
+    fn copy_key_evaluation_releases_the_state_lock() {
+        let state = std::sync::Mutex::new(AppState::default());
+        let rows = vec![
+            copy::CopyRow {
+                unit: 0,
+                raw_line: None,
+                atomic: false,
+                text: "a".into(),
+                global_row: 0,
+            },
+            copy::CopyRow {
+                unit: 0,
+                raw_line: None,
+                atomic: false,
+                text: "b".into(),
+                global_row: 1,
+            },
+        ];
+        let mut copy_mode = copy::CopyMode::default();
+        let key = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
+
+        let action = copy_key_action(&state, &mut copy_mode, &key, &rows);
+        assert!(matches!(action, copy::CopyAction::Moved(1)));
+        assert!(
+            state.try_lock().is_ok(),
+            "copy action must not retain the mutex guard"
+        );
+    }
 }

@@ -1,11 +1,12 @@
 # DSH TUI 设计文档（草案 v0.5）
 
-> 状态：**设计已定稿**（D1–D24 全部确认），进入实施阶段前不再改动；实施验证项见 §8。
+> 状态：D1–D30 已实施；后续实现修订以本文件当前章节与机器可读协议契约为准。
 > v0.4 变更：消息格式规范（用户消息原样、shell 卡 spinner+行数、read 合并折叠）；输入栏无边框背景块 + 粘贴占位。
 > v0.5 变更（v0.1.0 里程碑）：项目改名 **e**（可执行文件 **`dshe`**）；配置迁到
 > `%APPDATA%\dshe\config.toml`、主题目录 `%APPDATA%\dshe\themes\`（默认
 > **deepseek-e**，另内置 ferra）；新增 `/theme` `/model` `/reload` `/skill:<名称>`；
-> 启动器 `dshe` 自动 spawn `dsh --profile tui`（或 npx）／桥接已运行的 dsh。
+> 启动器 `dshe` 自动 spawn `dsh --profile dshe`（或 npx）／桥接已运行的 dsh；使用
+> 专属 `dshe` profile，避免与 DSH 自带或用户已有的 `tui` profile 冲突。
 
 ## 0. 已定决策（✅）
 
@@ -27,20 +28,20 @@
 | D14 | 语法高亮 | 二期再上 syntect；首期代码块纯色 + 语言标签 |
 | D15 | 桥接鉴权 | 轻量 token：桥接插件生成随机 token 写入 DSH 数据目录，客户端自动读取 |
 | D16 | 桥接插件形态 | 正式 TS 插件包（可用 `ws` 库），作为产品一部分长期维护 |
-| D17 | 启动行为 | `dshe` 记住上次会话直达；首次无历史弹选择器；`--list` 强制选择器 |
+| D17 | 启动行为 | 每个新 `dshe` 进程默认新建会话；CLI 会话 id 或“记住上次会话”（默认关）才续接；`/resume`/Ctrl+N 打开选择器 |
 | D18 | mermaid 超宽 | v1 截断 + 折叠提示（复制仍拿完整源码）；v2 全屏图形模式 hjkl 四向滚动 |
 | D19 | 复制提示 | 复制成功后输入区临时提示 `已复制 N 行`，约 2 秒后消失 |
 | D20 | 用户消息展示 | 逐字原样展示，不做 markdown 渲染；前缀 `❯` Coral |
 | D21 | 命令执行工具卡 | 圆点 spinner（默认半月旋转 `◐◓◑◒` ~120ms/帧，Honey）；只显示命令 + 实时输出行数；exit 0→`✓`Sage，非 0→`✗`Ember；命令超行截断，输出展开查看 |
 | D22 | read 合并与折叠 | 同一 turn 内相邻 read 合并为紧凑状态列表；全部结束折叠为 Bark 灰 `<a>, <b>, <c>`（只文件名，超宽截断 `+N`）；Enter 展开还原、Esc 收回 |
-| D23 | 输入栏形态 | 无边框背景块：Ash 底、上边距 1 行 + 文本区 + 下边距 1 行；前缀 `❯` Coral；多行模式最多显示 3 行，超出滚动、光标行可见 |
-| D24 | 粘贴超长占位 | 粘贴 >1000 字符显示 Rose 色 `[N text pasted]`；发送原样完整内容；Alt+Enter 多行模式可展开编辑 |
+| D23 | 输入栏形态 | 无边框背景块：Ash 底、上边距 1 行 + 文本区 + 下边距 1 行；前缀 `❯` Coral；`Enter` 固定发送、`Shift+Enter` 换行；`↑/↓` 行间移动并在首/末行边界切换提示词 |
+| D24 | 粘贴超长占位 | 粘贴超过配置阈值显示 Rose 色 `[N text pasted]`；发送原样完整内容；普通文本用 `Shift+Enter` 插入换行 |
 | D25 | spinner 可配置 | 默认 A 半月旋转 `◐◓◑◒`（~120ms/帧）；帧序做成可配置枚举（`config.toml` 可换 B/C/D/E）；字体缺字形自动降级 ASCII `\|/-\` |
-| D26 | 设置面板入口 | `/settings` 命令进入全屏覆盖层（无快捷键）；左分类栏 + 右项目列表；`↑↓` 选择 `←→` 切枚举 `Enter` 编辑数值/颜色 `Space` 切布尔 `Esc` 退出 |
+| D26 | Input Page | `/settings` `/login` `/model` `/theme` 统一替代输入区（非浮窗）；上下 1 行、左右 2 列内边距；单焦点用方向键/`hjkl` 移动、`Enter` 执行、`Esc` 返回 |
 | D27 | 配置存储 | `%APPDATA%\dshe\config.toml`（toml+serde）；优先级 默认值 < 文件 < 运行时；**即改即存、即时生效**，修改过的值 Honey 短暂高亮 |
 | D28 | TUI 内可改项 | 见 §4.7 清单：外观/行为/显示三类全部可改，高级类只读 |
 | D29 | 不提供 TUI 修改 | 连接参数（启动 flag）、字体字号（终端侧）、剪贴板后端（平台）、键位重绑定（v2）、语法高亮主题（二期） |
-| D30 | 发送键风格 | 设置项：`Enter 即发 + Alt+Enter 多行` ／ `Ctrl+Enter 发送 + Enter 换行`，默认前者 |
+| D30 | 发送键语义 | 固定 `Enter` 发送、`Shift+Enter` 换行；旧配置 `enter_sends` 仅保留反序列化兼容，不再改变交互 |
 
 ## 1. 目标与形态
 
@@ -99,7 +100,7 @@ RenderUnit { kind, source: { blockType, raw: String }, cells: RenderedCells }
 
 ```
 ┌──────────────────────────────────────────────────┐
-│ e · default · deepseek-v4-pro · ●running   │ ← 状态栏（1 行，固定顶部）
+│ • standard deepseek-v4-pro CH80%     ^h Help │ ← 底部状态第一行（无背景）
 ├──────────────────────────────────────────────────┤
 │ ❯ 把 foo 函数重构一下                             │ ← 用户消息：原样展示
 │                                                  │
@@ -186,7 +187,7 @@ RenderUnit { kind, source: { blockType, raw: String }, cells: RenderedCells }
 
 #### 3.3.3 Markdown 与富内容
 
-- Markdown：标题、粗体、斜体、行内代码、围栏代码块（语言标签 + syntect 高亮，主题随 ferra）、
+- Markdown：标题、粗体、斜体、行内代码、围栏代码块（语言标签 + 纯色；syntect 仍属后续）、
   有序/无序列表、引用、分隔线、**表格**（框线渲染，列宽自适应，超宽截断标注）、**mermaid**。
 - 代码块：左侧竖线边框 + 顶部语言标签；v1 超宽折行，横向滚动 v2。
 - mermaid：grok-mermaid WASM 渲染为 Unicode 框图，渲染失败时降级显示源码围栏块（可复制）。
@@ -216,10 +217,13 @@ RenderUnit { kind, source: { blockType, raw: String }, cells: RenderedCells }
 
 ### 3.5 状态呈现
 
-- 状态栏：最前是状态符号 `•`（与工具卡一致：**只要处于 running 状态即黄色呼吸**，
-  无论是否有可见的 thinking/命令/读写活动，空闲才灰色），随后一个空格接 `e ·
-  模型`；右侧快捷键提示。不再显示 idle/running 文字指示。
-- 审批/提问进行中：状态栏该段 Honey 色 `⏳等待审批`。
+- 页面底部固定两行状态，均不设置背景色。第一行最前是状态符号 `•`（与工具卡一致：
+  running 时黄色呼吸，空闲灰色），随后依次显示当前 agent preset 模式、当前模型和
+  `CH<缓存命中率%>`；CH 按 provider usage 的 `cacheRead / (input + cacheRead + cacheWrite)`
+  累计计算，暂无 usage 时显示 `CH—`。历史前插增加旧 usage 总量，但保留最新 request 的替换锚点；
+  mode 按 `agent-preset/selected` 的 event seq 保留最新值，旧页不得回退。右侧固定 `^h Help`。
+- 第二行左侧显示当前会话标题（无标题时为 `新会话`），右侧显示会话工作区绝对路径；
+  标题过长时以 `…` 截断，优先保留路径。
 - 复制模式：输入区切换为指示条 `-- COPY --`（§3.1），显示选中行数/字节数与可用键。
 
 ### 3.6 会话选择器（启动 / Ctrl+N）
@@ -252,25 +256,53 @@ RenderUnit { kind, source: { blockType, raw: String }, cells: RenderedCells }
   在输入栏上方逐行显示（Night 底 Bark 字，左缩进 2 空格 `* ` 前缀，每项一行，
   超宽 `…` 截断；行数受面板高度限制，超出显示 `… 还有 N 条`）。AI 回到空闲后
   **自动逐条发出**（每条发出即开始新 turn）；`Esc` 中断会清空尚未发出的队列；
-  切换会话时队列随之清空。空闲状态发送的提示词仍即时发出。
-- 其余规则不变：`Alt+Enter` 切多行；发送键按设置项（D30）：默认单行 `Enter` 即发 / 多行 `Ctrl+Enter`，
-  切换风格后单行 `Ctrl+Enter` 发送、`Enter` 换行；单行模式 `↑↓` 翻历史 + `Ctrl+R` 搜索；
-  **多行模式 `↑↓` 在行间移动光标**；补全 `Tab`。
+  切换会话时队列随之清空。空闲状态发送的提示词仍即时发出。客户端实现中，取出队首
+  与开始 Thinking 必须在同一个短生命周期状态锁内完成，并在 WebSocket `.await` 前
+  释放锁，保证自动派发时输入循环不被自死锁。
+- 输入键固定为 `Enter` 发送、`Shift+Enter` 插入换行；`↑↓` 保持字符列在输入行间移动，
+  只有光标已在最上行/最下行时才切换上一条/下一条历史提示词；`Ctrl+R` 搜索历史，
+  `Tab` 补全。`PageUp`/`PageDown` 按当前可见 transcript 高度翻页，鼠标滚轮每格移动 3 行；
+  二者始终滚动消息流，即使 Input Page 已打开。`Ctrl+H` 作为全局帮助键先于页面分发处理，
+  修饰过的 `hjkl` 不参与页面焦点导航。
+
+### 4.1.1 命令范式：内置命令与接入命令
+
+命令统一使用 `/name [raw input]` 交互和同一个补全浮层，但按兼容深度分两类：
+
+1. **内置命令**：dshe 做过交互优化的命令。`client/src/runtime_command.rs` 的
+   `BUILTIN_COMMANDS` 是唯一注册表；一项同时声明 name、description、DSH 风格 input hint、
+   参数补全策略和 action。注册一项就同时注册行为与补全，`input.rs` 不得维护第二份命令表。
+   当前 `/settings`、`/login`、`/new`、`/resume`、`/model`、`/theme`、`/reload`、
+   `/skill`、`/compact`、`/goal`、`/plan`、`/copy`、`/clear`、退出别名都属于内置项；
+   其中 `/new ` 以 bridge 的 preset roster 做参数级补全。
+2. **接入命令**：DSH 原生命令或其它 DSH 插件注册的命令。bridge 在 attach 后调用
+   `ctx.commands.list(agent)` 自动获取该 agent 的有效目录（全局定义 + agent-scoped shadow），
+   下发 handler-free `commands` 帧；`commands/change` 发生时为每条连接重新计算，而非要求
+   dshe 发布版本。客户端与内置目录合并、同名时内置优先，统一按前缀→子串→子序列模糊
+   补全。执行仍发 `command{line}`，bridge 调 `commands.execute`，将 direct UI outcome 通过
+   `command-result` 显示为 System/Error；未知命令报错，绝不降级成模型 user message。
+
+DSH 0.1.0-rc.6 的公开 [`CommandDescriptor`](https://deepseek-harness.github.io/deepseek-harness/en/reference/subsystems/commands)
+只有 name、description 和可选 `input.hint`（free-form text），没有 typed argument
+completion schema。因此接入命令都支持
+**命令名补全**并展示参数 hint；参数候选补全只有被提升为内置优化项后才能提供。命令执行是
+异步的，bridge 必须在 await 前捕获 current conn，返回结果前校验连接仍挂在同一会话。
 
 ### 4.2 快捷键表（v1 提案）
 
 | 键 | 功能 | 备注 |
 |----|------|------|
-| Enter | 发送（单行模式） | |
-| Alt+Enter | 切换多行模式 | |
-| Ctrl+Enter | 发送（多行模式） | |
-| ↑ / ↓ | 输入历史 | 空输入行时 |
+| Enter | 发送输入栏消息 | 单行/多行一致 |
+| Shift+Enter | 输入换行 | |
+| ↑ / ↓ | 输入行间移动；边界切换提示词 | 保持字符列 |
 | Ctrl+R | 历史反向搜索 | |
 | Tab | 命令补全 | |
 | Ctrl+C | running→中断 turn；idle→退出 | |
 | Ctrl+L | 重绘 | |
-| PgUp / PgDn / 滚轮 | 滚动消息流 | 上翻暂停自动跟随 |
-| Esc | 关闭浮层/卡片；取消输入 | |
+| PgUp / PgDn | 按当前可见 transcript 高度翻页 | 上翻暂停自动跟随 |
+| 滚轮 | 每格滚动消息流 3 行 | Input Page 打开时仍只滚消息流 |
+| Esc | Input Page 返回/关闭；取消输入或关闭浮层 | |
+| 方向键 / hjkl（Input Page） | 移动唯一焦点 | 文本编辑态 hjkl 为文字 |
 | Enter（折叠卡） | 展开/收起工具结果 | 焦点导航 v2 |
 | Ctrl+N | 会话选择器 | |
 | /settings | 设置面板（§4.7） | 即改即存 |
@@ -296,7 +328,9 @@ assistant 消息顶部。**复制的永远是原始 markdown 源码**（经 §2.
 
 **原子块语义（D11）**：光标移动到表格/mermaid/代码块的任意渲染行 ⇒ 整块自动选中
 （Umber 底色高亮）；`y` 复制该块在原始消息中的完整 markdown 源码（含围栏/竖线语法）。
-普通文本支持 V 行选与 Ctrl+V 块选；跨块选择以块为单位扩展（见 O13 细节）。
+普通文本支持 V 行选与 Ctrl+V 块选；跨块选择以块为单位扩展（见 O13 细节）。复制模式
+按键只在持有状态锁时计算 `CopyAction`，移动视口、展开单元或报告剪贴板错误等后续动作
+必须在该锁释放后执行，避免同线程重入状态锁导致输入循环冻结。
 
 ### 4.4 审批与用户提问
 
@@ -328,13 +362,13 @@ assistant 消息顶部。**复制的永远是原始 markdown 源码**（经 §2.
   失败（agents 缺失等）才以错误帧 + 4001 结束。
 - `Ctrl+N` / `/resume` 打开会话选择器；`/resume <session-id>` 直接 attach 切换
   （选择器/`/resume` 对冷会话同样先 resume，找不到才报错、不断连）。
-- 状态栏下方固定一行显示当前会话：左侧标题、右侧工作区路径。标题由
+- 状态栏下方固定一行显示当前会话（无背景色）：左侧标题、右侧工作区路径。标题由
   `welcome.title`（会话日志最近一条 `session/title`，由桥接在 attach 时读取）
   初始填充；冷恢复会话日志不在内存，桥接经 `sessionQuery.readTitleSnapshots`
   补发 `title{title}` 帧；此后 `session/title` 事件经普通 event 帧实时更新
   （客户端只更新该行，不重建 transcript 缓存）。路径由 `welcome.cwd`（会话头部
   `header.cwd`，桥接在 attach 时读取）填充；标题过长以 `…` 截断以保住右侧路径，
-  标题/路径均无时该行为空。
+  标题为空时显示 `新会话`，路径为空时右侧留空。
 - `/new`：新建会话并切换（保留旧会话）。新会话落在 **TUI 启动目录**的工作区——
   客户端在 `hello` 里带上 `cwd`，桥接用它（校验为真实目录后）作为 `agents.create`
   的 `meta.cwd`，再把新会话 `attachSession` 进该 cwd 的 workspace 台账（与 host
@@ -354,23 +388,27 @@ assistant 消息顶部。**复制的永远是原始 markdown 源码**（经 §2.
   `/new` 镜像当前会话的 provider/model，其余取 `agentDefaultModel.currentSelection()`。
   与 preset mount 是两个正交步骤，都要做（web/headless 入口同样如此）。
 
-### 4.7 设置面板（D26–D30）
+### 4.7 Input Page 与设置页面（D26–D30）
 
-- **入口**：输入 `/settings` 命令（仅命令，无快捷键）。
-- **形态**：不开浮窗——无边框无标题，**替代输入栏并占页面高度 2/3**，随页面
-  最大宽度居中；消息流保留上方 1/3。面板背景默认 **Ash**，被选中的元素背景
-  **Night**。
+- **统一范围**：`/settings`、`/login`、`/model`、`/theme` 由一个
+  `Option<InputPageSession>` 互斥管理。它们不是 overlay：不开浮窗、不画边框、不 `Clear`，
+  而是**替代输入栏并占页面高度 2/3**，消息流保留在上方。
+- **公共形态**：Ash 背景；所有内容外固定上下各 1 行、左右各 2 列空白内边距；公共
+  header/body/footer 提供标题、正文、加载/错误和键位提示。只有当前可执行元素使用 Night
+  焦点背景，当前已选值另以绿色 `●` 表示。
+- **公共键位**：方向键与 `hjkl` 在稳定焦点图的可执行元素间移动，`Enter` 执行，`Esc`
+  取消编辑/返回/关闭；只读、加载、信息和不可用元素不获得焦点。文本编辑态优先消费字符，
+  因而 `hjkl` 会正常输入而不会导航。动态 provider/model/proxy roster 按稳定 id 保留焦点。
+- **settings**：分类页签本身可聚焦，Enter 激活分类；Down 进入该分类的可编辑条目，
+  Enter 打开数值或选择编辑。分类内条目位置按页记忆，超出可视高度时自动滚动。
   ```
-                外观  行为  显示  高级                ← 页签：居中、不可选中
+                外观  行为  显示  高级
     主题                 ● ferra   ○ custom
     ferra 预设或自定义色板（自定义色板在 TOML 中手改）
     纯色模式              ○ 开   ● 关
     降级为纯色输出（NO_COLOR 语义）
-  ←/→ 分类  ↑/↓ 选择  Enter 编辑  Esc 退出 · 即改即存
+  hjkl/方向键移动  Enter 执行  Esc 退出 · 即改即存
   ```
-- **键位**：页签行居中且**不可选中**，`←/→`（h/l）直接切换分类页；`↑/↓`（j/k）
-  在条目间移动（两端钳制）；`Enter` 进入编辑；`Esc` 退出面板。分类内条目位置按页
-  记忆，列表超出可视高度时滚动并自动把选中项带回视野。
 - **两列**：左列为较小的名称列（30%）：名称 fg、说明 **Bark** 前景（过长换行）；
   右列为值。
 - **选中高亮**：只选中**名称**（Night 底），描述不高亮；编辑时焦点移到值上，
@@ -392,13 +430,11 @@ assistant 消息顶部。**复制的永远是原始 markdown 源码**（经 §2.
 | 外观 | 纯色模式（NO_COLOR） | 布尔 | 关 |
 | 行为 | 记住上次会话 | 布尔 | **关**（新进程默认新建会话） |
 | 行为 | 默认模式（新进程建会话使用的 preset，来自桥接 `presets` roster；配置值已失效时仍可显示/选择，桥接回退 standard） | 枚举 | standard |
-| 行为 | 发送键风格（Enter 即发 / Ctrl+Enter 发送） | 枚举 | Enter 即发 |
 | 行为 | 粘贴占位阈值 | 数值字符 | 1000 |
 | 行为 | 长内容折叠阈值 | 数值行 | 20 |
 | 行为 | 原子块折叠阈值 | 数值行 | 40 |
 | 行为 | 复制提示停留时长 | 数值秒 | 2 |
 | 行为 | 输入历史条数 | 数值 | 1000 |
-| 显示 | 状态栏字段（模型名 / turn:step / 子agent数） | 布尔×3 | 全开 |
 | 显示 | 工具耗时显示 | 布尔 | 开 |
 | 显示 | read 自动合并 | 布尔 | 开 |
 | 显示 | 消息时间戳 | 布尔 | 关 |
@@ -418,7 +454,7 @@ assistant 消息顶部。**复制的永远是原始 markdown 源码**（经 §2.
   `providerCredentialRef` 从 settings 读取，缺省回退 `<ID>_API_KEY`），
   `credentials.set/unset` 写入后经 `credentials/updated` 即时生效。**密钥值永不
   回传**——下行只带 `configured/writable/source/hint(…末四位)`；编辑框输入画 ●，
-  环境变量来源只读。
+  环境变量来源只读且不获得可执行焦点。
 - **Account**：OpenAI Codex（ChatGPT 订阅）网页登录，走**设备码流程**（无需本地
   回调端口）：桥接 POST `auth.openai.com/api/accounts/deviceauth/usercode` 拿
   `user_code`，面板显示 `https://auth.openai.com/codex/device` + 用户代码，轮询
@@ -426,31 +462,48 @@ assistant 消息顶部。**复制的永远是原始 markdown 源码**（经 §2.
   存 `%DSH_HOME%\dsh-tui-codex.json`。⚠️ 端到端生效还需宿主
   `dsh-llm-pi-ai` 接入持久化 OAuth 凭证（当前用 `InMemoryCredentialStore`，无
   登录流程）。
-- **Proxy**：列出已保存代理 + `+ New`；新建表单填 base url / api key / 协议模式
-  （`openai-completions` / `openai-responses` / `anthropic-messages` 三选一，非必选）
-  / 模型名称（非必填）。落点存 `%DSH_HOME%\dsh-tui-proxies.json`（api key 不回传）。
+- **Proxy**：列出已保存代理 + `+ New`；已有代理 Enter 先进入“取消/删除”确认页，只有
+  显式聚焦“删除”并 Enter 才发送 `login-proxy-delete`。新建表单填 base url / api key /
+  协议模式（`openai-completions` / `openai-responses` / `anthropic-messages` 三选一）/
+  模型名称。落点存 `%DSH_HOME%\dsh-tui-proxies.json`（api key 不回传）。
 - **错误呈现**：写失败由桥接经同一 `login` 帧的 `error` 字段回传，显示在面板页脚
   （红色 ✗），不走 transcript 错误流。
 
-## 5. 桥接与协议（v1 草案）
+### 4.9 模型与主题 Input Page
+
+- `/model` 是单焦点双栏页：provider 在左、所选 provider 的 model 在右；左右键/h/l
+  跨栏，上下键/j/k 在栏内移动，Enter 聚焦 provider 时激活该栏、聚焦 model 时发送
+  `model-set`。绿色 `●` 只表示当前已应用模型，Night 背景表示当前焦点，二者不可混同。
+  catalog 异步刷新时按 provider/model id 保留焦点；空 catalog 只显示说明，不创建假焦点。
+- `/theme` 以主题名为可执行焦点，色块仅为装饰；Enter 应用并持久化主题。两页都使用
+  §4.7 公共 shell，不再使用居中浮窗；终端过小时采用有界裁剪，不产生越界区域。
+
+## 5. 桥接与协议（wire protocol v3）
 
 ### 5.1 端点与安全
 
 - 端点：`ws://127.0.0.1:<dsport>/dsh-tui`；v1 仅 loopback；鉴权见 O7。
 
-### 5.2 消息协议（JSON，serde 两侧严格对齐）
+### 5.2 消息协议（JSON，单一契约生成）
 
-**上行（TUI → DSH）**：`hello` / `input` / `command` / `interrupt` / `approval-answer` /
-`login-get` / `login-set-api-key{provider,value}` / `login-codex-start` /
-`login-codex-cancel` / `login-proxy-create{baseUrl,apiKey,protocol,model}` /
-`login-proxy-delete{id}` / `ping`。`hello` 另带可选 `cwd`（TUI 启动目录，新会话的
-工作区）与 `mode`（新会话的默认 preset id，仅在不带 `resumeSessionId` 时发送）。
+消息名、surface 事件和容量的唯一机器可读来源是
+[`bridge/protocol-contract.json`](../bridge/protocol-contract.json)；可读清单由
+`node tools/generate-protocol-doc.mjs` 生成到 [`docs/protocol.md`](protocol.md)。
+Node 桥接运行时读取该 JSON，Rust 的 `client/build.rs` 编译期从同一文件生成常量，
+禁止再在两端手写 snapshot/history/frame 数值。
 
-**下行（DSH → TUI）**：`welcome` / `snapshot` / `event` / `status` / `presets` / `title` /
-`login` / `login-codex` / `approval` / `resolved` / `error` / `pong`。`welcome` 另带可选
-`title`（attach 时日志最近一条 `session/title`；冷恢复会话日志不在内存，桥接经
-`readTitleSnapshots` 补发 `title{title}` 帧；此后标题更新走普通 `event` 帧的
-`session/title` 事件）与可选 `cwd`（会话头部 `header.cwd`，标题行右侧显示的工作区路径）。
+`hello` 带 `protocolVersion`，并可带 `resumeSessionId`、`cwd`（TUI 启动目录）和
+`mode`（仅创建启动会话时的 preset id）。`welcome` 回传 `protocolVersion`、
+`maxFrameBytes`、会话 id/状态及可选 `title`、`cwd`、provider/model；旧端可省略新增
+能力字段。正常帧上限为 16 MiB；仅连接未更新的旧桥接时可显式设置
+`DSHE_LEGACY_MAX_FRAME_MB` 放宽客户端上限。
+
+每次 attach 后桥接还从 `ctx.commands.list(agent)` 下发
+`commands{commands:[{name,description,input?:{hint}}]}`（不携带 handler）；客户端与内置
+优化命令合并并由内置项覆盖同名。`commands/change` 会触发每连接的 agent-scoped 全量刷新。
+通用命令仍经 `command{line}` 执行，直接 UI 结果以
+`command-result{commandId,kind:success|error,text?}` 返回，followup 型命令继续通过普通会话
+事件呈现；`execute` 返回 `undefined` 时桥接发 `command-unknown`，不创建模型消息。
 
 `login` 载荷 `{ providers: [{id,name,apiKeyConfigured,apiKeyWritable,apiKeySource?,
 apiKeyHint?}], proxies: [{id,name,baseUrl,protocol,model}], codex?: {loggedIn,
@@ -462,13 +515,42 @@ accountId?}, error? }`（§4.8）：API key 只有视图没有值。`login-codex
 roster 快照，每次 attach（hello/`/new`/picker）后紧随 `welcome` 下发；客户端用它渲染
 `/new ` 模式提示弹窗。
 
-`snapshot` 载荷 `{ events, truncated? }`：只含 surface 事件（user/message、assistant/message、
-tool/call、tool/result、turn/step 边界、todo/write），assistant/chunk 不下发（assistant/message
-携带最终文本）；最多最近 4000 条，超出时 `truncated: true`（实施中因 36MB 单帧触发
-tungstenite `max_frame_size` 而加入的裁剪）。
+`snapshot` 载荷 `{ events, truncated? }`：含契约列出的重建事件，以及带 `surfaceOp` 的未知事件
+（用于新宿主事件的兼容降级）；未知事件在 bridge 侧裁成只含 bounded type/seq/time/surface 元数据的
+空 data envelope。assistant/chunk 不进入快照（assistant/message 带最终文本）。桥接最多发送最近
+**600** 条，超出置 `truncated: true`，历史经 `history{beforeSeq,limit}` 分页，单页最多 2000。
+所有下行 JSON 由 `frame.js::encodeBoundedFrame` 按 UTF-8 字节执行 16 MiB 上限：snapshot/history
+保留最新可容纳后缀，单体超限改发 `frame-too-large`。冷日志读取完成后必须校验原连接仍有效，禁止
+把旧会话快照发到已重绑的 socket。
 
-事件层是 DSH 会话日志的直通投影；markdown/表格/mermaid 解析与 source mapping 全部在客户端
-本地完成——**协议薄、渲染厚**。
+事件 JSON 在 `protocol.rs::HostEvent` 边界转换为类型化 `HostEventKind`，同时读取事件顶层
+`time`、`surfaceOp` 与 `sourceEventSeqs`；未知事件保留为 `Unknown`，但只有未知 append-surface
+事件生成有界 fallback，未知/malformed replace 报兼容错误而不能伪装成 append。`projection.rs`
+把事件穷尽分类为 display、surface mutation、page/session state、input accessory 或 ignore effect，
+`AppState` reducer 不再遍历宿主原始 JSON。
+
+事件显示统一为四种公共表面：
+
+| 表面 | 用途 | 代表事件 |
+|---|---|---|
+| `ActivityRow` | Waiting/Running/Success/Failure/Cancelled 活动，可带 parent/depth | Thinking、tool、retry、command、Code Mode、workflow、compaction |
+| `TranscriptBlock` | 无工作状态的 plain/Markdown/reasoning/fallback 内容 | assistant、turn notice/error、reasoning |
+| `ContentCard` | 统一内边距、背景与 copy source 的内容卡 | 用户消息、context、附件占位、compaction summary |
+| `InputAccessory` | 输入栏上方、统一高度预算/优先级/焦点 | queue、approval、question、todo、goal、plan |
+
+DSH surface replace 在显示前执行：shadowed surface node 及其拥有的工具活动从有效 transcript
+删除，replacement 插回原 surface 位置；compaction 的 log-only summary 只更新 lifecycle，唯一可见
+summary card 由紧随其后的 replacement 创建并拥有。历史从新到旧分页时长期保留 shadowed seq，后加载
+旧页不会让被压缩消息复活；若 tool/command/Code Mode/workflow 的 terminal half 与 start 被分页
+边界拆开，projector 暂存 terminal outcome，并在旧页 start 到达时直接重建最终状态；workflow
+cancelled 保留为独立状态。retry schedule 晚于已加载 retry-started 回放时写入 deferred enrichment，
+待 saved rows 恢复并完成 index shift 后回填完整 delay/failure/maxRetries 与 start time。`session/title`、provider/model、request
+context 与策略状态只更新页面/会话状态；`request/header`、`session/end-seed`、approval audit、
+title/search request 等默认忽略。
+
+Markdown/source map 仍在客户端本地完成；渲染缓存封装为 `TranscriptRenderCache`，复制模式直接
+消费 UI 同一布局过程产生的行 provenance，不再重复推导 padding/折行/间距。流式 text delta
+只置 `tail_dirty`，surface replace 等结构变更只做一次结构失效。
 
 ## 6. Rust 技术栈
 
@@ -478,12 +560,24 @@ tungstenite `max_frame_size` 而加入的裁剪）。
 | 异步/WS | tokio + tokio-tungstenite | 连桥接端点 |
 | 协议 | serde + serde_json | 与 §5 严格对齐 |
 | Markdown | pulldown-cmark | 保留块区间做 source map |
-| Mermaid | **wasmtime + grok-mermaid WASM** | 备选：wasmi；失败降级源码围栏 |
-| 代码高亮 | syntect（ferra 自定义主题） | 见 O14 首期确认 |
+| Mermaid | **wasmi + grok-mermaid WASM** | 进程内解释执行；失败降级源码围栏 |
+| 代码高亮 | 纯色 + 语言标签 | syntect 延后 |
 | 剪贴板 | arboard（系统剪贴板） | Windows 直写剪贴板 |
 | 配置 | toml + serde（`%APPDATA%\dshe\config.toml`） | 即改即存（§4.7） |
 | 宽字符 | unicode-width | 中文/emoji 宽度 |
-| 分发 | 单 exe（仓库根为 Cargo workspace，根目录 `cargo run` 即启动） | 用户无需 Node |
+| 分发 | 单 exe（仓库根为 Cargo workspace，根目录 `cargo run` 即启动） | 客户端运行时无 Node 依赖；首次安装/更新桥接需要 Node.js/DSH |
+
+### 6.1 源码安装路径
+
+README「Quick Start」是当前面向用户的安装入口：Windows / PowerShell 下先准备
+Git、Node.js/npm 与 Rust/Cargo，全局安装 `@deepseek-ai/dsh`，把 `bridge/` 挂载到
+专属 `dshe` profile 并执行 `dsh plugin --profile dshe install`，再用
+`cargo install --path client --locked` 将 `dshe.exe` 安装到 Cargo bin 目录。未显式
+设置 `DSH_HOME`（包括环境变量存在但值为空）时，安装命令与客户端统一使用
+`%USERPROFILE%\.dsh`，挂载脚本会自动回退并打印实际目录；自定义目录也可显式传
+`-DshHome`。挂载脚本须兼容 Windows PowerShell 5.1、可幂等执行，并以 UTF-8 无 BOM 写出供 Node 读取的
+`package.json`。客户端安装后运行时仍为单 exe；Node.js 只用于 DSH 本身及首次安装/
+更新桥接。
 
 ## 7. 平台与边界
 
@@ -496,8 +590,8 @@ tungstenite `max_frame_size` 而加入的裁剪）。
 
 所有开放问题（O1–O16）已逐项讨论并记录为 D 系列决策。剩余为**实施验证项**，非设计问题：
 
-- O17 grok-mermaid WASM 接口确认（输入/输出格式、体积、许可证、wasmtime 集成方式）——M5 开始前验证。
-- 桥接 token 文件的具体位置与权限（DSH 数据目录内，随实施确定）。
+- grok-mermaid WASM 已用 wasmi 集成，并有成功/失败降级测试。
+- 桥接 token 固定为 `%DSH_HOME%\dsh-tui.token`，客户端启动时读取。
 - ferra 色板到 256 色降级映射表——实施时用算法（最近色距）生成。
 
 ## 9. 里程碑草案（设计定稿后细化）

@@ -7,24 +7,11 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::config::Config;
-
-/// Built-in slash commands (name, one-line description) for the suggestion
-/// popup.
-pub const COMMANDS: &[(&str, &str)] = &[
-    ("/help", "显示帮助"),
-    ("/settings", "打开设置面板"),
-    ("/login", "登录设置（API key / 账号 / proxy）"),
-    ("/new", "新建会话（空格后可选模式）"),
-    ("/resume", "切换会话"),
-    ("/compact", "压缩上下文"),
-    ("/goal", "目标管理"),
-    ("/plan", "计划模式"),
-    ("/copy", "进入复制模式"),
-    ("/clear", "清空会话列表"),
-    ("/exit", "退出客户端"),
-    ("/q", "退出客户端"),
-    ("/quit", "退出客户端"),
-];
+use crate::model::AppState;
+use crate::protocol::{ClientMessage, CommandInfo};
+use crate::runtime_command::{
+    completion_context, match_command_catalog, CommandSource, CompletionKind,
+};
 
 /// One selectable `/new` mode: an agent preset pushed by the bridge's
 /// `presets` roster message (broken presets are filtered out before they
@@ -53,14 +40,14 @@ pub struct InputState {
     /// The buffer is one atomic paste block (a paste over the threshold):
     /// it renders as `[N text pasted]` and the cursor can never enter it.
     pub pasted: bool,
-    /// Enter sends immediately (D30); false = Enter inserts a newline and
-    /// Ctrl+Enter sends.
-    pub enter_sends: bool,
     /// History cap (D28).
     pub history_limit: usize,
     /// `/new <mode>` candidates from the bridge's `presets` roster message;
     /// empty until the roster arrives.
     pub new_modes: Vec<NewMode>,
+    /// Effective DSH/plugin commands discovered by the bridge. They are
+    /// merged with the centralized built-in registry for every completion.
+    pub integrated_commands: Vec<CommandInfo>,
     /// Slash-command suggestion popup, when open.
     pub suggest: Option<Suggestion>,
 }
@@ -82,6 +69,9 @@ pub struct Suggestion {
     /// Per-row description column, parallel to `matches` (the command
     /// description or the mode's display name).
     pub descriptions: Vec<String>,
+    /// Per-row source, parallel to `matches`: Builtin vs Integrated. Mode rows
+    /// are all Builtin (the popup header already says 「模式」).
+    pub sources: Vec<CommandSource>,
     /// True = mode rows (header "模式"); false = command rows (header "命令").
     pub modes: bool,
 }
@@ -98,11 +88,19 @@ impl InputState {
             search: None,
             paste_placeholder_chars: config.paste_placeholder_chars,
             pasted: false,
-            enter_sends: config.enter_sends,
             history_limit: config.history_limit,
             new_modes: Vec::new(),
+            integrated_commands: Vec::new(),
             suggest: None,
         }
+    }
+
+    /// Replace the effective DSH/plugin command directory. Registry change
+    /// events can arrive while the popup is open, so recompute immediately.
+    pub fn replace_integrated_commands(&mut self, commands: Vec<CommandInfo>) {
+        self.integrated_commands = commands;
+        self.suggest = None;
+        self.refresh_suggest();
     }
 
     /// Insert pasted text at the cursor. Content over the threshold becomes
@@ -122,6 +120,65 @@ impl InputState {
 }
 
 /// What the UI should do after a key press.
+#[derive(Debug)]
+pub struct QuestionKeyResult {
+    pub handled: bool,
+    pub outbound: Option<ClientMessage>,
+}
+
+/// Apply one key to the pending question batch without holding the state lock
+/// across network I/O. The main loop sends `outbound` only after this returns.
+pub fn handle_question_key(state: &mut AppState, key: &KeyEvent) -> QuestionKeyResult {
+    let mut result = QuestionKeyResult {
+        handled: false,
+        outbound: None,
+    };
+    let Some(question) = state.question.as_mut() else {
+        return result;
+    };
+    match key.code {
+        KeyCode::Left => {
+            question.step(-1);
+            result.handled = true;
+        }
+        KeyCode::Right => {
+            question.step(1);
+            result.handled = true;
+        }
+        KeyCode::Enter => {
+            if let Some(answers) = question.enter() {
+                result.outbound = Some(ClientMessage::AnswerQuestions {
+                    rpc_id: question.rpc_id.clone(),
+                    answers,
+                });
+                state.question = None;
+            }
+            result.handled = true;
+        }
+        KeyCode::Esc => {
+            result.outbound = Some(ClientMessage::CancelQuestions {
+                rpc_id: question.rpc_id.clone(),
+            });
+            state.question = None;
+            result.handled = true;
+        }
+        KeyCode::Backspace => {
+            question.backspace();
+            result.handled = true;
+        }
+        KeyCode::Char(character)
+            if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+        {
+            if character == ' ' || !character.is_ascii_control() {
+                question.push_char(character);
+            }
+            result.handled = true;
+        }
+        _ => {}
+    }
+    result
+}
+
 #[derive(Debug, PartialEq)]
 pub enum InputAction {
     None,
@@ -147,32 +204,14 @@ fn char_to_byte(s: &str, idx: usize) -> usize {
     s.char_indices().nth(idx).map(|(i, _)| i).unwrap_or(s.len())
 }
 
-/// Ranked fuzzy match against the command names: prefix matches first, then
-/// substring matches, then subsequence matches; each group alphabetical. An
-/// empty query returns every command.
-pub fn match_commands(query: &str) -> Vec<&'static str> {
-    let q = query.to_lowercase();
-    let mut prefix: Vec<&'static str> = Vec::new();
-    let mut substring: Vec<&'static str> = Vec::new();
-    let mut fuzzy: Vec<&'static str> = Vec::new();
-    for (cmd, _) in COMMANDS {
-        let name = cmd.trim_start_matches('/').to_lowercase();
-        if q.is_empty() {
-            prefix.push(cmd);
-        } else if name.starts_with(&q) {
-            prefix.push(cmd);
-        } else if name.contains(&q) {
-            substring.push(cmd);
-        } else if is_subsequence(&q, &name) {
-            fuzzy.push(cmd);
-        }
-    }
-    prefix.sort_unstable();
-    substring.sort_unstable();
-    fuzzy.sort_unstable();
-    prefix.extend(substring);
-    prefix.extend(fuzzy);
-    prefix
+/// Built-in-only matching helper kept for callers/tests that do not own a
+/// live bridge directory. Interactive completion uses `match_command_catalog`
+/// below and therefore includes auto-discovered plugin commands.
+pub fn match_commands(query: &str) -> Vec<String> {
+    match_command_catalog(query, &[])
+        .into_iter()
+        .map(|candidate| candidate.line)
+        .collect()
 }
 
 /// Every char of `q` appears in `name` in order (classic fuzzy subsequence).
@@ -238,7 +277,10 @@ impl InputState {
         // Ctrl+R: reverse history search (design §4.1).
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('r') {
             if !self.multiline {
-                self.search = Some(SearchState { query: String::new(), sel: 0 });
+                self.search = Some(SearchState {
+                    query: String::new(),
+                    sel: 0,
+                });
             }
             return InputAction::None;
         }
@@ -324,11 +366,7 @@ impl InputState {
                         self.buf = cmd.clone();
                         self.cursor = cmd.chars().count();
                     }
-                    let saved = self.enter_sends;
-                    self.enter_sends = true;
-                    let action = self.commit();
-                    self.enter_sends = saved;
-                    return action;
+                    return self.commit();
                 }
                 _ => {}
             }
@@ -356,38 +394,18 @@ impl InputState {
         {
             return self.commit();
         }
-        // Ctrl+Enter always sends under the "Ctrl+Enter sends" style (D30).
-        if !self.enter_sends
-            && key.modifiers.contains(KeyModifiers::CONTROL)
-            && key.code == KeyCode::Enter
-        {
-            return self.commit();
-        }
-
         let action = match key.code {
-            KeyCode::Enter => {
-                // Enter sends (D30 default); Shift+Enter is the newline key.
-                // Only the "Ctrl+Enter sends" style makes Enter break lines.
-                if !self.enter_sends {
-                    self.insert_char('\n');
-                    if !self.multiline {
-                        self.multiline = true;
-                    }
-                    InputAction::None
-                } else {
-                    self.commit()
-                }
-            }
+            // Chat-style input is fixed: Enter sends; Shift+Enter above is
+            // the only ordinary newline gesture.
+            KeyCode::Enter => self.commit(),
             KeyCode::Tab => {
                 // Open the suggestion popup and fill the first match —
                 // in either context: a slash-prefixed word (commands) or
                 // the `/new ` prefix (agent-preset modes).
                 let command_ctx = self.buf.starts_with('/') && !self.buf.contains([' ', '\n']);
-                let mode_ctx = match self.buf.strip_prefix("/new ") {
-                    Some(rest) => !rest.contains([' ', '\n']),
-                    None => false,
-                };
-                if command_ctx || mode_ctx {
+                let argument_ctx = completion_context(&self.buf)
+                    .is_some_and(|(_, query)| !query.contains([' ', '\n']));
+                if command_ctx || argument_ctx {
                     self.refresh_suggest();
                     if let Some(s) = self.suggest.as_mut() {
                         let cmd = s.matches[s.sel].clone();
@@ -457,23 +475,13 @@ impl InputState {
                 InputAction::None
             }
             KeyCode::Up => {
-                if self.multiline {
-                    // Multiline: move between lines (history stays in
-                    // single-line mode). Paste blocks stay atomic.
-                    if !self.pasted {
-                        self.cursor_up();
-                    }
-                } else {
+                if !self.multiline || (!self.pasted && !self.cursor_up()) {
                     self.history_prev();
                 }
                 InputAction::None
             }
             KeyCode::Down => {
-                if self.multiline {
-                    if !self.pasted {
-                        self.cursor_down();
-                    }
-                } else {
+                if !self.multiline || (!self.pasted && !self.cursor_down()) {
                     self.history_next();
                 }
                 InputAction::None
@@ -525,56 +533,58 @@ impl InputState {
         // Command-name popup: "/" or "/set…" without a space.
         let slash = self.buf.starts_with('/') && !self.buf.contains([' ', '\n']);
         if slash {
-            let matched = match_commands(&self.buf[1..]);
+            let matched = match_command_catalog(&self.buf[1..], &self.integrated_commands);
             if matched.is_empty() {
                 self.suggest = None;
                 return;
             }
-            let matches: Vec<String> = matched.iter().map(|cmd| (*cmd).to_string()).collect();
-            let descriptions: Vec<String> = matched
-                .iter()
-                .map(|cmd| {
-                    COMMANDS
-                        .iter()
-                        .find(|(c, _)| c == cmd)
-                        .map(|(_, d)| (*d).to_string())
-                        .unwrap_or_default()
-                })
-                .collect();
             self.suggest = Some(Suggestion {
                 query: self.buf.clone(),
                 sel: 0,
-                matches,
-                descriptions,
+                matches: matched
+                    .iter()
+                    .map(|candidate| candidate.line.clone())
+                    .collect(),
+                descriptions: matched
+                    .iter()
+                    .map(|candidate| candidate.description.clone())
+                    .collect(),
+                sources: matched.iter().map(|candidate| candidate.source).collect(),
                 modes: false,
             });
             return;
         }
-        // `/new <mode>` popup: everything after the first space is the mode
-        // query; a second space or a newline leaves the command line again.
-        if let Some(rest) = self.buf.strip_prefix("/new ") {
-            if !rest.contains([' ', '\n']) {
-                let ranked = match_new_modes(rest, &self.new_modes);
-                if ranked.is_empty() {
-                    self.suggest = None;
-                    return;
+        // Argument popup selected by the built-in command's declaration. A
+        // second space/newline leaves the single-token completion context.
+        if let Some((command, query)) = completion_context(&self.buf) {
+            if !query.contains([' ', '\n']) {
+                match command.completion {
+                    CompletionKind::NewMode => {
+                        let ranked = match_new_modes(query, &self.new_modes);
+                        if ranked.is_empty() {
+                            self.suggest = None;
+                            return;
+                        }
+                        let matches: Vec<String> = ranked
+                            .iter()
+                            .map(|mode| format!("/{} {}", command.name, mode.id))
+                            .collect();
+                        let descriptions: Vec<String> = ranked
+                            .iter()
+                            .map(|mode| mode.name.clone().unwrap_or_else(|| mode.id.clone()))
+                            .collect();
+                        self.suggest = Some(Suggestion {
+                            query: self.buf.clone(),
+                            sel: 0,
+                            sources: vec![CommandSource::Builtin; matches.len()],
+                            matches,
+                            descriptions,
+                            modes: true,
+                        });
+                        return;
+                    }
+                    CompletionKind::None => unreachable!("filtered by completion_context"),
                 }
-                let matches: Vec<String> = ranked
-                    .iter()
-                    .map(|mode| format!("/new {}", mode.id))
-                    .collect();
-                let descriptions: Vec<String> = ranked
-                    .iter()
-                    .map(|mode| mode.name.clone().unwrap_or_else(|| mode.id.clone()))
-                    .collect();
-                self.suggest = Some(Suggestion {
-                    query: self.buf.clone(),
-                    sel: 0,
-                    matches,
-                    descriptions,
-                    modes: true,
-                });
-                return;
             }
         }
         self.suggest = None;
@@ -589,31 +599,44 @@ impl InputState {
         }
     }
 
-    /// Multiline: move the cursor to the end of the previous line.
-    fn cursor_up(&mut self) {
+    /// Move to the previous visual input line while preserving the character
+    /// column where possible. Returns false at the first line so the caller
+    /// can recall the previous prompt from history.
+    fn cursor_up(&mut self) -> bool {
         let byte = char_to_byte(&self.buf, self.cursor);
-        let before = &self.buf[..byte];
-        let Some(i) = before.rfind('\n') else {
-            return; // already on the first line
-        };
-        // `i` is the byte index of the newline before the current line;
-        // the previous line ends right there.
-        self.cursor = self.buf[..i].chars().count();
+        let current_start = self.buf[..byte].rfind('\n').map_or(0, |index| index + 1);
+        if current_start == 0 {
+            return false;
+        }
+        let column = self.buf[current_start..byte].chars().count();
+        let previous_end = current_start - 1;
+        let previous_start = self.buf[..previous_end]
+            .rfind('\n')
+            .map_or(0, |index| index + 1);
+        let previous_len = self.buf[previous_start..previous_end].chars().count();
+        let target_column = column.min(previous_len);
+        self.cursor = self.buf[..previous_start].chars().count() + target_column;
+        true
     }
 
-    /// Multiline: move the cursor to the end of the next line.
-    fn cursor_down(&mut self) {
+    /// Move to the next visual input line while preserving the character
+    /// column where possible. Returns false at the last line so the caller
+    /// can advance through prompt history or restore the draft.
+    fn cursor_down(&mut self) -> bool {
         let byte = char_to_byte(&self.buf, self.cursor);
-        let after = &self.buf[byte..];
-        let Some(i) = after.find('\n') else {
-            return; // already on the last line
+        let current_start = self.buf[..byte].rfind('\n').map_or(0, |index| index + 1);
+        let Some(relative_end) = self.buf[byte..].find('\n') else {
+            return false;
         };
-        let next_start = byte + i + 1;
-        let next_end = match self.buf[next_start..].find('\n') {
-            Some(j) => next_start + j,
-            None => self.buf.len(),
-        };
-        self.cursor = self.buf[..next_end].chars().count();
+        let column = self.buf[current_start..byte].chars().count();
+        let next_start = byte + relative_end + 1;
+        let next_end = self.buf[next_start..]
+            .find('\n')
+            .map_or(self.buf.len(), |index| next_start + index);
+        let next_len = self.buf[next_start..next_end].chars().count();
+        let target_column = column.min(next_len);
+        self.cursor = self.buf[..next_start].chars().count() + target_column;
+        true
     }
 
     fn commit(&mut self) -> InputAction {
@@ -703,6 +726,7 @@ impl InputState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime_command::BUILTIN_COMMANDS;
     use crossterm::event::{KeyEvent, KeyModifiers};
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -782,7 +806,10 @@ mod tests {
         assert_eq!(action, InputAction::Command("/quit".into()));
         // All three variants fuzzy-match from "q".
         let m = match_commands("q");
-        assert!(m.contains(&"/q") && m.contains(&"/quit"), "got: {m:?}");
+        assert!(
+            m.iter().any(|item| item == "/q") && m.iter().any(|item| item == "/quit"),
+            "got: {m:?}"
+        );
     }
 
     #[test]
@@ -790,7 +817,7 @@ mod tests {
         let mut s = state();
         s.handle_key(&key(KeyCode::Char('/')), true);
         let suggest = s.suggest.as_ref().expect("popup opens on /");
-        assert_eq!(suggest.matches.len(), COMMANDS.len());
+        assert_eq!(suggest.matches.len(), BUILTIN_COMMANDS.len());
         assert_eq!(suggest.query, "/");
         assert_eq!(suggest.sel, 0);
     }
@@ -805,8 +832,47 @@ mod tests {
         assert_eq!(match_commands("pln"), vec!["/plan"]);
         // All prefix results come before everything else.
         let m = match_commands("c");
-        assert!(m.iter().all(|c| c.starts_with("/c")), "prefix group only: {m:?}");
+        assert!(
+            m.iter().all(|c| c.starts_with("/c")),
+            "prefix group only: {m:?}"
+        );
         assert_eq!(m.len(), 3);
+    }
+
+    #[test]
+    fn integrated_plugin_command_is_auto_completed_with_its_hint() {
+        let mut s = state();
+        s.integrated_commands = vec![CommandInfo {
+            name: "feedback".into(),
+            description: "record feedback".into(),
+            input: Some(crate::protocol::CommandInputInfo {
+                hint: "<text>".into(),
+            }),
+        }];
+        for c in "/feed".chars() {
+            s.handle_key(&key(KeyCode::Char(c)), true);
+        }
+        let suggest = s.suggest.as_ref().expect("plugin command is discovered");
+        assert_eq!(suggest.matches, vec!["/feedback"]);
+        assert!(suggest.descriptions[0].contains("<text>"));
+    }
+
+    #[test]
+    fn live_directory_change_refreshes_an_open_popup() {
+        let mut s = state();
+        s.handle_key(&key(KeyCode::Char('/')), true);
+        s.replace_integrated_commands(vec![CommandInfo {
+            name: "feedback".into(),
+            description: "record feedback".into(),
+            input: None,
+        }]);
+        assert!(s
+            .suggest
+            .as_ref()
+            .unwrap()
+            .matches
+            .iter()
+            .any(|item| item == "/feedback"));
     }
 
     #[test]
@@ -817,7 +883,11 @@ mod tests {
         s.handle_key(&key(KeyCode::Down), true);
         assert_eq!(s.buf, list[1], "Down fills the next command");
         assert_eq!(s.suggest.as_ref().unwrap().sel, 1);
-        assert_eq!(s.suggest.as_ref().unwrap().matches.len(), list.len(), "list stays open");
+        assert_eq!(
+            s.suggest.as_ref().unwrap().matches.len(),
+            list.len(),
+            "list stays open"
+        );
         s.handle_key(&key(KeyCode::Up), true);
         assert_eq!(s.buf, list[0]);
         s.handle_key(&key(KeyCode::Up), true); // wraps around
@@ -904,7 +974,10 @@ mod tests {
         for c in "/new ".chars() {
             s.handle_key(&key(KeyCode::Char(c)), true);
         }
-        let suggest = s.suggest.as_ref().expect("mode popup opens after /new<space>");
+        let suggest = s
+            .suggest
+            .as_ref()
+            .expect("mode popup opens after /new<space>");
         assert!(suggest.modes, "popup is the mode list");
         assert_eq!(suggest.matches.len(), 4, "empty query lists every mode");
         assert_eq!(suggest.matches[0], "/new standard", "roster order is kept");
@@ -947,7 +1020,10 @@ mod tests {
         s.handle_key(&key(KeyCode::Char('m')), true);
         assert!(s.suggest.is_some());
         s.handle_key(&key(KeyCode::Char(' ')), true);
-        assert!(s.suggest.is_none(), "a second space leaves the command line");
+        assert!(
+            s.suggest.is_none(),
+            "a second space leaves the command line"
+        );
     }
 
     #[test]
@@ -998,29 +1074,23 @@ mod tests {
     }
 
     #[test]
-    fn enter_sends_style_false_inserts_newline() {
-        let mut s = state();
-        s.enter_sends = false;
+    fn enter_always_sends_even_with_legacy_config_false() {
+        let mut config = Config::default();
+        config.enter_sends = false;
+        let mut s = InputState::new(&config);
         s.handle_key(&key(KeyCode::Char('a')), true);
-        s.handle_key(&key(KeyCode::Enter), true);
-        assert_eq!(s.buf, "a\n");
-        assert!(s.multiline);
-        // Ctrl+Enter sends even in multiline.
-        let action = s.handle_key(
-            &KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL),
-            true,
+        assert_eq!(
+            s.handle_key(&key(KeyCode::Enter), true),
+            InputAction::Send("a".into())
         );
-        assert!(matches!(action, InputAction::Send(_)));
+        assert!(s.buf.is_empty());
     }
 
     #[test]
     fn shift_enter_inserts_newline() {
         let mut s = state();
         s.handle_key(&key(KeyCode::Char('a')), true);
-        let action = s.handle_key(
-            &KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT),
-            true,
-        );
+        let action = s.handle_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT), true);
         assert_eq!(action, InputAction::None, "Shift+Enter must not send");
         assert_eq!(s.buf, "a\n");
         assert!(s.multiline);
@@ -1051,11 +1121,12 @@ mod tests {
         let mut s = state();
         s.handle_key(&key(KeyCode::Char('/')), true);
         assert!(s.suggest.is_some());
-        let action = s.handle_key(
-            &KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT),
-            true,
+        let action = s.handle_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT), true);
+        assert_eq!(
+            action,
+            InputAction::None,
+            "popup Enter must not fire on Shift+Enter"
         );
-        assert_eq!(action, InputAction::None, "popup Enter must not fire on Shift+Enter");
         assert!(s.suggest.is_none());
         assert_eq!(s.buf, "/\n");
     }
@@ -1064,16 +1135,10 @@ mod tests {
     fn alt_enter_toggles_multiline() {
         let mut s = state();
         s.handle_key(&key(KeyCode::Char('a')), true);
-        let action = s.handle_key(
-            &KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT),
-            true,
-        );
+        let action = s.handle_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT), true);
         assert_eq!(action, InputAction::ToggleMultiline);
         assert!(s.multiline);
-        let action = s.handle_key(
-            &KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT),
-            true,
-        );
+        let action = s.handle_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT), true);
         assert_eq!(action, InputAction::ToggleMultiline);
         assert!(!s.multiline);
     }
@@ -1170,6 +1235,23 @@ mod tests {
         s.handle_key(&key(KeyCode::Up), true);
         assert_eq!(s.cursor, 2);
         assert_eq!(s.buf, "ab\ncd", "Up moves lines, not history");
+    }
+
+    #[test]
+    fn multiline_boundaries_switch_prompt_history() {
+        let mut s = state();
+        s.history = vec!["older".into(), "newer".into()];
+        s.buf = "ab\ncd".into();
+        s.cursor = 1;
+        s.multiline = true;
+
+        s.handle_key(&key(KeyCode::Up), true);
+        assert_eq!(s.buf, "newer", "Up on the first line recalls history");
+        s.handle_key(&key(KeyCode::Down), true);
+        assert_eq!(
+            s.buf, "ab\ncd",
+            "Down at the history end restores the draft"
+        );
     }
 
     /// Regression: inserting/removing CJK characters used to panic because

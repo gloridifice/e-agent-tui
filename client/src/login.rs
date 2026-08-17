@@ -12,7 +12,10 @@
 
 use crossterm::event::{KeyCode, KeyEvent};
 
-use crate::protocol::{ClientMessage, CodexInfo, ProviderInfo, ProxyInfo};
+use crate::{
+    input_page::{handle_text_editor, TextEditResult, TextEditor},
+    protocol::{ClientMessage, CodexInfo, ProviderInfo, ProxyInfo},
+};
 
 /// Wire protocols a custom proxy route may speak (first = default).
 pub const PROTOCOLS: &[(&str, &str)] = &[
@@ -39,6 +42,8 @@ pub enum Page {
     ProxyList,
     /// Proxy create form: 4 fields + a save row.
     ProxyForm,
+    /// Confirmation before deleting an existing proxy route.
+    ProxyDelete { id: String, name: String },
 }
 
 /// What the UI should do after a key press.
@@ -124,13 +129,52 @@ pub struct CodexView {
 impl LoginState {
     /// Apply one bridge `login` frame.
     pub fn apply(&mut self, view: LoginView) {
+        let edited_provider = match &self.page {
+            Page::ApiKey { provider, .. } => Some(provider.clone()),
+            _ => None,
+        };
+        let deleting_proxy = match &self.page {
+            Page::ProxyDelete { id, .. } => Some(id.clone()),
+            _ => None,
+        };
+        let focused_provider = if matches!(self.page, Page::Providers) {
+            self.providers
+                .get(self.pos)
+                .map(|provider| provider.id.clone())
+        } else {
+            None
+        };
+        let focused_proxy = if matches!(self.page, Page::ProxyList) {
+            self.proxies.get(self.pos).map(|proxy| proxy.id.clone())
+        } else {
+            None
+        };
         self.providers = view.providers;
         self.proxies = view.proxies;
         self.codex = view.codex;
         self.error = view.error;
         self.loading = false;
-        // Clamp the cursor to the refreshed list.
-        self.pos = self.pos.min(self.list_len().saturating_sub(1));
+
+        if edited_provider.is_some_and(|id| {
+            !self
+                .providers
+                .iter()
+                .any(|provider| provider.id == id && provider.api_key_writable)
+        }) {
+            self.editing = None;
+            self.page = Page::Providers;
+        }
+        if deleting_proxy.is_some_and(|id| !self.proxies.iter().any(|proxy| proxy.id == id)) {
+            self.page = Page::ProxyList;
+        }
+
+        self.pos = focused_provider
+            .and_then(|id| self.providers.iter().position(|provider| provider.id == id))
+            .or_else(|| {
+                focused_proxy.and_then(|id| self.proxies.iter().position(|proxy| proxy.id == id))
+            })
+            .unwrap_or_else(|| self.pos.min(self.list_len().saturating_sub(1)));
+        self.clamp_to_actionable();
     }
 
     /// Apply one bridge `login-codex` frame.
@@ -166,17 +210,53 @@ impl LoginState {
     fn list_len(&self) -> usize {
         match self.page {
             Page::Menu => 3,
-            Page::Providers => self.providers.len().max(1),
+            Page::Providers => self.providers.len(),
             Page::ProxyList => self.proxies.len() + 1,
+            Page::ProxyDelete { .. } => 2,
             _ => 1,
         }
     }
 
-    /// Move the selection, clamped to the current list.
+    fn actionable(&self, index: usize) -> bool {
+        match self.page {
+            Page::Providers => self
+                .providers
+                .get(index)
+                .is_some_and(|provider| provider.api_key_writable),
+            Page::Account => !self.codex_pending && !self.codex_logged_in(),
+            _ => index < self.list_len(),
+        }
+    }
+
+    fn clamp_to_actionable(&mut self) {
+        if self.actionable(self.pos) {
+            return;
+        }
+        if let Some(index) = (0..self.list_len()).find(|index| self.actionable(*index)) {
+            self.pos = index;
+        } else {
+            self.pos = 0;
+        }
+    }
+
+    /// Move the selection between actionable rows, clamped to the list.
     fn move_pos(&mut self, delta: i32) {
-        let len = self.list_len().max(1) as i32;
-        let next = (self.pos as i32 + delta).clamp(0, len - 1);
-        self.pos = next as usize;
+        if self.list_len() == 0 {
+            self.pos = 0;
+            return;
+        }
+        let mut next = self.pos as i32;
+        loop {
+            let candidate = next + delta;
+            if candidate < 0 || candidate >= self.list_len() as i32 {
+                break;
+            }
+            next = candidate;
+            if self.actionable(next as usize) {
+                self.pos = next as usize;
+                break;
+            }
+        }
     }
 
     fn open_menu_item(&mut self) {
@@ -192,7 +272,9 @@ impl LoginState {
         match field {
             0 => self.draft.base_url.clone(),
             1 => self.draft.api_key.clone(),
-            2 => PROTOCOLS[self.draft.protocol % PROTOCOLS.len()].0.to_string(),
+            2 => PROTOCOLS[self.draft.protocol % PROTOCOLS.len()]
+                .0
+                .to_string(),
             _ => self.draft.model.clone(),
         }
     }
@@ -200,7 +282,11 @@ impl LoginState {
     /// Start editing the focused proxy-form field (secret fields start empty).
     fn begin_proxy_edit(&mut self) {
         let field = self.pos;
-        let buf = if field == 1 { String::new() } else { self.proxy_field_value(field) };
+        let buf = if field == 1 {
+            String::new()
+        } else {
+            self.proxy_field_value(field)
+        };
         self.editing = Some(buf);
     }
 
@@ -218,8 +304,13 @@ impl LoginState {
     pub fn handle_key(&mut self, key: &KeyEvent) -> LoginAction {
         // ---- text editing (proxy form fields + API key) ----
         if let Some(buf) = self.editing.take() {
-            return match key.code {
-                KeyCode::Enter => {
+            let mut editor = TextEditor {
+                buf,
+                secret: matches!(self.page, Page::ApiKey { .. })
+                    || matches!(self.page, Page::ProxyForm if self.pos == 1),
+            };
+            return match handle_text_editor(&mut editor, key) {
+                TextEditResult::Confirm(buf) => {
                     if let Page::ApiKey { provider, .. } = &self.page {
                         let provider = provider.clone();
                         let action = LoginAction::Send(ClientMessage::LoginSetApiKey {
@@ -228,6 +319,7 @@ impl LoginState {
                         });
                         self.page = Page::Providers;
                         self.pos = 0;
+                        self.clamp_to_actionable();
                         action
                     } else {
                         self.commit_proxy_edit(buf);
@@ -235,27 +327,16 @@ impl LoginState {
                         LoginAction::None
                     }
                 }
-                KeyCode::Esc => {
+                TextEditResult::Cancel => {
                     if matches!(self.page, Page::ApiKey { .. }) {
                         self.page = Page::Providers;
                         self.pos = 0;
+                        self.clamp_to_actionable();
                     }
                     LoginAction::None
                 }
-                KeyCode::Char(c) if !c.is_ascii_control() => {
-                    let mut next = buf;
-                    next.push(c);
-                    self.editing = Some(next);
-                    LoginAction::None
-                }
-                KeyCode::Backspace => {
-                    let mut next = buf;
-                    next.pop();
-                    self.editing = Some(next);
-                    LoginAction::None
-                }
-                _ => {
-                    self.editing = Some(buf);
+                TextEditResult::Continue => {
+                    self.editing = Some(editor.buf);
                     LoginAction::None
                 }
             };
@@ -291,8 +372,15 @@ impl LoginState {
                 LoginAction::None
             }
             (Page::Providers, KeyCode::Enter) => {
-                if let Some(p) = self.providers.get(self.pos) {
-                    self.page = Page::ApiKey { provider: p.id.clone(), buf: String::new() };
+                if let Some(p) = self
+                    .providers
+                    .get(self.pos)
+                    .filter(|provider| provider.api_key_writable)
+                {
+                    self.page = Page::ApiKey {
+                        provider: p.id.clone(),
+                        buf: String::new(),
+                    };
                     self.editing = Some(String::new());
                 }
                 LoginAction::None
@@ -331,10 +419,15 @@ impl LoginState {
             }
             (Page::ProxyList, KeyCode::Enter) => {
                 if self.pos == self.proxies.len() {
-                    // `+ New` — open the create form.
                     self.page = Page::ProxyForm;
                     self.pos = 0;
                     self.draft = ProxyDraft::default();
+                } else if let Some(proxy) = self.proxies.get(self.pos) {
+                    self.page = Page::ProxyDelete {
+                        id: proxy.id.clone(),
+                        name: proxy.name.clone(),
+                    };
+                    self.pos = 0;
                 }
                 LoginAction::None
             }
@@ -365,12 +458,53 @@ impl LoginState {
                     self.pos = self.proxies.len();
                     action
                 } else if self.pos == 2 {
-                    // Protocol field cycles through the three choices.
                     self.draft.protocol = (self.draft.protocol + 1) % PROTOCOLS.len();
                     LoginAction::None
                 } else {
                     self.begin_proxy_edit();
                     LoginAction::None
+                }
+            }
+
+            (Page::ProxyDelete { id, .. }, KeyCode::Esc | KeyCode::Char('q')) => {
+                let proxy_pos = self
+                    .proxies
+                    .iter()
+                    .position(|proxy| proxy.id == *id)
+                    .unwrap_or(0);
+                self.page = Page::ProxyList;
+                self.pos = proxy_pos;
+                LoginAction::None
+            }
+            (
+                Page::ProxyDelete { .. },
+                KeyCode::Left | KeyCode::Char('h') | KeyCode::Up | KeyCode::Char('k'),
+            ) => {
+                self.pos = 0;
+                LoginAction::None
+            }
+            (
+                Page::ProxyDelete { .. },
+                KeyCode::Right | KeyCode::Char('l') | KeyCode::Down | KeyCode::Char('j'),
+            ) => {
+                self.pos = 1;
+                LoginAction::None
+            }
+            (Page::ProxyDelete { id, .. }, KeyCode::Enter) => {
+                let proxy_pos = self
+                    .proxies
+                    .iter()
+                    .position(|proxy| proxy.id == *id)
+                    .unwrap_or(0);
+                if self.pos == 0 {
+                    self.page = Page::ProxyList;
+                    self.pos = proxy_pos;
+                    LoginAction::None
+                } else {
+                    let id = id.clone();
+                    self.page = Page::ProxyList;
+                    self.pos = proxy_pos.min(self.proxies.len().saturating_sub(1));
+                    LoginAction::Send(ClientMessage::LoginProxyDelete { id })
                 }
             }
 
@@ -506,5 +640,112 @@ mod tests {
         });
         assert!(!s.codex_pending);
         assert!(s.codex.as_ref().unwrap().logged_in);
+    }
+
+    #[test]
+    fn non_writable_provider_is_not_actionable() {
+        let mut s = LoginState::default();
+        s.providers.push(ProviderInfo {
+            id: "env-only".into(),
+            name: "Env only".into(),
+            api_key_configured: true,
+            api_key_writable: false,
+            api_key_source: Some("env".into()),
+            api_key_hint: Some("…1234".into()),
+        });
+        s.page = Page::Providers;
+        s.handle_key(&key(KeyCode::Enter));
+        assert_eq!(s.page, Page::Providers);
+        assert!(s.editing.is_none());
+    }
+
+    #[test]
+    fn proxy_delete_requires_explicit_confirmation() {
+        let mut s = LoginState::default();
+        s.proxies.push(ProxyInfo {
+            id: "proxy-1".into(),
+            name: "Local".into(),
+            base_url: "http://localhost".into(),
+            protocol: "openai-responses".into(),
+            model: String::new(),
+        });
+        s.page = Page::ProxyList;
+        s.handle_key(&key(KeyCode::Enter));
+        assert!(matches!(s.page, Page::ProxyDelete { .. }));
+        assert!(matches!(
+            s.handle_key(&key(KeyCode::Enter)),
+            LoginAction::None
+        ));
+
+        s.page = Page::ProxyList;
+        s.pos = 0;
+        s.handle_key(&key(KeyCode::Enter));
+        s.handle_key(&key(KeyCode::Right));
+        assert!(matches!(
+            s.handle_key(&key(KeyCode::Enter)),
+            LoginAction::Send(ClientMessage::LoginProxyDelete { id }) if id == "proxy-1"
+        ));
+    }
+
+    #[test]
+    fn provider_refresh_reconciles_focus_by_stable_id() {
+        let provider = |id: &str| ProviderInfo {
+            id: id.into(),
+            name: id.into(),
+            api_key_configured: false,
+            api_key_writable: true,
+            api_key_source: None,
+            api_key_hint: None,
+        };
+        let mut s = LoginState::default();
+        s.page = Page::Providers;
+        s.providers = vec![provider("a"), provider("b")];
+        s.pos = 1;
+        s.apply(LoginView {
+            providers: vec![provider("b"), provider("a")],
+            proxies: Vec::new(),
+            codex: None,
+            error: None,
+        });
+        assert_eq!(s.providers[s.pos].id, "b");
+    }
+
+    #[test]
+    fn api_key_editor_treats_hjkl_as_secret_text() {
+        let mut s = LoginState::default();
+        s.page = Page::ApiKey {
+            provider: "p".into(),
+            buf: String::new(),
+        };
+        s.editing = Some(String::new());
+        for ch in ['h', 'j', 'k', 'l'] {
+            s.handle_key(&key(KeyCode::Char(ch)));
+        }
+        assert_eq!(s.editing.as_deref(), Some("hjkl"));
+    }
+
+    #[test]
+    fn refresh_closes_actions_whose_stable_target_disappeared() {
+        let mut key_page = LoginState {
+            page: Page::ApiKey {
+                provider: "gone".into(),
+                buf: String::new(),
+            },
+            editing: Some("secret".into()),
+            ..Default::default()
+        };
+        key_page.apply(LoginView::default());
+        assert_eq!(key_page.page, Page::Providers);
+        assert!(key_page.editing.is_none());
+
+        let mut delete_page = LoginState {
+            page: Page::ProxyDelete {
+                id: "gone".into(),
+                name: "Gone".into(),
+            },
+            ..Default::default()
+        };
+        delete_page.apply(LoginView::default());
+        assert_eq!(delete_page.page, Page::ProxyList);
     }
 }

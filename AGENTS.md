@@ -11,25 +11,39 @@ DeepSeek Harness（DSH）的终端客户端（项目名 **e**，可执行文件 
   （`/dsh-tui`），把会话事件转发给 TUI，并接受输入/命令/中断/审批应答/会话切换/
   历史分页，以及 `/login` `/model` `/skill:<名称>` 桥接。注入依赖只有 `webServer`。
 - `client/` — Rust（ratatui + crossterm）单 exe 客户端（crate `e`，产物
-  `dshe.exe`）。含启动器（`launcher.rs`：探测/spawn `dsh --profile tui`/桥接）与
+  `dshe.exe`）。含启动器（`launcher.rs`：探测/spawn `dsh --profile dshe`/桥接）与
   主题系统（`theme.rs` + `config.rs`）。无 TLS/网络依赖（除 WebSocket 本体）。
 
-两个进程通过 JSON WebSocket 通信（协议见 `docs/design.md` §5 与
-`client/src/protocol.rs`）；token 认证，token 在 `%DSH_HOME%\dsh-tui.token`。
+两个进程通过 JSON WebSocket 通信；唯一机器可读契约是
+`bridge/protocol-contract.json`（`client/build.rs` 生成 Rust 常量，`bridge/src/protocol.js`
+运行时读取，`tools/generate-protocol-doc.mjs` 生成 `docs/protocol.md`）。token 认证，token
+在 `%DSH_HOME%\dsh-tui.token`。
 客户端配置在 `%APPDATA%\dshe\config.toml`，主题在 `%APPDATA%\dshe\themes\`。
 
 ## 常用命令（Windows / PowerShell）
 
+面向用户的源码安装流程记录在 README「Quick Start」：全局安装
+`@deepseek-ai/dsh`，设置/沿用 `DSH_HOME`，挂载并安装专属 `dshe` profile 桥接，最后用
+`cargo install --path client --locked` 把 `dshe.exe` 安装到 Cargo bin 目录。
+
 ```powershell
+# 首次安装
+npm install --global @deepseek-ai/dsh
+# DSH_HOME 未设置/空值时 mount 脚本自动用 $HOME\.dsh；自定义 home 才需先设置环境变量
+.\tools\mount-bridge.ps1 -Profile dshe
+dsh plugin --profile dshe install
+cargo install --path client --locked
+
 # 客户端（根目录是 Cargo workspace，默认成员 client，crate 名 e，产物 dshe.exe）
 cargo run                                # 根目录编译并启动 dshe
 cargo build --release                    # 产物 target\release\dshe.exe
 cargo build --release --features tracy   # Tracy profiling 版（DSH_TUI_TRACY=1 激活）
-cargo test                               # 全量单测（约 160 个）
+cargo test                               # 全量单测（约 170 个）
 
 # 桥接同步（改 bridge/ 后必做；重启 dsh 后生效）
-.\tools\mount-bridge.ps1 -Profile web    # 或 -Profile tui（dshe 的 tui profile）
+.\tools\mount-bridge.ps1 -Profile web    # 或 -Profile dshe（dshe 启动器的专属 profile）
 # 等价手动：robocopy bridge\src "$env:DSH_HOME\profiles\<p>\packages\dsh-tui-bridge\src" /MIR
+# 脚本须兼容 Windows PowerShell 5.1：空 DSH_HOME 回退 $HOME\.dsh；变量名不区分大小写；Node JSON 必须 UTF-8 无 BOM
 
 # 桥接测试（node:test；trim/compose/login/skill/model 五个模块）
 cd bridge; npm test                      # = node --test --test-isolation=none "test/*.test.js"
@@ -52,21 +66,45 @@ cargo 走 crates.io 官方源（本机网络已修复）。`client/vendor/` 与
 
 ### client（Rust）
 
-- **消息模型**（`model.rs`）：桥接事件折叠为 `Msg`（User/Assistant/Streaming/
-  Tool/FileGroup/System/Error）。`assistant/chunk` 只追加到 `Msg::Streaming`；
-  `assistant/message` 才做完整 markdown 渲染并替换它。
-- **渲染缓存**（`ui.rs` + `model.rs` 的 `render_cache`）：只有结构性事件使缓存
+- **事件显示模型**（`display.rs` + `projection.rs` + `model.rs`）：所有可见事件归入四类公共表面：
+  `ActivityRow`（带 Waiting/Running/Success/Failure/Cancelled 状态，可带 parent/depth）、
+  `TranscriptBlock`（plain/markdown/reasoning/unknown fallback）、`ContentCard`（统一 padding/
+  背景/copy source）与 `InputAccessory`（输入栏上方）。`EventProjector` 先产出 display/
+  surface mutation/page state/accessory/ignore effect，再由状态层应用；禁止在 `ui.rs` 新增绕过
+  公共表面的事件专用顶层渲染。旧 `Msg` 域状态只可作为迁移/关联载体，渲染前必须适配到公共表面。
+- **Surface 语义**：`HostEvent` 解析事件顶层 `time`、`surfaceOp`、`sourceEventSeqs`；replace
+  必须先移除 shadowed surface owner，再在原 surface 位置插入替代节点。未知但带 `surfaceOp` 的事件
+  也必须进入快照/历史兼容路径。历史前插时保存 shadowed seq，后到的旧页不得复活压缩内容；被分页
+  拆开的 tool/command/Code Mode/workflow terminal half 先暂存，旧页 start 到达时直接重建最终状态；retry
+  schedule 与较新 retry-started 跨页时须在恢复 saved rows 后回填 delay/failure/maxRetries，不得只为去重而
+  丢详情；只按真正新增渲染行数移动 viewport。workflow 的 completed/failed/cancelled 必须保留为 typed
+  outcome 并映射到 Success/Failure/Cancelled。compaction 的 log-only summary 不单独画卡，唯一 summary
+  card 由 replacement 创建并拥有，确保后续 replace 能精确删除。
+- **渲染缓存**（`cache.rs::TranscriptRenderCache` + `ui.rs`）：只有结构性事件使缓存
   失效并全量重建；流式 chunk 只标记 `tail_dirty`，渲染时**尾部拼接**；spinner
-  帧推进也会触发重建。改间距/行数逻辑时必须**同步 `copy.rs::flatten`**（全局
-  行号用于复制模式光标/滚动，两者必须一致，有对应测试）。
+  帧推进也会触发重建。复制行号由 `ui.rs::copy_layout_rows` 从同一个
+  `styled_msg_lines` 布局过程产生，`copy.rs::flatten` 只投影 provenance——禁止重新
+  实现 padding/折行/活动卡间距。
 - **性能红线**（都有回归测试）：每事件不得全量重渲染；重绘 ≤30ms 一帧且只在
   dirty 时；每帧只克隆可见窗口。新功能别破坏 `cache_valid/tail_dirty` 语义。
-- **字符边界**：`InputState.cursor` 是**字符索引**，`String::insert/remove` 和
-  切片要字节索引——用 `char_to_byte()`（`input.rs`），CJK 有回归测试。光标 x
-  坐标用 `unicode_width` 显示宽度。
-- **覆盖层渲染**：任何画在 transcript 之上的面板（命令提示/会话选择/设置）必须
-  先 `frame.render_widget(Clear, rect)` 再画背景，否则底下文字会透出（有测试
-  `suggest_popup_is_opaque_over_transcript`）。
+- **主循环锁纪律**：Rust 2021 的 `if let`/`match` scrutinee 临时值会活到整个表达式
+  结束；不得把 `state_r.lock()` 直接写进 scrutinee 后又在分支中重锁或 `.await`，否则
+  会自死锁、表现为 TUI 完全无法输入。先在独立作用域算出普通值/动作再匹配，或像
+  `prepare_next_queued_prompt` 一样在单个 guard 内完成原子状态变更；`main.rs` 已 deny
+  `clippy::significant_drop_in_scrutinee`，并有队列派发/复制模式释放锁的回归测试。
+- **输入交互与字符边界**：`InputState.cursor` 是**字符索引**，`String::insert/remove`
+  和切片要字节索引——用 `char_to_byte()`（`input.rs`），CJK 有回归测试；光标 x 坐标用
+  `unicode_width`。普通输入固定 `Enter` 发送、`Shift+Enter` 换行；`↑/↓` 先按字符列在
+  输入行间移动，到首/末行边界才切换上一/下一条历史提示词；`PageUp`/`PageDown` 按当前可见
+  transcript 高度翻页，鼠标滚轮每格移动 3 行（Input Page 打开时也始终操作 transcript）。
+  `Ctrl+H` 是 Input Page 之前处理的全局帮助键，带 Control/Alt/Super 的 `hjkl` 不得进入焦点图。
+  `Config.enter_sends` 仅为旧配置反序列化
+  兼容，不得再改变键位语义。
+- **覆盖层与 Input Page 渲染**：真正画在 transcript 之上的命令提示/会话选择器必须先
+  `frame.render_widget(Clear, rect)` 再画背景，否则底下文字会透出（有测试
+  `suggest_popup_is_opaque_over_transcript`）。`/settings` `/login` `/model` `/theme` 不是
+  overlay：它们统一由 `InputPageSession` 替代输入区，无边框、不得 `Clear`，公共 shell 固定
+  上下各 1 行、左右各 2 列内边距。
 - **copy 语义**：复制永远取原始 markdown（`units` 表）；表格/代码/mermaid 是
   原子块（`RenderLine.atomic`）。渲染单元 id 在重渲染时复用（`unit_start`），
   别重新分配。
@@ -79,35 +117,52 @@ cargo 走 crates.io 官方源（本机网络已修复）。`client/vendor/` 与
   不生成（`state.replaying`），文件组合并/结算扫描会跳过它。
 - **Tracy/计时**（`profile.rs`）：埋点用 `e::tracy_zone!("字面量")`（宏，
   无 client 时安全空转）；阶段打点用 `PhaseTimers`。zone 名必须是字符串字面量。
-- **底部布局与标题行**：页面底部固定行序为 输入栏/gap/状态栏/**会话标题行**
-  （`ui.rs::render` 的 chunks 数组；`max_queue` 公式里的 `+3` 与之一致）。标题行
-  左侧是 `AppState.session_title`（`welcome.title` 初始化 + `session/title` 事件实时
-  更新）、右侧是 `AppState.session_cwd`（`welcome.cwd` 初始化，即会话头部
-  `header.cwd`），标题过长以 `…` 截断以保住路径；两者都画在 transcript 之外——
-  更新它们**不得**触碰 render_cache；改底部行数时必须同步 ui 层测试里硬编码的
-  行号（status/queue/question/settings 四个测试）。
+- **底部布局与双行状态栏**：页面底部固定行序为 输入栏或 Input Page / gap / 状态第一行 /
+  **会话标题行**（`ui.rs::render` 的 chunks 数组；accessory budget 公式里的 `+3` 与之一致）。
+  两行都不设置背景色：第一行左侧依次为工作指示灯、`AppState.current_mode`、当前模型、
+  `CH<缓存命中率%>`，右侧固定 `^h Help`；第二行左侧是 `AppState.session_title`（空时显示
+  `新会话`），右侧是 `AppState.session_cwd` 绝对路径，标题过长以 `…` 截断以保住路径。
+  mode 由 `agent-preset/selected` 回放更新，按 event seq 保留最新值（历史前插不得回退）；CH 从
+  assistant usage 的 input/cache read/cache write 累计计算，历史前插可增加旧总量但不得替换最新
+  request 的 usage 锚点；这些页面状态更新**不得**触碰 `TranscriptRenderCache`。改底部行数时必须
+  同步 ui 层测试里硬编码的行号。
+- **命令范式**（`runtime_command.rs` + `input.rs`）：命令分为内置优化命令与 DSH
+  接入命令。所有内置项只在 `BUILTIN_COMMANDS` 声明一次（名称/说明/input hint/补全策略/
+  action 同项），禁止在 `input.rs` 再维护平行名称表；`match_command_catalog` 合并桥接下发
+  的 `CommandInfo`，同名时内置优先。接入命令来自每个 agent 的有效 `ctx.commands.list`
+  视图，至少支持名称模糊补全并显示 DSH 的 free-form input hint；DSH 当前无 typed argument
+  completion schema，只有内置项可做 `/new ` 这类参数补全。收到新 `commands` 帧要立即刷新
+  已打开的提示框，切会话先清旧 agent-scoped 目录。通用执行不得预先 `start_thinking`，结果
+  由 `command-result` 直接投影为 System/Error。
 - **启动即新会话**：新进程不带 `resumeSessionId` 发 hello，桥接就地建会话（
   `hello.cwd` 工作区 + `hello.mode` 默认模式，失效回退 standard）；只有 CLI 会话
   id 与「记住上次会话」（默认关）走续接。`/resume` 打开选择器、`/resume <id>`
   直接 attach（都是纯客户端命令）。
-- **/login 面板**（`login.rs` + `ui.rs::render_login`）：输入栏变登录页，一层三选一
-  菜单（API key / Account / Proxy）→ 子页面（`login.rs::Page` 状态机：Menu /
-  Providers / ApiKey / Account / ProxyList / ProxyForm）。状态全部来自桥接 `login`
-  帧（客户端发 `login-get` / `login-set-api-key` / `login-codex-start` /
-  `login-codex-cancel` / `login-proxy-create` / `login-proxy-delete`）。API key
-  永不回传、编辑态画 ●；代理表单协议字段三选一循环、其余字段 Enter 编辑；改
-  `render()` 参数（settings 与 login 两个 Option<&mut>）时同步改所有调用点
-  （ui 测试 + examples）。
+- **Input Page 控制器**（`input_page.rs` + `settings.rs` + `login.rs`）：主循环只持有一个
+  `Option<InputPageSession>`，闭集 variant 为 Settings/Login/Model/Theme；页面按键只返回
+  `PageOutcome`/`PageEffect`，caller 在释放页面借用和状态锁后再 save 或 `.await` 发送。
+  浏览态方向键与 `hjkl` 共用稳定焦点图、Enter 执行，文本编辑态 `hjkl` 必须作为普通字符。
+  动态 login/model roster 以 provider/model/proxy id 对焦点做 reconcile，空列表不得制造假焦点。
+- **/login 页面**：一层三选一菜单（API key / Account / Proxy）→ 子页面（Menu /
+  Providers / ApiKey / Account / ProxyList / ProxyForm / ProxyDelete）。状态来自桥接 `login`
+  帧；API key 永不回传、编辑态画 ●，不可写 provider 不得获得操作焦点；已有代理 Enter
+  必须先进入删除确认页，只有显式选择删除才发送 `login-proxy-delete`。
 - 新增交互键位后同步更新：`ui.rs` 的 `help_overlay`、README 速查表、input 测试。
 
 ### bridge（Node.js）
 
-- **模块布局**：`index.js` 只留 socket/会话生命周期与消息分发；`trim.js`（负载
-  裁剪纯函数）、`compose.js`（harness 路径、session 元数据、model-selection
-  钩子）、`login.js`（/login 三字段与文件/凭证落点，home 可注入）、`skill.js`
-  （/skill 命令解析 + `<skill_content>` 渲染）、`model.js`（/model 帧投影）都有
-  `node:test` 单测（`bridge/test/`，`cd bridge && npm test`）。新代码进对应
-  模块，别再往 index.js 里堆纯逻辑。
+- **模块布局**：`index.js` 只留 WebSocket 生命周期与消息分发；`host.js` 显式封装
+  DSH service locator，`connection.js` 统一 detach/过期连接判定，`history.js` 管 surface
+  缓存与分页，`session.js` 管创建/冷恢复/workspace/preset 组合，`command.js` 投影宿主
+  命令目录/直接结果，`protocol.js` 读取共享
+  wire contract；`trim.js`、`compose.js`、`login.js`、`skill.js`、`model.js` 留各自纯逻辑。
+  这些模块均须有 `bridge/test/` 的 `node:test`，新代码不得再堆回 `index.js`。
+- **DSH 命令接入**：attach 后用 `ctx.commands.list(agent)` 下发 handler-free
+  `commands{commands[{name,description,input?:{hint}}]}`；监听 `commands/change` 后为每个连接
+  重算有效目录（agent-scoped shadow 不能做全局增量 patch）。`command{line}` 走
+  `commands.execute(agent,line,signal)`；`undefined` 是未注册/语法无效，settled result 走
+  `command-result{commandId,kind,text?}`，不得变成模型消息。执行跨 await，回结果前必须做
+  current-conn 校验，防止 attach 后串会话。
 - **跨 await 的 conn 纪律**：消息处理器里凡是 `await` 之后要动 `conn`（detach/
   重绑）的，必须在 await 前捕获局部 `current = conn`，await 后校验
   `conn === current && conns.has(current)` 再操作——连续 attach/`/new` 会并发
@@ -116,12 +171,21 @@ cargo 走 crates.io 官方源（本机网络已修复）。`client/vendor/` 与
   撤销待审批（`done('cancelled')`）。
 - **快照/历史数据源**：活跃会话取 `agent.session.events`（内存，零磁盘读）；
   只有非常驻会话才回退 `persistence.readFrom(id, 0)`（全量读盘，慢，结果缓存到
-  `conn.log`）。surface 列表按会话缓存并增量追加（`surfaceState`）。
+  `conn.log`）。跨该异步读取后必须先检查 `conn.abort.signal.aborted`，旧连接不得被写入或发送快照。
+  surface 列表按会话缓存并增量追加（`surfaceState`），除契约 roster 外还保留任何显式带
+  `surfaceOp` 的未知事件；未知事件进入 wire 前必须裁成有界的 type/seq/time/surface 元数据 envelope，
+  不得携带任意 data。所有下行帧经 `frame.js::encodeBoundedFrame` 执行 `MAX_FRAME_BYTES`：snapshot/history
+  只留最新可容纳后缀并置 truncated/hasMore，单体超限帧改发 `frame-too-large` 错误。
 - **负载裁剪**：`trimToolResultEvent`（模块级纯函数，导出为
   `_trimToolResultEvent` 供测试）——read 结果整段剥掉、其余工具只留末尾 2000
   字符（exit marker 在末尾）。实时事件转发也要过它，别恢复全量转发。
-- 改协议字段时同步 `client/src/protocol.rs`（serde `rename_all_fields =
-  "camelCase"`，客户端发 `beforeSeq`/`limit` 这类驼峰）。
+- 改消息 roster、surface 类型或容量时只改 `bridge/protocol-contract.json`，随后运行
+  `node tools/generate-protocol-doc.mjs`；Rust 常量由 `client/build.rs` 自动生成。载荷
+  结构仍同步改 `client/src/protocol.rs`（serde camelCase）与桥接 handler，并加双方契约测试。
+  会话事件必须先解析为 `HostEventKind`，不得让 `serde_json::Value` 进入 reducer。历史 roster
+  只收录重建已支持显示/输入 accessory 所需事件；approval/request/header/title-llm 等审计或重建
+  记录默认不进 transcript。工具结果、Code Mode 子调用、compaction summary 与 `meta` 都必须有界裁剪，
+  裁剪后带 `data.dshTuiTrimmed: true`，客户端不得把尾部行数冒充完整输出行数。
 - **`/new` 的工作区继承**：新会话必须同时做两件事，缺一不可——`agents.create`
   的 `meta.cwd` 指向目标目录，然后经 `ctx.get('workspaceRegistry')` 的
   `resolveByPath`（无则 `create`）找到该 cwd 的工作区并 `attachSession(agent.id)`。
@@ -198,8 +262,10 @@ cargo 走 crates.io 官方源（本机网络已修复）。`client/vendor/` 与
   存主题名，`resolved_theme` 为 `#[serde(skip)]` 的解析结果缓存，渲染期零磁盘读）；
   主题文件在 `%APPDATA%\dshe\themes\*.toml`（`theme.rs` 扫描/校验/内置
   deepseek-e + ferra）。`launcher.rs`：`probe(url)` TCP 探测 → 无 dsh 则 spawn
-  `dsh --profile tui`（`dsh` 或 `npx @deepseek-ai/dsh`）→ `%DSH_HOME%\dsh-tui.lock`
-  计数「最后一个 tui 关闭时关 dsh」。`/reload` 重读 config + 重扫主题。
+  `dsh --profile dshe`（`dsh` 或 `npx @deepseek-ai/dsh`）→ `%DSH_HOME%\dsh-tui.lock`
+  计数「最后一个 tui 关闭时关 dsh」。启动器必须使用专属 `dshe` profile，不能复用
+  DSH 自带/用户已有的 `tui` profile（其中的终端 UI 会抢占 stdio，且不提供桥接依赖的
+  `webServer`）。`/reload` 重读 config + 重扫主题。
 
 ## 维护纪律
 
@@ -215,8 +281,9 @@ cargo 走 crates.io 官方源（本机网络已修复）。`client/vendor/` 与
 - 已知偶发：全量并行测试偶有一次 flake（tool 卡片断言），单跑或复跑即过，勿
   据此大改。
 - 桥接侧有 `node:test`（`bridge/test/`，`cd bridge && npm test`，用
-  `--test-isolation=none` 避免沙箱 spawn EPERM）：trim/compose/login/skill/model
-  五个模块各一文件；文件层测试必须走 temp home（不要碰真实 `%DSH_HOME%`）。
+  `--test-isolation=none` 避免沙箱 spawn EPERM）：除 trim/compose/login/skill/model 外，
+  host/connection/history/session/protocol 边界也必须覆盖；文件层测试走 temp home（不要
+  碰真实 `%DSH_HOME%`）。
   DSH 升级后跑 `node tools/smoke-bridge.mjs` 对部署副本做契约冒烟
   （`installModelSelection` 是内联副本，钉在 DSH 版本上）。
 

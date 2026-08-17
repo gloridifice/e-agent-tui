@@ -1,0 +1,20 @@
+[
+  {"seq":1,"time":1000,"type":"command/run","data":{"commandId":"cmd-1","name":"compact","args":" now","source":{"kind":"user"}}},
+  {"seq":2,"time":1010,"type":"compaction/start","data":{"compactionId":"compact-1","sourceCommandId":"cmd-1","turn":null}},
+  {"seq":3,"time":1020,"type":"compaction/summary","data":{"compactionId":"compact-1","sourceCommandId":"cmd-1","summary":[{"type":"text","text":"bounded summary"}],"shadowedRange":{"start":20,"end":40},"shadowedSeqs":[20,30,40],"shadowedTokenCount":120,"provider":"p","model":"m"}},
+  {"seq":4,"time":1030,"type":"user/message","surfaceOp":{"op":"replace","start":20,"end":40},"sourceEventSeqs":[20,30,40],"data":{"content":[{"type":"text","text":"bounded summary"}],"source":{"kind":"plugin","plugin":"compact","compactionId":"compact-1"}}},
+  {"seq":5,"time":1040,"type":"compaction/end","data":{"compactionId":"compact-1","sourceCommandId":"cmd-1","turn":null}},
+  {"seq":6,"time":1050,"type":"command/done","data":{"commandId":"cmd-1","kind":"success","sourceEventSeq":3}},
+  {"seq":7,"time":1060,"type":"llm/retry","data":{"retryId":"retry-1","turn":2,"step":1,"provider":"p","mode":"normal","policyKey":"default","retry":1,"maxRetries":2,"delayMs":500,"failure":{"message":"busy","code":"RATE_LIMIT"}}},
+  {"seq":8,"time":1560,"type":"llm/retry-started","data":{"retryId":"retry-1","turn":2,"step":1,"retry":1}},
+  {"seq":9,"time":1600,"type":"tool/code-dispatch-start","data":{"rootCallId":"root-1","parentCallId":"root-1","subCallId":"root-1:code:1","name":"read","arguments":{"file_path":"a.rs"}}},
+  {"seq":10,"time":1610,"type":"tool/code-dispatch","data":{"rootCallId":"root-1","parentCallId":"root-1","subCallId":"root-1:code:1","name":"read","arguments":{"file_path":"a.rs"},"isError":false,"content":[{"type":"text","text":"ok"}]}},
+  {"seq":11,"time":1700,"type":"tool-workflow/run-start","data":{"runId":"run-1","name":"review"}},
+  {"seq":12,"time":1710,"type":"tool-workflow/agent-start","data":{"runId":"run-1","seq":1,"label":"worker","childId":"child-1"}},
+  {"seq":13,"time":1800,"type":"tool-workflow/agent-end","data":{"runId":"run-1","seq":1,"outcome":"completed"}},
+  {"seq":14,"time":1810,"type":"tool-workflow/run-end","data":{"runId":"run-1","stopReason":"completed"}},
+  {"seq":15,"time":1900,"type":"todo/write","data":{"todos":[{"content":"ship","status":"pending"}]}},
+  {"seq":16,"time":1910,"type":"approval/asked","data":{"id":"approval-1","toolName":"bash","reason":"dangerous"}},
+  {"seq":17,"time":1920,"type":"request/header","data":{"header":{},"reason":{"kind":"changed"}}},
+  {"seq":18,"time":1930,"type":"session/title-llm-request","data":{"provider":"p","model":"m"}}
+]

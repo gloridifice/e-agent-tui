@@ -1,9 +1,0 @@
-[
-  {
-    "date": "2026-08-16",
-    "mode": "PR Review",
-    "score": 77,
-    "findings": { "critical": 0, "warning": 4, "suggestion": 3 },
-    "scope": "initial commit 70f7c9e (45 files, sampled: bridge + client core)"
-  }
-]

@@ -28,6 +28,30 @@ fn main() -> anyhow::Result<()> {
     let mut units = std::collections::HashSet::new();
     for msg in &state.msgs {
         match msg {
+            Msg::Card(card) if card.role == e::display::CardRole::User => users += 1,
+            Msg::Card(_) => systems += 1,
+            Msg::Block(block)
+                if matches!(
+                    block.format,
+                    e::display::TranscriptFormat::Markdown
+                        | e::display::TranscriptFormat::Reasoning
+                ) =>
+            {
+                assistants += 1
+            }
+            Msg::Block(_) => systems += 1,
+            Msg::Activity(row) => {
+                tools += 1;
+                match row.state {
+                    e::display::ActivityState::Waiting | e::display::ActivityState::Running => {
+                        tools_running += 1
+                    }
+                    e::display::ActivityState::Success => tools_ok += 1,
+                    e::display::ActivityState::Failure | e::display::ActivityState::Cancelled => {
+                        tools_fail += 1
+                    }
+                }
+            }
             Msg::User { .. } => users += 1,
             Msg::Assistant { lines, .. } => {
                 assistants += 1;

@@ -1,19 +1,21 @@
-//! /settings panel (design §4.7, D26–D30): replaces the input bar and the
-//! rows above it — no floating window, no border. ←/→ (h/l) switch category
-//! pages (the centered tab row itself is not selectable), ↑/↓ (j/k) move
-//! between items. Enter edits the hovered item's value, Enter confirms,
-//! Esc cancels — or exits the panel when not editing.
+//! /settings Input Page: category tabs and editable rows share one visible
+//! focus. The page replaces the ordinary input area without a floating border.
 
 use crossterm::event::{KeyCode, KeyEvent};
 
-use crate::config::Config;
+use crate::{
+    config::Config,
+    input_page::{handle_text_editor, TextEditResult, TextEditor},
+};
 
 pub const CATEGORIES: &[&str] = &["外观", "行为", "显示", "高级"];
 
 /// Value kinds. Booleans are just two-option choices (开/关).
 #[derive(Clone, Copy, PartialEq)]
 pub enum ItemKind {
-    Choice { options: &'static [&'static str] },
+    Choice {
+        options: &'static [&'static str],
+    },
     /// Choice over the live agent-preset roster (`/new` modes): the options
     /// are not static — they come from `SettingsState.modes`, fed by the
     /// bridge's `presets` message.
@@ -55,7 +57,9 @@ pub static ITEMS: &[ItemDef] = &[
         category: 0,
         label: "纯色模式",
         desc: "降级为纯色输出（NO_COLOR 语义）",
-        kind: ItemKind::Choice { options: &["开", "关"] },
+        kind: ItemKind::Choice {
+            options: &["开", "关"],
+        },
         get: |c| bool_str(c.plain_color),
         apply: |c, v| {
             c.plain_color = v == "开";
@@ -89,7 +93,9 @@ pub static ITEMS: &[ItemDef] = &[
         category: 1,
         label: "记住上次会话",
         desc: "启动时自动续接上次会话（默认关：新进程开新会话）",
-        kind: ItemKind::Choice { options: &["开", "关"] },
+        kind: ItemKind::Choice {
+            options: &["开", "关"],
+        },
         get: |c| bool_str(c.remember_last_session),
         apply: |c, v| {
             c.remember_last_session = v == "开";
@@ -105,22 +111,6 @@ pub static ITEMS: &[ItemDef] = &[
             if !v.is_empty() {
                 c.default_mode = v;
             }
-        },
-    },
-    ItemDef {
-        category: 1,
-        label: "发送键风格",
-        desc: "单行模式下 Enter 直接发送，或改由 Ctrl+Enter 发送",
-        kind: ItemKind::Choice { options: &["Enter 即发", "Ctrl+Enter 发送"] },
-        get: |c| {
-            if c.enter_sends {
-                "Enter 即发".into()
-            } else {
-                "Ctrl+Enter 发送".into()
-            }
-        },
-        apply: |c, v| {
-            c.enter_sends = v == "Enter 即发";
         },
     },
     ItemDef {
@@ -173,19 +163,11 @@ pub static ITEMS: &[ItemDef] = &[
     },
     ItemDef {
         category: 2,
-        label: "状态栏模型名",
-        desc: "状态栏显示 provider · model",
-        kind: ItemKind::Choice { options: &["开", "关"] },
-        get: |c| bool_str(c.show_model_in_status),
-        apply: |c, v| {
-            c.show_model_in_status = v == "开";
-        },
-    },
-    ItemDef {
-        category: 2,
         label: "工具耗时显示",
         desc: "工具卡完成时显示执行耗时",
-        kind: ItemKind::Choice { options: &["开", "关"] },
+        kind: ItemKind::Choice {
+            options: &["开", "关"],
+        },
         get: |c| bool_str(c.show_tool_duration),
         apply: |c, v| {
             c.show_tool_duration = v == "开";
@@ -195,7 +177,9 @@ pub static ITEMS: &[ItemDef] = &[
         category: 2,
         label: "read/edit 合并为一行",
         desc: "连续 read/edit 调用折叠为一行",
-        kind: ItemKind::Choice { options: &["开", "关"] },
+        kind: ItemKind::Choice {
+            options: &["开", "关"],
+        },
         get: |c| bool_str(c.read_merge),
         apply: |c, v| {
             c.read_merge = v == "开";
@@ -205,7 +189,9 @@ pub static ITEMS: &[ItemDef] = &[
         category: 2,
         label: "mermaid 渲染",
         desc: "mermaid 代码块渲染为框图（失败时显示源码）",
-        kind: ItemKind::Choice { options: &["开", "关"] },
+        kind: ItemKind::Choice {
+            options: &["开", "关"],
+        },
         get: |c| bool_str(c.mermaid_enabled),
         apply: |c, v| {
             c.mermaid_enabled = v == "开";
@@ -279,6 +265,11 @@ pub enum Edit {
 pub struct SettingsState {
     /// Current category page.
     pub category: usize,
+    /// The category tab currently under the single page focus.
+    pub tab_cursor: usize,
+    /// True while the focus is on the category row; otherwise it is on an
+    /// actionable item in the active category.
+    pub focus_tabs: bool,
     /// Hovered item index, remembered per category page.
     pub pos: [usize; 4],
     /// Active edit (only when the hovered item is being edited).
@@ -298,6 +289,8 @@ impl Default for SettingsState {
     fn default() -> Self {
         Self {
             category: 0,
+            tab_cursor: 0,
+            focus_tabs: false,
             pos: [0; 4],
             editing: None,
             scroll: 0,
@@ -316,7 +309,9 @@ pub enum SettingsAction {
 
 impl SettingsState {
     pub fn current_item(&self) -> Option<&'static ItemDef> {
-        items_in(self.category).get(self.pos[self.category]).copied()
+        items_in(self.category)
+            .get(self.pos[self.category])
+            .copied()
     }
 
     /// Keep the hovered index inside the category's item range after a
@@ -335,26 +330,21 @@ impl SettingsState {
                 .map(|d| dynamic_options(d, config, &self.modes, &self.themes))
                 .unwrap_or_default();
             match edit {
-                Edit::Input { buf } => match key.code {
-                    KeyCode::Enter => {
-                        if let Some(def) = def {
-                            (def.apply)(config, buf);
-                            return SettingsAction::Changed;
+                Edit::Input { buf } => {
+                    let mut editor = TextEditor { buf, secret: false };
+                    match handle_text_editor(&mut editor, key) {
+                        TextEditResult::Confirm(value) => {
+                            if let Some(def) = def {
+                                (def.apply)(config, value);
+                                return SettingsAction::Changed;
+                            }
+                        }
+                        TextEditResult::Cancel => {}
+                        TextEditResult::Continue => {
+                            self.editing = Some(Edit::Input { buf: editor.buf });
                         }
                     }
-                    KeyCode::Esc => {}
-                    KeyCode::Char(c) if !c.is_ascii_control() => {
-                        let mut next = buf;
-                        next.push(c);
-                        self.editing = Some(Edit::Input { buf: next });
-                    }
-                    KeyCode::Backspace => {
-                        let mut next = buf;
-                        next.pop();
-                        self.editing = Some(Edit::Input { buf: next });
-                    }
-                    _ => self.editing = Some(Edit::Input { buf }),
-                },
+                }
                 Edit::Choice { cursor } => {
                     let n = options.len().max(1);
                     match key.code {
@@ -366,10 +356,14 @@ impl SettingsState {
                         }
                         KeyCode::Esc => {}
                         KeyCode::Left | KeyCode::Char('h') => {
-                            self.editing = Some(Edit::Choice { cursor: (cursor + n - 1) % n });
+                            self.editing = Some(Edit::Choice {
+                                cursor: (cursor + n - 1) % n,
+                            });
                         }
                         KeyCode::Right | KeyCode::Char('l') => {
-                            self.editing = Some(Edit::Choice { cursor: (cursor + 1) % n });
+                            self.editing = Some(Edit::Choice {
+                                cursor: (cursor + 1) % n,
+                            });
                         }
                         _ => self.editing = Some(Edit::Choice { cursor }),
                     }
@@ -378,32 +372,62 @@ impl SettingsState {
             return SettingsAction::None;
         }
 
-        // ---- browsing: ←/→ (h/l) switch category pages, ↑/↓ (j/k) move
-        // ---- between items.
-        let n = items_in(self.category).len();
+        // ---- browsing: one focus covers the tabs and actionable rows.
+        let items = items_in(self.category);
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => SettingsAction::Exit,
-            KeyCode::Left | KeyCode::Char('h') => {
-                self.category = (self.category + CATEGORIES.len() - 1) % CATEGORIES.len();
-                self.clamp_item();
-                self.scroll = 0;
+            KeyCode::Left | KeyCode::Char('h') if self.focus_tabs => {
+                self.tab_cursor = (self.tab_cursor + CATEGORIES.len() - 1) % CATEGORIES.len();
                 SettingsAction::None
             }
-            KeyCode::Right | KeyCode::Char('l') => {
-                self.category = (self.category + 1) % CATEGORIES.len();
-                self.clamp_item();
-                self.scroll = 0;
+            KeyCode::Right | KeyCode::Char('l') if self.focus_tabs => {
+                self.tab_cursor = (self.tab_cursor + 1) % CATEGORIES.len();
+                SettingsAction::None
+            }
+            KeyCode::Left | KeyCode::Char('h') | KeyCode::Right | KeyCode::Char('l') => {
+                self.focus_tabs = true;
+                self.tab_cursor = self.category;
+                SettingsAction::None
+            }
+            KeyCode::Up | KeyCode::Char('k') if self.focus_tabs => SettingsAction::None,
+            KeyCode::Down | KeyCode::Char('j') if self.focus_tabs => {
+                if items.iter().any(|item| item.kind != ItemKind::ReadOnly) {
+                    self.focus_tabs = false;
+                    self.clamp_item();
+                }
                 SettingsAction::None
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                if self.pos[self.category] > 0 {
-                    self.pos[self.category] -= 1;
+                let current = self.pos[self.category];
+                if let Some(previous) = (0..current)
+                    .rev()
+                    .find(|index| items[*index].kind != ItemKind::ReadOnly)
+                {
+                    self.pos[self.category] = previous;
+                } else {
+                    self.focus_tabs = true;
+                    self.tab_cursor = self.category;
                 }
                 SettingsAction::None
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if n > 0 && self.pos[self.category] + 1 < n {
-                    self.pos[self.category] += 1;
+                let current = self.pos[self.category];
+                if let Some(next) = (current + 1..items.len())
+                    .find(|index| items[*index].kind != ItemKind::ReadOnly)
+                {
+                    self.pos[self.category] = next;
+                }
+                SettingsAction::None
+            }
+            KeyCode::Enter if self.focus_tabs => {
+                self.category = self.tab_cursor;
+                self.clamp_item();
+                self.scroll = 0;
+                if items_in(self.category)
+                    .iter()
+                    .any(|item| item.kind != ItemKind::ReadOnly)
+                {
+                    self.focus_tabs = false;
                 }
                 SettingsAction::None
             }
@@ -419,30 +443,22 @@ impl SettingsState {
                             self.editing = Some(Edit::Choice { cursor });
                         }
                         ItemKind::ModeChoice => {
-                            // Cursor on the configured mode (present even
-                            // when the roster no longer lists it — see
-                            // `dynamic_options`).
                             let current = (def.get)(config);
-                            let cursor = self
-                                .modes
+                            let cursor = dynamic_options(def, config, &self.modes, &self.themes)
                                 .iter()
-                                .position(|m| *m == current)
+                                .position(|mode| *mode == current)
                                 .unwrap_or(0);
                             self.editing = Some(Edit::Choice { cursor });
                         }
                         ItemKind::ThemeChoice => {
-                            // Cursor on the configured theme name (present
-                            // even when the registry no longer lists it).
                             let current = (def.get)(config);
-                            let cursor = self
-                                .themes
+                            let cursor = dynamic_options(def, config, &self.modes, &self.themes)
                                 .iter()
-                                .position(|t| *t == current)
+                                .position(|theme| *theme == current)
                                 .unwrap_or(0);
                             self.editing = Some(Edit::Choice { cursor });
                         }
                         ItemKind::Input => {
-                            // Replace semantics: start with an empty buffer.
                             self.editing = Some(Edit::Input { buf: String::new() });
                         }
                         ItemKind::ReadOnly => {}
@@ -465,17 +481,16 @@ mod tests {
     }
 
     #[test]
-    fn hl_and_arrows_switch_categories() {
+    fn tabs_are_focusable_and_enter_activates_one() {
         let mut s = SettingsState::default();
         let mut config = Config::default();
-        s.handle_key(&key(KeyCode::Right), &mut config);
-        assert_eq!(s.category, 1);
-        s.handle_key(&key(KeyCode::Char('h')), &mut config);
-        assert_eq!(s.category, 0);
-        s.handle_key(&key(KeyCode::Char('l')), &mut config);
-        assert_eq!(s.category, 1);
         s.handle_key(&key(KeyCode::Left), &mut config);
-        assert_eq!(s.category, 0);
+        assert!(s.focus_tabs);
+        s.handle_key(&key(KeyCode::Right), &mut config);
+        assert_eq!(s.tab_cursor, 1);
+        s.handle_key(&key(KeyCode::Enter), &mut config);
+        assert_eq!(s.category, 1);
+        assert!(!s.focus_tabs, "actionable category enters its item list");
     }
 
     #[test]
@@ -500,17 +515,23 @@ mod tests {
     }
 
     #[test]
-    fn category_switch_clamps_hover() {
+    fn category_activation_clamps_hover_and_skips_read_only_page() {
         let mut s = SettingsState::default();
         let mut config = Config::default();
         s.pos[1] = 3;
-        s.handle_key(&key(KeyCode::Right), &mut config); // → 行为 (6 items)
-        assert_eq!(s.pos[1], 3, "position kept when it fits");
-        // A remembered position beyond the new page's range is clamped.
-        s.pos[3] = 5; // 高级 has 1 item
-        s.handle_key(&key(KeyCode::Right), &mut config);
-        s.handle_key(&key(KeyCode::Right), &mut config); // → 高级
-        assert_eq!(s.pos[3], 0, "position clamped to the last item");
+        s.focus_tabs = true;
+        s.tab_cursor = 1;
+        s.handle_key(&key(KeyCode::Enter), &mut config);
+        assert_eq!(s.category, 1);
+        assert_eq!(s.pos[1], 3, "remembered position is retained");
+
+        s.focus_tabs = true;
+        s.tab_cursor = 3;
+        s.pos[3] = 5;
+        s.handle_key(&key(KeyCode::Enter), &mut config);
+        assert_eq!(s.category, 3);
+        assert_eq!(s.pos[3], 0);
+        assert!(s.focus_tabs, "read-only rows never receive focus");
     }
 
     #[test]
@@ -520,7 +541,11 @@ mod tests {
         let mut config = Config::default();
         assert_eq!(config.theme, "deepseek-e");
         s.handle_key(&key(KeyCode::Enter), &mut config);
-        assert_eq!(s.editing, Some(Edit::Choice { cursor: 0 }), "cursor on the current value");
+        assert_eq!(
+            s.editing,
+            Some(Edit::Choice { cursor: 0 }),
+            "cursor on the current value"
+        );
         s.handle_key(&key(KeyCode::Right), &mut config);
         assert_eq!(s.editing, Some(Edit::Choice { cursor: 1 }));
         s.handle_key(&key(KeyCode::Enter), &mut config);
@@ -565,7 +590,10 @@ mod tests {
             s.handle_key(&key(KeyCode::Char(c)), &mut config);
         }
         s.handle_key(&key(KeyCode::Esc), &mut config);
-        assert_eq!(config.user_input_padding, 6, "cancelled edit keeps the value");
+        assert_eq!(
+            config.user_input_padding, 6,
+            "cancelled edit keeps the value"
+        );
     }
 
     #[test]

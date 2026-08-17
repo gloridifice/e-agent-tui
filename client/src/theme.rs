@@ -162,8 +162,7 @@ impl ThemeFile {
 
     /// Legal theme = non-empty name and every color parsing as 6-digit hex.
     pub fn is_legal(&self) -> bool {
-        !self.name.trim().is_empty()
-            && self.to_theme().is_some()
+        !self.name.trim().is_empty() && self.to_theme().is_some()
     }
 
     pub fn to_theme(&self) -> Option<Theme> {
@@ -192,7 +191,10 @@ fn hex(color: Color) -> String {
 
 /// The two built-in themes, written to the themes directory on first load.
 pub fn default_themes() -> Vec<(&'static str, Theme)> {
-    vec![("deepseek-e", Theme::deepseek_e()), ("ferra", Theme::ferra())]
+    vec![
+        ("deepseek-e", Theme::deepseek_e()),
+        ("ferra", Theme::ferra()),
+    ]
 }
 
 /// Ensure the themes directory exists and contains the two default theme
@@ -235,7 +237,9 @@ pub fn discover_themes(dir: &Path) -> Vec<ThemeFile> {
         if path.extension().and_then(|e| e.to_str()) != Some("toml") {
             continue;
         }
-        let Ok(text) = fs::read_to_string(&path) else { continue };
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
         if let Some(file) = parse_theme(&text) {
             out.push(file);
         }
@@ -303,12 +307,13 @@ mod tests {
 
     #[test]
     fn resolve_prefers_discovered_then_builtin() {
-        let themes = vec![
-            ThemeFile::from_theme("mine", Theme {
+        let themes = vec![ThemeFile::from_theme(
+            "mine",
+            Theme {
                 user: Color::Rgb(1, 2, 3),
                 ..Theme::deepseek_e()
-            }),
-        ];
+            },
+        )];
         assert_eq!(resolve("mine", &themes).user, Color::Rgb(1, 2, 3));
         assert_eq!(resolve("ferra", &themes).user, Theme::ferra().user);
         // Unknown name falls back to deepseek-e.

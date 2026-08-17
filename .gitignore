@@ -23,6 +23,12 @@ client/run-err.txt
 *.swo
 *~
 
+# ---------- pi 编码 agent 本地工具 ----------
+.pi/
+
+# ---------- brooks 工具缓存 ----------
+.brooks-lint-history.json
+
 # ---------- 系统杂项 ----------
 Thumbs.db
 Desktop.ini

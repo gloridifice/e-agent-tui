@@ -8,10 +8,10 @@
 
 use std::time::Instant;
 
-use e::model::AppState;
-use e::ui::{render, ScrollState};
 use e::config::Config;
 use e::input::InputState;
+use e::model::AppState;
+use e::ui::{render, ScrollState};
 
 fn main() -> anyhow::Result<()> {
     let path = std::env::args()
@@ -57,19 +57,27 @@ fn main() -> anyhow::Result<()> {
     let backend = ratatui::backend::TestBackend::new(120, 40);
     let mut terminal = ratatui::Terminal::new(backend)?;
     terminal.draw(|frame| {
-        render(frame, &mut state, &input, &mut scroll, &theme, e::ui::RenderOverlays {
-            help_visible: false,
-            overlay: None,
-            toast: None,
-            settings: None,
-            login: None,
-        });
+        render(
+            frame,
+            &mut state,
+            &input,
+            &mut scroll,
+            &theme,
+            e::ui::RenderOverlays {
+                input_page: None,
+                help_visible: false,
+                overlay: None,
+                toast: None,
+                settings: None,
+                login: None,
+            },
+        );
     })?;
     let t4 = Instant::now();
     println!(
         "  first frame: {:.2} ms ({} cached lines)",
         t4.duration_since(t3).as_secs_f64() * 1000.0,
-        state.render_cache.len()
+        state.transcript_cache.lines.len()
     );
 
     println!(

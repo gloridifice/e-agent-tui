@@ -116,7 +116,14 @@ pub fn render_markdown(
                     let unit = *next_unit;
                     *next_unit += 1;
                     units.insert(unit, raw.to_string());
-                    emit_block(block_kind.as_ref().unwrap(), raw, unit, theme, options, &mut out);
+                    emit_block(
+                        block_kind.as_ref().unwrap(),
+                        raw,
+                        unit,
+                        theme,
+                        options,
+                        &mut out,
+                    );
                     block_kind = None;
                     continue;
                 }
@@ -136,7 +143,14 @@ pub fn render_markdown(
                 let unit = *next_unit;
                 *next_unit += 1;
                 units.insert(unit, raw.to_string());
-                emit_block(block_kind.as_ref().unwrap(), raw, unit, theme, options, &mut out);
+                emit_block(
+                    block_kind.as_ref().unwrap(),
+                    raw,
+                    unit,
+                    theme,
+                    options,
+                    &mut out,
+                );
                 block.clear();
                 block_kind = None;
             }
@@ -247,7 +261,11 @@ fn top_level_kind(event: &Event) -> Option<BlockKind> {
         Event::Start(Tag::CodeBlock(kind)) => Some(BlockKind::CodeBlock {
             lang: match kind {
                 pulldown_cmark::CodeBlockKind::Fenced(lang) => {
-                    if lang.is_empty() { None } else { Some(lang.to_string()) }
+                    if lang.is_empty() {
+                        None
+                    } else {
+                        Some(lang.to_string())
+                    }
                 }
                 pulldown_cmark::CodeBlockKind::Indented => None,
             },
@@ -340,9 +358,11 @@ fn render_block(
                 let rendered = if level == 1 {
                     // h1: padded reverse bar (glamour h1 background look).
                     let mut spans = vec![Span::styled(" ", base)];
-                    spans.extend(line.spans.into_iter().map(|s| {
-                        Span::styled(s.content.into_owned(), base)
-                    }));
+                    spans.extend(
+                        line.spans
+                            .into_iter()
+                            .map(|s| Span::styled(s.content.into_owned(), base)),
+                    );
                     spans.push(Span::styled(" ", base));
                     Line::from(spans)
                 } else {
@@ -450,8 +470,12 @@ fn heading_style(theme: &Theme, level: usize) -> Style {
             .bg(theme.user)
             .add_modifier(Modifier::BOLD),
         2 => Style::default().fg(theme.user).add_modifier(Modifier::BOLD),
-        3 => Style::default().fg(theme.running).add_modifier(Modifier::BOLD),
-        4 => Style::default().fg(theme.rose).add_modifier(Modifier::ITALIC),
+        3 => Style::default()
+            .fg(theme.running)
+            .add_modifier(Modifier::BOLD),
+        4 => Style::default()
+            .fg(theme.rose)
+            .add_modifier(Modifier::ITALIC),
         5 => Style::default().fg(theme.link),
         _ => Style::default().fg(theme.dim),
     }
@@ -591,7 +615,8 @@ fn render_mermaid_block(
 
     match crate::mermaid::render(&source, 0) {
         Ok(diagram) => {
-            let collapsed = !options.expanded.contains(&unit) && diagram.len() > options.collapse_rows;
+            let collapsed =
+                !options.expanded.contains(&unit) && diagram.len() > options.collapse_rows;
             let emit = |i: usize, out: &mut Vec<RenderLine>| {
                 let line = &diagram[i];
                 let spans: Vec<Span<'static>> = line
@@ -602,7 +627,9 @@ fn render_mermaid_block(
                             crate::mermaid::MermaidClass::Border => Style::default().fg(theme.dim),
                             crate::mermaid::MermaidClass::Node => Style::default().fg(theme.fg),
                             crate::mermaid::MermaidClass::Edge => Style::default().fg(theme.dim),
-                            crate::mermaid::MermaidClass::EdgeLabel => Style::default().fg(theme.link),
+                            crate::mermaid::MermaidClass::EdgeLabel => {
+                                Style::default().fg(theme.link)
+                            }
                             crate::mermaid::MermaidClass::Title => {
                                 Style::default().fg(theme.user).add_modifier(Modifier::BOLD)
                             }
@@ -751,10 +778,7 @@ fn collapse_hint_row(unit: u64, theme: &Theme, hidden: usize) -> RenderLine {
 /// a glamour margin blank at the message end).
 fn block_bottom_pad(unit: u64, theme: &Theme, out: &mut Vec<RenderLine>) {
     out.push(RenderLine {
-        line: Line::from(Span::styled(
-            " ",
-            Style::default().bg(theme.bg),
-        )),
+        line: Line::from(Span::styled(" ", Style::default().bg(theme.bg))),
         unit,
         raw_line: None,
         atomic: true,
@@ -783,10 +807,7 @@ fn render_table(
             if !t.starts_with('|') {
                 return None;
             }
-            let mut cells: Vec<String> = t
-                .split('|')
-                .map(|c| c.trim().to_string())
-                .collect();
+            let mut cells: Vec<String> = t.split('|').map(|c| c.trim().to_string()).collect();
             if !cells.is_empty() && cells[0].is_empty() {
                 cells.remove(0);
             }
@@ -803,7 +824,10 @@ fn render_table(
         // Fall back: plain lines (should not happen for a real table block).
         for (i, line) in raw.lines().enumerate() {
             out.push(RenderLine {
-                line: Line::from(Span::styled(line.to_string(), Style::default().fg(theme.fg))),
+                line: Line::from(Span::styled(
+                    line.to_string(),
+                    Style::default().fg(theme.fg),
+                )),
                 unit,
                 raw_line: Some(i),
                 atomic: false,
@@ -821,13 +845,17 @@ fn render_table(
             widths[c] = widths[c].max(w.min(MAX_CELL_WIDTH));
         }
     }
-    let has_header = rows.len() >= 2 && rows[1].iter().all(|c| c.chars().all(|ch| ch == '-' || ch == ':'));
+    let has_header = rows.len() >= 2
+        && rows[1]
+            .iter()
+            .all(|c| c.chars().all(|ch| ch == '-' || ch == ':'));
 
     let dim_style = Style::default().fg(theme.dim);
     let body_rows: Vec<usize> = (0..rows.len())
         .filter(|r| !(*r == 1 && has_header))
         .collect();
-    let collapsed = !options.expanded.contains(&unit) && body_rows.len() > options.collapse_rows / 2;
+    let collapsed =
+        !options.expanded.contains(&unit) && body_rows.len() > options.collapse_rows / 2;
     push_plain(out, unit, table_border("┌", "┬", "┐", &widths), dim_style);
     if collapsed {
         // Header + separator + first rows … last rows.
@@ -969,7 +997,8 @@ struct ItemBuf {
 }
 
 fn render_list(raw: &str, unit: u64, theme: &Theme, out: &mut Vec<RenderLine>) {
-    let options = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
+    let options =
+        Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
     let parser = Parser::new_ext(raw, options);
     let mut ordered: Option<u64> = None;
     // Number counters per nesting depth.
@@ -994,12 +1023,23 @@ fn render_list(raw: &str, unit: u64, theme: &Theme, out: &mut Vec<RenderLine>) {
                 }
             }
             Event::End(TagEnd::Item) => {
-                let Some(item) = item_stack.pop() else { continue };
+                let Some(item) = item_stack.pop() else {
+                    continue;
+                };
                 if let Some(parent) = item_stack.last_mut() {
                     // Nested item: attach to its parent, emit with the tree.
                     parent.children.push(item);
                 } else {
-                    emit_item_tree(item, 0, ordered, &mut counters, &mut raw_line_no, theme, unit, out);
+                    emit_item_tree(
+                        item,
+                        0,
+                        ordered,
+                        &mut counters,
+                        &mut raw_line_no,
+                        theme,
+                        unit,
+                        out,
+                    );
                 }
             }
             Event::Text(t) => {
@@ -1024,7 +1064,16 @@ fn render_list(raw: &str, unit: u64, theme: &Theme, out: &mut Vec<RenderLine>) {
     // Unclosed items (streaming safety).
     while let Some(item) = item_stack.pop() {
         let depth = item_stack.len();
-        emit_item_tree(item, depth, ordered, &mut counters, &mut raw_line_no, theme, unit, out);
+        emit_item_tree(
+            item,
+            depth,
+            ordered,
+            &mut counters,
+            &mut raw_line_no,
+            theme,
+            unit,
+            out,
+        );
     }
 }
 
@@ -1052,7 +1101,16 @@ fn emit_item_tree(
         out,
     );
     for child in item.children {
-        emit_item_tree(child, depth + 1, ordered, counters, raw_line_no, theme, unit, out);
+        emit_item_tree(
+            child,
+            depth + 1,
+            ordered,
+            counters,
+            raw_line_no,
+            theme,
+            unit,
+            out,
+        );
     }
 }
 
@@ -1084,7 +1142,10 @@ fn emit_list_item(
                     counters.push(0);
                 }
                 counters[depth] += 1;
-                (format!("{}. ", counters[depth]), Style::default().fg(theme.user))
+                (
+                    format!("{}. ", counters[depth]),
+                    Style::default().fg(theme.user),
+                )
             } else {
                 (
                     "◦ ".to_string(),
@@ -1133,24 +1194,43 @@ mod tests {
         let theme = Theme::ferra();
         let mut next = 0;
         let mut units = HashMap::new();
-        let options = RenderOptions { collapse_rows: 40, ..Default::default() };
+        let options = RenderOptions {
+            collapse_rows: 40,
+            ..Default::default()
+        };
         let lines = render_markdown(text, &theme, &mut next, &options, &mut units);
         (lines, units)
     }
 
     fn plain(lines: &[RenderLine]) -> Vec<String> {
-        lines.iter().map(|r| r.line.spans.iter().map(|s| s.content.as_ref()).collect::<String>()).collect()
+        lines
+            .iter()
+            .map(|r| {
+                r.line
+                    .spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect()
     }
 
     #[test]
     fn table_renders_boxed_and_atomic() {
         let lines = render("| a | b |\n|---|---|\n| 1 | 2 |");
         let text = plain(&lines);
-        assert!(text[0].starts_with("┌") && text[0].contains("┬"), "top border: {}", text[0]);
+        assert!(
+            text[0].starts_with("┌") && text[0].contains("┬"),
+            "top border: {}",
+            text[0]
+        );
         assert!(text.iter().any(|l| l.starts_with("├")), "header separator");
         assert!(text.last().unwrap().starts_with("└"), "bottom border");
         assert!(lines.iter().all(|r| r.atomic), "all table rows atomic");
-        assert!(lines.iter().all(|r| r.raw_line.is_none()), "no row-level mapping for table");
+        assert!(
+            lines.iter().all(|r| r.raw_line.is_none()),
+            "no row-level mapping for table"
+        );
     }
 
     /// Regression: bold and inline code inside table cells used to leak their
@@ -1197,7 +1277,11 @@ mod tests {
             .iter()
             .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
             .sum();
-        assert_eq!(total, 1 + 1 + MAX_CELL_WIDTH + 2, "cell padded to 40 columns");
+        assert_eq!(
+            total,
+            1 + 1 + MAX_CELL_WIDTH + 2,
+            "cell padded to 40 columns"
+        );
     }
 
     #[test]
@@ -1243,8 +1327,14 @@ mod tests {
         let lines = render("看 [文档](https://x.dev) 吧");
         let spans = &lines[0].line.spans;
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(text.contains("https://x.dev"), "url shown after the text: {text}");
-        let url = spans.iter().find(|s| s.content == "https://x.dev").expect("url span");
+        assert!(
+            text.contains("https://x.dev"),
+            "url shown after the text: {text}"
+        );
+        let url = spans
+            .iter()
+            .find(|s| s.content == "https://x.dev")
+            .expect("url span");
         assert!(url.style.add_modifier.contains(Modifier::UNDERLINED));
     }
 
@@ -1329,7 +1419,11 @@ mod tests {
         assert_eq!(text[header_idx - 1], "", "blank row above code block");
         assert_eq!(text[header_idx - 2], "", "margin: two blanks above");
         assert_eq!(text[header_idx + 1], "  code", "content row follows");
-        assert_eq!(text[header_idx + 2], " ", "inner padding row below the block");
+        assert_eq!(
+            text[header_idx + 2],
+            " ",
+            "inner padding row below the block"
+        );
         assert_eq!(text[header_idx + 3], "", "blank row below code block");
         assert_eq!(text[header_idx + 4], "", "margin: two blanks below");
     }
@@ -1420,7 +1514,13 @@ mod tests {
         let mut next = 0;
         let mut units = HashMap::new();
         // Find the code unit id by rendering collapsed first.
-        let collapsed = render_markdown(&code, &theme, &mut next, &RenderOptions::default(), &mut units);
+        let collapsed = render_markdown(
+            &code,
+            &theme,
+            &mut next,
+            &RenderOptions::default(),
+            &mut units,
+        );
         let unit = collapsed[0].unit;
         let mut options = RenderOptions::default();
         options.expanded.insert(unit);
@@ -1435,4 +1535,3 @@ mod tests {
         assert_eq!(lines.len(), 102);
     }
 }
-

@@ -1,11 +1,11 @@
-//! `dshe` launcher: probe for a running DSH bridge, spawn `dsh --profile tui`
+//! `dshe` launcher: probe for a running DSH bridge, spawn `dsh --profile dshe`
 //! when absent (global `dsh` first, `npx @deepseek-ai/dsh` fallback), and shut
 //! the spawned service down when the last attached TUI exits.
 //!
 //! Startup modes:
-//!   1. `dshe` (no running dsh) → spawn `dsh --profile tui`, run the TUI, and
+//!   1. `dshe` (no running dsh) → spawn `dsh --profile dshe`, run the TUI, and
 //!      kill the spawned service when the last TUI closes.
-//!   2. `dsh --profile tui` → the user starts dsh themselves; a later `dshe`
+//!   2. `dsh --profile dshe` → the user starts dsh themselves; a later `dshe`
 //!      bridges to it.
 //!   3. dsh already running (any profile) → `dshe` bridges and never touches
 //!      the existing service.
@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 
 const PROBE_TIMEOUT_MS: u64 = 400;
 const SPAWN_WAIT_TIMEOUT_SECS: u64 = 45;
+const DSH_PROFILE: &str = "dshe";
 
 /// DSH home (the bridge token and the instance lock live here), matching the
 /// bridge's own `dshHome()` resolution.
@@ -60,8 +61,9 @@ pub fn probe(url: &str) -> bool {
         return false;
     };
     match (host.as_str(), port).to_socket_addrs() {
-        Ok(mut addrs) => addrs
-            .any(|a| TcpStream::connect_timeout(&a, Duration::from_millis(PROBE_TIMEOUT_MS)).is_ok()),
+        Ok(mut addrs) => addrs.any(|a| {
+            TcpStream::connect_timeout(&a, Duration::from_millis(PROBE_TIMEOUT_MS)).is_ok()
+        }),
         Err(_) => false,
     }
 }
@@ -76,18 +78,18 @@ fn command_exists(cmd: &str) -> bool {
     out.map(|o| o.status.success()).unwrap_or(false)
 }
 
-/// The argv that boots the `tui` profile: global `dsh` when installed, else
-/// `npx @deepseek-ai/dsh` (downloads on first run).
+/// The argv that boots the dedicated `dshe` profile: global `dsh` when
+/// installed, else `npx @deepseek-ai/dsh` (downloads on first run).
 pub fn dsh_command() -> Vec<String> {
     if command_exists("dsh") {
-        vec!["dsh".into(), "--profile".into(), "tui".into()]
+        vec!["dsh".into(), "--profile".into(), DSH_PROFILE.into()]
     } else {
         vec![
             "npx".into(),
             "-y".into(),
             "@deepseek-ai/dsh".into(),
             "--profile".into(),
-            "tui".into(),
+            DSH_PROFILE.into(),
         ]
     }
 }
@@ -189,18 +191,30 @@ pub fn acquire(url: &str, dsh_home: &Path) -> DshSession {
         // its count and bridge to it.
         lock.instances += 1;
         write_lock(&path, &lock);
-        return DshSession { child: None, in_lock: true, path };
+        return DshSession {
+            child: None,
+            in_lock: true,
+            path,
+        };
     }
     if probe(url) {
         // A dsh is already running out-of-band: bridge without lifecycle.
-        return DshSession { child: None, in_lock: false, path };
+        return DshSession {
+            child: None,
+            in_lock: false,
+            path,
+        };
     }
-    // Spawn `dsh --profile tui` and own its shutdown.
+    // Spawn `dsh --profile dshe` and own its shutdown.
     let argv = dsh_command();
     let mut child = match spawn_dsh(&argv) {
         Ok(child) => child,
         Err(_) => {
-            return DshSession { child: None, in_lock: false, path };
+            return DshSession {
+                child: None,
+                in_lock: false,
+                path,
+            };
         }
     };
     let pid = child.id();
@@ -210,13 +224,24 @@ pub fn acquire(url: &str, dsh_home: &Path) -> DshSession {
         // and fall through to the normal connect (which will surface the
         // connection error to the user).
         let _ = child.kill();
-        return DshSession { child: None, in_lock: false, path };
+        return DshSession {
+            child: None,
+            in_lock: false,
+            path,
+        };
     }
     write_lock(
         &path,
-        &InstanceLock { dsh_pid: pid, instances: 1 },
+        &InstanceLock {
+            dsh_pid: pid,
+            instances: 1,
+        },
     );
-    DshSession { child: Some(child), in_lock: true, path }
+    DshSession {
+        child: Some(child),
+        in_lock: true,
+        path,
+    }
 }
 
 /// Release the launcher bookkeeping on TUI exit: decrement the instance count
@@ -255,11 +280,28 @@ mod tests {
 
     #[test]
     fn parse_host_port_handles_default_and_path() {
-        assert_eq!(parse_host_port("ws://127.0.0.1:3080/dsh-tui"), Some(("127.0.0.1".into(), 3080)));
-        assert_eq!(parse_host_port("ws://localhost:4000"), Some(("localhost".into(), 4000)));
-        assert_eq!(parse_host_port("ws://127.0.0.1"), Some(("127.0.0.1".into(), 3080)));
+        assert_eq!(
+            parse_host_port("ws://127.0.0.1:3080/dsh-tui"),
+            Some(("127.0.0.1".into(), 3080))
+        );
+        assert_eq!(
+            parse_host_port("ws://localhost:4000"),
+            Some(("localhost".into(), 4000))
+        );
+        assert_eq!(
+            parse_host_port("ws://127.0.0.1"),
+            Some(("127.0.0.1".into(), 3080))
+        );
         assert_eq!(parse_host_port("http://x"), None);
         assert_eq!(parse_host_port("ws://"), None);
+    }
+
+    #[test]
+    fn dsh_command_uses_the_dedicated_dshe_profile() {
+        let command = dsh_command();
+        assert!(command
+            .windows(2)
+            .any(|args| args[0] == "--profile" && args[1] == DSH_PROFILE));
     }
 
     #[test]
@@ -287,7 +329,10 @@ mod tests {
     fn instance_lock_roundtrips() {
         let dir = std::env::temp_dir().join(format!("dshe-launcher-test-{}", std::process::id()));
         let path = lock_path(&dir);
-        let lock = InstanceLock { dsh_pid: 42, instances: 2 };
+        let lock = InstanceLock {
+            dsh_pid: 42,
+            instances: 2,
+        };
         write_lock(&path, &lock);
         assert_eq!(read_lock(&path), Some(lock));
         remove_lock(&path);

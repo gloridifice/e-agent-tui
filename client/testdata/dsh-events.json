@@ -1,0 +1,17 @@
+[
+  {"seq":1,"time":1000,"type":"turn/start","data":{"turn":1}},
+  {"seq":2,"time":1010,"type":"user/message","surfaceOp":"append","data":{"content":[{"type":"text","text":"hello"},{"type":"image","attachment":{"id":"img-1","name":"shot.png"}}],"source":{"kind":"user"}}},
+  {"seq":3,"time":1020,"type":"user/message","surfaceOp":"append","data":{"content":[{"type":"text","text":"rules"}],"source":{"kind":"plugin","plugin":"instructions","form":"instructions"}}},
+  {"seq":4,"time":1030,"type":"step/start","data":{"turn":1,"step":1}},
+  {"seq":5,"time":1040,"type":"assistant/chunk","data":{"turn":1,"step":1,"chunk":{"type":"reasoning-delta","index":0,"text":"think"}}},
+  {"seq":6,"time":1050,"type":"assistant/chunk","data":{"turn":1,"step":1,"chunk":{"type":"text-delta","index":1,"text":"answer"}}},
+  {"seq":7,"time":1060,"type":"assistant/message","surfaceOp":"append","sourceEventSeqs":[5,6],"data":{"turn":1,"step":1,"message":{"content":[{"type":"reasoning","text":"think"},{"type":"text","text":"answer"}]}}},
+  {"seq":8,"time":1070,"type":"tool/call","data":{"turn":1,"step":1,"callId":"call-1","name":"bash","arguments":"{\"command\":\"false\"}"}},
+  {"seq":9,"time":1090,"type":"tool/result","surfaceOp":"append","data":{"turn":1,"step":1,"message":{"content":[{"type":"tool-result","toolCallId":"call-1","isError":true,"content":[{"type":"text","text":"failed\n[exit code: 1]"}]}]}},"error":{"name":"ToolError","code":"FAILED"}},
+  {"seq":10,"time":1100,"type":"todo/write","data":{"todos":[{"content":"fix event display","status":"in-progress"}]}},
+  {"seq":11,"time":1110,"type":"step/end","data":{"turn":1,"step":1}},
+  {"seq":12,"time":1120,"type":"turn/end","data":{"turn":1,"reason":{"kind":"error","error":{"message":"provider failed","code":"PROVIDER"}}}},
+  {"seq":13,"time":1200,"type":"compaction/summary","data":{"compactionId":"compact-1","summary":[{"type":"text","text":"summary"}],"shadowedRange":{"start":2,"end":9},"shadowedSeqs":[2,3,7,9],"shadowedTokenCount":100,"provider":"p","model":"m"}},
+  {"seq":14,"time":1210,"type":"user/message","surfaceOp":{"op":"replace","start":2,"end":9},"sourceEventSeqs":[2,3,7,9],"data":{"content":[{"type":"text","text":"summary"}],"source":{"kind":"plugin","plugin":"compact","compactionId":"compact-1"}}},
+  {"seq":15,"time":1220,"type":"future/surface","surfaceOp":"append","data":{"summary":"future"}}
+]

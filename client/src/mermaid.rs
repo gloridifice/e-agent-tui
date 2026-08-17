@@ -87,7 +87,8 @@ pub fn render(source: &str, max_width: u32) -> Result<Vec<MermaidLine>, String> 
         .ok_or("mermaid: no memory export")?;
 
     let input = source.as_bytes();
-    let ptr = alloc.call(&mut store, input.len() as i32)
+    let ptr = alloc
+        .call(&mut store, input.len() as i32)
         .map_err(|e| format!("mermaid: alloc trap: {e}"))?;
     write_memory(&memory, &mut store, ptr, input)?;
 
@@ -97,21 +98,33 @@ pub fn render(source: &str, max_width: u32) -> Result<Vec<MermaidLine>, String> 
     if len <= 0 {
         return Err("mermaid: empty render result".into());
     }
-    let out_ptr = result_ptr.call(&mut store, ()).map_err(|e| format!("mermaid: result ptr: {e}"))?;
+    let out_ptr = result_ptr
+        .call(&mut store, ())
+        .map_err(|e| format!("mermaid: result ptr: {e}"))?;
     let bytes = read_memory(&memory, &store, out_ptr, len as usize)?;
     let html = String::from_utf8_lossy(&bytes).into_owned();
 
     Ok(parse_html(&html))
 }
 
-fn write_memory(memory: &Memory, store: &mut Store<()>, ptr: i32, bytes: &[u8]) -> Result<(), String> {
+fn write_memory(
+    memory: &Memory,
+    store: &mut Store<()>,
+    ptr: i32,
+    bytes: &[u8],
+) -> Result<(), String> {
     let ptr = ptr.max(0) as usize;
     memory
         .write(store, ptr, bytes)
         .map_err(|e| format!("mermaid: memory write: {e}"))
 }
 
-fn read_memory(memory: &Memory, store: &Store<()>, ptr: i32, len: usize) -> Result<Vec<u8>, String> {
+fn read_memory(
+    memory: &Memory,
+    store: &Store<()>,
+    ptr: i32,
+    len: usize,
+) -> Result<Vec<u8>, String> {
     let ptr = ptr.max(0) as usize;
     let data = memory.data(store);
     let end = ptr
@@ -139,10 +152,14 @@ fn parse_html(html: &str) -> Vec<MermaidLine> {
                 });
             }
             let after_open = &rest[open + "<span class=\"".len()..];
-            let Some(close_quote) = after_open.find('"') else { break };
+            let Some(close_quote) = after_open.find('"') else {
+                break;
+            };
             let class = &after_open[..close_quote];
             let after_tag = &after_open[close_quote + 2..]; // skip `">`
-            let Some(end) = after_tag.find("</span>") else { break };
+            let Some(end) = after_tag.find("</span>") else {
+                break;
+            };
             let text = &after_tag[..end];
             let parsed = match class.split_whitespace().next().unwrap_or("") {
                 "b" => MermaidClass::Border,
@@ -152,7 +169,10 @@ fn parse_html(html: &str) -> Vec<MermaidLine> {
                 "t" => MermaidClass::Title,
                 _ => MermaidClass::Node,
             };
-            spans.push(MermaidSpan { class: parsed, text: decode_html(text) });
+            spans.push(MermaidSpan {
+                class: parsed,
+                text: decode_html(text),
+            });
             rest = &after_tag[end + "</span>".len()..];
         }
         if !rest.is_empty() {
@@ -163,7 +183,10 @@ fn parse_html(html: &str) -> Vec<MermaidLine> {
         }
         lines.push(MermaidLine { spans });
     }
-    while lines.last().map_or(false, |l| l.spans.iter().all(|s| s.text.trim().is_empty())) {
+    while lines
+        .last()
+        .map_or(false, |l| l.spans.iter().all(|s| s.text.trim().is_empty()))
+    {
         lines.pop();
     }
     lines
@@ -208,7 +231,9 @@ mod tests {
 
     #[test]
     fn bad_source_errors() {
-        assert!(render("not a diagram @@@", 80).is_err() || render("not a diagram @@@", 80).is_ok());
+        assert!(
+            render("not a diagram @@@", 80).is_err() || render("not a diagram @@@", 80).is_ok()
+        );
         // Malformed input must not panic; either outcome is acceptable here.
     }
 }

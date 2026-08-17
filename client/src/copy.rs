@@ -7,7 +7,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::model::{AppState, Msg};
+use crate::model::AppState;
 
 /// One navigable row: a rendered assistant line plus its provenance.
 #[derive(Debug, Clone)]
@@ -55,69 +55,20 @@ pub enum CopyAction {
 
 /// Flatten the assistant transcript into navigable rows.
 pub fn flatten(state: &AppState) -> Vec<CopyRow> {
-    let mut rows = Vec::new();
-    let mut global = 0usize;
-    let is_activity = |m: &Msg| matches!(m, Msg::Tool(_) | Msg::FileGroup(_) | Msg::Thinking(_));
-    for (idx, msg) in state.msgs.iter().enumerate() {
-        match msg {
-            Msg::Assistant { lines, .. } => {
-                for r in lines {
-                    let text: String = r
-                        .line
-                        .spans
-                        .iter()
-                        .map(|s| s.content.as_ref())
-                        .collect();
-                    rows.push(CopyRow {
-                        unit: r.unit,
-                        raw_line: r.raw_line,
-                        atomic: r.atomic,
-                        text,
-                        global_row: global,
-                    });
-                    global += 1;
-                }
-            }
-            // User messages render with one padding row above and below;
-            // long lines pre-wrap inside the page width (gutter excluded),
-            // so each wrapped row counts.
-            Msg::User { text } => {
-                let gutter = state.config.user_input_padding;
-                let avail = state.render_width.saturating_sub(gutter).max(1);
-                let mut rows = 2usize;
-                for line in text.lines() {
-                    rows += if line.is_empty() {
-                        1
-                    } else {
-                        crate::ui::wrap_text(line, avail).len().max(1)
-                    };
-                }
-                global += rows;
-            }
-            Msg::Streaming { text } => global += text.lines().count().max(1),
-            Msg::FileGroup(group) => {
-                // Line count mirrors the ui renderer (see model.rs helper).
-                global += crate::model::file_group_line_count(group);
-            }
-            Msg::Tool(_) | Msg::Thinking(_) | Msg::System { .. } | Msg::Error { .. } => global += 1,
-        }
-        // One-row gap between messages — except between consecutive
-        // tool/file-group activity rows, which stay glued.
-        let next_is_activity = state.msgs.get(idx + 1).map_or(false, is_activity);
-        if !(is_activity(msg) && next_is_activity) {
-            global += 1;
-        }
-    }
-    rows
+    crate::ui::copy_layout_rows(state)
+        .into_iter()
+        .map(|row| CopyRow {
+            unit: row.unit,
+            raw_line: row.raw_line,
+            atomic: row.atomic,
+            text: row.text,
+            global_row: row.global_row,
+        })
+        .collect()
 }
 
 impl CopyMode {
-    pub fn handle_key(
-        &mut self,
-        key: &KeyEvent,
-        rows: &[CopyRow],
-        state: &AppState,
-    ) -> CopyAction {
+    pub fn handle_key(&mut self, key: &KeyEvent, rows: &[CopyRow], state: &AppState) -> CopyAction {
         if rows.is_empty() {
             return CopyAction::Exit;
         }
@@ -326,7 +277,7 @@ fn line_selection_text(
 mod tests {
     use super::*;
     use crate::config::Theme;
-    use crate::model::AppState;
+    use crate::model::{AppState, Msg};
     use crate::render::{render_markdown, RenderOptions};
 
     fn state_with(md: &str) -> AppState {
@@ -382,8 +333,10 @@ mod tests {
         use crate::render::RenderLine;
 
         let mut state = AppState::default();
-        state.render_width = 12;
-        state.msgs.push(Msg::User { text: "x".repeat(30) });
+        state.transcript_cache.width = 12;
+        state.msgs.push(Msg::User {
+            text: "x".repeat(30),
+        });
         state.msgs.push(Msg::Assistant {
             text: "t".into(),
             lines: vec![RenderLine {
@@ -403,7 +356,8 @@ mod tests {
 
     #[test]
     fn table_is_atomic_and_raw() {
-        let md = "| a | b |\n|---|---|\n| 1 | 2 |";let state = state_with(md);
+        let md = "| a | b |\n|---|---|\n| 1 | 2 |";
+        let state = state_with(md);
         let rows = flatten(&state);
         assert!(rows.iter().all(|r| r.atomic));
         let mut cm = CopyMode::default();

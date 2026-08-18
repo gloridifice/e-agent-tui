@@ -17,7 +17,7 @@
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -26,6 +26,116 @@ const SPAWN_WAIT_TIMEOUT_SECS: u64 = 45;
 const CHILD_REAP_TIMEOUT_MS: u64 = 2_000;
 const CHILD_REAP_POLL_MS: u64 = 20;
 const DSH_PROFILE: &str = "dshe";
+
+pub trait ProcessHandle {
+    fn id(&self) -> u32;
+    fn terminate_and_reap(&mut self, timeout: Duration) -> bool;
+}
+
+pub trait LockStore {
+    fn read(&self, path: &Path) -> Option<InstanceLock>;
+    fn write(&mut self, path: &Path, lock: &InstanceLock);
+    fn remove(&mut self, path: &Path);
+}
+
+pub trait LauncherClock {
+    fn now(&self) -> Instant;
+    fn sleep(&mut self, duration: Duration);
+}
+
+pub trait LauncherPorts {
+    type Process: ProcessHandle;
+    type Locks: LockStore;
+    type Clock: LauncherClock;
+
+    fn probe(&mut self, url: &str) -> bool;
+    fn spawn(&mut self, argv: &[String]) -> std::io::Result<Self::Process>;
+    fn terminate_pid(&mut self, pid: u32) -> bool;
+    fn locks(&mut self) -> &mut Self::Locks;
+    fn clock(&mut self) -> &mut Self::Clock;
+}
+
+pub struct StdProcessHandle {
+    child: Option<Child>,
+}
+
+impl StdProcessHandle {
+    fn new(child: Child) -> Self {
+        Self { child: Some(child) }
+    }
+}
+
+impl ProcessHandle for StdProcessHandle {
+    fn id(&self) -> u32 {
+        self.child.as_ref().map_or(0, Child::id)
+    }
+
+    fn terminate_and_reap(&mut self, _timeout: Duration) -> bool {
+        self.child.take().is_some_and(kill_child_service)
+    }
+}
+
+#[derive(Default)]
+pub struct FileLockStore;
+
+impl LockStore for FileLockStore {
+    fn read(&self, path: &Path) -> Option<InstanceLock> {
+        read_lock(path)
+    }
+
+    fn write(&mut self, path: &Path, lock: &InstanceLock) {
+        write_lock(path, lock);
+    }
+
+    fn remove(&mut self, path: &Path) {
+        remove_lock(path);
+    }
+}
+
+#[derive(Default)]
+pub struct SystemLauncherClock;
+
+impl LauncherClock for SystemLauncherClock {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+
+    fn sleep(&mut self, duration: Duration) {
+        std::thread::sleep(duration);
+    }
+}
+
+#[derive(Default)]
+pub struct ProductionLauncherPorts {
+    locks: FileLockStore,
+    clock: SystemLauncherClock,
+}
+
+impl LauncherPorts for ProductionLauncherPorts {
+    type Process = StdProcessHandle;
+    type Locks = FileLockStore;
+    type Clock = SystemLauncherClock;
+
+    fn probe(&mut self, url: &str) -> bool {
+        probe(url)
+    }
+
+    fn spawn(&mut self, argv: &[String]) -> std::io::Result<Self::Process> {
+        spawn_dsh(argv).map(StdProcessHandle::new)
+    }
+
+    fn terminate_pid(&mut self, pid: u32) -> bool {
+        kill_process(pid)
+    }
+
+    fn locks(&mut self) -> &mut Self::Locks {
+        &mut self.locks
+    }
+
+    fn clock(&mut self) -> &mut Self::Clock {
+        &mut self.clock
+    }
+}
 
 /// DSH home (the bridge token and the instance lock live here), matching the
 /// bridge's own `dshHome()` resolution.
@@ -223,127 +333,336 @@ fn kill_child_service(mut child: Child) -> bool {
 
 // ---------- orchestration ----------
 
-/// Outcome of the launcher preamble: whether this process spawned dsh (and
-/// must therefore own the shutdown when it is the last TUI).
-pub struct DshSession {
-    /// The spawned dsh child, when this process started it.
-    pub child: Option<Child>,
-    /// Whether this process joined the instance lock (a dshe-spawned service).
+/// Generic launcher bookkeeping owned by one TUI instance.
+pub struct ManagedDshSession<H: ProcessHandle> {
+    pub child: Option<H>,
     pub in_lock: bool,
-    /// The lock file, so `release` can decrement it.
     pub path: PathBuf,
 }
 
-/// Ensure a DSH bridge is listening at `url`, spawning one if absent.
-/// Returns the session bookkeeping to pass back to [`release`] on TUI exit.
-pub fn acquire(url: &str, dsh_home: &Path) -> DshSession {
-    let path = lock_path(dsh_home);
-    if let Some(mut lock) = read_lock(&path) {
-        // Any lock can outlive its service when a TUI is terminated abruptly.
-        // Reuse it only while the endpoint is reachable; `instances > 0` alone
-        // is not evidence that DSH is still running.
-        if reusable_lock(&lock, probe(url)) {
-            lock.instances = lock.instances.saturating_add(1);
-            write_lock(&path, &lock);
-            return DshSession {
-                child: None,
-                in_lock: true,
-                path,
-            };
+pub type DshSession = ManagedDshSession<StdProcessHandle>;
+
+pub struct LauncherCoordinator<P: LauncherPorts> {
+    ports: P,
+}
+
+impl<P: LauncherPorts> LauncherCoordinator<P> {
+    pub fn new(ports: P) -> Self {
+        Self { ports }
+    }
+
+    fn wait_for_service(&mut self, url: &str, timeout: Duration) -> bool {
+        let deadline = self.ports.clock().now() + timeout;
+        while self.ports.clock().now() < deadline {
+            if self.ports.probe(url) {
+                return true;
+            }
+            self.ports.clock().sleep(Duration::from_millis(300));
         }
-        remove_lock(&path);
+        false
     }
-    if probe(url) {
-        // A dsh is already running out-of-band: bridge without lifecycle.
-        return DshSession {
-            child: None,
-            in_lock: false,
-            path,
-        };
-    }
-    // Spawn `dsh --profile dshe` and own its shutdown.
-    let argv = dsh_command();
-    let child = match spawn_dsh(&argv) {
-        Ok(child) => child,
-        Err(_) => {
-            return DshSession {
+
+    pub fn acquire(&mut self, url: &str, dsh_home: &Path) -> ManagedDshSession<P::Process> {
+        let path = lock_path(dsh_home);
+        if let Some(mut lock) = self.ports.locks().read(&path) {
+            if reusable_lock(&lock, self.ports.probe(url)) {
+                lock.instances = lock.instances.saturating_add(1);
+                self.ports.locks().write(&path, &lock);
+                return ManagedDshSession {
+                    child: None,
+                    in_lock: true,
+                    path,
+                };
+            }
+            self.ports.locks().remove(&path);
+        }
+        if self.ports.probe(url) {
+            return ManagedDshSession {
                 child: None,
                 in_lock: false,
                 path,
             };
         }
-    };
-    let pid = child.id();
-    let ready = wait_for_dsh(url, Duration::from_secs(SPAWN_WAIT_TIMEOUT_SECS));
-    if !ready {
-        // The service never came up. Use the same process-tree cleanup as the
-        // normal last-TUI shutdown so a Windows cmd shim cannot orphan Node.
-        kill_child_service(child);
-        return DshSession {
-            child: None,
-            in_lock: false,
-            path,
+
+        let argv = dsh_command();
+        let mut child = match self.ports.spawn(&argv) {
+            Ok(child) => child,
+            Err(_) => {
+                return ManagedDshSession {
+                    child: None,
+                    in_lock: false,
+                    path,
+                };
+            }
         };
+        let pid = child.id();
+        if !self.wait_for_service(url, Duration::from_secs(SPAWN_WAIT_TIMEOUT_SECS)) {
+            child.terminate_and_reap(Duration::from_millis(CHILD_REAP_TIMEOUT_MS));
+            return ManagedDshSession {
+                child: None,
+                in_lock: false,
+                path,
+            };
+        }
+        self.ports.locks().write(
+            &path,
+            &InstanceLock {
+                dsh_pid: pid,
+                instances: 1,
+            },
+        );
+        ManagedDshSession {
+            child: Some(child),
+            in_lock: true,
+            path,
+        }
     }
-    write_lock(
-        &path,
-        &InstanceLock {
-            dsh_pid: pid,
-            instances: 1,
-        },
-    );
-    DshSession {
-        child: Some(child),
-        in_lock: true,
-        path,
+
+    pub fn release(&mut self, session: &mut ManagedDshSession<P::Process>) -> bool {
+        if !session.in_lock {
+            if let Some(mut child) = session.child.take() {
+                child.terminate_and_reap(Duration::from_millis(CHILD_REAP_TIMEOUT_MS));
+            }
+            return false;
+        }
+        let Some(mut lock) = self.ports.locks().read(&session.path) else {
+            return false;
+        };
+        lock.instances = lock.instances.saturating_sub(1);
+        if lock.instances != 0 {
+            self.ports.locks().write(&session.path, &lock);
+            return false;
+        }
+
+        let stopped = if let Some(mut child) = session.child.take() {
+            child.terminate_and_reap(Duration::from_millis(CHILD_REAP_TIMEOUT_MS))
+        } else {
+            self.ports.terminate_pid(lock.dsh_pid)
+        };
+        if stopped {
+            self.ports.locks().remove(&session.path);
+        } else {
+            lock.instances = 0;
+            self.ports.locks().write(&session.path, &lock);
+        }
+        stopped
     }
 }
 
-/// Release the launcher bookkeeping on TUI exit: decrement the instance count
-/// and, when this is the last TUI of a dshe-spawned service, shut it down.
-/// Returns `true` only when this release successfully stopped that service.
+/// Ensure a bridge is available using production launcher adapters.
+pub fn acquire(url: &str, dsh_home: &Path) -> DshSession {
+    LauncherCoordinator::new(ProductionLauncherPorts::default()).acquire(url, dsh_home)
+}
+
+/// Release production launcher bookkeeping.
 pub fn release(session: &mut DshSession) -> bool {
-    if !session.in_lock {
-        // External dsh — never touch it. If we spawned a child but didn't
-        // lock (spawn failed to come up), make sure its complete shim tree is
-        // stopped and reaped. This is startup-failure cleanup, not a managed
-        // service shutdown to announce to the user.
-        if let Some(child) = session.child.take() {
-            kill_child_service(child);
-        }
-        return false;
-    }
-    let Some(mut lock) = read_lock(&session.path) else {
-        return false;
-    };
-    lock.instances = lock.instances.saturating_sub(1);
-    if lock.instances == 0 {
-        // Last TUI: shut the spawned service down (via our child handle when
-        // we own it, else by pid).
-        let stopped = if let Some(child) = session.child.take() {
-            kill_child_service(child)
-        } else {
-            kill_process(lock.dsh_pid)
-        };
-        if stopped {
-            remove_lock(&session.path);
-        } else {
-            // Keep a retryable ownership record. A later acquire joins it if
-            // the service is alive, or removes it as stale before respawning.
-            lock.instances = 0;
-            write_lock(&session.path, &lock);
-        }
-        stopped
-    } else {
-        write_lock(&session.path, &lock);
-        false
-    }
+    LauncherCoordinator::new(ProductionLauncherPorts::default()).release(session)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::TcpListener;
+    use std::{
+        collections::{HashMap, VecDeque},
+        net::TcpListener,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        },
+    };
+
+    struct FakeProcess {
+        id: u32,
+        stopped: Arc<AtomicBool>,
+        stop_result: bool,
+    }
+
+    impl ProcessHandle for FakeProcess {
+        fn id(&self) -> u32 {
+            self.id
+        }
+
+        fn terminate_and_reap(&mut self, _timeout: Duration) -> bool {
+            self.stopped.store(true, Ordering::SeqCst);
+            self.stop_result
+        }
+    }
+
+    #[derive(Default)]
+    struct MemoryLocks(HashMap<PathBuf, InstanceLock>);
+
+    impl LockStore for MemoryLocks {
+        fn read(&self, path: &Path) -> Option<InstanceLock> {
+            self.0.get(path).cloned()
+        }
+
+        fn write(&mut self, path: &Path, lock: &InstanceLock) {
+            self.0.insert(path.to_owned(), lock.clone());
+        }
+
+        fn remove(&mut self, path: &Path) {
+            self.0.remove(path);
+        }
+    }
+
+    struct FakeClock(Instant);
+
+    impl Default for FakeClock {
+        fn default() -> Self {
+            Self(Instant::now())
+        }
+    }
+
+    impl LauncherClock for FakeClock {
+        fn now(&self) -> Instant {
+            self.0
+        }
+
+        fn sleep(&mut self, duration: Duration) {
+            self.0 += duration;
+        }
+    }
+
+    struct FakePorts {
+        probes: VecDeque<bool>,
+        default_probe: bool,
+        locks: MemoryLocks,
+        clock: FakeClock,
+        spawned: usize,
+        spawn_fails: bool,
+        child_stopped: Arc<AtomicBool>,
+        child_stop_result: bool,
+        terminate_result: bool,
+    }
+
+    impl Default for FakePorts {
+        fn default() -> Self {
+            Self {
+                probes: VecDeque::new(),
+                default_probe: false,
+                locks: MemoryLocks::default(),
+                clock: FakeClock::default(),
+                spawned: 0,
+                spawn_fails: false,
+                child_stopped: Arc::new(AtomicBool::new(false)),
+                child_stop_result: true,
+                terminate_result: true,
+            }
+        }
+    }
+
+    impl LauncherPorts for FakePorts {
+        type Process = FakeProcess;
+        type Locks = MemoryLocks;
+        type Clock = FakeClock;
+
+        fn probe(&mut self, _url: &str) -> bool {
+            self.probes.pop_front().unwrap_or(self.default_probe)
+        }
+
+        fn spawn(&mut self, _argv: &[String]) -> std::io::Result<Self::Process> {
+            if self.spawn_fails {
+                return Err(std::io::Error::other("spawn failed"));
+            }
+            self.spawned += 1;
+            Ok(FakeProcess {
+                id: 42,
+                stopped: self.child_stopped.clone(),
+                stop_result: self.child_stop_result,
+            })
+        }
+
+        fn terminate_pid(&mut self, _pid: u32) -> bool {
+            self.terminate_result
+        }
+
+        fn locks(&mut self) -> &mut Self::Locks {
+            &mut self.locks
+        }
+
+        fn clock(&mut self) -> &mut Self::Clock {
+            &mut self.clock
+        }
+    }
+
+    #[test]
+    fn coordinator_recovers_stale_lock_and_spawns_once() {
+        let home = PathBuf::from("fake-home");
+        let path = lock_path(&home);
+        let mut ports = FakePorts::default();
+        ports.locks.0.insert(
+            path.clone(),
+            InstanceLock {
+                dsh_pid: 9,
+                instances: 3,
+            },
+        );
+        ports.probes = [false, false, true].into_iter().collect();
+        let mut coordinator = LauncherCoordinator::new(ports);
+        let session = coordinator.acquire("ws://fake", &home);
+        assert!(session.in_lock);
+        assert_eq!(coordinator.ports.spawned, 1);
+        assert_eq!(coordinator.ports.locks.0[&path].instances, 1);
+    }
+
+    #[test]
+    fn coordinator_joins_live_lock_without_spawning() {
+        let home = PathBuf::from("fake-home");
+        let path = lock_path(&home);
+        let mut ports = FakePorts::default();
+        ports.locks.0.insert(
+            path.clone(),
+            InstanceLock {
+                dsh_pid: 9,
+                instances: 1,
+            },
+        );
+        ports.probes.push_back(true);
+        let mut coordinator = LauncherCoordinator::new(ports);
+        let session = coordinator.acquire("ws://fake", &home);
+        assert!(session.in_lock && session.child.is_none());
+        assert_eq!(coordinator.ports.spawned, 0);
+        assert_eq!(coordinator.ports.locks.0[&path].instances, 2);
+    }
+
+    #[test]
+    fn coordinator_timeout_stops_spawned_process() {
+        let ports = FakePorts::default();
+        let stopped = ports.child_stopped.clone();
+        let mut coordinator = LauncherCoordinator::new(ports);
+        let session = coordinator.acquire("ws://fake", Path::new("fake-home"));
+        assert!(!session.in_lock);
+        assert!(stopped.load(Ordering::SeqCst));
+        assert_eq!(coordinator.ports.spawned, 1);
+    }
+
+    #[test]
+    fn coordinator_last_release_removes_or_retains_retry_lock() {
+        let home = PathBuf::from("fake-home");
+        let path = lock_path(&home);
+        let mut ports = FakePorts::default();
+        ports.locks.0.insert(
+            path.clone(),
+            InstanceLock {
+                dsh_pid: 9,
+                instances: 1,
+            },
+        );
+        ports.terminate_result = false;
+        let mut coordinator = LauncherCoordinator::new(ports);
+        let mut session = ManagedDshSession::<FakeProcess> {
+            child: None,
+            in_lock: true,
+            path: path.clone(),
+        };
+        assert!(!coordinator.release(&mut session));
+        assert_eq!(coordinator.ports.locks.0[&path].instances, 0);
+
+        coordinator.ports.terminate_result = true;
+        coordinator.ports.locks.0.get_mut(&path).unwrap().instances = 1;
+        assert!(coordinator.release(&mut session));
+        assert!(!coordinator.ports.locks.0.contains_key(&path));
+    }
 
     #[test]
     fn parse_host_port_handles_default_and_path() {
@@ -512,7 +831,7 @@ mod tests {
             },
         );
         let mut session = DshSession {
-            child: Some(child),
+            child: Some(StdProcessHandle::new(child)),
             in_lock: true,
             path: path.clone(),
         };

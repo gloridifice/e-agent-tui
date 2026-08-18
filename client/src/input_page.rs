@@ -4,217 +4,19 @@
 //! the common lifecycle, focus navigation, text editing, viewport anchoring,
 //! and side-effect boundary used by the main loop.
 
-use std::collections::HashMap;
-
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+pub use crate::page_core::{
+    direction_from_key, handle_text_editor, Direction, FocusId, FocusNode, FocusState, PageEffect,
+    PageOutcome, TextEditResult, TextEditor, ViewportState,
+};
 use crate::{
     config::Config,
     login::{LoginAction, LoginState, LoginView, Page as LoginPage, PROXY_SAVE_ROW},
-    protocol::{ClientMessage, ModelProviderInfo},
+    protocol::{ClientMessage, ModelProviderInfo, SessionInfo},
     settings::{items_in, ItemKind, SettingsAction, SettingsState, CATEGORIES},
     theme::ThemeFile,
 };
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Direction {
-    Left,
-    Down,
-    Up,
-    Right,
-}
-
-pub fn direction_from_key(key: &KeyEvent) -> Option<Direction> {
-    if key
-        .modifiers
-        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
-    {
-        return None;
-    }
-    match key.code {
-        KeyCode::Left | KeyCode::Char('h') => Some(Direction::Left),
-        KeyCode::Down | KeyCode::Char('j') => Some(Direction::Down),
-        KeyCode::Up | KeyCode::Char('k') => Some(Direction::Up),
-        KeyCode::Right | KeyCode::Char('l') => Some(Direction::Right),
-        _ => None,
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct FocusId(pub String);
-
-impl FocusId {
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct FocusNode {
-    pub id: FocusId,
-    pub enabled: bool,
-    pub left: Option<FocusId>,
-    pub down: Option<FocusId>,
-    pub up: Option<FocusId>,
-    pub right: Option<FocusId>,
-}
-
-impl FocusNode {
-    pub fn new(id: FocusId) -> Self {
-        Self {
-            id,
-            enabled: true,
-            left: None,
-            down: None,
-            up: None,
-            right: None,
-        }
-    }
-
-    fn neighbor(&self, direction: Direction) -> Option<&FocusId> {
-        match direction {
-            Direction::Left => self.left.as_ref(),
-            Direction::Down => self.down.as_ref(),
-            Direction::Up => self.up.as_ref(),
-            Direction::Right => self.right.as_ref(),
-        }
-    }
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct FocusState {
-    pub current: Option<FocusId>,
-    nodes: HashMap<FocusId, FocusNode>,
-    order: Vec<FocusId>,
-}
-
-impl FocusState {
-    pub fn replace(&mut self, nodes: Vec<FocusNode>) {
-        let previous = self.current.clone();
-        self.order = nodes
-            .iter()
-            .filter(|node| node.enabled)
-            .map(|node| node.id.clone())
-            .collect();
-        self.nodes = nodes
-            .into_iter()
-            .map(|node| (node.id.clone(), node))
-            .collect();
-        self.current = previous
-            .filter(|id| self.nodes.get(id).is_some_and(|node| node.enabled))
-            .or_else(|| self.order.first().cloned());
-    }
-
-    pub fn set(&mut self, id: FocusId) {
-        if self.nodes.get(&id).is_some_and(|node| node.enabled) {
-            self.current = Some(id);
-        }
-    }
-
-    pub fn move_in(&mut self, direction: Direction) -> bool {
-        let Some(current) = self.current.as_ref() else {
-            self.current = self.order.first().cloned();
-            return self.current.is_some();
-        };
-        let mut next = self
-            .nodes
-            .get(current)
-            .and_then(|node| node.neighbor(direction))
-            .cloned();
-        for _ in 0..self.nodes.len() {
-            let Some(candidate) = next else { return false };
-            let Some(node) = self.nodes.get(&candidate) else {
-                return false;
-            };
-            if node.enabled {
-                self.current = Some(candidate);
-                return true;
-            }
-            next = node.neighbor(direction).cloned();
-        }
-        false
-    }
-
-    pub fn is(&self, id: &FocusId) -> bool {
-        self.current.as_ref() == Some(id)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TextEditor {
-    pub buf: String,
-    pub secret: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TextEditResult {
-    Continue,
-    Confirm(String),
-    Cancel,
-}
-
-pub fn handle_text_editor(editor: &mut TextEditor, key: &KeyEvent) -> TextEditResult {
-    match key.code {
-        KeyCode::Enter => TextEditResult::Confirm(std::mem::take(&mut editor.buf)),
-        KeyCode::Esc => TextEditResult::Cancel,
-        KeyCode::Backspace => {
-            editor.buf.pop();
-            TextEditResult::Continue
-        }
-        KeyCode::Char(character) if !character.is_ascii_control() => {
-            editor.buf.push(character);
-            TextEditResult::Continue
-        }
-        _ => TextEditResult::Continue,
-    }
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct ViewportState {
-    pub start: usize,
-}
-
-impl ViewportState {
-    pub fn ensure_visible(&mut self, index: usize, visible: usize, total: usize) {
-        if visible == 0 || total == 0 {
-            self.start = 0;
-            return;
-        }
-        if index < self.start {
-            self.start = index;
-        } else if index >= self.start.saturating_add(visible) {
-            self.start = index.saturating_add(1).saturating_sub(visible);
-        }
-        self.start = self.start.min(total.saturating_sub(visible.min(total)));
-    }
-}
-
-pub enum PageEffect {
-    Send(ClientMessage),
-    ConfigChanged,
-}
-
-#[derive(Default)]
-pub struct PageOutcome {
-    pub close: bool,
-    pub effects: Vec<PageEffect>,
-}
-
-impl PageOutcome {
-    fn close() -> Self {
-        Self {
-            close: true,
-            effects: Vec::new(),
-        }
-    }
-
-    fn send(message: ClientMessage, close: bool) -> Self {
-        Self {
-            close,
-            effects: vec![PageEffect::Send(message)],
-        }
-    }
-}
 
 #[derive(Clone)]
 pub struct ThemeOption {
@@ -225,6 +27,111 @@ pub struct ThemeOption {
 pub struct ThemePage {
     pub themes: Vec<ThemeOption>,
     pub current: String,
+}
+
+/// `/resume` session list. The page is visible immediately in a loading
+/// state; the bridge may then send a fast header-only list followed by the
+/// same rows enriched with titles.
+pub struct ResumePage {
+    pub sessions: Vec<SessionInfo>,
+    pub query: String,
+    /// Selection index within [`Self::filtered_indices`].
+    pub sel: usize,
+    pub loading: bool,
+    pub titles_pending: bool,
+}
+
+impl ResumePage {
+    pub fn loading() -> Self {
+        Self {
+            sessions: Vec::new(),
+            query: String::new(),
+            sel: 0,
+            loading: true,
+            titles_pending: false,
+        }
+    }
+
+    pub fn filtered_indices(&self) -> Vec<usize> {
+        let query = self.query.to_lowercase();
+        self.sessions
+            .iter()
+            .enumerate()
+            .filter(|(_, session)| {
+                query.is_empty()
+                    || session.title.to_lowercase().contains(&query)
+                    || session.id.to_lowercase().contains(&query)
+            })
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    fn selected_id(&self) -> Option<&str> {
+        let filtered = self.filtered_indices();
+        filtered
+            .get(self.sel)
+            .and_then(|index| self.sessions.get(*index))
+            .map(|session| session.id.as_str())
+    }
+
+    pub fn apply_sessions(&mut self, sessions: Vec<SessionInfo>, titles_pending: bool) {
+        let selected_id = self.selected_id().map(str::to_owned);
+        self.sessions = sessions;
+        self.loading = false;
+        self.titles_pending = titles_pending;
+        let filtered = self.filtered_indices();
+        self.sel = selected_id
+            .as_ref()
+            .and_then(|id| {
+                filtered.iter().position(|index| {
+                    self.sessions
+                        .get(*index)
+                        .is_some_and(|session| session.id == *id)
+                })
+            })
+            .unwrap_or_else(|| self.sel.min(filtered.len().saturating_sub(1)));
+    }
+
+    fn handle_key(&mut self, key: &KeyEvent) -> PageOutcome {
+        match key.code {
+            KeyCode::Esc => PageOutcome::close(),
+            KeyCode::Up => {
+                self.sel = self.sel.saturating_sub(1);
+                PageOutcome::default()
+            }
+            KeyCode::Down => {
+                self.sel = (self.sel + 1).min(self.filtered_indices().len().saturating_sub(1));
+                PageOutcome::default()
+            }
+            KeyCode::Enter => self
+                .selected_id()
+                .map(|session_id| {
+                    PageOutcome::send(
+                        ClientMessage::Attach {
+                            session_id: session_id.to_owned(),
+                        },
+                        true,
+                    )
+                })
+                .unwrap_or_default(),
+            KeyCode::Backspace => {
+                self.query.pop();
+                self.sel = 0;
+                PageOutcome::default()
+            }
+            KeyCode::Char(character)
+                if !character.is_ascii_control()
+                    && !key.modifiers.intersects(
+                        KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                    ) =>
+            {
+                self.query.push(character);
+                self.sel = 0;
+                PageOutcome::default()
+            }
+            _ => PageOutcome::default(),
+        }
+    }
 }
 
 impl ThemePage {
@@ -396,6 +303,7 @@ pub enum InputPage {
     Login(LoginState),
     Model(ModelPage),
     Theme(ThemePage),
+    Resume(ResumePage),
 }
 
 pub struct InputPageSession {
@@ -421,6 +329,10 @@ impl InputPageSession {
         Self::new(InputPage::Model(ModelPage::loading()))
     }
 
+    pub fn resume() -> Self {
+        Self::new(InputPage::Resume(ResumePage::loading()))
+    }
+
     pub fn theme(files: &[ThemeFile], current: &str) -> Self {
         let mut page = Self::new(InputPage::Theme(ThemePage::from_files(files, current)));
         page.rebuild_focus();
@@ -439,6 +351,7 @@ impl InputPageSession {
         let editing = match &self.page {
             InputPage::Settings(settings) => settings.editing.is_some(),
             InputPage::Login(login) => login.editing.is_some(),
+            InputPage::Resume(_) => true,
             InputPage::Model(_) | InputPage::Theme(_) => false,
         };
         if !editing {
@@ -503,6 +416,7 @@ impl InputPageSession {
                     PageOutcome::default()
                 }
             }
+            InputPage::Resume(resume) => resume.handle_key(key),
         };
         if matches!(self.page, InputPage::Settings(_) | InputPage::Login(_)) {
             self.rebuild_focus();
@@ -520,6 +434,12 @@ impl InputPageSession {
         if let InputPage::Login(login) = &mut self.page {
             login.apply(view);
             self.rebuild_focus();
+        }
+    }
+
+    pub fn apply_sessions(&mut self, sessions: Vec<SessionInfo>, titles_pending: bool) {
+        if let InputPage::Resume(resume) = &mut self.page {
+            resume.apply_sessions(sessions, titles_pending);
         }
     }
 
@@ -551,6 +471,11 @@ impl InputPageSession {
                     false
                 }
             }
+            InputPage::Resume(resume) => {
+                resume.query.push_str(text);
+                resume.sel = 0;
+                true
+            }
             _ => false,
         }
     }
@@ -572,6 +497,7 @@ impl InputPageSession {
                     .collect();
                 linear_focus_nodes(&ids, false)
             }
+            InputPage::Resume(_) => Vec::new(),
         };
         self.focus.replace(nodes);
         if let Some(desired) = desired {
@@ -592,6 +518,7 @@ impl InputPageSession {
                 .current
                 .clone()
                 .or_else(|| Some(FocusId::new(format!("theme:{}", theme.current)))),
+            InputPage::Resume(_) => None,
         }
     }
 
@@ -624,7 +551,7 @@ impl InputPageSession {
                     login.pos = pos;
                 }
             }
-            InputPage::Model(_) | InputPage::Theme(_) => {}
+            InputPage::Model(_) | InputPage::Theme(_) | InputPage::Resume(_) => {}
         }
     }
 }
@@ -940,6 +867,75 @@ mod tests {
         page.apply_catalog(Vec::new(), None, &mut focus);
         assert!(focus.current.is_none());
         assert!(!page.loading);
+    }
+
+    #[test]
+    fn resume_page_filters_progressive_rows_and_attaches_selection() {
+        let sessions = || {
+            vec![
+                SessionInfo {
+                    id: "s1".into(),
+                    title: "Rust 修复".into(),
+                    live: true,
+                    created_at: 2,
+                },
+                SessionInfo {
+                    id: "s2".into(),
+                    title: "文档整理".into(),
+                    live: false,
+                    created_at: 1,
+                },
+            ]
+        };
+        let mut page = InputPageSession::resume();
+        page.apply_sessions(sessions(), true);
+        let mut config = Config::default();
+        page.handle_key(&key(KeyCode::Char('文')), &mut config);
+        assert!(matches!(
+            &page.page,
+            InputPage::Resume(resume)
+                if resume.filtered_indices() == vec![1] && resume.query == "文"
+        ));
+
+        // A later title-enriched frame keeps the selected stable session id.
+        page.apply_sessions(sessions(), false);
+        let outcome = page.handle_key(&key(KeyCode::Enter), &mut config);
+        assert!(outcome.close);
+        assert!(matches!(
+            outcome.effects.as_slice(),
+            [PageEffect::Send(ClientMessage::Attach { session_id })] if session_id == "s2"
+        ));
+    }
+
+    #[test]
+    fn resume_search_accepts_hjkl_as_text_and_arrows_navigate() {
+        let mut page = InputPageSession::resume();
+        page.apply_sessions(
+            vec![
+                SessionInfo {
+                    id: "hjkl-one".into(),
+                    title: String::new(),
+                    live: false,
+                    created_at: 2,
+                },
+                SessionInfo {
+                    id: "hjkl-two".into(),
+                    title: String::new(),
+                    live: false,
+                    created_at: 1,
+                },
+            ],
+            false,
+        );
+        let mut config = Config::default();
+        for character in "hjkl".chars() {
+            page.handle_key(&key(KeyCode::Char(character)), &mut config);
+        }
+        page.handle_key(&key(KeyCode::Down), &mut config);
+        assert!(matches!(
+            &page.page,
+            InputPage::Resume(resume) if resume.query == "hjkl" && resume.sel == 1
+        ));
     }
 
     #[test]

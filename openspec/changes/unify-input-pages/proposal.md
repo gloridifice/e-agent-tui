@@ -1,3 +1,6 @@
+> **状态：已完成。** 当前生产实现保持一个 `Option<InputPageSession>`、闭集页面 variant 与
+> `page_core` 共享焦点/编辑/viewport 内核；后续 runtime controller 只改变效果执行边界，未改变页面交互契约。
+
 ## Why
 
 配置相关页面目前分为两套交互形态：`/settings`、`/login` 替代输入栏，而 `/model`、`/theme` 使用浮窗；它们还分别维护导航、焦点、编辑和渲染逻辑，导致视觉与键位不一致并增加维护成本。需要引入统一的 Input Page 能力，使配置页面共享页面容器、单焦点导航和执行语义。

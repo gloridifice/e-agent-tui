@@ -1,8 +1,28 @@
 //! smoke_snapshot — feed a captured snapshot file through the model fold and
-//! report the resulting message mix. Usage:
+//! report the resulting public display-surface mix. Usage:
 //!   cargo run --example smoke_snapshot -- <path-to-snapshot.json>
 
-use e::model::{AppState, Msg, ToolState};
+use e::{
+    display::{ActivityState, CardRole, DisplayItem, TranscriptFormat},
+    model::AppState,
+    presentation::materialize_transcript,
+    ui::copy_layout_rows,
+};
+
+fn count_activity(
+    state: ActivityState,
+    tools: &mut usize,
+    tools_ok: &mut usize,
+    tools_fail: &mut usize,
+    tools_running: &mut usize,
+) {
+    *tools += 1;
+    match state {
+        ActivityState::Waiting | ActivityState::Running => *tools_running += 1,
+        ActivityState::Success => *tools_ok += 1,
+        ActivityState::Failure | ActivityState::Cancelled => *tools_fail += 1,
+    }
+}
 
 fn main() -> anyhow::Result<()> {
     let path = std::env::args()
@@ -15,6 +35,8 @@ fn main() -> anyhow::Result<()> {
     for event in &events {
         state.apply_event(event);
     }
+    materialize_transcript(&mut state);
+    state.transcript_cache.width = 120;
 
     let mut users = 0;
     let mut assistants = 0;
@@ -23,71 +45,52 @@ fn main() -> anyhow::Result<()> {
     let mut tools_ok = 0;
     let mut tools_fail = 0;
     let mut tools_running = 0;
-    let mut render_lines = 0;
-    let mut atomic_rows = 0;
-    let mut units = std::collections::HashSet::new();
-    for msg in &state.msgs {
-        match msg {
-            Msg::Card(card) if card.role == e::display::CardRole::User => users += 1,
-            Msg::Card(_) => systems += 1,
-            Msg::Block(block)
+    for node in state.transcript.nodes() {
+        match &node.item {
+            DisplayItem::Card(card) if card.role == CardRole::User => users += 1,
+            DisplayItem::Card(_) => systems += 1,
+            DisplayItem::Block(block)
                 if matches!(
                     block.format,
-                    e::display::TranscriptFormat::Markdown
-                        | e::display::TranscriptFormat::Reasoning
+                    TranscriptFormat::Markdown | TranscriptFormat::Reasoning
                 ) =>
             {
-                assistants += 1
-            }
-            Msg::Block(_) => systems += 1,
-            Msg::Activity(row) => {
-                tools += 1;
-                match row.state {
-                    e::display::ActivityState::Waiting | e::display::ActivityState::Running => {
-                        tools_running += 1
-                    }
-                    e::display::ActivityState::Success => tools_ok += 1,
-                    e::display::ActivityState::Failure | e::display::ActivityState::Cancelled => {
-                        tools_fail += 1
-                    }
-                }
-            }
-            Msg::User { .. } => users += 1,
-            Msg::Assistant { lines, .. } => {
                 assistants += 1;
-                render_lines += lines.len();
-                atomic_rows += lines.iter().filter(|l| l.atomic).count();
-                for line in lines {
-                    units.insert(line.unit);
-                }
             }
-            Msg::Streaming { .. } => {}
-            Msg::FileGroup(group) => {
-                tools += 1;
-                if group.pending() {
-                    tools_running += 1;
-                } else {
-                    tools_ok += 1;
-                }
-            }
-            Msg::Tool(card) => {
-                tools += 1;
-                match card.state {
-                    ToolState::Running => tools_running += 1,
-                    ToolState::Done { ok: true, .. } => tools_ok += 1,
-                    ToolState::Done { ok: false, .. } => tools_fail += 1,
-                }
-            }
-            Msg::Thinking(_) => {}
-            Msg::System { .. } => systems += 1,
-            Msg::Error { .. } => {}
+            DisplayItem::Block(_) => systems += 1,
+            DisplayItem::Activity(row) if row.id.0.starts_with("thinking:") => {}
+            DisplayItem::Activity(row) => count_activity(
+                row.state,
+                &mut tools,
+                &mut tools_ok,
+                &mut tools_fail,
+                &mut tools_running,
+            ),
+            DisplayItem::Composite { activity, .. } => count_activity(
+                activity.state,
+                &mut tools,
+                &mut tools_ok,
+                &mut tools_fail,
+                &mut tools_running,
+            ),
         }
     }
 
+    let copy_rows = copy_layout_rows(&state);
+    let render_lines = copy_rows.len();
+    let atomic_rows = copy_rows.iter().filter(|row| row.atomic).count();
+    let units = copy_rows
+        .iter()
+        .map(|row| row.unit)
+        .collect::<std::collections::HashSet<_>>();
+
     println!("snapshot events: {}", events.len());
-    println!("folded messages: {}", state.msgs.len());
+    println!("display nodes: {}", state.transcript.len());
     println!("  user:      {users}");
-    println!("  assistant: {assistants} (rendered {render_lines} lines, {} units, {atomic_rows} atomic rows)", units.len());
+    println!(
+        "  assistant: {assistants} (rendered {render_lines} provenance rows, {} units, {atomic_rows} atomic rows)",
+        units.len()
+    );
     println!("  tools:     {tools} (ok {tools_ok}, failed {tools_fail}, running {tools_running})");
     println!("  system:    {systems}");
     println!("OK");

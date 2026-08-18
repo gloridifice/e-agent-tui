@@ -11,22 +11,20 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context};
-use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, MouseEventKind};
 use e::config::Config;
 use e::copy;
-use e::input::{InputAction, InputState, NewMode};
-use e::input_page::{InputPageSession, PageEffect};
-use e::model::{
-    animation_active, tick_spinners, AgentStatus, AppState, ApprovalCard, Msg, QuestionBatch,
-};
+use e::input::InputState;
+use e::input_page::InputPageSession;
+use e::model::{animation_active, tick_spinners, AppState};
 use e::profile::{FrameMetrics, FrameSample};
 use e::protocol::{ClientMessage, ServerMessage, MAX_WIRE_FRAME_BYTES, WIRE_PROTOCOL_VERSION};
-use e::terminal_runtime::TerminalOwner;
-use e::ui::{
-    render_picker, render_with_cursor, scroll_lines, scroll_page, transcript_view_height,
-    CopyOverlay, PickerAction, PickerState, ScrollState,
+use e::runtime::{BridgeUiState, DrawPriority, EffectResult, RuntimeController, RuntimeEffect};
+use e::runtime_ports::{
+    BridgeTransportPort, ProductionRuntimePorts, ProductionTerminalEvents, RuntimeEffectPorts,
+    TerminalEventPort, TerminalLifecyclePort,
 };
-use futures_util::StreamExt;
+use e::terminal_runtime::TerminalOwner;
+use e::ui::{render_with_cursor, CopyOverlay, ScrollState};
 
 const DSH_SERVER_CLOSED_MESSAGE: &str = "dsh 服务器已关闭。";
 const INTERACTIVE_FRAME_INTERVAL: Duration = Duration::from_millis(16);
@@ -179,261 +177,69 @@ async fn main() -> anyhow::Result<()> {
     result
 }
 
-/// Mutable locals that bridge messages update — grouped so `handle_msg`
-/// keeps a short parameter list instead of five `&mut` tails.
-fn is_help_shortcut(key: &KeyEvent) -> bool {
-    key.code == KeyCode::Char('h')
-        && key
-            .modifiers
-            .contains(crossterm::event::KeyModifiers::CONTROL)
+#[derive(Default)]
+struct EffectExecution {
+    completed: Vec<EffectResult>,
+    quit: bool,
+    fatal: Option<String>,
 }
 
-pub struct UiChannels<'a> {
-    pub picker: &'a mut Option<PickerState>,
-    pub scroll: &'a mut ScrollState,
-    pub copy_mode: &'a mut Option<copy::CopyMode>,
-    pub input: &'a mut InputState,
-    pub input_page: &'a mut Option<InputPageSession>,
-}
-
-/// Apply one bridge message to the shared state. Returns a fatal reason when
-/// the connection is unusable and the main loop must stop.
-fn handle_msg(
-    msg: ServerMessage,
-    state_r: &Arc<std::sync::Mutex<AppState>>,
-    ui: &mut UiChannels<'_>,
-) -> Option<String> {
-    match &msg {
-        ServerMessage::Welcome {
-            session_id,
-            status,
-            provider,
-            model,
-            mode,
-            title,
-            cwd,
-            ..
-        } => {
-            let switched = {
-                let mut state = state_r.lock().unwrap();
-                let switched = state.session_id.as_deref() != Some(session_id.as_str());
-                state.apply(
-                    "welcome",
-                    &serde_json::json!({
-                        "sessionId": session_id,
-                        "status": status,
-                        "provider": provider,
-                        "model": model,
-                        "mode": mode,
-                        "title": title,
-                        "cwd": cwd,
-                    }),
-                );
-                switched
-            };
-            if switched {
-                // Fresh transcript (e.g. `/new` or picker attach): the old
-                // viewport/copy rows and agent-scoped command directory no
-                // longer exist. A fresh `commands` frame follows attach.
-                *ui.scroll = ScrollState::default();
-                *ui.copy_mode = None;
-                ui.input.replace_integrated_commands(Vec::new());
-                ui.input.replace_skills(Vec::new());
+async fn execute_runtime_effects(
+    effects: Vec<RuntimeEffect>,
+    outbound: &impl BridgeTransportPort,
+    scheduler: &mut FrameScheduler,
+    ports: &mut impl RuntimeEffectPorts,
+) -> EffectExecution {
+    let mut execution = EffectExecution::default();
+    for effect in effects {
+        match effect {
+            RuntimeEffect::Send(message) => {
+                if let Err(error) = outbound.send_message(message).await {
+                    execution.fatal = Some(error);
+                    break;
+                }
             }
-            // Remember the attached session (D17).
-            let mut state_file = e::config::StateFile::load();
-            state_file.last_session_id = Some(session_id.clone());
-            state_file.save();
-            None
-        }
-        ServerMessage::Snapshot { events, truncated } => {
-            let _z = e::tracy_zone!("snapshot apply");
-            state_r.lock().unwrap().apply_snapshot(events, *truncated);
-            None
-        }
-        ServerMessage::Event { event } => {
-            state_r.lock().unwrap().apply_host_event(event);
-            None
-        }
-        ServerMessage::History { events, has_more } => {
-            let events = events.clone();
-            let mut state = state_r.lock().unwrap();
-            state.prepend_host_events(&events);
-            state.history_loading = false;
-            state.history_exhausted = !*has_more;
-            None
-        }
-        ServerMessage::Status { status } => {
-            state_r
-                .lock()
-                .unwrap()
-                .apply("status", &serde_json::json!({ "status": status }));
-            None
-        }
-        ServerMessage::Sessions { sessions } => {
-            let sessions = sessions.clone();
-            state_r.lock().unwrap().sessions = sessions.clone();
-            if let Some(p) = ui.picker.as_mut() {
-                p.sessions = sessions;
+            RuntimeEffect::PersistConfig(config) => {
+                execution
+                    .completed
+                    .push(EffectResult::ConfigPersisted(ports.persist_config(&config)));
             }
-            None
-        }
-        ServerMessage::Presets { presets } => {
-            // The `/new <mode>` popup feeds off this roster. Broken presets
-            // cannot mount — offering one would invite a failed `/new`; the
-            // roster order (declared `order`) is kept as-is.
-            ui.input.new_modes.clear();
-            ui.input
-                .new_modes
-                .extend(
-                    presets
-                        .iter()
-                        .filter(|p| p.broken.is_none())
-                        .map(|p| NewMode {
-                            id: p.id.clone(),
-                            name: p.name.clone(),
-                            description: p.description.clone(),
-                        }),
-                );
-            if let Some(page) = ui.input_page.as_mut() {
-                page.apply_modes(
-                    ui.input
-                        .new_modes
-                        .iter()
-                        .map(|mode| mode.id.clone())
-                        .collect(),
-                );
-            }
-            None
-        }
-        ServerMessage::Skills { skills } => {
-            ui.input.replace_skills(skills.clone());
-            None
-        }
-        ServerMessage::Title { title } => {
-            state_r.lock().unwrap().session_title = Some(title.clone());
-            None
-        }
-        ServerMessage::Commands { commands } => {
-            ui.input.replace_integrated_commands(commands.clone());
-            None
-        }
-        ServerMessage::CommandResult {
-            command_id,
-            kind,
-            text,
-        } => {
-            state_r
-                .lock()
-                .unwrap()
-                .apply_command_result(command_id, kind, text.as_deref());
-            None
-        }
-        ServerMessage::Login {
-            providers,
-            proxies,
-            error,
-        } => {
-            if let Some(page) = ui.input_page.as_mut() {
-                page.apply_login(e::login::LoginView {
-                    providers: providers.clone(),
-                    proxies: proxies.clone(),
-                    error: error.clone(),
+            RuntimeEffect::ReloadConfig => {
+                execution.completed.push(match ports.load_config() {
+                    Ok((config, themes)) => EffectResult::ConfigReloaded {
+                        config: Box::new(config),
+                        themes,
+                    },
+                    Err(error) => EffectResult::ConfigReloadFailed(error),
                 });
             }
-            None
-        }
-        ServerMessage::Model { providers, current } => {
-            let cur = current
-                .clone()
-                .map(|c| (c.provider.clone(), c.model.clone()));
-            // Populate the matching open Input Page; late catalog frames are
-            // ignored by other pages while global status still updates.
-            if let Some(page) = ui.input_page.as_mut() {
-                page.apply_model(providers.clone(), cur);
+            RuntimeEffect::PersistSessionId(session_id) => {
+                ports.persist_session_id(session_id);
             }
-            let mut state = state_r.lock().unwrap();
-            if let Some(c) = current {
-                state.provider = Some(c.provider.clone());
-                state.model = Some(c.model.clone());
-            }
-            None
-        }
-        ServerMessage::Approval {
-            id,
-            tool_name,
-            reason,
-            call_id,
-        } => {
-            let _ = call_id;
-            state_r.lock().unwrap().approval = Some(ApprovalCard {
-                id: id.clone(),
-                tool_name: tool_name.clone(),
-                reason: reason.clone(),
-            });
-            None
-        }
-        ServerMessage::Question {
-            rpc_id,
-            session_id,
-            questions,
-        } => {
-            state_r.lock().unwrap().question = Some(QuestionBatch::new(
-                rpc_id.clone(),
-                session_id.clone(),
-                questions.clone(),
-            ));
-            None
-        }
-        ServerMessage::QuestionResolved {
-            question_rpc_id, ..
-        } => {
-            let mut state = state_r.lock().unwrap();
-            if state.question.as_ref().map(|q| q.rpc_id.as_str()) == Some(question_rpc_id.as_str())
-            {
-                // Settled elsewhere (web GUI, abort…) — drop the selection UI.
-                state.question = None;
-            }
-            None
-        }
-        ServerMessage::Error { code, message } => {
-            if code == "disconnected" {
-                Some(format!("bridge disconnected: {message}"))
-            } else {
-                state_r.lock().unwrap().msgs.push(Msg::Error {
-                    text: format!("桥接错误 {code}: {message}"),
+            RuntimeEffect::WriteClipboard(text) => {
+                let lines = text.lines().count();
+                let result = ports.write_clipboard(text);
+                execution.completed.push(match result {
+                    Ok(()) => EffectResult::ClipboardWritten { lines },
+                    Err(error) => EffectResult::ClipboardFailed(error.to_string()),
                 });
-                None
+            }
+            RuntimeEffect::RequestDraw(priority) => {
+                let reason = match priority {
+                    DrawPriority::Interactive => DirtyReason::Interactive,
+                    DrawPriority::Content => DirtyReason::Content,
+                    DrawPriority::Animation => DirtyReason::Animation,
+                };
+                scheduler.request(reason, ports.now());
+            }
+            RuntimeEffect::Quit => execution.quit = true,
+            RuntimeEffect::Fatal(reason) => {
+                execution.fatal = Some(reason);
+                break;
             }
         }
-        ServerMessage::Pong => None,
     }
-}
-
-/// Atomically claim the next queued prompt and mark its turn as started.
-///
-/// Keeping both mutations under one guard avoids the self-deadlock caused by
-/// locking `state` again inside an `if let` whose scrutinee still owns the
-/// first `MutexGuard` (Rust 2021 keeps that temporary alive through the body).
-fn prepare_next_queued_prompt(state_r: &std::sync::Mutex<AppState>) -> Option<String> {
-    let mut state = state_r.lock().unwrap();
-    let text = state.take_next_queued()?;
-    state.start_thinking();
-    Some(text)
-}
-
-/// Evaluate a copy-mode key while the state guard is scoped entirely inside
-/// this function. The returned action is processed only after the guard drops,
-/// so actions such as movement and expand may lock `state` safely again.
-fn copy_key_action(
-    state_r: &std::sync::Mutex<AppState>,
-    copy_mode: &mut copy::CopyMode,
-    rows_cache: &mut copy::CopyRowsCache,
-    key: &crossterm::event::KeyEvent,
-) -> copy::CopyAction {
-    let state = state_r.lock().unwrap();
-    let rows = rows_cache.rows(&state);
-    copy_mode.handle_key(key, rows, &state)
+    execution
 }
 
 fn wire_frame_limit(legacy_megabytes: Option<&str>) -> usize {
@@ -483,7 +289,6 @@ async fn run(
     let mut copy_mode: Option<copy::CopyMode> = None;
     let mut copy_rows_cache = copy::CopyRowsCache::default();
     let mut copy_toast: Option<(String, std::time::Instant)> = None;
-    let mut picker: Option<PickerState> = None;
     let mut input_page: Option<InputPageSession> = None;
     let mut theme = theme;
 
@@ -514,8 +319,9 @@ async fn run(
     // ---- event-driven main loop ----
     let mut terminal = TerminalOwner::new().context("initialize terminal")?;
     phases.mark("terminal setup");
-    let mut events = EventStream::new();
-    let mut scheduler = FrameScheduler::new(Instant::now());
+    let mut events = ProductionTerminalEvents::new();
+    let mut runtime_ports = ProductionRuntimePorts;
+    let mut scheduler = FrameScheduler::new(runtime_ports.now());
     let mut animation_deadline: Option<Instant> = None;
     let mut frame_metrics = FrameMetrics::from_env();
     let mut pending_update_elapsed = Duration::ZERO;
@@ -535,7 +341,7 @@ async fn run(
                 };
                 first_inbound = Some(msg);
             }
-            event = events.next() => {
+            event = events.next_event() => {
                 match event {
                     Some(Ok(event)) => {
                         pending_event = Some(event);
@@ -576,15 +382,21 @@ async fn run(
                     phases.mark("snapshot received");
                 }
                 let update_started = Instant::now();
-                let mut ui = UiChannels {
-                    picker: &mut picker,
+                let mut ui = BridgeUiState {
                     scroll: &mut scroll,
                     copy_mode: &mut copy_mode,
                     input: &mut input,
                     input_page: &mut input_page,
                 };
-                if let Some(reason) = handle_msg(msg, &state_r, &mut ui) {
+                let effects = RuntimeController::apply_bridge(msg, &state_r, &mut ui);
+                let execution =
+                    execute_runtime_effects(effects, &tx_out, &mut scheduler, &mut runtime_ports)
+                        .await;
+                if let Some(reason) = execution.fatal {
                     fatal = Some(reason);
+                    break 'outer;
+                }
+                if execution.quit {
                     break 'outer;
                 }
                 pending_update_elapsed += update_started.elapsed();
@@ -608,361 +420,93 @@ async fn run(
 
         // ---- queued prompts: auto-dispatch the next one now that the agent
         // ---- is idle (one at a time — each dispatch keeps it busy again).
-        if let Some(text) = prepare_next_queued_prompt(&state_r) {
-            let _ = tx_out.send(ClientMessage::Input { text }).await;
+        let queued_effects = RuntimeController::dispatch_next_queued(&state_r);
+        if !queued_effects.is_empty() {
+            let execution = execute_runtime_effects(
+                queued_effects,
+                &tx_out,
+                &mut scheduler,
+                &mut runtime_ports,
+            )
+            .await;
+            if let Some(reason) = execution.fatal {
+                fatal = Some(reason);
+                break 'outer;
+            }
+            if execution.quit {
+                break 'outer;
+            }
             scheduler.request(DirtyReason::Content, Instant::now());
         }
 
         // ---- directly-woken terminal event ----
-        if let Some(ev) = pending_event {
-            if let Event::Mouse(mouse) = &ev {
-                let up = matches!(mouse.kind, MouseEventKind::ScrollUp);
-                let down = matches!(mouse.kind, MouseEventKind::ScrollDown);
-                if up || down {
-                    let terminal_height = terminal.size().map(|size| size.height).unwrap_or(40);
-                    let input_page_open = input_page.is_some();
-                    let before = {
-                        let mut state = state_r.lock().unwrap();
-                        let height = transcript_view_height(
-                            terminal_height,
-                            &state,
-                            &input,
-                            input_page_open,
-                        );
-                        scroll_lines(
-                            &mut scroll,
-                            height,
-                            state.transcript_cache.display_len(),
-                            up,
-                            3,
-                        );
-                        if up
-                            && scroll.offset == 0
-                            && !scroll.follow
-                            && !state.history_exhausted
-                            && !state.history_loading
-                        {
-                            if let Some(seq) = state.min_seq {
-                                state.history_loading = true;
-                                Some(seq)
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    };
-                    if let Some(seq) = before {
-                        let _ = tx_out
-                            .send(ClientMessage::History {
-                                before_seq: seq,
-                                limit: 400,
-                            })
-                            .await;
-                    }
+        if let Some(event) = pending_event {
+            let focus = {
+                let state = state_r.lock().unwrap();
+                e::runtime::TerminalFocus {
+                    help_visible,
+                    input_page_open: input_page.is_some(),
+                    question_open: state.question.is_some(),
+                    approval_open: state.approval.is_some(),
+                    copy_mode_open: copy_mode.is_some(),
                 }
-                continue;
-            }
-            let Event::Key(key) = ev else {
-                // Bracketed paste: route into an Input Page editor, the
-                // free-text question draft, or the ordinary input bar.
-                if let Event::Paste(text) = ev {
-                    if input_page.as_mut().is_some_and(|page| page.paste(&text)) {
-                        continue;
-                    }
-                    {
-                        let mut state = state_r.lock().unwrap();
-                        if let Some(q) = state.question.as_mut() {
-                            if q.is_free_text() {
-                                for c in text.chars() {
-                                    q.push_char(c);
-                                }
-                                continue;
-                            }
-                        }
-                    }
-                    input.paste(&text);
-                }
-                continue;
             };
-            if key.kind == KeyEventKind::Release {
-                continue;
-            }
-            if help_visible {
-                if key.code == KeyCode::Char('q')
-                    || key.code == KeyCode::Esc
-                    || key.code == KeyCode::Char('h')
-                {
-                    help_visible = false;
-                }
-                continue;
-            }
-
-            // Help is global even while an Input Page owns ordinary input.
-            if is_help_shortcut(&key) {
-                help_visible = true;
-                continue;
-            }
-
-            // PageUp/PageDown always operate the transcript, even while an
-            // Input Page owns the bottom area.
-            if matches!(key.code, KeyCode::PageUp | KeyCode::PageDown) {
-                let up = key.code == KeyCode::PageUp;
-                let terminal_height = terminal.size().map(|size| size.height).unwrap_or(40);
-                let input_page_open = input_page.is_some();
-                let before = {
-                    let mut state = state_r.lock().unwrap();
-                    let height =
-                        transcript_view_height(terminal_height, &state, &input, input_page_open);
-                    scroll_page(
-                        &mut scroll,
-                        height,
-                        state.transcript_cache.display_len(),
-                        up,
-                    );
-                    if up
-                        && scroll.offset == 0
-                        && !scroll.follow
-                        && !state.history_exhausted
-                        && !state.history_loading
-                    {
-                        if let Some(seq) = state.min_seq {
-                            state.history_loading = true;
-                            Some(seq)
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
+            let route = e::runtime::route_terminal_event(event, focus);
+            let terminal_height = terminal.size().map(|size| size.height).unwrap_or(40);
+            let effects = RuntimeController::apply_terminal_route(
+                route,
+                terminal_height,
+                runtime_ports.now(),
+                &state_r,
+                &mut e::runtime::TerminalUiState {
+                    scroll: &mut scroll,
+                    input: &mut input,
+                    input_page: &mut input_page,
+                    help_visible: &mut help_visible,
+                    copy_mode: &mut copy_mode,
+                    copy_rows_cache: &mut copy_rows_cache,
+                    copy_toast: &mut copy_toast,
+                    config: &mut config,
+                    themes: &mut themes,
+                    theme: &mut theme,
+                },
+            );
+            let execution =
+                execute_runtime_effects(effects, &tx_out, &mut scheduler, &mut runtime_ports).await;
+            for result in execution.completed {
+                match result {
+                    EffectResult::ClipboardWritten { lines } => {
+                        copy_toast = Some((format!("已复制 {lines} 行"), runtime_ports.now()));
                     }
-                };
-                if let Some(seq) = before {
-                    let _ = tx_out
-                        .send(ClientMessage::History {
-                            before_seq: seq,
-                            limit: 400,
-                        })
-                        .await;
-                }
-                continue;
-            }
-
-            // ---- the active Input Page owns all remaining keys ----
-            if input_page.is_some() {
-                let outcome = input_page
-                    .as_mut()
-                    .expect("checked above")
-                    .handle_key(&key, &mut config);
-                for effect in outcome.effects {
-                    match effect {
-                        PageEffect::Send(message) => {
-                            let _ = tx_out.send(message).await;
-                        }
-                        PageEffect::ConfigChanged => {
-                            config.resolved_theme = e::theme::resolve(&config.theme, &themes);
-                            if let Err(error) = config.save() {
-                                let mut state = state_r.lock().unwrap();
-                                state.msgs.push(Msg::Error {
-                                    text: format!("设置保存失败: {error}"),
-                                });
-                                state.transcript_cache.invalidate();
-                            }
-                            {
-                                let mut state = state_r.lock().unwrap();
-                                state.config = config.clone();
-                                state.transcript_cache.invalidate();
-                            }
-                            theme = config.theme();
-                            input.paste_placeholder_chars = config.paste_placeholder_chars;
-                            input.history_limit = config.history_limit;
-                        }
-                    }
-                }
-                if outcome.close {
-                    input_page = None;
-                }
-                continue;
-            }
-
-            // ---- session picker owns the keys while open ----
-            if let Some(p) = picker.as_mut() {
-                match p.handle_key(&key) {
-                    PickerAction::None => {}
-                    PickerAction::Close => picker = None,
-                    PickerAction::Select(id) => {
-                        picker = None;
-                        let _ = tx_out.send(ClientMessage::Attach { session_id: id }).await;
-                    }
-                }
-                continue;
-            }
-
-            // ---- focused blocking input accessory ----
-            // Question has higher focus priority than approval; informational
-            // accessories never consume keys.
-            {
-                let pending = {
-                    let state = state_r.lock().unwrap();
-                    let focused = e::display::focused_blocking_accessory(
-                        state.question.is_some(),
-                        state.approval.is_some(),
-                    );
-                    (focused == Some(e::display::InputAccessoryKind::Approval))
-                        .then(|| state.approval.clone())
-                        .flatten()
-                };
-                if let Some(card) = pending {
-                    match key.code {
-                        KeyCode::Char('y') | KeyCode::Char('Y') => {
-                            let _ = tx_out
-                                .send(ClientMessage::ApprovalAnswer {
-                                    id: card.id,
-                                    allow: true,
-                                })
-                                .await;
-                            state_r.lock().unwrap().approval = None;
-                            continue;
-                        }
-                        KeyCode::Char('n') | KeyCode::Char('N') => {
-                            let _ = tx_out
-                                .send(ClientMessage::ApprovalAnswer {
-                                    id: card.id,
-                                    allow: false,
-                                })
-                                .await;
-                            state_r.lock().unwrap().approval = None;
-                            continue;
-                        }
-                        _ => {}
-                    }
-                }
-            }
-
-            // ---- copy mode owns the keys while active ----
-            if let Some(cm) = copy_mode.as_mut() {
-                let action = copy_key_action(&state_r, cm, &mut copy_rows_cache, &key);
-                match action {
-                    copy::CopyAction::None => {}
-                    copy::CopyAction::Exit => copy_mode = None,
-                    copy::CopyAction::Copy(text) => {
-                        let lines_count = text.lines().count();
-                        match arboard::Clipboard::new().and_then(|mut c| c.set_text(text.clone())) {
-                            Ok(()) => {
-                                copy_toast = Some((
-                                    format!("已复制 {lines_count} 行"),
-                                    std::time::Instant::now(),
-                                ));
-                            }
-                            Err(e) => {
-                                state_r.lock().unwrap().msgs.push(Msg::Error {
-                                    text: format!("剪贴板写入失败: {e}"),
-                                });
-                            }
-                        }
-                        copy_mode = None;
-                    }
-                    copy::CopyAction::ToggleExpand(unit) => {
-                        e::presentation::toggle_expand(&mut state_r.lock().unwrap(), unit);
-                    }
-                    copy::CopyAction::Moved(global_row) => {
-                        let height = terminal.size().map(|s| s.height).unwrap_or(40) as usize;
-                        let visible = height.saturating_sub(5);
-                        let total = state_r.lock().unwrap().msgs.len();
-                        let _ = total;
-                        scroll.follow = false;
-                        let first = scroll.offset;
-                        let last = scroll.offset + visible;
-                        if global_row < first {
-                            scroll.offset = global_row;
-                        } else if global_row >= last {
-                            scroll.offset = global_row.saturating_sub(visible) + 1;
-                        }
-                    }
-                }
-                // Clear the toast when it expires (D19/D28).
-                if let Some((_, at)) = &copy_toast {
-                    if at.elapsed() > Duration::from_secs(config.copy_toast_secs) {
-                        copy_toast = None;
-                    }
-                }
-                continue;
-            }
-
-            // ---- user-question mode ----
-            let question_action = {
-                let mut state = state_r.lock().unwrap();
-                e::input::handle_question_key(&mut state, &key)
-            };
-            if let Some(message) = question_action.outbound {
-                let _ = tx_out.send(message).await;
-            }
-            if question_action.handled {
-                continue;
-            }
-
-            match key.code {
-                KeyCode::Char('n')
-                    if key
-                        .modifiers
-                        .contains(crossterm::event::KeyModifiers::CONTROL) =>
-                {
-                    // Open the session picker (design §3.6): fetch the list,
-                    // then overlay. Data lands via ServerMessage::Sessions.
-                    picker = Some(PickerState::default());
-                    let _ = tx_out.send(ClientMessage::ListSessions).await;
-                    continue;
-                }
-                _ => {}
-            }
-            let idle = state_r.lock().unwrap().status == AgentStatus::Idle;
-            let action = input.handle_key(&key, idle);
-            match action {
-                InputAction::None => {}
-                InputAction::Send(text) => {
-                    // While the agent runs, the prompt enters the pending
-                    // queue (auto-dispatched on idle); otherwise it goes out
-                    // immediately with the `• Thinking...` feedback row.
-                    let immediate = state_r.lock().unwrap().enqueue_or_immediate(&text);
-                    if immediate {
-                        state_r.lock().unwrap().start_thinking();
-                        let _ = tx_out.send(ClientMessage::Input { text }).await;
-                    }
-                }
-                InputAction::Command(line) => {
-                    let outcome = e::runtime_command::handle_local_command(
-                        line,
-                        e::runtime_command::LocalCommandContext {
+                    EffectResult::ConfigReloaded {
+                        config: loaded,
+                        themes: loaded_themes,
+                    } => RuntimeController::apply_reloaded_config(
+                        *loaded,
+                        loaded_themes,
+                        &state_r,
+                        &mut e::runtime::TerminalUiState {
+                            scroll: &mut scroll,
+                            input: &mut input,
                             input_page: &mut input_page,
-                            picker: &mut picker,
                             help_visible: &mut help_visible,
                             copy_mode: &mut copy_mode,
+                            copy_rows_cache: &mut copy_rows_cache,
+                            copy_toast: &mut copy_toast,
                             config: &mut config,
                             themes: &mut themes,
-                            input: &mut input,
                             theme: &mut theme,
-                            state: &state_r,
-                            outbound: &tx_out,
                         },
-                    )
-                    .await;
-                    if matches!(outcome, e::runtime_command::CommandOutcome::Quit) {
-                        break 'outer;
-                    }
+                    ),
+                    other => RuntimeController::apply_effect_result(other, &state_r),
                 }
-                InputAction::Interrupt => {
-                    // Esc stops the whole plan: drop prompts that never left
-                    // the client queue.
-                    state_r.lock().unwrap().queue.clear();
-                    let _ = tx_out.send(ClientMessage::Interrupt).await;
-                }
-                InputAction::Quit => {
-                    break 'outer;
-                }
-                InputAction::CopyMode => {
-                    // Enter copy mode over the assistant transcript (D12).
-                    copy_mode = Some(copy::CopyMode::default());
-                }
-                InputAction::ToggleMultiline => {}
+            }
+            if let Some(reason) = execution.fatal {
+                fatal = Some(reason);
+                break 'outer;
+            }
+            if execution.quit {
+                break 'outer;
             }
         }
 
@@ -981,7 +525,7 @@ async fn run(
             let mut state = state_r.lock().unwrap();
             // Copy-mode overlay: cursor + selection as global row ranges.
             let overlay = copy_mode.as_ref().and_then(|cm| {
-                let rows = copy_rows_cache.rows(&state);
+                let rows = copy_rows_cache.rows_with(&state, || e::ui::copy_layout_rows(&state));
                 if rows.is_empty() {
                     return None;
                 }
@@ -999,7 +543,7 @@ async fn run(
                 None
             };
             let transaction = terminal.draw(|frame| {
-                let mut cursor_anchor = render_with_cursor(
+                let cursor_anchor = render_with_cursor(
                     frame,
                     &mut state,
                     &input,
@@ -1014,10 +558,6 @@ async fn run(
                         login: None,
                     },
                 );
-                if let Some(p) = picker.as_ref() {
-                    render_picker(frame, p, &theme);
-                    cursor_anchor = None;
-                }
                 cursor_anchor
             })?;
             scheduler.complete(Instant::now());
@@ -1049,7 +589,7 @@ async fn run(
     }
 
     bridge_io.shutdown();
-    terminal.restore().ok();
+    terminal.restore_terminal().ok();
     if let Some(reason) = fatal {
         bail!("{reason}");
     }
@@ -1059,20 +599,6 @@ async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::{KeyEvent, KeyModifiers};
-
-    #[test]
-    fn help_shortcut_is_global_input() {
-        assert!(is_help_shortcut(&KeyEvent::new(
-            KeyCode::Char('h'),
-            KeyModifiers::CONTROL,
-        )));
-        assert!(!is_help_shortcut(&KeyEvent::new(
-            KeyCode::Char('h'),
-            KeyModifiers::NONE,
-        )));
-    }
-
     #[test]
     fn shutdown_confirmation_has_the_required_text() {
         assert_eq!(DSH_SERVER_CLOSED_MESSAGE, "dsh 服务器已关闭。");
@@ -1091,7 +617,11 @@ mod tests {
         let state = std::sync::Mutex::new(AppState::default());
         state.lock().unwrap().queue.push("next".into());
 
-        assert_eq!(prepare_next_queued_prompt(&state).as_deref(), Some("next"));
+        let effects = RuntimeController::dispatch_next_queued(&state);
+        assert!(matches!(
+            effects.as_slice(),
+            [RuntimeEffect::Send(ClientMessage::Input { text })] if text == "next"
+        ));
         let guard = state
             .try_lock()
             .expect("dispatch must not retain the mutex guard");
@@ -1152,42 +682,5 @@ mod tests {
         assert_eq!(animation_interval(&state), Duration::from_millis(120));
         state.config.spinner_frame_ms = 0;
         assert_eq!(animation_interval(&state), MIN_ANIMATION_INTERVAL);
-    }
-
-    #[test]
-    fn copy_key_evaluation_releases_the_state_lock() {
-        let mut app = AppState::default();
-        app.msgs.push(Msg::Assistant {
-            text: "a\nb".into(),
-            lines: vec![
-                e::render::RenderLine {
-                    line: ratatui::text::Line::from("a"),
-                    unit: 1,
-                    raw_line: Some(0),
-                    atomic: false,
-                    fill: false,
-                },
-                e::render::RenderLine {
-                    line: ratatui::text::Line::from("b"),
-                    unit: 1,
-                    raw_line: Some(1),
-                    atomic: false,
-                    fill: false,
-                },
-            ],
-            unit_start: 1,
-        });
-        app.transcript_cache.width = 80;
-        let state = std::sync::Mutex::new(app);
-        let mut rows_cache = copy::CopyRowsCache::default();
-        let mut copy_mode = copy::CopyMode::default();
-        let key = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
-
-        let action = copy_key_action(&state, &mut copy_mode, &mut rows_cache, &key);
-        assert!(matches!(action, copy::CopyAction::Moved(1)));
-        assert!(
-            state.try_lock().is_ok(),
-            "copy action must not retain the mutex guard"
-        );
     }
 }

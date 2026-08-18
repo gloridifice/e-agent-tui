@@ -73,5 +73,380 @@
     "model",
     "error",
     "pong"
-  ]
+  ],
+  "shapeTypes": {
+    "primitives": [
+      "string",
+      "boolean",
+      "integer",
+      "host-event"
+    ],
+    "arraySuffix": "[]",
+    "recordReference": "Any other type name refers to an entry in records"
+  },
+  "records": {
+    "QuestionAnswer": {
+      "required": {
+        "id": "string",
+        "selected": "string[]"
+      },
+      "optional": {
+        "custom": "string"
+      }
+    },
+    "QuestionItem": {
+      "required": {
+        "id": "string",
+        "question": "string"
+      },
+      "optional": {
+        "header": "string",
+        "options": "QuestionOption[]",
+        "multiSelect": "boolean"
+      }
+    },
+    "QuestionOption": {
+      "required": {
+        "label": "string"
+      },
+      "optional": {
+        "description": "string"
+      }
+    },
+    "SessionInfo": {
+      "required": {
+        "id": "string",
+        "title": "string",
+        "live": "boolean",
+        "createdAt": "integer"
+      },
+      "optional": {}
+    },
+    "PresetInfo": {
+      "required": {
+        "id": "string"
+      },
+      "optional": {
+        "name": "string",
+        "description": "string",
+        "order": "integer",
+        "broken": "string"
+      }
+    },
+    "SkillInfo": {
+      "required": {
+        "name": "string",
+        "description": "string"
+      },
+      "optional": {}
+    },
+    "ProviderInfo": {
+      "required": {
+        "id": "string",
+        "name": "string"
+      },
+      "optional": {
+        "apiKeyConfigured": "boolean",
+        "apiKeyWritable": "boolean",
+        "apiKeySource": "string",
+        "apiKeyHint": "string"
+      }
+    },
+    "ProxyInfo": {
+      "required": {
+        "id": "string",
+        "name": "string",
+        "baseUrl": "string",
+        "protocol": "string",
+        "model": "string"
+      },
+      "optional": {}
+    },
+    "CommandInfo": {
+      "required": {
+        "name": "string",
+        "description": "string"
+      },
+      "optional": {
+        "input": "CommandInputInfo"
+      }
+    },
+    "CommandInputInfo": {
+      "required": {
+        "hint": "string"
+      },
+      "optional": {}
+    },
+    "ModelProviderInfo": {
+      "required": {
+        "id": "string",
+        "name": "string"
+      },
+      "optional": {
+        "models": "ModelInfo[]"
+      }
+    },
+    "ModelInfo": {
+      "required": {
+        "id": "string",
+        "name": "string"
+      },
+      "optional": {
+        "description": "string"
+      }
+    },
+    "ModelCurrent": {
+      "required": {
+        "provider": "string",
+        "model": "string"
+      },
+      "optional": {}
+    }
+  },
+  "messageShapes": {
+    "client": {
+      "hello": {
+        "required": {
+          "token": "string",
+          "protocolVersion": "integer"
+        },
+        "optional": {
+          "resumeSessionId": "string",
+          "cwd": "string",
+          "mode": "string"
+        }
+      },
+      "input": {
+        "required": {
+          "text": "string"
+        },
+        "optional": {}
+      },
+      "command": {
+        "required": {
+          "line": "string"
+        },
+        "optional": {}
+      },
+      "interrupt": {
+        "required": {},
+        "optional": {}
+      },
+      "attach": {
+        "required": {
+          "sessionId": "string"
+        },
+        "optional": {}
+      },
+      "list-sessions": {
+        "required": {},
+        "optional": {}
+      },
+      "approval-answer": {
+        "required": {
+          "id": "string",
+          "allow": "boolean"
+        },
+        "optional": {}
+      },
+      "answer-questions": {
+        "required": {
+          "rpcId": "string",
+          "answers": "QuestionAnswer[]"
+        },
+        "optional": {}
+      },
+      "cancel-questions": {
+        "required": {
+          "rpcId": "string"
+        },
+        "optional": {}
+      },
+      "history": {
+        "required": {
+          "beforeSeq": "integer",
+          "limit": "integer"
+        },
+        "optional": {}
+      },
+      "login-get": {
+        "required": {},
+        "optional": {}
+      },
+      "login-set-api-key": {
+        "required": {
+          "provider": "string",
+          "value": "string"
+        },
+        "optional": {}
+      },
+      "login-proxy-create": {
+        "required": {
+          "baseUrl": "string",
+          "apiKey": "string",
+          "protocol": "string",
+          "model": "string"
+        },
+        "optional": {}
+      },
+      "login-proxy-delete": {
+        "required": {
+          "id": "string"
+        },
+        "optional": {}
+      },
+      "model-get": {
+        "required": {},
+        "optional": {}
+      },
+      "model-set": {
+        "required": {
+          "provider": "string",
+          "model": "string"
+        },
+        "optional": {}
+      },
+      "ping": {
+        "required": {},
+        "optional": {}
+      }
+    },
+    "server": {
+      "welcome": {
+        "required": {
+          "sessionId": "string",
+          "status": "string"
+        },
+        "optional": {
+          "protocolVersion": "integer",
+          "maxFrameBytes": "integer",
+          "provider": "string",
+          "model": "string",
+          "mode": "string",
+          "title": "string",
+          "cwd": "string"
+        }
+      },
+      "snapshot": {
+        "required": {
+          "events": "host-event[]"
+        },
+        "optional": {
+          "truncated": "boolean"
+        }
+      },
+      "event": {
+        "required": {
+          "event": "host-event"
+        },
+        "optional": {}
+      },
+      "status": {
+        "required": {
+          "status": "string"
+        },
+        "optional": {}
+      },
+      "history": {
+        "required": {
+          "events": "host-event[]"
+        },
+        "optional": {
+          "hasMore": "boolean"
+        }
+      },
+      "sessions": {
+        "required": {
+          "sessions": "SessionInfo[]"
+        },
+        "optional": {
+          "titlesPending": "boolean"
+        }
+      },
+      "presets": {
+        "required": {
+          "presets": "PresetInfo[]"
+        },
+        "optional": {}
+      },
+      "skills": {
+        "required": {},
+        "optional": {
+          "skills": "SkillInfo[]"
+        }
+      },
+      "title": {
+        "required": {
+          "title": "string"
+        },
+        "optional": {}
+      },
+      "login": {
+        "required": {},
+        "optional": {
+          "providers": "ProviderInfo[]",
+          "proxies": "ProxyInfo[]",
+          "error": "string"
+        }
+      },
+      "approval": {
+        "required": {
+          "id": "string",
+          "toolName": "string",
+          "reason": "string"
+        },
+        "optional": {
+          "callId": "string"
+        }
+      },
+      "question": {
+        "required": {
+          "rpcId": "string",
+          "sessionId": "string",
+          "questions": "QuestionItem[]"
+        },
+        "optional": {}
+      },
+      "question-resolved": {
+        "required": {
+          "questionRpcId": "string",
+          "outcome": "string"
+        },
+        "optional": {}
+      },
+      "commands": {
+        "required": {},
+        "optional": {
+          "commands": "CommandInfo[]"
+        }
+      },
+      "command-result": {
+        "required": {
+          "commandId": "string",
+          "kind": "string"
+        },
+        "optional": {
+          "text": "string"
+        }
+      },
+      "model": {
+        "required": {},
+        "optional": {
+          "providers": "ModelProviderInfo[]",
+          "current": "ModelCurrent"
+        }
+      },
+      "error": {
+        "required": {
+          "code": "string",
+          "message": "string"
+        },
+        "optional": {}
+      },
+      "pong": {
+        "required": {},
+        "optional": {}
+      }
+    }
+  }
 }

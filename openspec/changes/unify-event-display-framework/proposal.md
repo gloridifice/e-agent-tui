@@ -1,3 +1,7 @@
+> **状态：已完成并由 `remediate-architecture-audit` 收口。** 本变更的四公共表面与事件投影目标已保留；
+> 临时 `Msg` compatibility conversion 已删除。生产 `AppState` 只保存 `TranscriptStore`，
+> `client/tests/architecture.rs::single_track_transcript_has_no_legacy_production_path` 持续守卫这一状态。
+
 ## Why
 
 DSH session events are currently reduced directly into ad-hoc transcript messages, which makes new event support inconsistent and leaves important semantics such as surface replacement, retries, todos, nested tools, and rich content unimplemented. A small set of shared display surfaces will make event coverage incremental while keeping transcript layout, copy provenance, input interaction, and rendering-cache behavior consistent.

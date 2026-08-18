@@ -5,19 +5,16 @@
  * webServer and forwards session events / agent status to connected TUI
  * clients, while accepting user input, slash commands, and interrupts.
  *
- * Protocol (JSON, one message per frame; both directions carry `type`):
- *   up:   hello{token, resumeSessionId?, cwd?, mode?} | input{text}
- *         | command{line} | login-get{} | login-set{field,value}
- *         | interrupt{} | ping{}
- *   down: welcome{sessionId,status,provider?,model?,mode?,title?} | snapshot{events[]}
- *         | event{event} | status{status} | presets{presets[]} | skills{skills[]}
- *         | title{title} | commands{commands[]} | command-result{commandId,kind,text?}
- *         | login{apiKeyConfigured,apiKeyWritable,apiKeySource?,apiKeyHint?,
- *                proxy?,error?} | error{code,message} | pong{}
+ * Protocol: JSON, one message per frame; both directions carry `type`.
+ * The complete roster and payload shapes live only in
+ * `bridge/protocol-contract.json` and generated `docs/protocol.md`; dispatcher
+ * and frame conformance tests consume generated samples from that contract.
  *
  * Module layout (index.js keeps only the socket/session lifecycle):
  *   trim.js    — payload trimming (pure)
- *   compose.js — harness-home paths, session meta, model-selection hooks
+ *   compose.js — harness-home paths and session metadata
+ *   model-selection.js — public DSH model-selection compatibility adapter
+ *   session-list.js — progressive resume catalog/title projection
  *   command.js — DSH command directory/result wire projection
  *   login.js   — the /login fields and their file/credentials seams
  */
@@ -43,6 +40,8 @@ import { ConnectionRegistry } from './connection.js'
 import { createHostPort } from './host.js'
 import { createHistoryStore } from './history.js'
 import { createSessionService } from './session.js'
+import { createModelSelectionAdapter } from './model-selection.js'
+import { createSessionLister, titleFromObservation } from './session-list.js'
 import { createClientDispatcher } from './dispatcher.js'
 import { shapeCommandsFrame, watchCommandChanges } from './command.js'
 import { encodeBoundedFrame, shapeWelcomeFrame } from './frame.js'
@@ -85,6 +84,7 @@ function apply(ctx, config = {}) {
    * request routing) use the newly selected provider/model.
    */
   const modelSelections = new Map()
+  const modelSelection = createModelSelectionAdapter()
 
   // ---- user questions (ask_user_question) ----
   // The host's web UI owns the single userQuestions provider slot, so the
@@ -284,7 +284,7 @@ function apply(ctx, config = {}) {
         const query = host.sessionQuery()
         if (query === undefined) return
         const snapshots = await query.readTitleSnapshots([agent.id])
-        const title = snapshots?.[0]?.title
+        const title = titleFromObservation(snapshots?.[0], agent.id).title
         if (typeof title !== 'string' || title === '') return
         if (!conns.has(conn) || conn.agent.id !== agent.id) return
         send(ws, { type: 'title', title })
@@ -320,10 +320,12 @@ function apply(ctx, config = {}) {
     host,
     ctx,
     modelSelections,
+    modelSelection,
     attach,
     detach,
     isCurrent: (conn) => conns.has(conn),
   })
+  const listSessions = createSessionLister(host)
 
   wss.on('connection', (ws) => {
     const dispatcher = createClientDispatcher({
@@ -350,34 +352,6 @@ function apply(ctx, config = {}) {
     ws.on('error', () => {})
   })
 
-  /** List live + persisted sessions with titles, newest first. */
-  async function listSessions() {
-    const query = host.sessionQuery()
-    const persistence = host.persistence()
-    if (!query || !persistence) return []
-    const headers = await persistence.list()
-    const live = new Set((host.agents()?.list() ?? []).map((a) => a.id))
-    let titles = []
-    try {
-      const observations = await query.readTitleSnapshots(headers.map((h) => h.id))
-      titles = observations
-    } catch {
-      titles = []
-    }
-    const byId = new Map()
-    for (const t of titles) {
-      if (t?.sessionId) byId.set(t.sessionId, t.title ?? '')
-    }
-    return headers
-      .slice(0, 200)
-      .map((h) => ({
-        id: h.id,
-        title: byId.get(h.id) ?? '',
-        live: live.has(h.id),
-        createdAt: h.createdAt,
-      }))
-      .sort((a, b) => b.createdAt - a.createdAt)
-  }
 
   // Approval answerer (design §4.4): a connected TUI answers for its own
   // agent; without one the waterfall delegates to the next answerer.

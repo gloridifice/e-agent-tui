@@ -3,6 +3,7 @@
 
 pub mod bridge_io;
 pub mod cache;
+pub mod command_catalog;
 pub mod config;
 pub mod copy;
 pub mod display;
@@ -12,13 +13,17 @@ pub mod launcher;
 pub mod login;
 pub mod mermaid;
 pub mod model;
+pub mod page_core;
 pub mod presentation;
 pub mod profile;
 pub mod projection;
 pub mod protocol;
 pub mod render;
+pub mod runtime;
 pub mod runtime_command;
+pub mod runtime_ports;
 pub mod settings;
 pub mod terminal_runtime;
 pub mod theme;
+pub mod transcript_layout;
 pub mod ui;

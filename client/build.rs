@@ -30,18 +30,25 @@ fn main() {
             .join(", ");
         format!("pub const {name}: &[&str] = &[{values}];\n")
     };
+    let records_json = serde_json::to_string(&contract["records"]).expect("serialize records");
+    let shapes_json =
+        serde_json::to_string(&contract["messageShapes"]).expect("serialize message shapes");
     let generated = format!(
         "// Generated from bridge/protocol-contract.json; do not edit.\n\
          pub const WIRE_PROTOCOL_VERSION: u64 = {};\n\
          pub const SNAPSHOT_EVENT_CAP: usize = {};\n\
          pub const HISTORY_EVENT_CAP: usize = {};\n\
          pub const MAX_WIRE_FRAME_BYTES: usize = {};\n\
-         pub const CLIENT_REPLAY_EVENT_CAP: usize = {};\n{}{}{}",
+         pub const CLIENT_REPLAY_EVENT_CAP: usize = {};\n\
+         pub const WIRE_RECORD_SHAPES_JSON: &str = {:?};\n\
+         pub const WIRE_MESSAGE_SHAPES_JSON: &str = {:?};\n{}{}{}",
         number(&["protocolVersion"]),
         number(&["limits", "snapshotEvents"]),
         number(&["limits", "historyEvents"]),
         number(&["limits", "maxFrameBytes"]),
         number(&["limits", "clientReplayEvents"]),
+        records_json,
+        shapes_json,
         array("SURFACE_EVENT_TYPES", strings("surfaceEvents")),
         array("CLIENT_MESSAGE_TYPES", strings("clientMessages")),
         array("SERVER_MESSAGE_TYPES", strings("serverMessages")),

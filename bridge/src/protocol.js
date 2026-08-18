@@ -10,6 +10,8 @@ export const SNAPSHOT_CAP = WIRE_CONTRACT.limits.snapshotEvents
 export const HISTORY_CAP = WIRE_CONTRACT.limits.historyEvents
 export const MAX_FRAME_BYTES = WIRE_CONTRACT.limits.maxFrameBytes
 export const SNAPSHOT_SURFACE = new Set(WIRE_CONTRACT.surfaceEvents)
+export const RECORD_SHAPES = Object.freeze(WIRE_CONTRACT.records)
+export const MESSAGE_SHAPES = Object.freeze(WIRE_CONTRACT.messageShapes)
 
 export function supportsClientMessage(type) {
   return WIRE_CONTRACT.clientMessages.includes(type)

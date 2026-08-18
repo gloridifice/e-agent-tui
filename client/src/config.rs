@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 
 pub use crate::theme::Theme;
 
@@ -32,7 +32,8 @@ impl ThinkingDisplayMode {
 
 // ---------- full config ----------
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     // 外观
     pub spinner_style: String,
@@ -46,8 +47,8 @@ pub struct Config {
     pub plain_color: bool,
     // 行为
     pub remember_last_session: bool,
-    /// Agent-preset mode for the session a fresh TUI process opens (the
-    /// bridge falls back to `standard` when this id is stale).
+    /// Agent-preset mode for bare `/new` and the session a fresh TUI process
+    /// opens (the bridge falls back to `standard` when this id is stale).
     pub default_mode: String,
     pub enter_sends: bool,
     pub paste_placeholder_chars: usize,
@@ -74,147 +75,57 @@ pub struct Config {
     pub page_max_width: usize,
 }
 
-/// Exact schema for the embedded file. Unlike a user overlay, every field is
-/// mandatory so an accidental omission in the repository asset fails tests
-/// and startup immediately instead of silently changing behavior.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CompleteConfig {
-    spinner_style: String,
-    spinner_frame_ms: u64,
-    theme: String,
-    plain_color: bool,
-    remember_last_session: bool,
-    default_mode: String,
-    enter_sends: bool,
-    paste_placeholder_chars: usize,
-    long_content_lines: usize,
-    atomic_collapse_rows: usize,
-    copy_toast_secs: u64,
-    history_limit: usize,
-    show_model_in_status: bool,
-    show_tool_duration: bool,
-    read_merge: bool,
-    thinking_display: String,
-    thinking_lines: usize,
-    show_timestamps: bool,
-    mermaid_enabled: bool,
-    user_input_padding: usize,
-    page_max_width: usize,
-}
-
-impl CompleteConfig {
-    fn into_config(self) -> Config {
-        let resolved_theme = Theme::from_name(&self.theme);
-        Config {
-            spinner_style: self.spinner_style,
-            spinner_frame_ms: self.spinner_frame_ms,
-            theme: self.theme,
-            resolved_theme,
-            plain_color: self.plain_color,
-            remember_last_session: self.remember_last_session,
-            default_mode: self.default_mode,
-            enter_sends: self.enter_sends,
-            paste_placeholder_chars: self.paste_placeholder_chars,
-            long_content_lines: self.long_content_lines,
-            atomic_collapse_rows: self.atomic_collapse_rows,
-            copy_toast_secs: self.copy_toast_secs,
-            history_limit: self.history_limit,
-            show_model_in_status: self.show_model_in_status,
-            show_tool_duration: self.show_tool_duration,
-            read_merge: self.read_merge,
-            thinking_display: self.thinking_display,
-            thinking_lines: self.thinking_lines,
-            show_timestamps: self.show_timestamps,
-            mermaid_enabled: self.mermaid_enabled,
-            user_input_padding: self.user_input_padding,
-            page_max_width: self.page_max_width,
+/// Recursively overlay only keys present in the embedded schema. Unknown keys
+/// from older config files are ignored, while known keys retain their user
+/// value (including an invalid type, which the one strict deserialize rejects).
+fn overlay_known(base: &mut toml::Value, user: toml::Value) {
+    match (base, user) {
+        (toml::Value::Table(base), toml::Value::Table(user)) => {
+            for (key, value) in user {
+                if let Some(base_value) = base.get_mut(&key) {
+                    overlay_known(base_value, value);
+                }
+            }
         }
-    }
-}
-
-/// User config files are overlays. Option fields preserve the old
-/// `#[serde(default)]` behavior while keeping the default values out of Rust.
-#[derive(Deserialize, Default)]
-struct PartialConfig {
-    spinner_style: Option<String>,
-    spinner_frame_ms: Option<u64>,
-    theme: Option<String>,
-    plain_color: Option<bool>,
-    remember_last_session: Option<bool>,
-    default_mode: Option<String>,
-    enter_sends: Option<bool>,
-    paste_placeholder_chars: Option<usize>,
-    long_content_lines: Option<usize>,
-    atomic_collapse_rows: Option<usize>,
-    copy_toast_secs: Option<u64>,
-    history_limit: Option<usize>,
-    show_model_in_status: Option<bool>,
-    show_tool_duration: Option<bool>,
-    read_merge: Option<bool>,
-    thinking_display: Option<String>,
-    thinking_lines: Option<usize>,
-    show_timestamps: Option<bool>,
-    mermaid_enabled: Option<bool>,
-    user_input_padding: Option<usize>,
-    page_max_width: Option<usize>,
-}
-
-impl PartialConfig {
-    fn apply(self, mut config: Config) -> Config {
-        macro_rules! apply {
-            ($($field:ident),+ $(,)?) => {
-                $(if let Some(value) = self.$field {
-                    config.$field = value;
-                })+
-            };
-        }
-        apply!(
-            spinner_style,
-            spinner_frame_ms,
-            theme,
-            plain_color,
-            remember_last_session,
-            default_mode,
-            enter_sends,
-            paste_placeholder_chars,
-            long_content_lines,
-            atomic_collapse_rows,
-            copy_toast_secs,
-            history_limit,
-            show_model_in_status,
-            show_tool_duration,
-            read_merge,
-            thinking_display,
-            thinking_lines,
-            show_timestamps,
-            mermaid_enabled,
-            user_input_padding,
-            page_max_width,
-        );
-        config.resolved_theme = Theme::from_name(&config.theme);
-        config
-    }
-}
-
-impl<'de> Deserialize<'de> for Config {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        PartialConfig::deserialize(deserializer).map(|file| file.apply(Self::default()))
+        (base, user) => *base = user,
     }
 }
 
 impl Default for Config {
     fn default() -> Self {
-        toml::from_str::<CompleteConfig>(DEFAULT_CONFIG_SOURCE)
-            .expect("embedded default_config.toml must be valid")
-            .into_config()
+        Self::parse_complete(DEFAULT_CONFIG_SOURCE)
+            .expect("embedded default_config.toml must be a complete valid Config")
     }
 }
 
 impl Config {
+    fn parse_complete(source: &str) -> Result<Self, String> {
+        let mut config: Self = toml::from_str(source).map_err(|error| error.to_string())?;
+        config.resolved_theme = Theme::from_name(&config.theme);
+        Ok(config)
+    }
+
+    /// Merge one partial user document over the embedded schema, ignore
+    /// obsolete keys, then deserialize exactly once into the strict Config.
+    pub(crate) fn from_user_toml(source: &str) -> Result<Self, String> {
+        let mut merged: toml::Value =
+            toml::from_str(DEFAULT_CONFIG_SOURCE).map_err(|error| error.to_string())?;
+        let user: toml::Value = toml::from_str(source).map_err(|error| error.to_string())?;
+        overlay_known(&mut merged, user);
+        let mut config: Self = merged
+            .try_into()
+            .map_err(|error: toml::de::Error| error.to_string())?;
+        config.resolved_theme = Theme::from_name(&config.theme);
+        Ok(config)
+    }
+
+    fn user_toml_or_default(source: &str) -> Self {
+        Self::from_user_toml(source).unwrap_or_else(|error| {
+            eprintln!("[dshe] config parse failed ({error}); using embedded defaults");
+            Self::default()
+        })
+    }
+
     /// `%APPDATA%\dshe` on Windows, `~/.config/dshe` elsewhere.
     pub fn config_dir() -> PathBuf {
         directories::ProjectDirs::from("", "", "dshe")
@@ -238,18 +149,10 @@ impl Config {
     }
 
     pub fn load() -> Self {
-        let path = Self::config_path();
-        let mut config = match std::fs::read_to_string(&path) {
-            Ok(text) => toml::from_str(&text).unwrap_or_else(|error| {
-                eprintln!("[dshe] config parse failed ({error}); using embedded defaults");
-                Self::default()
-            }),
+        match std::fs::read_to_string(Self::config_path()) {
+            Ok(text) => Self::user_toml_or_default(&text),
             Err(_) => Self::default(),
-        };
-        // Fall back the cached palette by built-in name; the real theme
-        // resolution (against the themes directory) happens at startup.
-        config.resolved_theme = Theme::from_name(&config.theme);
-        config
+        }
     }
 
     pub fn save(&self) -> Result<(), String> {
@@ -313,10 +216,10 @@ mod tests {
 
     #[test]
     fn embedded_default_config_is_the_default_source() {
-        let complete: CompleteConfig =
-            toml::from_str(DEFAULT_CONFIG_SOURCE).expect("embedded defaults parse");
+        let direct: Config =
+            toml::from_str(DEFAULT_CONFIG_SOURCE).expect("embedded defaults are the full schema");
         let config = Config::default();
-        assert_eq!(config.spinner_style, complete.spinner_style);
+        assert_eq!(config.spinner_style, direct.spinner_style);
         assert_eq!(config.spinner_frame_ms, 120);
         assert_eq!(config.theme, "deepseek-e");
         assert_eq!(config.default_mode, "standard");
@@ -324,21 +227,18 @@ mod tests {
         assert_eq!(config.page_max_width, 0);
         assert_eq!(config.thinking_display, "compact");
         assert_eq!(config.thinking_lines, 2);
-        assert_eq!(
-            config.thinking_display_mode(),
-            ThinkingDisplayMode::Compact
-        );
+        assert_eq!(config.thinking_display_mode(), ThinkingDisplayMode::Compact);
     }
 
     #[test]
     fn partial_user_config_overlays_embedded_defaults() {
-        let config: Config = toml::from_str(
+        let config = Config::from_user_toml(
             r#"
                 theme = "ferra"
                 spinner_frame_ms = 250
             "#,
         )
-        .expect("partial config parses");
+        .expect("partial config overlays defaults");
         assert_eq!(config.theme, "ferra");
         assert_eq!(config.spinner_frame_ms, 250);
         assert_eq!(config.spinner_style, "A");
@@ -346,6 +246,42 @@ mod tests {
         assert_eq!(config.thinking_display, "compact");
         assert_eq!(config.thinking_lines, 2);
         assert_eq!(config.resolved_theme.user, Theme::ferra().user);
+    }
+
+    #[test]
+    fn obsolete_unknown_fields_are_filtered_without_losing_valid_overrides() {
+        let config = Config::from_user_toml(
+            r#"
+                theme = "ferra"
+                removed_legacy_option = true
+            "#,
+        )
+        .expect("unknown legacy key is ignored");
+        assert_eq!(config.theme, "ferra");
+        assert_eq!(config.spinner_frame_ms, 120);
+    }
+
+    #[test]
+    fn known_invalid_types_and_malformed_toml_take_the_safe_full_fallback() {
+        assert!(Config::from_user_toml("spinner_frame_ms = \"fast\"").is_err());
+        assert!(Config::from_user_toml("theme = [").is_err());
+        let fallback = Config::user_toml_or_default("history_limit = \"many\"");
+        assert_eq!(fallback.history_limit, 1000);
+        assert_eq!(fallback.theme, "deepseek-e");
+    }
+
+    #[test]
+    fn unknown_theme_name_is_persisted_but_runtime_palette_has_a_safe_fallback() {
+        let config = Config::from_user_toml("theme = \"removed-theme\"").unwrap();
+        assert_eq!(config.theme, "removed-theme");
+        assert_eq!(config.resolved_theme.user, Theme::deepseek_e().user);
+    }
+
+    #[test]
+    fn direct_config_deserialization_is_strict_and_complete() {
+        assert!(toml::from_str::<Config>("theme = \"ferra\"").is_err());
+        let with_unknown = format!("{DEFAULT_CONFIG_SOURCE}\nunknown = true\n");
+        assert!(toml::from_str::<Config>(&with_unknown).is_err());
     }
 
     #[test]

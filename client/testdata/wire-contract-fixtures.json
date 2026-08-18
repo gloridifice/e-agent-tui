@@ -1,0 +1,578 @@
+{
+  "generatedFrom": "bridge/protocol-contract.json",
+  "protocolVersion": 4,
+  "client": {
+    "hello": {
+      "minimal": {
+        "type": "hello",
+        "token": "contract-token",
+        "protocolVersion": 4
+      },
+      "full": {
+        "type": "hello",
+        "token": "contract-token",
+        "protocolVersion": 4,
+        "resumeSessionId": "session-1",
+        "cwd": "C:\\workspace",
+        "mode": "standard"
+      }
+    },
+    "input": {
+      "minimal": {
+        "type": "input",
+        "text": "sample text"
+      },
+      "full": {
+        "type": "input",
+        "text": "sample text"
+      }
+    },
+    "command": {
+      "minimal": {
+        "type": "command",
+        "line": "/help"
+      },
+      "full": {
+        "type": "command",
+        "line": "/help"
+      }
+    },
+    "interrupt": {
+      "minimal": {
+        "type": "interrupt"
+      },
+      "full": {
+        "type": "interrupt"
+      }
+    },
+    "attach": {
+      "minimal": {
+        "type": "attach",
+        "sessionId": "session-1"
+      },
+      "full": {
+        "type": "attach",
+        "sessionId": "session-1"
+      }
+    },
+    "list-sessions": {
+      "minimal": {
+        "type": "list-sessions"
+      },
+      "full": {
+        "type": "list-sessions"
+      }
+    },
+    "approval-answer": {
+      "minimal": {
+        "type": "approval-answer",
+        "id": "id-1",
+        "allow": true
+      },
+      "full": {
+        "type": "approval-answer",
+        "id": "id-1",
+        "allow": true
+      }
+    },
+    "answer-questions": {
+      "minimal": {
+        "type": "answer-questions",
+        "rpcId": "rpc-1",
+        "answers": [
+          {
+            "id": "id-1",
+            "selected": [
+              "selected-sample"
+            ]
+          }
+        ]
+      },
+      "full": {
+        "type": "answer-questions",
+        "rpcId": "rpc-1",
+        "answers": [
+          {
+            "id": "id-1",
+            "selected": [
+              "selected-sample"
+            ],
+            "custom": "custom-sample"
+          }
+        ]
+      }
+    },
+    "cancel-questions": {
+      "minimal": {
+        "type": "cancel-questions",
+        "rpcId": "rpc-1"
+      },
+      "full": {
+        "type": "cancel-questions",
+        "rpcId": "rpc-1"
+      }
+    },
+    "history": {
+      "minimal": {
+        "type": "history",
+        "beforeSeq": 10,
+        "limit": 20
+      },
+      "full": {
+        "type": "history",
+        "beforeSeq": 10,
+        "limit": 20
+      }
+    },
+    "login-get": {
+      "minimal": {
+        "type": "login-get"
+      },
+      "full": {
+        "type": "login-get"
+      }
+    },
+    "login-set-api-key": {
+      "minimal": {
+        "type": "login-set-api-key",
+        "provider": "provider-1",
+        "value": "secret"
+      },
+      "full": {
+        "type": "login-set-api-key",
+        "provider": "provider-1",
+        "value": "secret"
+      }
+    },
+    "login-proxy-create": {
+      "minimal": {
+        "type": "login-proxy-create",
+        "baseUrl": "https://example.invalid/v1",
+        "apiKey": "secret",
+        "protocol": "openai-completions",
+        "model": "model-1"
+      },
+      "full": {
+        "type": "login-proxy-create",
+        "baseUrl": "https://example.invalid/v1",
+        "apiKey": "secret",
+        "protocol": "openai-completions",
+        "model": "model-1"
+      }
+    },
+    "login-proxy-delete": {
+      "minimal": {
+        "type": "login-proxy-delete",
+        "id": "id-1"
+      },
+      "full": {
+        "type": "login-proxy-delete",
+        "id": "id-1"
+      }
+    },
+    "model-get": {
+      "minimal": {
+        "type": "model-get"
+      },
+      "full": {
+        "type": "model-get"
+      }
+    },
+    "model-set": {
+      "minimal": {
+        "type": "model-set",
+        "provider": "provider-1",
+        "model": "model-1"
+      },
+      "full": {
+        "type": "model-set",
+        "provider": "provider-1",
+        "model": "model-1"
+      }
+    },
+    "ping": {
+      "minimal": {
+        "type": "ping"
+      },
+      "full": {
+        "type": "ping"
+      }
+    }
+  },
+  "server": {
+    "welcome": {
+      "minimal": {
+        "type": "welcome",
+        "sessionId": "session-1",
+        "status": "idle"
+      },
+      "full": {
+        "type": "welcome",
+        "sessionId": "session-1",
+        "status": "idle",
+        "protocolVersion": 4,
+        "maxFrameBytes": 16777216,
+        "provider": "provider-1",
+        "model": "model-1",
+        "mode": "standard",
+        "title": "Sample session",
+        "cwd": "C:\\workspace"
+      }
+    },
+    "snapshot": {
+      "minimal": {
+        "type": "snapshot",
+        "events": [
+          {
+            "seq": 1,
+            "time": 1,
+            "type": "user/message",
+            "data": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "sample"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "full": {
+        "type": "snapshot",
+        "events": [
+          {
+            "seq": 1,
+            "time": 1,
+            "type": "user/message",
+            "data": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "sample"
+                }
+              ]
+            }
+          }
+        ],
+        "truncated": true
+      }
+    },
+    "event": {
+      "minimal": {
+        "type": "event",
+        "event": {
+          "seq": 1,
+          "time": 1,
+          "type": "user/message",
+          "data": {
+            "content": [
+              {
+                "type": "text",
+                "text": "sample"
+              }
+            ]
+          }
+        }
+      },
+      "full": {
+        "type": "event",
+        "event": {
+          "seq": 1,
+          "time": 1,
+          "type": "user/message",
+          "data": {
+            "content": [
+              {
+                "type": "text",
+                "text": "sample"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "status": {
+      "minimal": {
+        "type": "status",
+        "status": "idle"
+      },
+      "full": {
+        "type": "status",
+        "status": "idle"
+      }
+    },
+    "history": {
+      "minimal": {
+        "type": "history",
+        "events": [
+          {
+            "seq": 1,
+            "time": 1,
+            "type": "user/message",
+            "data": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "sample"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "full": {
+        "type": "history",
+        "events": [
+          {
+            "seq": 1,
+            "time": 1,
+            "type": "user/message",
+            "data": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "sample"
+                }
+              ]
+            }
+          }
+        ],
+        "hasMore": true
+      }
+    },
+    "sessions": {
+      "minimal": {
+        "type": "sessions",
+        "sessions": [
+          {
+            "id": "id-1",
+            "title": "Sample session",
+            "live": true,
+            "createdAt": 1
+          }
+        ]
+      },
+      "full": {
+        "type": "sessions",
+        "sessions": [
+          {
+            "id": "id-1",
+            "title": "Sample session",
+            "live": true,
+            "createdAt": 1
+          }
+        ],
+        "titlesPending": true
+      }
+    },
+    "presets": {
+      "minimal": {
+        "type": "presets",
+        "presets": [
+          {
+            "id": "id-1"
+          }
+        ]
+      },
+      "full": {
+        "type": "presets",
+        "presets": [
+          {
+            "id": "id-1",
+            "name": "sample",
+            "description": "sample description",
+            "order": 1,
+            "broken": "broken-sample"
+          }
+        ]
+      }
+    },
+    "skills": {
+      "minimal": {
+        "type": "skills"
+      },
+      "full": {
+        "type": "skills",
+        "skills": [
+          {
+            "name": "sample",
+            "description": "sample description"
+          }
+        ]
+      }
+    },
+    "title": {
+      "minimal": {
+        "type": "title",
+        "title": "Sample session"
+      },
+      "full": {
+        "type": "title",
+        "title": "Sample session"
+      }
+    },
+    "login": {
+      "minimal": {
+        "type": "login"
+      },
+      "full": {
+        "type": "login",
+        "providers": [
+          {
+            "id": "id-1",
+            "name": "sample",
+            "apiKeyConfigured": true,
+            "apiKeyWritable": true,
+            "apiKeySource": "credentials",
+            "apiKeyHint": "…1234"
+          }
+        ],
+        "proxies": [
+          {
+            "id": "id-1",
+            "name": "sample",
+            "baseUrl": "https://example.invalid/v1",
+            "protocol": "openai-completions",
+            "model": "model-1"
+          }
+        ],
+        "error": "error-sample"
+      }
+    },
+    "approval": {
+      "minimal": {
+        "type": "approval",
+        "id": "id-1",
+        "toolName": "read",
+        "reason": "sample reason"
+      },
+      "full": {
+        "type": "approval",
+        "id": "id-1",
+        "toolName": "read",
+        "reason": "sample reason",
+        "callId": "call-1"
+      }
+    },
+    "question": {
+      "minimal": {
+        "type": "question",
+        "rpcId": "rpc-1",
+        "sessionId": "session-1",
+        "questions": [
+          {
+            "id": "id-1",
+            "question": "Choose one?"
+          }
+        ]
+      },
+      "full": {
+        "type": "question",
+        "rpcId": "rpc-1",
+        "sessionId": "session-1",
+        "questions": [
+          {
+            "id": "id-1",
+            "question": "Choose one?",
+            "header": "header-sample",
+            "options": [
+              {
+                "label": "Option A",
+                "description": "sample description"
+              }
+            ],
+            "multiSelect": true
+          }
+        ]
+      }
+    },
+    "question-resolved": {
+      "minimal": {
+        "type": "question-resolved",
+        "questionRpcId": "rpc-1",
+        "outcome": "answered"
+      },
+      "full": {
+        "type": "question-resolved",
+        "questionRpcId": "rpc-1",
+        "outcome": "answered"
+      }
+    },
+    "commands": {
+      "minimal": {
+        "type": "commands"
+      },
+      "full": {
+        "type": "commands",
+        "commands": [
+          {
+            "name": "sample",
+            "description": "sample description",
+            "input": {
+              "hint": "<text>"
+            }
+          }
+        ]
+      }
+    },
+    "command-result": {
+      "minimal": {
+        "type": "command-result",
+        "commandId": "commandId-sample",
+        "kind": "success"
+      },
+      "full": {
+        "type": "command-result",
+        "commandId": "commandId-sample",
+        "kind": "success",
+        "text": "sample text"
+      }
+    },
+    "model": {
+      "minimal": {
+        "type": "model"
+      },
+      "full": {
+        "type": "model",
+        "providers": [
+          {
+            "id": "id-1",
+            "name": "sample",
+            "models": [
+              {
+                "id": "id-1",
+                "name": "sample",
+                "description": "sample description"
+              }
+            ]
+          }
+        ],
+        "current": {
+          "provider": "provider-1",
+          "model": "model-1"
+        }
+      }
+    },
+    "error": {
+      "minimal": {
+        "type": "error",
+        "code": "sample-error",
+        "message": "sample message"
+      },
+      "full": {
+        "type": "error",
+        "code": "sample-error",
+        "message": "sample message"
+      }
+    },
+    "pong": {
+      "minimal": {
+        "type": "pong"
+      },
+      "full": {
+        "type": "pong"
+      }
+    }
+  }
+}

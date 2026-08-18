@@ -1,5 +1,9 @@
 # e
 
+<p align="center">
+<img src="./readme/logo.png" width="200">
+</p>
+
 **e** (also called **e tui**) is a terminal UI client for DeepSeek Harness (DSH). Its executable is **`dshe`**, a single binary with no extra runtime dependencies.
 
 It connects to the same DSH backend as the Web GUI and shares the same session logs, so you can switch between the terminal and the browser at any time.
@@ -10,10 +14,10 @@ It connects to the same DSH backend as the Web GUI and shares the same session l
 - **Tool cards** — command summaries with line counts and timing stay on one row and ellipsize at the configured page width; `str_replace_editor` view/replace/insert operations fold with read/edit activity while create stays a concise workspace-relative row; nested Code Mode and workflow work is shown as parented activity rows
 - **Event-aware transcript** — model reasoning is folded into a breathing `Thinking...` indicator without adding transcript/copy rows or splitting adjacent activities; context/attachment cards, retries, durable commands, compaction, rich turn outcomes, and DSH surface replacement are projected consistently
 - **Input accessories** — queued prompts, approvals, questions, todos, goals, and plan mode share a bounded area above the editor
-- **Unified Input Pages** — `/settings`, `/login`, `/model`, and `/theme` replace the editor with one borderless, keyboard-navigable page instead of opening floating windows
+- **Unified Input Pages** — `/settings`, `/login`, `/model`, `/theme`, and `/resume` replace the editor with one borderless, keyboard-navigable page instead of opening floating windows
 - **Model selection** — switch provider and model with `/model`
 - **Themes** — `deepseek-e` (default) and `ferra` are embedded from TOML assets; custom themes use an open-ended color palette plus fixed semantic roles
-- **Sessions** — create, switch, and resume conversations with incremental history
+- **Sessions** — create, switch, and resume conversations with incremental history; `/resume` shows persisted titles and paints the header list before slower title folding completes
 - **Unified commands** — optimized built-ins and commands contributed by DSH/plugins share one fuzzy-completion menu; `/skill` immediately opens the live user-invocable skill roster and fills canonical `/skill:<name>` commands
 - **Responsive input** — queue prompts while the agent runs; queued dispatch and copy-mode navigation do not block the UI; a software cursor stays stable while the hidden terminal cursor anchors IME input
 - **Managed backend lifecycle** — when `dshe` starts its dedicated DSH service, startup-timeout cleanup and last-TUI shutdown terminate the complete Windows command-shim process tree with bounded waiting; every saved instance lock is revalidated against the bridge endpoint, so an abruptly terminated TUI cannot leave a positive-count stale lock that suppresses the next startup; failed shutdowns retain retry bookkeeping, while confirmed shutdowns print `dsh 服务器已关闭。`; externally started DSH services are left untouched
@@ -45,7 +49,14 @@ dshe
 
 On first launch, `dshe` starts the DSH service automatically, then guides you through signing in (API key / proxy); use `/model` to pick a model. If PowerShell cannot find `dshe`, add `%USERPROFILE%\.cargo\bin` to your `PATH`.
 
-> **Updating**: re-run step 4 after pulling new code. If the bridge changed, repeat step 3 and restart DSH.
+> **Updating**: re-run step 4 after pulling new code. If the bridge changed, repeat step 3 and restart DSH. The bridge is verified against DSH `0.1.0-rc.6`; after upgrading DSH, run the deployed-profile compatibility gate before using it:
+>
+> ```powershell
+> $env:DSH_TUI_SMOKE_PROFILE = 'dshe'
+> cd bridge; npm run verify-dsh-upgrade
+> ```
+>
+> The gate checks the generated wire contract, the public `@deepseek-ai/dsh-agent` model-selection export, and deployed `/new`, resume, and `/model` request routing.
 
 ## Commands
 
@@ -53,7 +64,7 @@ Type `/` to open command completion; continue typing for prefix/substring/fuzzy 
 
 Commands use two compatibility levels:
 
-- **Built-in commands** are optimized for dshe (for example `/settings`, `/model`, `/new`, `/resume`, and `/skill`). Their effect, description, input hint, and specialized completion policy are declared together in `client/src/runtime_command.rs`; `/new ` completes the live agent-preset roster, while typing `/skill` immediately completes the attached session's user-invocable skills as `/skill:<name>`.
+- **Built-in commands** are optimized for dshe (for example `/settings`, `/model`, `/new`, `/resume`, and `/skill`). Their effect, description, input hint, and specialized completion policy are declared together in `client/src/runtime_command.rs`; bare `/new` uses the configured default mode, `/new ` completes the live agent-preset roster, and typing `/skill` immediately completes the attached session's user-invocable skills as `/skill:<name>`.
 - **Integrated commands** come from DSH core or any installed DSH plugin. The bridge discovers the effective per-session `ctx.commands` registry automatically, refreshes it on `commands/change`, and forwards execution results directly to the transcript. No dshe code change is needed when a plugin registers a new command.
 
 DSH 0.1.0-rc.6 exposes command names, descriptions, and one free-form input hint, but no typed argument-completion schema. Therefore every integrated command has name completion and shows its input hint; richer argument completion is available only for built-ins that dshe explicitly optimizes.
@@ -69,12 +80,12 @@ DSH 0.1.0-rc.6 exposes command names, descriptions, and one free-form input hint
 | mouse wheel | Scroll the message transcript by three rows |
 | `Ctrl+H` | Show help (`^h Help` in the status line) |
 | `Ctrl+B` | Enter transcript copy mode |
-| `Ctrl+N` | Open the session picker |
+| `Ctrl+N` | Open the `/resume` Input Page |
 | `Esc` | Cancel/return in an Input Page or interrupt active model work |
 | arrows or `hjkl` | Move the single focus between actionable Input Page elements |
 | `Enter` in an Input Page | Execute the focused element |
 
-`/settings`, `/login`, `/model`, and `/theme` use the shared **Input Page** layout: no border or floating window, one row of vertical padding, two columns of horizontal padding, and one stable focus. Text editors consume ordinary letters—including `hjkl`—instead of navigating. Existing proxies open an explicit confirmation page before deletion.
+`/settings`, `/login`, `/model`, `/theme`, and `/resume` use the shared **Input Page** layout: no border or floating window, one row of vertical padding, two columns of horizontal padding, and one stable focus. Text editors consume ordinary letters—including `hjkl`—instead of navigating. In `/resume`, type to filter by title/id, use `↑`/`↓` to select, and press `Enter` to attach. Existing proxies open an explicit confirmation page before deletion.
 
 The two background-free status rows are:
 
@@ -87,7 +98,7 @@ The optional model and cache-hit fields are omitted until values are available; 
 
 ## Configuration and themes
 
-User configuration is stored in `%APPDATA%\dshe\config.toml`. Repository defaults live in [`client/assets/default_config.toml`](client/assets/default_config.toml), are embedded with `include_str!`, and are parsed as the base configuration. User files may omit fields; their values overlay the embedded defaults, so newly added options remain backward-compatible.
+User configuration is stored in `%APPDATA%\dshe\config.toml`. Repository defaults live in [`client/assets/default_config.toml`](client/assets/default_config.toml), are embedded with `include_str!`, and are the sole default-value source. A user file may omit fields; known values recursively overlay the embedded TOML and then deserialize through one strict `Config` schema. Obsolete unknown keys are ignored for backward compatibility; malformed TOML or a known key with the wrong type safely falls back to embedded defaults and reports a diagnostic. The `default_mode` setting applies both to startup-created sessions and bare `/new`; `/new <mode>` remains an explicit one-off override. Existing key behavior is unchanged: `Enter` sends and `Shift+Enter` inserts a newline; legacy `enter_sends` is read only for old-file compatibility.
 
 Theme files live in `%APPDATA%\dshe\themes\*.toml`. A theme has two layers: an open-ended `[colors]` palette whose keys are user-defined, and a fixed `[semantics.*]` schema that maps UI roles to palette keys:
 
@@ -107,11 +118,14 @@ Every fixed semantic role requires `fg`; `bg`, `bold`, `italic`, and `underline`
 
 ## Architecture and protocol
 
-`client/` is the Rust TUI and `bridge/` is the DSH host plugin. Their JSON WebSocket contract has one machine-readable source: [`bridge/protocol-contract.json`](bridge/protocol-contract.json). [`docs/protocol.md`](docs/protocol.md) is generated with:
+`client/` is the Rust TUI and `bridge/` is the DSH host plugin. Their JSON WebSocket contract has one machine-readable source: [`bridge/protocol-contract.json`](bridge/protocol-contract.json). It owns protocol version, limits, rosters, record/message shapes, generated Rust constants, shared Rust/Node fixtures, `bridge/package.json` wire metadata, and [`docs/protocol.md`](docs/protocol.md). Synchronize or verify all derived artifacts with:
 
 ```powershell
-node tools/generate-protocol-doc.mjs
+node tools/sync-protocol-contract.mjs
+node tools/sync-protocol-contract.mjs --check
 ```
+
+`tools/generate-protocol-doc.mjs` remains a compatibility wrapper around the same synchronizer.
 
 The normal WebSocket frame limit is 16 MiB. The bridge enforces it on every outgoing frame; oversized snapshot/history frames retain the newest fitting suffix and singular oversized frames become a bounded compatibility error. Only when connecting to an old, not-yet-restarted bridge, set `DSHE_LEGACY_MAX_FRAME_MB` explicitly (for example `64`) before launching `dshe`.
 
@@ -122,10 +136,13 @@ The transcript renderer owns its cache, and copy-mode navigation reuses the same
 ## Development
 
 ```powershell
+cargo fmt --check
+cargo clippy --all-targets
 cargo test
 cargo run --release --example timing_frames  # long-history scroll/frame benchmark
 cd bridge; npm test
-node tools/generate-protocol-doc.mjs
+node tools/sync-protocol-contract.mjs --check
+npm run verify-dsh-upgrade  # after mounting the bridge into the selected profile
 ```
 
-Bridge lifecycle policy is split into testable host, connection, history, session, command, skill, dispatcher, and protocol adapters under `bridge/src/`. Slash completion merges the effective per-session DSH/plugin command catalog with client-optimized commands and refreshes cwd/scope-sensitive user-invocable skills after attach or `skills/change`; live DSH compatibility remains covered by `node tools/smoke-bridge.mjs`.
+Bridge lifecycle policy is split into testable host, connection, history, session, session-list, command, skill, dispatcher, protocol, and model-selection adapters under `bridge/src/`. The session adapter lazily reuses the public `@deepseek-ai/dsh-agent` `installModelSelection` export, so new/cold-resumed sessions receive provider/model assembly and request routing without carrying a bridge-local waterfall copy. Slash completion merges the effective per-session DSH/plugin command catalog with client-optimized commands and refreshes cwd/scope-sensitive user-invocable skills after attach or `skills/change`; `npm run verify-dsh-upgrade` validates the deployed bridge after a DSH upgrade.

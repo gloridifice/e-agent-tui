@@ -5,7 +5,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::{
     config::Config,
-    input_page::{handle_text_editor, TextEditResult, TextEditor},
+    page_core::{handle_text_editor, TextEditResult, TextEditor},
 };
 
 pub const CATEGORIES: &[&str] = &["外观", "行为", "显示", "高级"];
@@ -104,7 +104,7 @@ pub static ITEMS: &[ItemDef] = &[
     ItemDef {
         category: 1,
         label: "默认模式",
-        desc: "新开 TUI 进程创建会话时使用的模式（失效时回退标准模式）",
+        desc: "裸 /new 与新开 TUI 创建会话时使用的模式（失效时回退标准模式）",
         kind: ItemKind::ModeChoice,
         get: |c| c.default_mode.clone(),
         apply: |c, v| {

@@ -43,9 +43,9 @@ fn main() -> anyhow::Result<()> {
     );
     let t3 = Instant::now();
     println!(
-        "  model fold:  {:.2} ms ({} messages, {} render units)",
+        "  model fold:  {:.2} ms ({} display nodes, {} render units)",
         t3.duration_since(t2).as_secs_f64() * 1000.0,
-        state.msgs.len(),
+        state.transcript.len(),
         state.units.len()
     );
 

@@ -1,3 +1,6 @@
+> **状态：已完成。** 性能约束由当前 `TranscriptStore`/`transcript_layout` 实现承接；任务中历史
+> `Msg` 名称仅为当时缓存形状的记录，不能重新引入 production legacy transcript。
+
 ## 1. 建立性能基线与观测边界
 
 - [x] 1.1 定义 80×40、160×50、240×70、1000+ 消息、持续流式、活动动画和连续滚动的 release benchmark fixtures，并记录当前基线。

@@ -1,3 +1,6 @@
+> **完成记录：** 本文是性能变更的历史设计。后续单轨 Display 迁移以 `DisplayId`/`TranscriptStore`
+> 替代 production `Msg`；本文中 `Msg`、`styled_msg_lines` 等名称不得作为恢复旧生产路径的依据。
+
 ## Context
 
 Rust 客户端当前用一个 50ms `tokio::time::interval` 唤醒主循环；Crossterm 键盘、鼠标和 resize 事件只在该唤醒或 WebSocket 收包之后通过 `poll(Duration::ZERO)` 排空。`dirty` 帧另受 30ms 条件限制，因此无网络流量时交互刷新实际上最多约 20 FPS，连续滚轮事件会每 50ms 成批跳动。入站消息也会无界排空，持续 chunk 流可能延后输入处理。

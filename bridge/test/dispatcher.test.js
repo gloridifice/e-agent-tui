@@ -4,6 +4,7 @@ import { createClientDispatcher } from '../src/dispatcher.js'
 
 function harness(options = {}) {
   const frames = []
+  const modelSelections = options.modelSelections ?? new Map()
   const closes = []
   const followups = []
   const conn = {
@@ -30,14 +31,14 @@ function harness(options = {}) {
     },
     injectSkill: () => {},
     historyEvents: () => ({ events: [], hasMore: false }),
-    listSessions: async () => [],
+    listSessions: options.listSessions ?? (async () => []),
     apiProxy: undefined,
     questionSessions: new Map(),
-    sendModel: async () => {},
-    modelSelections: new Map(),
+    sendModel: options.sendModel ?? (async () => {}),
+    modelSelections,
     createUserMessage: (message) => message,
   })
-  return { dispatcher, frames, closes, followups, conn, conns }
+  return { dispatcher, frames, closes, followups, conn, conns, modelSelections }
 }
 
 test('dispatcher authenticates, attaches, and routes typed input', async () => {
@@ -63,6 +64,26 @@ test('dispatcher routes keepalive without a session', () => {
   const h = harness()
   h.dispatcher.handle(Buffer.from(JSON.stringify({ type: 'ping' })))
   assert.deepEqual(h.frames, [{ type: 'pong' }])
+})
+
+test('dispatcher streams a title-pending session list before the enriched list', async () => {
+  const sessions = [{ id: 's1', title: '', live: false, createdAt: 1 }]
+  const h = harness({
+    listSessions: async (onPartial) => {
+      onPartial(sessions)
+      return [{ ...sessions[0], title: 'Session title' }]
+    },
+  })
+  h.dispatcher.handle(Buffer.from(JSON.stringify({
+    type: 'hello', token: 'secret', protocolVersion: 4,
+  })))
+  await new Promise((resolve) => setImmediate(resolve))
+  h.dispatcher.handle(Buffer.from(JSON.stringify({ type: 'list-sessions' })))
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(h.frames.slice(-2), [
+    { type: 'sessions', sessions, titlesPending: true },
+    { type: 'sessions', sessions: [{ ...sessions[0], title: 'Session title' }] },
+  ])
 })
 
 test('dispatcher executes an integrated command and relays its direct UI result', async () => {
@@ -107,6 +128,26 @@ test('dispatcher drops a command result after the connection becomes stale', asy
   settle({ commandId: 'cmd-stale', result: { kind: 'success', text: 'wrong session' } })
   await new Promise((resolve) => setImmediate(resolve))
   assert.equal(h.frames.some((frame) => frame.commandId === 'cmd-stale'), false)
+})
+
+test('dispatcher model-set updates the next assembly selection and agent options', async () => {
+  const selection = { current: { provider: 'before', model: 'old' }, assembled: undefined }
+  const refreshed = []
+  const h = harness({
+    modelSelections: new Map([['a1', selection]]),
+    sendModel: async (_ws, agent) => refreshed.push(agent),
+  })
+  h.dispatcher.handle(Buffer.from(JSON.stringify({
+    type: 'hello', token: 'secret', protocolVersion: 4,
+  })))
+  await new Promise((resolve) => setImmediate(resolve))
+  h.dispatcher.handle(Buffer.from(JSON.stringify({
+    type: 'model-set', provider: 'after', model: 'new',
+  })))
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(selection.current, { provider: 'after', model: 'new' })
+  assert.deepEqual(h.conn.agent.options, { provider: 'after', model: 'new' })
+  assert.deepEqual(refreshed, [h.conn.agent])
 })
 
 test('dispatcher reports unknown integrated commands without creating model input', async () => {

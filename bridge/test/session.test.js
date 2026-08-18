@@ -9,6 +9,13 @@ function agentContext() {
   return { on: () => () => {} }
 }
 
+function modelSelection(calls, current) {
+  return {
+    defaultSelection: () => current,
+    install: async (_agentCtx, selection) => calls.push(['install-model-selection', selection.current]),
+  }
+}
+
 test('session service composes preset/model, claims workspace, then reattaches', async () => {
   const cwd = mkdtempSync(join(tmpdir(), 'dsh-tui-session-'))
   const calls = []
@@ -41,6 +48,7 @@ test('session service composes preset/model, claims workspace, then reattaches',
     host,
     ctx,
     modelSelections,
+    modelSelection: modelSelection(calls, { provider: 'p', model: 'm' }),
     attach: (_ws, agent, clientCwd) => ({ agent, clientCwd }),
     detach: (_conn, options) => calls.push(['detach', options.keepSocket]),
   })
@@ -49,6 +57,7 @@ test('session service composes preset/model, claims workspace, then reattaches',
   assert.equal(next.agent, createdAgent)
   assert.deepEqual(calls, [
     ['create', cwd, 'standard'],
+    ['install-model-selection', { provider: 'p', model: 'm' }],
     ['mount', 'standard'],
     ['workspace', 'new-1'],
     ['detach', true],
@@ -80,10 +89,14 @@ test('cold resume restores the recorded preset behind the host port', async () =
     host,
     ctx,
     modelSelections,
+    modelSelection: modelSelection(calls),
     attach: () => {},
     detach: () => {},
   })
   assert.equal(await service.resumePersistedSession('s1'), resumed)
-  assert.deepEqual(calls, [['mount', 'standard']])
+  assert.deepEqual(calls, [
+    ['install-model-selection', undefined],
+    ['mount', 'standard'],
+  ])
   assert.ok(modelSelections.has('s1'))
 })

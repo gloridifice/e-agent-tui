@@ -11,6 +11,9 @@
 > 避免遗留孤儿 Node；回收等待有上限，关闭失败保留零实例锁供下次 attach 重试；所有实例锁均须重新探测
 > bridge endpoint，即使正实例计数也不能证明服务存活，服务已消失时清除 stale 锁并重建。
 > 确认关闭后离开 alternate screen 并输出 `dsh 服务器已关闭。`。桥接外部启动的 DSH 或仍有其他 TUI 时不输出。
+> v0.6 架构收敛：生产客户端模块图由 `client/tests/architecture.rs` 自动检查为无 SCC；
+> transcript 只存公共 Display 表面；wire shape/fixture/doc 由同一 JSON contract 同步；配置用单一严格 schema；
+> DSH model selection 通过公开上游 adapter 安装并有部署副本升级验证。
 
 ## 0. 已定决策（✅）
 
@@ -32,7 +35,7 @@
 | D14 | 语法高亮 | 二期再上 syntect；首期代码块纯色 + 语言标签 |
 | D15 | 桥接鉴权 | 轻量 token：桥接插件生成随机 token 写入 DSH 数据目录，客户端自动读取 |
 | D16 | 桥接插件形态 | 正式 TS 插件包（可用 `ws` 库），作为产品一部分长期维护 |
-| D17 | 启动行为 | 每个新 `dshe` 进程默认新建会话；CLI 会话 id 或“记住上次会话”（默认关）才续接；`/resume`/Ctrl+N 打开选择器 |
+| D17 | 启动行为 | 每个新 `dshe` 进程默认新建会话；CLI 会话 id 或“记住上次会话”（默认关）才续接；`/resume`/Ctrl+N 打开续接 Input Page |
 | D18 | mermaid 超宽 | v1 截断 + 折叠提示（复制仍拿完整源码）；v2 全屏图形模式 hjkl 四向滚动 |
 | D19 | 复制提示 | 复制成功后输入区临时提示 `已复制 N 行`，约 2 秒后消失 |
 | D20 | 用户消息展示 | 逐字原样展示，不做 markdown 渲染；前缀 `❯` Coral |
@@ -41,7 +44,7 @@
 | D23 | 输入栏形态 | 无边框背景块：Ash 底、上边距 1 行 + 文本区 + 下边距 1 行；前缀 `❯` Coral；`Enter` 固定发送、`Shift+Enter` 换行；`↑/↓` 行间移动并在首/末行边界切换提示词 |
 | D24 | 粘贴超长占位 | 粘贴超过配置阈值显示 Rose 色 `[N text pasted]`；发送原样完整内容；普通文本用 `Shift+Enter` 插入换行 |
 | D25 | spinner 可配置 | 默认 A 半月旋转 `◐◓◑◒`（~120ms/帧）；帧序做成可配置枚举（`config.toml` 可换 B/C/D/E）；字体缺字形自动降级 ASCII `\|/-\` |
-| D26 | Input Page | `/settings` `/login` `/model` `/theme` 统一替代输入区（非浮窗）；上下 1 行、左右 2 列内边距；单焦点用方向键/`hjkl` 移动、`Enter` 执行、`Esc` 返回 |
+| D26 | Input Page | `/settings` `/login` `/model` `/theme` `/resume` 统一替代输入区（非浮窗）；上下 1 行、左右 2 列内边距；单焦点用方向键/`hjkl` 移动、`Enter` 执行、`Esc` 返回 |
 | D27 | 配置存储 | 默认值唯一来源为 `client/assets/default_config.toml`（`include_str!` 嵌入并解析）；`%APPDATA%\dshe\config.toml` 是允许缺字段的覆盖层；优先级 嵌入默认值 < 用户文件 < 运行时；**即改即存、即时生效** |
 | D28 | TUI 内可改项 | 见 §4.7 清单：外观/行为/显示三类全部可改，高级类只读 |
 | D29 | 不提供 TUI 修改 | 连接参数（启动 flag）、字体字号（终端侧）、剪贴板后端（平台）、键位重绑定（v2）、语法高亮主题（二期） |
@@ -97,6 +100,34 @@ RenderUnit { kind, source: { blockType, raw: String }, cells: RenderedCells }
   mermaid 复制出 ` ```mermaid ... ` 围栏源码。
 - 行映射表随渲染增量维护；复制模式不重新解析，只查表。
 - 表格/mermaid/代码块为**原子块**：光标落入块内任意位置即整块高亮，不提供块内局部选择。
+
+### 2.2 依赖方向、运行时与投影边界
+
+客户端生产模块遵守单向依赖，并由 `client/tests/architecture.rs` 的源码 edge scanner、Tarjan SCC
+检查及禁止反向边断言持续守卫：
+
+```text
+main（Tokio composition root）
+  ├─ runtime / runtime_ports ──> command_catalog / page_core
+  ├─ input / runtime_command ──> command_catalog
+  ├─ input_page ──> page_core + settings/login/model/theme/resume
+  └─ ui + copy ──> transcript_layout ──> display/render/config
+
+protocol（typed DTO + HostEvent family parser）
+  └─ projection/{assistant,tool,lifecycle,retry,command,workflow,surface}
+       └─ TranscriptStore（仅 DisplayItem 公共表面）
+```
+
+`RuntimeController` 接收已类型化的 bridge frame、终端事件和 deadline，并在持有短生命周期
+状态锁时只产出内部 action 或完整 `RuntimeEffect`。`main.rs` 仅负责 `tokio::select!`、有界
+inbound、deadline、terminal 生命周期与 effect executor；传输、终端事件、配置/状态文件、剪贴板、
+时钟及 launcher 的进程/锁均通过窄 port 适配，因此脚本化替身可验证竞态而不在锁内 await/I/O。
+
+生产 `AppState` 只以 `TranscriptStore` 保存 `ActivityRow`、`TranscriptBlock`、`ContentCard` 与
+composite `DisplayItem`。`EventProjector` 和 family projection 是唯一的 HostEvent→显示入口；
+`LegacyTestMsg` 仅保留在 `#[cfg(test)]` characterization fixture，不能重新进入 production renderer、
+cache 或 copy path。`transcript_layout` 是 UI 与 copy 共用的 width/generation/provenance 布局内核，
+因此 tail splice、activity range patch、history anchor 和原始 Markdown copy 使用同一行语义。
 
 ## 3. 视觉设计
 
@@ -261,9 +292,10 @@ Ferra 色板来源于 casperstorm/ferra README：
   标题过长时以 `…` 截断，优先保留路径。
 - 复制模式：输入区切换为指示条 `-- COPY --`（§3.1），显示选中行数/字节数与可用键。
 
-### 3.6 会话选择器（启动 / Ctrl+N）
+### 3.6 续接会话 Input Page（/resume / Ctrl+N）
 
-- 全屏覆盖层：模糊搜索 + 会话列表（标题、时间、消息数），↑↓ 选择，Enter 进入；无匹配 Enter = 新建。
+- 与其它 Input Page 一样替代输入区而非覆盖 transcript：输入文字按标题或 id 筛选，↑↓ 选择，Enter 续接，Esc 返回。
+- 页面先显示加载态；bridge 的 `session-list` 边界在持久化 header 列表完成后立即下发 `sessions{titlesPending:true}`，再只对最多 200 条候选折叠标题并下发最终 `sessions`。因此慢磁盘标题读取不会阻塞列表首屏。
 
 ### 3.7 帮助浮层（? / Ctrl+H）
 
@@ -341,7 +373,7 @@ completion schema。因此接入命令都支持
 | Esc | Input Page 返回/关闭；取消输入或关闭浮层 | |
 | 方向键 / hjkl（Input Page） | 移动唯一焦点 | 文本编辑态 hjkl 为文字 |
 | Enter（折叠卡） | 展开/收起工具结果 | 焦点导航 v2 |
-| Ctrl+N | 会话选择器 | |
+| Ctrl+N | 续接会话 Input Page | 输入筛选，↑↓ 选择 |
 | /settings | 设置面板（§4.7） | 即改即存 |
 | ? / Ctrl+H | 帮助浮层 | |
 | **Ctrl+B** | **进入复制模式** | D12 |
@@ -397,8 +429,8 @@ assistant 消息顶部。**复制的永远是原始 markdown 源码**（经 §2.
   记录的 preset（`agent-preset/selected` 事件 > header）恢复该持久化会话，恢复
   不了（未持久化/preset 已删除）则新建会话——**绝不因"会话不活跃"断连**。仅创建
   失败（agents 缺失等）才以错误帧 + 4001 结束。
-- `Ctrl+N` / `/resume` 打开会话选择器；`/resume <session-id>` 直接 attach 切换
-  （选择器/`/resume` 对冷会话同样先 resume，找不到才报错、不断连）。
+- `Ctrl+N` / `/resume` 打开续接会话 Input Page；`/resume <session-id>` 直接 attach 切换
+  （页面/`/resume` 对冷会话同样先 resume，找不到才报错、不断连）。会话列表先下发 header 与在线日志可直接取得的标题，再异步补齐持久化标题；`sessionQuery.readTitleSnapshots` 的 settled result 必须从 `fulfilled.value.title.title` 解包，不能把结果误当成扁平 `{sessionId,title}`。
 - 状态栏下方固定一行显示当前会话（无背景色）：左侧标题、右侧工作区路径。标题由
   `welcome.title`（会话日志最近一条 `session/title`，由桥接在 attach 时读取）
   初始填充；冷恢复会话日志不在内存，桥接经 `sessionQuery.readTitleSnapshots`
@@ -410,24 +442,27 @@ assistant 消息顶部。**复制的永远是原始 markdown 源码**（经 §2.
   客户端在 `hello` 里带上 `cwd`，桥接用它（校验为真实目录后）作为 `agents.create`
   的 `meta.cwd`，再把新会话 `attachSession` 进该 cwd 的 workspace 台账（与 host
   `session.create` 的两步一致）；客户端没发 cwd（旧客户端）时回退当前会话头部的
-  cwd / `process.cwd()`。裸 `/new` 继承当前会话的 agent preset（桥接在
-  `agents.create` 的 `setup` 里 `agentPresets.mount`，只写 header 不 mount 会拿
-  不到 preset 的工具与提示词）。
+  cwd / `process.cwd()`。dshe 的裸 `/new` 会展开为 `/new <config.default_mode>`，因此设置页切换默认模式后立即影响下一次新建；显式 `/new <模式>` 仍是一次性覆盖。兼容旧客户端时，bridge 收到真正的裸 `/new` 才继承当前会话 agent preset。bridge 在 `agents.create` 的 `setup` 里 `agentPresets.mount`，只写 header 不 mount 会拿不到 preset 的工具与提示词。
 - `/new <模式>`：按 agent preset id 新建会话（standard/code/minimal/cordis 及
   用户自建 preset）。桥接在每次 attach 后下发 `presets` roster 帧（id/name/
   description/order/broken）；客户端在输入 `/new `（含尾部空格）时弹出模式提示
   （同命令提示的 ↑↓/Tab/Enter/Esc 语义，按 id/显示名前缀-子串-子序列模糊匹配，
   broken 的 preset 不下发）。未知模式报错并列出可用 id。
-- **model selection**：桥接创建/恢复的每个会话都在 `setup` 里先装
-  `installModelSelection`（内联自 dsh-agent：`system-prompt/assemble` 注入
-  `variables.{provider,model}`、`agent/request` 路由）——persona 的 `{{model}}`
-  变量依赖它，缺失时每条消息报 `prompt variable "{{model}}" has no value`。
-  `/new` 镜像当前会话的 provider/model，其余取 `agentDefaultModel.currentSelection()`。
-  与 preset mount 是两个正交步骤，都要做（web/headless 入口同样如此）。
+- **model selection**：桥接创建/恢复的每个会话都在 `setup` 里先通过
+  `bridge/src/model-selection.js` adapter 安装公开的
+  `@deepseek-ai/dsh-agent@0.1.0-rc.6` package-root
+  `installModelSelection(agentCtx, selection) -> disposer`。它在
+  `system-prompt/assemble` 注入 `variables.{provider,model}`，并由该次 assembly
+  snapshot 在 `agent/request` 路由，避免 persona 的 `{{model}}` 变量缺失。
+  `/new` 镜像当前会话的 provider/model，其余取 `agentDefaultModel.currentSelection()`；
+  adapter 安装与 preset mount 是两个正交步骤，且前者先执行。桥接不维护本地 waterfall 副本；
+  `bridge/package.json` 精确声明已验证的 agent peer，DSH 升级后须运行
+  `npm run verify-dsh-upgrade`，它检查 contract、host/agent version/export 以及部署副本的
+  `/new`、cold resume、`/model` assembly/request 路由。
 
 ### 4.7 Input Page 与设置页面（D26–D30）
 
-- **统一范围**：`/settings`、`/login`、`/model`、`/theme` 由一个
+- **统一范围**：`/settings`、`/login`、`/model`、`/theme`、`/resume` 由一个
   `Option<InputPageSession>` 互斥管理。它们不是 overlay：不开浮窗、不画边框、不 `Clear`，
   而是**替代输入栏并占页面高度 2/3**，消息流保留在上方。
 - **公共形态**：Ash 背景；所有内容外固定上下各 1 行、左右各 2 列空白内边距；公共
@@ -435,7 +470,7 @@ assistant 消息顶部。**复制的永远是原始 markdown 源码**（经 §2.
   焦点背景，当前已选值另以绿色 `●` 表示。
 - **公共键位**：方向键与 `hjkl` 在稳定焦点图的可执行元素间移动，`Enter` 执行，`Esc`
   取消编辑/返回/关闭；只读、加载、信息和不可用元素不获得焦点。文本编辑态优先消费字符，
-  因而 `hjkl` 会正常输入而不会导航。动态 provider/model/proxy roster 按稳定 id 保留焦点。
+  因而 `hjkl` 会正常输入而不会导航。动态 provider/model/proxy/session roster 按稳定 id 保留焦点；`/resume` 的筛选框始终处于文本输入态，只用 ↑↓ 移动会话选择。
 - **settings**：分类页签本身可聚焦，Enter 激活分类；Down 进入该分类的可编辑条目，
   Enter 打开数值或选择编辑。分类内条目位置按页记忆，超出可视高度时自动滚动。
   ```
@@ -456,8 +491,10 @@ assistant 消息顶部。**复制的永远是原始 markdown 源码**（经 §2.
 - **编辑语义**：`Enter` 确认修改、`Esc` 取消退回；编辑期间按键不外泄。退出面板
   后消息流/输入栏状态原样恢复。
 - 默认配置：`client/assets/default_config.toml` 通过 `include_str!` 编译进单 exe，启动时解析为
-  `Config::default()`；默认值不得在 Rust 中维护平行字面量。用户配置按字段覆盖该基线，旧文件
-  缺少后来新增字段时自动继承嵌入默认值。
+  `Config::default()`；默认值不得在 Rust 中维护平行字面量。持久化 `Config` 本身是唯一
+  `#[serde(deny_unknown_fields)]` schema，运行时 resolved theme 用 `#[serde(skip)]` 缓存。
+  加载时先把用户 TOML 的已知键递归覆盖嵌入 TOML，再严格反序列化一次；旧文件缺字段继承默认，
+  已废弃未知键被过滤，已知键类型错误或 malformed TOML 则诊断后整体回退嵌入默认值。
 - 保存：**即改即存**写入 `%APPDATA%\dshe\config.toml` 并即时生效。
 
 **可配置项清单（TUI 内可改）**
@@ -469,7 +506,7 @@ assistant 消息顶部。**复制的永远是原始 markdown 源码**（经 §2.
 | 外观 | 主题（从 `%APPDATA%\dshe\themes\*.toml` 选择；色盘与语义映射在两层 TOML 中编辑） | 枚举 | deepseek-e |
 | 外观 | 纯色模式（NO_COLOR） | 布尔 | 关 |
 | 行为 | 记住上次会话 | 布尔 | **关**（新进程默认新建会话） |
-| 行为 | 默认模式（新进程建会话使用的 preset，来自桥接 `presets` roster；配置值已失效时仍可显示/选择，桥接回退 standard） | 枚举 | standard |
+| 行为 | 默认模式（裸 `/new` 与新进程建会话使用的 preset，来自桥接 `presets` roster；配置值已失效时仍可显示/选择，桥接回退 standard） | 枚举 | standard |
 | 行为 | 粘贴占位阈值 | 数值字符 | 1000 |
 | 行为 | 长内容折叠阈值 | 数值行 | 20 |
 | 行为 | 原子块折叠阈值 | 数值行 | 40 |
@@ -511,7 +548,7 @@ assistant 消息顶部。**复制的永远是原始 markdown 源码**（经 §2.
 - `/theme` 以主题名为可执行焦点，色块仅为装饰；Enter 应用并持久化主题。两页都使用
   §4.7 公共 shell，不再使用居中浮窗；终端过小时采用有界裁剪，不产生越界区域。
 
-## 5. 桥接与协议（wire protocol v3）
+## 5. 桥接与协议（wire protocol v4）
 
 ### 5.1 端点与安全
 
@@ -519,11 +556,14 @@ assistant 消息顶部。**复制的永远是原始 markdown 源码**（经 §2.
 
 ### 5.2 消息协议（JSON，单一契约生成）
 
-消息名、surface 事件和容量的唯一机器可读来源是
-[`bridge/protocol-contract.json`](../bridge/protocol-contract.json)；可读清单由
-`node tools/generate-protocol-doc.mjs` 生成到 [`docs/protocol.md`](protocol.md)。
-Node 桥接运行时读取该 JSON，Rust 的 `client/build.rs` 编译期从同一文件生成常量，
-禁止再在两端手写 snapshot/history/frame 数值。
+消息名、surface 事件、容量、`shapeTypes`、payload `records` 与 client/server
+`messageShapes` 的唯一机器可读来源是
+[`bridge/protocol-contract.json`](../bridge/protocol-contract.json)。
+`node tools/sync-protocol-contract.mjs` 校验该 JSON 并同步生成 [`docs/protocol.md`](protocol.md)、
+Rust `build.rs` 常量/shape JSON、Rust/Node conformance fixtures 与
+`bridge/package.json.dshCompatibility.wireProtocol`；`--check` 使任何未同步派生物失败。
+`tools/generate-protocol-doc.mjs` 只是该同步器的兼容入口。Node 桥接运行时和 Rust 构建都读取这一个
+contract，禁止两端手写 snapshot/history/frame 数值或独立消息 roster。
 
 `hello` 带 `protocolVersion`，并可带 `resumeSessionId`、`cwd`（TUI 启动目录）和
 `mode`（仅创建启动会话时的 preset id）。`welcome` 回传 `protocolVersion`、
@@ -542,7 +582,7 @@ Node 桥接运行时读取该 JSON，Rust 的 `client/build.rs` 编译期从同�
 apiKeyHint?}], proxies: [{id,name,baseUrl,protocol,model}], error? }`（§4.8）：API key 只有视图没有值。
 
 `presets` 载荷 `{ presets: [{ id, name?, description?, order?, broken? }] }`：agent-presets
-roster 快照，每次 attach（hello/`/new`/picker）后紧随 `welcome` 下发；客户端用它渲染
+roster 快照，每次 attach（hello/`/new`/Resume）后紧随 `welcome` 下发；客户端用它渲染
 `/new ` 模式提示弹窗。
 
 `skills` 载荷 `{ skills: [{ name, description }] }`：bridge 按附着会话的 cwd/scope 调
@@ -629,7 +669,9 @@ Git、Node.js/npm 与 Rust/Cargo，全局安装 `@deepseek-ai/dsh`，把 `bridge
 `%USERPROFILE%\.dsh`，挂载脚本会自动回退并打印实际目录；自定义目录也可显式传
 `-DshHome`。挂载脚本须兼容 Windows PowerShell 5.1、可幂等执行，并以 UTF-8 无 BOM 写出供 Node 读取的
 `package.json`。客户端安装后运行时仍为单 exe；Node.js 只用于 DSH 本身及首次安装/
-更新桥接。
+更新桥接。改 bridge 或升级 DSH 后，重新 mount/restart 后从 `bridge/` 运行
+`npm run verify-dsh-upgrade`；该命令会检查生成 contract、已声明的 DSH/agent 版本与公开 export，
+并对部署副本运行 helper 和 session-routing smoke。
 
 ## 7. 平台与边界
 
@@ -645,6 +687,7 @@ Git、Node.js/npm 与 Rust/Cargo，全局安装 `@deepseek-ai/dsh`，把 `bridge
 - grok-mermaid WASM 已用 wasmi 集成，并有成功/失败降级测试。
 - 桥接 token 固定为 `%DSH_HOME%\dsh-tui.token`，客户端启动时读取。
 - ferra 色板到 256 色降级映射表——实施时用算法（最近色距）生成。
+- 2026-08-18 Brooks Architecture Audit：94/100；生产依赖图无 SCC、单轨 transcript/strict Config/canonical contract 均有自动守卫。完整图与剩余 `AppState` 认知负荷建议见 [`architecture-audit.md`](architecture-audit.md)。
 
 ## 9. 里程碑草案（设计定稿后细化）
 

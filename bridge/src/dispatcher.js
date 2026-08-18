@@ -191,7 +191,7 @@ export function createClientDispatcher({
 
   function handle(data) {
     let msg
-    try { msg = JSON.parse(data.toString()) } catch { return }
+    try { msg = JSON.parse(data.toString()) } catch { return false }
     switch (msg?.type) {
       case 'hello': void hello(msg); break
       case 'input':
@@ -208,12 +208,24 @@ export function createClientDispatcher({
           send(ws, { type: 'history', events, hasMore })
         }
         break
-      case 'list-sessions':
-        listSessions().then(
-          (sessions) => send(ws, { type: 'sessions', sessions }),
-          (error) => send(ws, { type: 'error', code: 'sessions-failed', message: String(error?.message ?? error) }),
+      case 'list-sessions': {
+        const current = conn
+        if (!current) break
+        const sendSessions = (sessions, titlesPending = false) => {
+          if (conns.isCurrent(current, conn)) send(ws, {
+            type: 'sessions', sessions, ...(titlesPending ? { titlesPending: true } : {}),
+          })
+        }
+        listSessions((sessions) => sendSessions(sessions, true)).then(
+          sendSessions,
+          (error) => {
+            if (conns.isCurrent(current, conn)) {
+              send(ws, { type: 'error', code: 'sessions-failed', message: String(error?.message ?? error) })
+            }
+          },
         )
         break
+      }
       case 'approval-answer': {
         const done = conn?.pending.get(msg.id)
         if (done) done(msg.allow ? 'allowed-once' : 'rejected')
@@ -237,8 +249,9 @@ export function createClientDispatcher({
       case 'model-set': setModel(msg); break
       case 'interrupt': conn?.agent.cancel({ kind: 'user' }); break
       case 'ping': send(ws, { type: 'pong' }); break
-      default: break
+      default: return false
     }
+    return true
   }
 
   function close() {

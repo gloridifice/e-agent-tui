@@ -10,7 +10,7 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::{
-    input_page::{handle_text_editor, TextEditResult, TextEditor},
+    page_core::{handle_text_editor, TextEditResult, TextEditor},
     protocol::{ClientMessage, ProviderInfo, ProxyInfo},
 };
 

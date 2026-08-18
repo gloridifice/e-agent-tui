@@ -1,3 +1,7 @@
+> **完成记录：** 以下文本保留为实施前设计。其 migration plan 的第 6 步已经由
+> `remediate-architecture-audit` 7.1–7.9 完成：生产路径不再声明 `Msg` transcript、
+> compatibility reducer 或事件专用 UI branches；仅 `#[cfg(test)]` characterization fixture 保留 legacy 名称。
+
 ## Context
 
 The client currently converts a small typed subset of DSH events directly into `Msg` variants and renders those variants through event-specific branches in `ui.rs`. This works for text chat, Thinking, generic tools, file-operation groups, notices, and the user card, but it does not provide a stable extension point for the broader DSH 0.1.0-rc.6 event vocabulary. The bridge also calls its whitelist a “surface” while merely filtering event types; neither side applies DSH `surfaceOp` replacement semantics.

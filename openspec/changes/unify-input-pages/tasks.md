@@ -1,3 +1,6 @@
+> **状态：已完成。** 目前由 `page_core`、`input_page` 与 `RuntimeController` 维护同一页面生命周期；
+> 不要恢复 page-specific main-loop branches 或 overlay model/theme renderer。
+
 ## 1. Shared Input Page foundation
 
 - [x] 1.1 Add the Input Page module structure, closed `InputPage` enum, unified session owner, page outcome/effect types, and exports from `client/src/lib.rs`.

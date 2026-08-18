@@ -6,17 +6,26 @@
   "main": "src/index.js",
   "description": "WebSocket bridge exposing DSH session events and controls to the dsh-tui terminal client.",
   "scripts": {
-    "test": "node --test --test-isolation=none \"test/*.test.js\""
+    "test": "node --test --test-isolation=none \"test/*.test.js\"",
+    "sync-protocol": "node ../tools/sync-protocol-contract.mjs",
+    "check-protocol": "node ../tools/sync-protocol-contract.mjs --check",
+    "verify-dsh-upgrade": "node ../tools/verify-dsh-upgrade.mjs"
   },
   "dependencies": {
     "ws": "^8.18.0"
   },
   "peerDependencies": {
+    "@deepseek-ai/dsh-agent": "0.1.0-rc.6",
     "@deepseek-ai/dsh-llm": ">=0.1.0-rc.6 <0.2.0"
   },
   "dshCompatibility": {
     "testedHost": "0.1.0-rc.6",
-    "wireProtocol": 3,
-    "verification": "node tools/smoke-bridge.mjs"
+    "wireProtocol": 4,
+    "modelSelection": {
+      "package": "@deepseek-ai/dsh-agent",
+      "export": "installModelSelection",
+      "testedPackage": "0.1.0-rc.6"
+    },
+    "verification": "node tools/verify-dsh-upgrade.mjs"
   }
 }

@@ -1,3 +1,6 @@
+> **状态：已完成。** 8.4 的 temporary `Msg` cleanup completion evidence 由
+> `remediate-architecture-audit` 7.1–7.9 与生产源码守卫维护；不要将 legacy test fixture 误认为生产兼容层。
+
 ## 1. Baseline and Fixtures
 
 - [x] 1.1 Add bounded Rust fixtures for core DSH 0.1.0-rc.6 events, content blocks, top-level timestamps, source forms, tool errors, and append/replace surface metadata.
@@ -59,5 +62,6 @@
 - [x] 8.2 Verify streaming tail updates, structural mutation invalidation, animation redraw stopping, visible-window cloning, stable unit reuse, and copy provenance through cache/UI tests.
 - [x] 8.3 Verify accessory and projector state updates obey the main-loop lock discipline, including queued dispatch, copy navigation, blocking questions, and session switches.
 - [x] 8.4 Remove the temporary `Msg` compatibility conversion and obsolete event-specific UI branches after all existing presentations use the four shared surfaces.
+  - Completion evidence corrected by `remediate-architecture-audit` tasks 7.1–7.9: production `AppState` now stores `TranscriptStore`, the compatibility reducer and DisplayId position adapter are absent, the UI renders `DisplayItem` directly, and `client/tests/architecture.rs::single_track_transcript_has_no_legacy_production_path` prevents regression. Any remaining legacy characterization fixture is `#[cfg(test)]` only and is not a production transcript path.
 - [x] 8.5 Update `README.md`, `AGENTS.md`, and `docs/design.md` with the display framework, supported event classes, interaction changes, protocol roster, and intentional audit-only exclusions.
 - [x] 8.6 Run `cargo test`, `cd bridge && npm test`, protocol-doc generation checks, snapshot timing/smoke examples, and `node tools/smoke-bridge.mjs` against the deployed bridge copy.

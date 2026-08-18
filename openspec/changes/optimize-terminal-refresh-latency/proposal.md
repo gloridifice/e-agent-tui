@@ -1,3 +1,7 @@
+> **状态：已完成。** 后续 `remediate-architecture-audit` 将 production transcript 从历史 `Msg`
+> 存储迁到 `TranscriptStore`；本提案的事件驱动、同步输出、有界 inbound、tail/range patch 和
+> display-row 性能契约继续有效，术语中的 `Msg` 仅描述当时实现。
+
 ## Why
 
 当前客户端在滚轮滚动和持续输出时会出现明显的交互延迟与半帧刷新：输入只能随 50ms ticker 被轮询，滚动会让终端逐单元格展示尚未完成的差量帧，活动动画还会周期性使整份 transcript 缓存失效。需要建立可测量的刷新性能契约，并优先消除调度等待、终端 tearing 与长会话中的无效重建。

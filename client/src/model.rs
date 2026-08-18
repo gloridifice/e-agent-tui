@@ -11,19 +11,31 @@ use ratatui::style::Color;
 
 use crate::cache::TranscriptRenderCache;
 use crate::config::{Config, Theme};
+#[cfg(test)]
+use crate::display::ContentCard;
 use crate::display::{
-    ActivityRow, ActivityState, CardRole, ContentCard, DisplayId, DisplayTone, TranscriptBlock,
+    ActivityRow, ActivityState, CardRole, DisplayId, DisplayItem, DisplayTone, TranscriptBlock,
     TranscriptFormat,
 };
 use crate::projection::{
-    is_surface_node, AccessoryStateEffect, EventProjector, PageStateEffect,
+    assistant::{self, AssistantMutation},
+    command::{self, CommandProjection},
+    is_surface_node,
+    lifecycle::{self, LifecycleProjection},
+    retry,
+    tool::ToolMutation,
+    workflow::{self, WorkflowProjection},
+    AccessoryStateEffect, ActivityMutation, EventProjector, PageStateEffect,
     PendingActivityEnrichment, PendingActivityResult, PendingToolResult, ProjectionEffect,
+    TranscriptStore,
 };
 use crate::protocol::{
-    HostContentBlock, HostEvent, HostEventKind, HostLifecycleOutcome, HostSurfaceOp, TokenUsage,
-    CLIENT_REPLAY_EVENT_CAP,
+    HostEvent, HostEventKind, HostSurfaceOp, TokenUsage, CLIENT_REPLAY_EVENT_CAP,
 };
+#[cfg(test)]
 use crate::render::RenderLine;
+use crate::render::RenderOptions;
+use crate::transcript_layout::MarkdownLayoutRegistry;
 
 /// One breathing cycle (gray → yellow → gray) of the running indicator.
 pub const BREATH_CYCLE_MS: u128 = 1600;
@@ -67,7 +79,8 @@ pub fn settle_color(from: Color, to: Color, elapsed: std::time::Duration) -> Col
     )
 }
 
-/// Command cards (bash/pwsh/…) show command + live output line count (D21).
+/// Test-only characterization model retained while fixtures are rewritten.
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub struct ToolCard {
     pub call_id: String,
@@ -86,6 +99,7 @@ pub struct ToolCard {
     pub done_from: Option<Color>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum ToolState {
     Running,
@@ -101,6 +115,7 @@ pub enum ToolState {
 /// File operations that can share one folded activity group. The operation
 /// name remains visible (`read`, `view`, `edit`, `replace`, `insert`) even
 /// when several kinds settle onto the same line.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FileAction {
     Read,
@@ -111,6 +126,7 @@ pub enum FileAction {
     Create,
 }
 
+#[cfg(test)]
 impl FileAction {
     pub const FOLD_ORDER: [Self; 5] = [
         Self::Read,
@@ -143,6 +159,7 @@ impl FileAction {
 /// A merged group of consecutive file operations rendered on one line, for
 /// example `read a.rs; view b.rs; replace c.rs`. Creates deliberately remain
 /// standalone because they introduce a new file rather than mutate/read one.
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub struct FileGroup {
     pub items: Vec<FileItem>,
@@ -153,6 +170,7 @@ pub struct FileGroup {
     pub done_from: Option<Color>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub struct FileItem {
     pub action: FileAction,
@@ -162,15 +180,16 @@ pub struct FileItem {
     pub ok: Option<bool>,
 }
 
+#[cfg(test)]
 impl FileGroup {
     pub fn pending(&self) -> bool {
         self.items.iter().any(|item| item.ok.is_none())
     }
 }
 
-/// Screen rows a file group renders. MUST match `ui::msg_lines` exactly —
-/// copy-mode row math (global_row) depends on it. Failed items render one
+/// Screen rows used by the legacy characterization fixture. Failed items render one
 /// line per DISTINCT action/file pair (repeats collapse into `name xN`).
+#[cfg(test)]
 pub fn file_group_line_count(group: &FileGroup) -> usize {
     let failed = |read_like: bool| -> usize {
         FileAction::FOLD_ORDER
@@ -210,8 +229,9 @@ pub fn file_group_line_count(group: &FileGroup) -> usize {
 }
 
 /// One renderable message row/card in the transcript.
+#[cfg(test)]
 #[derive(Debug, Clone)]
-pub enum Msg {
+pub enum LegacyTestMsg {
     /// Shared ordinary transcript display surface.
     Block(crate::display::TranscriptBlock),
     /// Shared padded content-card display surface.
@@ -251,7 +271,11 @@ pub enum Msg {
     },
 }
 
+#[cfg(test)]
+pub type Msg = LegacyTestMsg;
+
 /// Lifecycle of the "Thinking..." row.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ThinkState {
     /// The model is between visible events (or waiting for its turn).
@@ -260,6 +284,7 @@ pub enum ThinkState {
     Done,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub struct ThinkingCard {
     pub state: ThinkState,
@@ -390,7 +415,20 @@ impl QuestionBatch {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct ActivityTransition {
+    pub done_since: std::time::Instant,
+    pub from: Color,
+}
+
 pub struct AppState {
+    /// Public display-surface store. During the family-by-family migration,
+    /// remaining legacy families are still rendered from `msgs`; migrated
+    /// assistant/content nodes are authoritative here.
+    pub transcript: TranscriptStore,
+    pub(crate) markdown_layout: MarkdownLayoutRegistry,
+    pub(crate) activity_transitions: std::collections::HashMap<DisplayId, ActivityTransition>,
+    #[cfg(test)]
     pub msgs: Vec<Msg>,
     /// Typed event classifier, surface ordering, and lifecycle correlations.
     pub projector: EventProjector,
@@ -423,6 +461,13 @@ pub struct AppState {
     pub config: Config,
     /// Render-unit id allocator for the source map.
     pub(crate) next_unit: u64,
+    next_thinking_id: u64,
+    next_local_display_id: u64,
+    pending_transcript_insert: Option<usize>,
+    /// Stable ids already present in the newer page while an older history
+    /// page is replayed. This preserves cross-page half correlation without
+    /// a second DisplayId-to-index adapter.
+    replay_newer_display_ids: std::collections::HashSet<DisplayId>,
     /// unit id -> raw markdown source (copy mode).
     pub units: std::collections::HashMap<u64, String>,
     /// Units whose collapsed window is expanded (D13).
@@ -434,7 +479,7 @@ pub struct AppState {
     /// Prompts typed while the agent runs: queued here and auto-dispatched
     /// one at a time whenever the agent returns to idle.
     pub queue: Vec<String>,
-    /// Last fetched session list (picker data).
+    /// Last fetched session list (`/resume` Input Page data).
     pub sessions: Vec<crate::protocol::SessionInfo>,
     /// Rendering-owned transcript cache. Session/event projection mutates
     /// messages and invalidates this boundary without owning ratatui details.
@@ -464,6 +509,10 @@ pub struct AppState {
 impl Default for AppState {
     fn default() -> Self {
         Self {
+            transcript: TranscriptStore::default(),
+            markdown_layout: MarkdownLayoutRegistry::default(),
+            activity_transitions: std::collections::HashMap::new(),
+            #[cfg(test)]
             msgs: Vec::new(),
             projector: EventProjector::default(),
             todos: Vec::new(),
@@ -483,6 +532,10 @@ impl Default for AppState {
             snapshot_truncated: false,
             config: Config::default(),
             next_unit: 0,
+            next_thinking_id: 0,
+            next_local_display_id: 0,
+            pending_transcript_insert: None,
+            replay_newer_display_ids: std::collections::HashSet::new(),
             units: std::collections::HashMap::new(),
             expanded: std::collections::HashSet::new(),
             approval: None,
@@ -576,11 +629,32 @@ impl AppState {
         if self.replaying {
             return;
         }
+        let adjacent_id = self.transcript.nodes().last().and_then(|node| {
+            matches!(&node.item, DisplayItem::Activity(row) if row.id.0.starts_with("thinking:"))
+                .then(|| node.id().clone())
+        });
+        if let Some(id) = adjacent_id {
+            if let Some(node) = self.transcript.get_mut(&id) {
+                if let DisplayItem::Activity(row) = &mut node.item {
+                    if row.state != ActivityState::Running {
+                        row.state = ActivityState::Running;
+                        row.count += 1;
+                    }
+                }
+            }
+            self.transcript.touch(&id);
+        } else {
+            let id = DisplayId::correlated("thinking", &self.next_thinking_id.to_string());
+            self.next_thinking_id = self.next_thinking_id.wrapping_add(1);
+            let mut row = ActivityRow::root(id, "Thinking...");
+            row.count = 1;
+            self.insert_transcript_item(DisplayItem::Activity(row), None, None);
+        }
+
+        #[cfg(test)]
         match self.msgs.last_mut() {
             Some(Msg::Thinking(card)) if card.state == ThinkState::Running => {}
             Some(Msg::Thinking(card)) => {
-                // Directly adjacent phases: revive the settled row and grow
-                // its count instead of stacking rows.
                 card.state = ThinkState::Running;
                 card.done_since = None;
                 card.done_from = None;
@@ -599,6 +673,19 @@ impl AppState {
         }
     }
 
+    fn capture_activity_transition(&mut self, id: &DisplayId) {
+        if self.replaying || self.activity_transitions.contains_key(id) {
+            return;
+        }
+        self.activity_transitions.insert(
+            id.clone(),
+            ActivityTransition {
+                done_since: std::time::Instant::now(),
+                from: breathing_color(&self.config.theme(), self.breath_phase()),
+            },
+        );
+    }
+
     /// The thinking phase ended (visible activity took over, the turn
     /// ended, or the agent went idle): settle the running Thinking row green.
     pub fn stop_thinking(&mut self) {
@@ -606,20 +693,68 @@ impl AppState {
         if self.replaying {
             return;
         }
-        let breath_now = breathing_color(&self.config.theme(), self.breath_phase());
-        // Hidden reasoning chunks accumulate behind the running Thinking row,
-        // so it may no longer be the last message; settle it by walking back.
-        if let Some(Msg::Thinking(card)) = self
-            .msgs
-            .iter_mut()
-            .rev()
-            .find(|msg| matches!(msg, Msg::Thinking(card) if card.state == ThinkState::Running))
-        {
-            card.state = ThinkState::Done;
-            card.done_since = Some(std::time::Instant::now());
-            card.done_from = Some(breath_now);
-            self.transcript_cache.valid = false;
+        let running_id = self.transcript.nodes().iter().rev().find_map(|node| {
+            matches!(&node.item, DisplayItem::Activity(row)
+                if row.id.0.starts_with("thinking:") && row.state == ActivityState::Running)
+            .then(|| node.id().clone())
+        });
+        if let Some(id) = running_id {
+            self.capture_activity_transition(&id);
+            if let Some(node) = self.transcript.get_mut(&id) {
+                if let DisplayItem::Activity(row) = &mut node.item {
+                    row.state = ActivityState::Success;
+                }
+            }
+            self.transcript.touch(&id);
         }
+        #[cfg(test)]
+        {
+            let breath_now = breathing_color(&self.config.theme(), self.breath_phase());
+            if let Some(Msg::Thinking(card)) =
+                self.msgs.iter_mut().rev().find(
+                    |msg| matches!(msg, Msg::Thinking(card) if card.state == ThinkState::Running),
+                )
+            {
+                card.state = ThinkState::Done;
+                card.done_since = Some(std::time::Instant::now());
+                card.done_from = Some(breath_now);
+                self.transcript_cache.valid = false;
+            }
+        }
+    }
+
+    pub fn push_system_message(&mut self, text: impl Into<String>) {
+        self.push_local_block(text.into(), DisplayTone::Info, "system");
+    }
+
+    pub fn push_error_message(&mut self, text: impl Into<String>) {
+        self.push_local_block(text.into(), DisplayTone::Error, "error");
+    }
+
+    fn push_local_block(&mut self, text: String, tone: DisplayTone, role: &str) {
+        let id = DisplayId::correlated(role, &format!("local:{}", self.next_local_display_id));
+        self.next_local_display_id = self.next_local_display_id.wrapping_add(1);
+        let unit = self.allocate_copy_unit(&text);
+        self.insert_transcript_item(
+            DisplayItem::Block(TranscriptBlock {
+                id,
+                unit: Some(unit),
+                content: text.clone(),
+                format: TranscriptFormat::Plain,
+                tone,
+                copy_source: text.clone(),
+                streaming: false,
+            }),
+            None,
+            None,
+        );
+        #[cfg(test)]
+        if tone == DisplayTone::Error {
+            self.msgs.push(Msg::Error { text });
+        } else {
+            self.msgs.push(Msg::System { text });
+        }
+        self.transcript_cache.invalidate();
     }
 
     /// Apply the direct command acknowledgment without duplicating the
@@ -631,15 +766,10 @@ impl AppState {
         }
         if let Some(text) = text.filter(|text| !text.is_empty()) {
             if kind == "error" {
-                self.msgs.push(Msg::Error {
-                    text: text.to_owned(),
-                });
+                self.push_error_message(text);
             } else {
-                self.msgs.push(Msg::System {
-                    text: text.to_owned(),
-                });
+                self.push_system_message(text);
             }
-            self.transcript_cache.invalidate();
         }
     }
 
@@ -671,60 +801,98 @@ impl AppState {
     /// Esc-interrupt bug). A dangling streaming tail is finalized into a
     /// regular assistant message so its breathing bullet also stops.
     pub fn settle_turn(&mut self, now_ms: u64, cancelled: bool) {
-        let breath_now = breathing_color(&self.config.theme(), self.breath_phase());
-        for msg in self.msgs.iter_mut() {
-            match msg {
-                Msg::Tool(card) => {
-                    if card.state == ToolState::Running {
-                        let duration_ms = now_ms.saturating_sub(card.start_ms);
-                        card.state = ToolState::Done {
-                            ok: false,
-                            lines: 0,
-                            lines_truncated: false,
-                            duration_ms,
-                        };
-                        card.done_since = Some(std::time::Instant::now());
-                        card.done_from = Some(breath_now);
+        let active_ids = self
+            .transcript
+            .nodes()
+            .iter()
+            .filter_map(|node| match &node.item {
+                DisplayItem::Activity(row) if row.state.is_active() => Some(row.id.clone()),
+                DisplayItem::Block(block) if block.streaming => Some(block.id.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for id in active_ids {
+            if self
+                .transcript
+                .get(&id)
+                .is_some_and(|node| matches!(&node.item, DisplayItem::Activity(_)))
+            {
+                self.capture_activity_transition(&id);
+            }
+            if let Some(node) = self.transcript.get_mut(&id) {
+                match &mut node.item {
+                    DisplayItem::Activity(row) if row.id.0.starts_with("thinking:") => {
+                        row.state = ActivityState::Success;
                     }
+                    DisplayItem::Activity(row) => {
+                        row.state = if cancelled {
+                            ActivityState::Cancelled
+                        } else {
+                            ActivityState::Failure
+                        };
+                        row.duration_ms = row.start_ms.map(|start| now_ms.saturating_sub(start));
+                    }
+                    DisplayItem::Block(block) => block.streaming = false,
+                    _ => {}
                 }
-                Msg::FileGroup(group) => {
-                    for item in &mut group.items {
-                        if item.ok.is_none() {
-                            item.ok = Some(false);
+            }
+            self.transcript.touch(&id);
+        }
+        #[cfg(test)]
+        {
+            let breath_now = breathing_color(&self.config.theme(), self.breath_phase());
+            for msg in self.msgs.iter_mut() {
+                match msg {
+                    Msg::Tool(card) => {
+                        if card.state == ToolState::Running {
+                            let duration_ms = now_ms.saturating_sub(card.start_ms);
+                            card.state = ToolState::Done {
+                                ok: false,
+                                lines: 0,
+                                lines_truncated: false,
+                                duration_ms,
+                            };
+                            card.done_since = Some(std::time::Instant::now());
+                            card.done_from = Some(breath_now);
                         }
                     }
-                    settle_group(group, breath_now);
-                }
-                Msg::Thinking(card) => {
-                    if card.state == ThinkState::Running {
-                        card.state = ThinkState::Done;
-                        card.done_since = Some(std::time::Instant::now());
-                        card.done_from = Some(breath_now);
+                    Msg::FileGroup(group) => {
+                        for item in &mut group.items {
+                            if item.ok.is_none() {
+                                item.ok = Some(false);
+                            }
+                        }
+                        settle_group(group, breath_now);
                     }
+                    Msg::Thinking(card) => {
+                        if card.state == ThinkState::Running {
+                            card.state = ThinkState::Done;
+                            card.done_since = Some(std::time::Instant::now());
+                            card.done_from = Some(breath_now);
+                        }
+                    }
+                    Msg::Activity(row) if row.state.is_active() => {
+                        row.state = if cancelled {
+                            ActivityState::Cancelled
+                        } else {
+                            ActivityState::Failure
+                        };
+                        row.duration_ms = row.start_ms.map(|start| now_ms.saturating_sub(start));
+                    }
+                    Msg::Block(block) if block.streaming => block.streaming = false,
+                    _ => {}
                 }
-                Msg::Activity(row) if row.state.is_active() => {
-                    row.state = if cancelled {
-                        ActivityState::Cancelled
-                    } else {
-                        ActivityState::Failure
-                    };
-                    row.duration_ms = row.start_ms.map(|start| now_ms.saturating_sub(start));
-                }
-                Msg::Block(block) if block.streaming => block.streaming = false,
-                _ => {}
             }
-        }
-        // A dangling streaming tail becomes assistant source. Presentation
-        // materialization is deferred to `presentation.rs`.
-        if let Some(Msg::Streaming { text }) = self.msgs.last() {
-            let text = text.clone();
-            self.msgs.pop();
-            if !text.is_empty() {
-                self.msgs.push(Msg::Assistant {
-                    text,
-                    lines: Vec::new(),
-                    unit_start: self.next_unit,
-                });
+            if let Some(Msg::Streaming { text }) = self.msgs.last() {
+                let text = text.clone();
+                self.msgs.pop();
+                if !text.is_empty() {
+                    self.msgs.push(Msg::Assistant {
+                        text,
+                        lines: Vec::new(),
+                        unit_start: self.next_unit,
+                    });
+                }
             }
         }
         self.working = false;
@@ -735,6 +903,10 @@ impl AppState {
 impl AppState {
     /// Drop the whole transcript (used when attaching to another session).
     pub fn reset_transcript(&mut self) {
+        self.transcript.clear();
+        self.markdown_layout.clear();
+        self.activity_transitions.clear();
+        #[cfg(test)]
         self.msgs.clear();
         self.projector = EventProjector::default();
         self.todos.clear();
@@ -748,6 +920,10 @@ impl AppState {
         self.units.clear();
         self.expanded.clear();
         self.next_unit = 0;
+        self.next_thinking_id = 0;
+        self.next_local_display_id = 0;
+        self.pending_transcript_insert = None;
+        self.replay_newer_display_ids.clear();
         self.snapshot_truncated = false;
         self.transcript_cache.reset();
         self.min_seq = None;
@@ -844,9 +1020,7 @@ impl AppState {
         if truncated {
             surface = surface.split_off(surface.len().saturating_sub(CLIENT_REPLAY_EVENT_CAP));
             self.snapshot_truncated = true;
-            self.msgs.push(Msg::System {
-                text: "（历史较长，仅回放最近消息）".into(),
-            });
+            self.push_system_message("（历史较长，仅回放最近消息）");
         }
         self.replaying = true;
         for event in surface {
@@ -873,6 +1047,7 @@ impl AppState {
             self.min_seq = Some(self.min_seq.map_or(seq, |m| m.min(seq)));
         }
         let effects = self.projector.effects(event);
+        #[cfg(test)]
         let mut replacement_insert = None;
         for effect in effects {
             match effect {
@@ -880,25 +1055,58 @@ impl AppState {
                     mut remove_indices,
                     insert_at,
                 } => {
+                    if let Some(HostSurfaceOp::Replace { start, end }) = event.surface_op {
+                        self.pending_transcript_insert = self.transcript.first_surface_position(
+                            &event.source_event_seqs,
+                            start,
+                            end,
+                        );
+                        self.transcript
+                            .remove_surfaces(&event.source_event_seqs, start, end);
+                    }
                     remove_indices.sort_unstable_by(|left, right| right.cmp(left));
                     for index in remove_indices {
+                        #[cfg(test)]
                         if index < self.msgs.len() {
                             self.msgs.remove(index);
-                            self.projector.remove_display_index(index);
                         }
+                        self.projector.remove_display_index(index);
                     }
-                    replacement_insert = insert_at;
+                    #[cfg(test)]
+                    {
+                        replacement_insert = insert_at;
+                    }
+                    #[cfg(not(test))]
+                    let _ = insert_at;
                     self.transcript_cache.invalidate();
                 }
                 ProjectionEffect::Reduce { insert_at } => {
+                    #[cfg(not(test))]
+                    let _ = insert_at;
+                    #[cfg(test)]
                     let before = self.msgs.len();
-                    self.reduce_host_event(event);
+                    if let Some(mutations) =
+                        assistant::project(event, self.config.user_input_padding)
+                    {
+                        self.reduce_assistant_event(event, mutations);
+                    } else if let Some(mutation) = self.project_tool_family(event) {
+                        self.reduce_tool_family(event, mutation);
+                    } else {
+                        let handled = self.reduce_activity_families(event);
+                        debug_assert!(
+                            handled,
+                            "unhandled typed HostEvent family: {:?}",
+                            event.kind
+                        );
+                    }
+                    #[cfg(test)]
                     let target = insert_at.or(replacement_insert);
+                    #[cfg(test)]
                     if let Some(target) = target.filter(|target| *target < before) {
                         let appended: Vec<Msg> = self.msgs.drain(before..).collect();
                         self.msgs.splice(target..target, appended);
                     }
-                    self.record_surface_owner(event, target);
+                    self.record_surface_owner(event);
                 }
                 ProjectionEffect::Display(item) => {
                     match item {
@@ -906,12 +1114,18 @@ impl AppState {
                             if block.unit.is_none() {
                                 block.unit = Some(self.allocate_copy_unit(&block.copy_source));
                             }
-                            let index = self.msgs.len();
-                            self.msgs.push(Msg::Block(block));
-                            if let Some(seq) = event
+                            let surface_seq = event
                                 .seq
-                                .filter(|_| event.surface_op == Some(HostSurfaceOp::Append))
-                            {
+                                .filter(|_| event.surface_op == Some(HostSurfaceOp::Append));
+                            self.insert_transcript_item(
+                                DisplayItem::Block(block.clone()),
+                                surface_seq,
+                                None,
+                            );
+                            let index = self.transcript.len().saturating_sub(1);
+                            #[cfg(test)]
+                            self.msgs.push(Msg::Block(block));
+                            if let Some(seq) = surface_seq {
                                 self.projector.record_surface_owner(seq, index, false);
                             }
                         }
@@ -919,6 +1133,12 @@ impl AppState {
                             if card.unit.is_none() {
                                 card.unit = Some(self.allocate_copy_unit(&card.copy_source));
                             }
+                            self.insert_transcript_item(
+                                DisplayItem::Card(card.clone()),
+                                event.seq.filter(|_| is_surface_node(&event.kind)),
+                                None,
+                            );
+                            #[cfg(test)]
                             self.msgs.push(Msg::Card(card));
                         }
                         crate::display::DisplayItem::Activity(row) => self.upsert_activity(row),
@@ -926,11 +1146,22 @@ impl AppState {
                             activity,
                             mut detail,
                         } => {
-                            self.upsert_activity(activity);
                             if detail.unit.is_none() {
                                 detail.unit = Some(self.allocate_copy_unit(&detail.copy_source));
                             }
-                            self.msgs.push(Msg::Card(detail));
+                            self.insert_transcript_item(
+                                DisplayItem::Composite {
+                                    activity: activity.clone(),
+                                    detail: detail.clone(),
+                                },
+                                event.seq.filter(|_| is_surface_node(&event.kind)),
+                                None,
+                            );
+                            #[cfg(test)]
+                            {
+                                self.msgs.push(Msg::Activity(activity));
+                                self.msgs.push(Msg::Card(detail));
+                            }
                         }
                     }
                     self.transcript_cache.invalidate();
@@ -945,47 +1176,24 @@ impl AppState {
                     self.todos.clear();
                 }
                 ProjectionEffect::CompatibilityError(message) => {
-                    self.msgs.push(Msg::Error { text: message });
-                    self.transcript_cache.invalidate();
+                    self.push_error_message(message);
                 }
                 ProjectionEffect::Ignore => {}
             }
         }
+        self.pending_transcript_insert = None;
     }
 
-    fn record_surface_owner(&mut self, event: &HostEvent, insertion: Option<usize>) {
+    fn record_surface_owner(&mut self, event: &HostEvent) {
         let Some(seq) = event.seq.filter(|_| is_surface_node(&event.kind)) else {
             return;
         };
-        let index = match &event.kind {
-            HostEventKind::UserMessage { source_kind, .. } => {
-                if source_kind.as_deref() == Some("user")
-                    && matches!(self.msgs.last(), Some(Msg::Thinking(_)))
-                {
-                    self.msgs.len().checked_sub(2)
-                } else {
-                    self.msgs.len().checked_sub(1)
-                }
-            }
-            HostEventKind::AssistantMessage { .. } => self
-                .msgs
-                .iter()
-                .rposition(|msg| matches!(msg, Msg::Assistant { .. })),
-            HostEventKind::ToolResult { call_id, .. } => {
-                self.msgs.iter().rposition(|msg| match msg {
-                    Msg::Tool(card) => card.call_id == *call_id,
-                    Msg::FileGroup(group) => {
-                        group.items.iter().any(|item| item.call_id == *call_id)
-                    }
-                    _ => false,
-                })
-            }
-            _ => None,
-        };
-        if let Some(mut index) = index {
-            if let Some(target) = insertion.filter(|target| *target < index) {
-                index = target;
-            }
+        if let Some(index) = self
+            .transcript
+            .nodes()
+            .iter()
+            .position(|node| node.surface_seq == Some(seq))
+        {
             self.projector.record_surface_owner(
                 seq,
                 index,
@@ -1001,18 +1209,17 @@ impl AppState {
         unit
     }
 
-    fn push_block(&mut self, mut block: TranscriptBlock) {
-        if block.unit.is_none() {
-            block.unit = Some(self.allocate_copy_unit(&block.copy_source));
+    fn insert_transcript_item(
+        &mut self,
+        item: DisplayItem,
+        surface_seq: Option<u64>,
+        preferred: Option<usize>,
+    ) -> usize {
+        if let Some(index) = self.pending_transcript_insert.take().or(preferred) {
+            self.transcript.insert(index, item, surface_seq)
+        } else {
+            self.transcript.append(item, surface_seq)
         }
-        self.msgs.push(Msg::Block(block));
-    }
-
-    fn push_card(&mut self, mut card: ContentCard) {
-        if card.unit.is_none() {
-            card.unit = Some(self.allocate_copy_unit(&card.copy_source));
-        }
-        self.msgs.push(Msg::Card(card));
     }
 
     fn upsert_activity(&mut self, mut row: crate::display::ActivityRow) {
@@ -1023,30 +1230,47 @@ impl AppState {
                 row.summary = summary;
             }
         }
-        if let Some(index) = self.projector.display_position(&id) {
-            if let Some(Msg::Activity(existing)) = self.msgs.get_mut(index) {
-                *existing = row;
-                self.transcript_cache.invalidate();
-                return;
+        if let Some(node) = self.transcript.get_mut(&id) {
+            node.item = DisplayItem::Activity(row.clone());
+            self.transcript.touch(&id);
+        } else {
+            self.insert_transcript_item(DisplayItem::Activity(row.clone()), None, None);
+        }
+        #[cfg(test)]
+        {
+            if let Some(existing) = self.msgs.iter_mut().find_map(|msg| match msg {
+                Msg::Activity(existing) if existing.id == id => Some(existing),
+                _ => None,
+            }) {
+                *existing = row.clone();
+            } else {
+                self.msgs.push(Msg::Activity(row.clone()));
             }
         }
-        let index = self.msgs.len();
-        self.msgs.push(Msg::Activity(row));
-        self.projector.record_display_position(id, index);
         self.transcript_cache.invalidate();
     }
 
     fn apply_pending_activity_enrichments(&mut self) {
         for (id, enrichment) in self.projector.take_activity_enrichments() {
-            let Some(index) = self.projector.display_position(&id) else {
-                continue;
-            };
-            if let Some(Msg::Activity(row)) = self.msgs.get_mut(index) {
-                row.summary = enrichment.summary;
+            #[cfg(test)]
+            if let Some(row) = self.msgs.iter_mut().find_map(|msg| match msg {
+                Msg::Activity(row) if row.id == id => Some(row),
+                _ => None,
+            }) {
+                row.summary = enrichment.summary.clone();
                 if enrichment.start_ms.is_some() {
                     row.start_ms = enrichment.start_ms;
                 }
                 self.transcript_cache.invalidate();
+            }
+            if let Some(node) = self.transcript.get_mut(&id) {
+                if let DisplayItem::Activity(row) = &mut node.item {
+                    row.summary = enrichment.summary;
+                    if enrichment.start_ms.is_some() {
+                        row.start_ms = enrichment.start_ms;
+                    }
+                }
+                self.transcript.touch(&id);
             }
         }
     }
@@ -1057,18 +1281,38 @@ impl AppState {
         state: ActivityState,
         summary: Option<&str>,
     ) -> bool {
-        let Some(index) = self.projector.display_position(id) else {
-            return false;
-        };
-        if let Some(Msg::Activity(row)) = self.msgs.get_mut(index) {
+        let was_active = self.transcript.get(id).is_some_and(
+            |node| matches!(&node.item, DisplayItem::Activity(row) if row.state.is_active()),
+        );
+        if was_active && !state.is_active() {
+            self.capture_activity_transition(id);
+        }
+        let mut settled = false;
+        #[cfg(test)]
+        if let Some(row) = self.msgs.iter_mut().find_map(|msg| match msg {
+            Msg::Activity(row) if &row.id == id => Some(row),
+            _ => None,
+        }) {
             row.state = state;
             if let Some(summary) = summary {
                 row.summary = summary.to_owned();
             }
-            self.transcript_cache.invalidate();
-            return true;
+            settled = true;
         }
-        false
+        if let Some(node) = self.transcript.get_mut(id) {
+            if let DisplayItem::Activity(row) = &mut node.item {
+                row.state = state;
+                if let Some(summary) = summary {
+                    row.summary = summary.to_owned();
+                }
+                settled = true;
+            }
+            self.transcript.touch(id);
+        }
+        if settled {
+            self.transcript_cache.invalidate();
+        }
+        settled
     }
 
     fn settle_activity(&mut self, id: &DisplayId, success: bool, summary: Option<&str>) -> bool {
@@ -1095,23 +1339,7 @@ impl AppState {
         }
     }
 
-    fn settle_activity_or_remember(
-        &mut self,
-        id: DisplayId,
-        success: bool,
-        summary: Option<String>,
-    ) {
-        self.settle_activity_state_or_remember(
-            id,
-            if success {
-                ActivityState::Success
-            } else {
-                ActivityState::Failure
-            },
-            summary,
-        );
-    }
-
+    #[cfg(test)]
     fn apply_tool_result_to_display(
         &mut self,
         call_id: &str,
@@ -1120,10 +1348,11 @@ impl AppState {
         output_truncated: bool,
         now_ms: u64,
     ) -> bool {
-        let id = self.projector.tool_calls.get(call_id).cloned();
-        let index = id
-            .as_ref()
-            .and_then(|id| self.projector.display_position(id));
+        let index = self.msgs.iter().rposition(|msg| match msg {
+            Msg::Tool(card) => card.call_id == call_id,
+            Msg::FileGroup(group) => group.items.iter().any(|item| item.call_id == call_id),
+            _ => false,
+        });
         let breath_now = breathing_color(&self.config.theme(), self.breath_phase());
         let Some(msg) = index.and_then(|index| self.msgs.get_mut(index)) else {
             return false;
@@ -1154,15 +1383,25 @@ impl AppState {
     }
 
     fn settle_retry_activities(&mut self) {
-        for msg in &mut self.msgs {
-            if let Msg::Activity(row) = msg {
-                if row.id.0.starts_with("retry:") && row.state.is_active() {
-                    row.state = crate::display::ActivityState::Success;
+        let ids = self
+            .transcript
+            .nodes()
+            .iter()
+            .filter_map(|node| match &node.item {
+                DisplayItem::Activity(row)
+                    if row.id.0.starts_with("retry:") && row.state.is_active() =>
+                {
+                    Some(row.id.clone())
                 }
-            }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for id in ids {
+            self.settle_activity_state(&id, ActivityState::Success, None);
         }
     }
 
+    #[cfg(test)]
     fn upsert_reasoning(
         &mut self,
         turn: Option<u64>,
@@ -1230,250 +1469,289 @@ impl AppState {
             self.transcript_cache.invalidate();
         }
     }
-    /// Compatibility reducer used while existing `Msg` storage migrates to
-    /// the shared display models.
-    fn reduce_host_event(&mut self, event: &HostEvent) {
+    fn reduce_assistant_event(&mut self, event: &HostEvent, mutations: Vec<AssistantMutation>) {
         match &event.kind {
-            HostEventKind::UserMessage {
-                text,
-                source_kind,
-                content,
-                source,
-            } => {
+            HostEventKind::UserMessage { .. } => {
+                self.projector.tool_family.close_group();
                 self.transcript_cache.invalidate();
                 if self.status == AgentStatus::Idle {
                     self.stop_thinking();
                 }
-                let attachments = content
-                    .iter()
-                    .filter_map(|block| match block {
-                        HostContentBlock::Image { label } => Some(format!("[Image: {label}]")),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>();
-                let mut displayed = text.clone();
-                if !attachments.is_empty() {
-                    if !displayed.is_empty() {
-                        displayed.push('\n');
-                    }
-                    displayed.push_str(&attachments.join("\n"));
-                }
-                let is_compaction_checkpoint =
-                    matches!(event.surface_op, Some(HostSurfaceOp::Replace { .. }))
-                        && matches!(source.producer.as_deref(), Some("compact" | "compaction"));
-                if source_kind.as_deref() == Some("user") && attachments.is_empty() {
-                    let trailing_thinking = match self.msgs.last() {
-                        Some(Msg::Thinking(_)) => self.msgs.pop(),
-                        _ => None,
-                    };
-                    self.msgs.push(Msg::User { text: text.clone() });
-                    if let Some(card) = trailing_thinking {
-                        self.msgs.push(card);
-                    }
-                } else if is_compaction_checkpoint {
-                    self.push_card(ContentCard {
-                        id: event.seq.map_or_else(
-                            || DisplayId::correlated("compaction-detail", "legacy"),
-                            |seq| DisplayId::event(seq, "compaction-summary"),
-                        ),
-                        unit: None,
-                        header: Some("Compaction summary".into()),
-                        content: displayed.clone(),
-                        role: CardRole::Detail,
-                        tone: DisplayTone::Dim,
-                        horizontal_padding: self.config.user_input_padding,
-                        copy_source: displayed,
-                    });
-                } else if source.form.as_deref() == Some("notice") {
-                    let notice = source.summary.as_deref().unwrap_or(&displayed);
-                    self.push_block(TranscriptBlock {
-                        id: event.seq.map_or_else(
-                            || DisplayId::correlated("notice", "legacy"),
-                            |seq| DisplayId::event(seq, "notice"),
-                        ),
-                        unit: None,
-                        content: notice.chars().take(200).collect(),
-                        format: TranscriptFormat::Plain,
-                        tone: DisplayTone::Dim,
-                        copy_source: notice.to_owned(),
-                        streaming: false,
-                    });
-                } else if source.form.is_some() || !attachments.is_empty() {
-                    let role = if source_kind.as_deref() == Some("user") {
-                        CardRole::Attachment
-                    } else {
-                        CardRole::Context
-                    };
-                    self.push_card(ContentCard {
-                        id: event.seq.map_or_else(
-                            || DisplayId::correlated("context", "legacy"),
-                            |seq| DisplayId::event(seq, "context"),
-                        ),
-                        unit: None,
-                        header: source.form.as_ref().map(|form| format!("Context · {form}")),
-                        content: displayed.clone(),
-                        role,
-                        tone: DisplayTone::Dim,
-                        horizontal_padding: self.config.user_input_padding,
-                        copy_source: displayed,
-                    });
-                } else {
-                    self.msgs.push(Msg::System {
-                        text: text.chars().take(200).collect(),
-                    });
-                }
             }
             HostEventKind::AssistantChunk {
                 text,
-                reasoning,
-                turn,
-                step,
-                usage,
-            } => {
-                self.record_usage(*turn, *step, *usage);
-                self.settle_retry_activities();
-                if !reasoning.is_empty() {
-                    // Thinking output is folded into the breathing
-                    // `• Thinking...` row, not the transcript; keep that row
-                    // breathing until real answer text arrives.
-                    self.upsert_reasoning(*turn, *step, reasoning, true);
-                }
-                if text.is_empty() {
-                    return;
-                }
-                self.stop_thinking();
-                match self.msgs.last_mut() {
-                    Some(Msg::Streaming { text: buf }) => {
-                        buf.push_str(text);
-                        self.transcript_cache.mark_tail_dirty();
-                    }
-                    _ => {
-                        self.msgs.push(Msg::Streaming { text: text.clone() });
-                        self.transcript_cache.invalidate();
-                    }
-                }
-            }
-            HostEventKind::AssistantMessage {
-                text,
-                reasoning,
                 turn,
                 step,
                 usage,
                 ..
             } => {
                 self.record_usage(*turn, *step, *usage);
-                self.transcript_cache.invalidate();
+                self.settle_retry_activities();
+                if !text.is_empty() {
+                    self.projector.tool_family.close_group();
+                    self.stop_thinking();
+                }
+            }
+            HostEventKind::AssistantMessage {
+                text,
+                turn,
+                step,
+                usage,
+                ..
+            } => {
+                self.record_usage(*turn, *step, *usage);
+                if !text.is_empty() {
+                    self.projector.tool_family.close_group();
+                }
                 self.stop_thinking();
                 self.settle_retry_activities();
-                if !reasoning.is_empty() {
-                    self.upsert_reasoning(*turn, *step, reasoning, false);
-                }
-                if matches!(self.msgs.last(), Some(Msg::Streaming { .. })) {
-                    self.msgs.pop();
-                }
-                if !text.is_empty() {
-                    self.msgs.push(Msg::Assistant {
-                        text: text.clone(),
-                        lines: Vec::new(),
-                        unit_start: self.next_unit,
-                    });
-                }
             }
-            HostEventKind::ToolCall {
-                call_id,
-                name,
-                arguments,
-            } => {
-                self.transcript_cache.invalidate();
-                self.stop_thinking();
-                let start_ms = host_event_time(event);
-                let file_call = classify_file_call(name, arguments, self.session_cwd.as_deref());
-                let group_at = self
-                    .msgs
-                    .iter()
-                    .rposition(|m| !matches!(m, Msg::Thinking(_)));
-                let group_open =
-                    group_at.map_or(false, |i| matches!(self.msgs[i], Msg::FileGroup(_)));
-                let display_index;
-                if let Some((action, file)) = file_call
-                    .as_ref()
-                    .filter(|(action, _)| action.foldable() && self.config.read_merge)
-                {
-                    let item = FileItem {
-                        action: *action,
-                        call_id: call_id.clone(),
-                        file: file.clone(),
-                        ok: None,
-                    };
-                    if group_open {
-                        let i = group_at.expect("open group index");
-                        display_index = i;
-                        if let Some(Msg::FileGroup(group)) = self.msgs.get_mut(i) {
-                            group.items.push(item);
-                        }
-                    } else {
-                        self.activity_epoch
-                            .get_or_insert_with(std::time::Instant::now);
-                        self.msgs.push(Msg::FileGroup(FileGroup {
-                            items: vec![item],
-                            frame: 0,
-                            done_since: None,
-                            done_from: None,
-                        }));
-                        display_index = self.msgs.len() - 1;
-                    }
-                } else {
-                    let (display_name, summary) = file_call
-                        .map(|(action, file)| (action.label().to_owned(), file))
-                        .unwrap_or_else(|| (name.clone(), tool_summary(name, arguments)));
-                    self.activity_epoch
-                        .get_or_insert_with(std::time::Instant::now);
-                    self.msgs.push(Msg::Tool(ToolCard {
-                        call_id: call_id.clone(),
-                        name: display_name,
-                        summary,
-                        state: ToolState::Running,
-                        frame: 0,
-                        start_ms,
-                        done_since: None,
-                        done_from: None,
-                    }));
-                    display_index = self.msgs.len() - 1;
+            _ => return,
+        }
+
+        for mutation in mutations {
+            match mutation {
+                AssistantMutation::Append(item) => {
+                    self.append_assistant_item(event, item);
+                    self.transcript_cache.invalidate();
                 }
-                let id = DisplayId::correlated("tool-call", call_id);
-                self.projector
-                    .tool_calls
-                    .insert(call_id.clone(), id.clone());
-                self.projector.record_display_position(id, display_index);
-                if let Some(pending) = self.projector.take_tool_result(call_id) {
-                    self.apply_tool_result_to_display(
-                        call_id,
-                        &pending.output,
-                        pending.is_error,
-                        pending.output_truncated,
-                        pending.time_ms,
+                AssistantMutation::UpsertReasoning(block) => {
+                    self.upsert_reasoning_store(block.clone());
+                    #[cfg(test)]
+                    self.upsert_reasoning(
+                        match &event.kind {
+                            HostEventKind::AssistantChunk { turn, .. }
+                            | HostEventKind::AssistantMessage { turn, .. } => *turn,
+                            _ => None,
+                        },
+                        match &event.kind {
+                            HostEventKind::AssistantChunk { step, .. }
+                            | HostEventKind::AssistantMessage { step, .. } => *step,
+                            _ => None,
+                        },
+                        &block.content,
+                        block.streaming,
                     );
-                    if let Some(seq) = pending.surface_seq {
-                        self.projector
-                            .record_surface_owner(seq, display_index, false);
-                    }
+                }
+                AssistantMutation::UpsertAnswer(block) => {
+                    self.upsert_answer_store(event, block);
                 }
             }
-            HostEventKind::ToolResult {
-                call_id,
-                output,
-                is_error,
-                output_truncated,
-            } => {
+        }
+    }
+
+    fn append_assistant_item(&mut self, event: &HostEvent, mut item: DisplayItem) {
+        match &mut item {
+            DisplayItem::Block(block) if block.unit.is_none() => {
+                block.unit = Some(self.allocate_copy_unit(&block.copy_source));
+            }
+            DisplayItem::Card(card) if card.unit.is_none() => {
+                card.unit = Some(self.allocate_copy_unit(&card.copy_source));
+            }
+            _ => {}
+        }
+        let surface_seq = event.seq.filter(|_| is_surface_node(&event.kind));
+        let preferred = matches!(&item, DisplayItem::Card(card) if card.role == CardRole::User)
+            .then(|| {
+                self.transcript.nodes().last().and_then(|node| {
+                    matches!(&node.item, DisplayItem::Activity(row)
+                        if row.id.0.starts_with("thinking:") && row.state.is_active())
+                    .then(|| self.transcript.len().saturating_sub(1))
+                })
+            })
+            .flatten();
+        self.insert_transcript_item(item.clone(), surface_seq, preferred);
+
+        #[cfg(test)]
+        match item {
+            DisplayItem::Card(card) if card.role == CardRole::User => {
+                let trailing_thinking = match self.msgs.last() {
+                    Some(Msg::Thinking(_)) => self.msgs.pop(),
+                    _ => None,
+                };
+                self.msgs.push(Msg::User { text: card.content });
+                if let Some(thinking) = trailing_thinking {
+                    self.msgs.push(thinking);
+                }
+            }
+            DisplayItem::Card(card) => self.msgs.push(Msg::Card(card)),
+            DisplayItem::Block(block) if block.id.0.ends_with(":context-fallback") => {
+                self.msgs.push(Msg::System {
+                    text: block.content,
+                });
+            }
+            DisplayItem::Block(block) => self.msgs.push(Msg::Block(block)),
+            DisplayItem::Activity(row) => self.msgs.push(Msg::Activity(row)),
+            DisplayItem::Composite { activity, detail } => {
+                self.msgs.push(Msg::Activity(activity));
+                self.msgs.push(Msg::Card(detail));
+            }
+        }
+    }
+
+    fn upsert_reasoning_store(&mut self, mut incoming: TranscriptBlock) {
+        let id = incoming.id.clone();
+        let existed = self.transcript.get(&id).is_some();
+        let mut existing_unit = None;
+        let mut updated_source = None;
+        if let Some(node) = self.transcript.get_mut(&id) {
+            if let DisplayItem::Block(block) = &mut node.item {
+                if incoming.streaming {
+                    block.content.push_str(&incoming.content);
+                    block.copy_source.push_str(&incoming.copy_source);
+                } else {
+                    block.content = incoming.content;
+                    block.copy_source = incoming.copy_source;
+                    block.streaming = false;
+                }
+                existing_unit = block.unit;
+                updated_source = Some(block.copy_source.clone());
+            }
+        } else {
+            if incoming.unit.is_none() {
+                incoming.unit = Some(self.allocate_copy_unit(&incoming.copy_source));
+            }
+            self.insert_transcript_item(DisplayItem::Block(incoming), None, None);
+        }
+        if let (Some(unit), Some(source)) = (existing_unit, updated_source) {
+            self.units.insert(unit, source);
+            self.transcript.touch(&id);
+        }
+        if self.config.thinking_display_mode().shows_reasoning() && !self.replaying {
+            let is_tail = self.transcript.position(&id) == self.transcript.len().checked_sub(1);
+            if existed && is_tail {
+                self.transcript_cache.mark_tail_dirty();
+            } else {
+                self.transcript_cache.invalidate();
+            }
+        }
+    }
+
+    fn upsert_answer_store(&mut self, event: &HostEvent, incoming: TranscriptBlock) {
+        let id = incoming.id.clone();
+        let mut existed = false;
+        if let Some(node) = self.transcript.get_mut(&id) {
+            if let DisplayItem::Block(block) = &mut node.item {
+                existed = true;
+                if incoming.streaming {
+                    block.content.push_str(&incoming.content);
+                    block.copy_source.push_str(&incoming.copy_source);
+                } else {
+                    block.content = incoming.content.clone();
+                    block.copy_source = incoming.copy_source.clone();
+                    block.streaming = false;
+                }
+            }
+        }
+        if existed {
+            self.transcript.touch(&id);
+        } else {
+            let surface_seq = event.seq.filter(|_| is_surface_node(&event.kind));
+            self.insert_transcript_item(DisplayItem::Block(incoming.clone()), surface_seq, None);
+        }
+
+        if incoming.streaming {
+            let is_tail = self.transcript.position(&id) == self.transcript.len().checked_sub(1);
+            #[cfg(test)]
+            match self.msgs.last_mut() {
+                Some(Msg::Streaming { text }) => text.push_str(&incoming.content),
+                _ => self.msgs.push(Msg::Streaming {
+                    text: incoming.content,
+                }),
+            }
+            if existed && is_tail {
+                self.transcript_cache.mark_tail_dirty();
+            } else {
+                self.transcript_cache.invalidate();
+            }
+            return;
+        }
+
+        #[cfg(test)]
+        if matches!(self.msgs.last(), Some(Msg::Streaming { .. })) {
+            self.msgs.pop();
+        }
+        let source = self
+            .transcript
+            .get(&id)
+            .and_then(|node| match &node.item {
+                DisplayItem::Block(block) => Some(block.content.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| incoming.content.clone());
+        let theme = self.config.theme();
+        let options = RenderOptions {
+            expanded: self.expanded.clone(),
+            collapse_rows: self.config.atomic_collapse_rows,
+            mermaid_enabled: self.config.mermaid_enabled,
+        };
+        let lines = self
+            .markdown_layout
+            .materialize(
+                &id,
+                &source,
+                &theme,
+                &mut self.next_unit,
+                &options,
+                &mut self.units,
+            )
+            .to_vec();
+        #[cfg(test)]
+        let unit_start = self
+            .markdown_layout
+            .unit_start(&id)
+            .unwrap_or(self.next_unit);
+        if let Some(primary) = lines.first().map(|line| line.unit) {
+            if let Some(node) = self.transcript.get_mut(&id) {
+                if let DisplayItem::Block(block) = &mut node.item {
+                    block.unit = Some(primary);
+                }
+            }
+        }
+        #[cfg(test)]
+        self.msgs.push(Msg::Assistant {
+            text: source,
+            lines,
+            unit_start,
+        });
+        self.transcript_cache.invalidate();
+    }
+
+    fn project_tool_family(&mut self, event: &HostEvent) -> Option<ToolMutation> {
+        let now_ms = host_event_time(event);
+        match &event.kind {
+            HostEventKind::ToolCall { .. } => self.projector.tool_family.project_call(
+                event,
+                self.session_cwd.as_deref(),
+                self.config.read_merge,
+                now_ms,
+            ),
+            HostEventKind::ToolResult { .. } => {
                 self.start_thinking();
-                let now_ms = host_event_time(event);
-                if !self.apply_tool_result_to_display(
+                self.projector.tool_family.project_result(event, now_ms)
+            }
+            HostEventKind::UserMessage { .. }
+            | HostEventKind::AssistantChunk { .. }
+            | HostEventKind::AssistantMessage { .. } => None,
+            _ => {
+                self.projector.tool_family.close_group();
+                None
+            }
+        }
+    }
+
+    fn reduce_tool_family(&mut self, event: &HostEvent, mutation: ToolMutation) {
+        let now_ms = host_event_time(event);
+        let mut row = match mutation {
+            ToolMutation::Upsert(row) => row,
+            ToolMutation::MissingResult => {
+                if let HostEventKind::ToolResult {
                     call_id,
                     output,
-                    *is_error,
-                    *output_truncated,
-                    now_ms,
-                ) {
+                    is_error,
+                    output_truncated,
+                } = &event.kind
+                {
                     if let Some(seq) = event.seq {
                         self.projector.record_surface_seq(seq);
                     }
@@ -1488,306 +1766,380 @@ impl AppState {
                         },
                     );
                 }
+                return;
             }
-            HostEventKind::TurnStart => {
-                self.start_thinking();
-                self.activity_epoch
-                    .get_or_insert_with(std::time::Instant::now);
-            }
-            HostEventKind::TurnEnd {
-                reason,
-                error_message,
-                error_code,
-            } => {
+        };
+        match &event.kind {
+            HostEventKind::ToolCall { .. } => {
                 self.transcript_cache.invalidate();
-                self.settle_turn(
-                    host_event_time(event),
-                    matches!(reason.as_deref(), Some("aborted" | "interrupted")),
-                );
-                match reason.as_deref() {
-                    Some("aborted") => self.msgs.push(Msg::System {
-                        text: "（已中断）".into(),
-                    }),
-                    Some("error") => self.msgs.push(Msg::Error {
-                        text: match (error_message, error_code) {
-                            (Some(message), Some(code)) => format!("{message} ({code})"),
-                            (Some(message), None) => message.clone(),
-                            _ => "turn error".into(),
+                self.stop_thinking();
+            }
+            HostEventKind::ToolResult { .. } => self.start_thinking(),
+            _ => {}
+        }
+
+        let row_id = row.id.clone();
+        if let HostEventKind::ToolCall { call_id, .. } = &event.kind {
+            self.projector
+                .tool_calls
+                .insert(call_id.clone(), row_id.clone());
+        }
+        let pending_result = match &event.kind {
+            HostEventKind::ToolCall { call_id, .. } => self.projector.take_tool_result(call_id),
+            _ => None,
+        };
+        if let Some(pending) = &pending_result {
+            row.state = if pending.is_error {
+                ActivityState::Failure
+            } else {
+                ActivityState::Success
+            };
+            if row.label != "create" {
+                row.duration_ms = Some(pending.time_ms.saturating_sub(row.start_ms.unwrap_or(0)));
+                let lines = pending.output.lines().count();
+                row.continuations
+                    .push(crate::display::ActivityContinuation {
+                        separator: " · ".into(),
+                        label: String::new(),
+                        summary: if pending.output_truncated {
+                            format!("{lines}+ lines")
+                        } else {
+                            format!("{lines} lines")
                         },
-                    }),
-                    Some("blocked") => self.msgs.push(Msg::System {
-                        text: "（已阻塞）".into(),
-                    }),
-                    Some("interrupted") => self.msgs.push(Msg::System {
-                        text: "（会话异常中断）".into(),
-                    }),
-                    Some("max-tokens") => self.push_block(TranscriptBlock {
-                        id: event.seq.map_or_else(
-                            || DisplayId::correlated("turn", "max-tokens"),
-                            |seq| DisplayId::event(seq, "turn-outcome"),
-                        ),
-                        unit: None,
-                        content: "（达到模型输出 token 上限）".into(),
-                        format: TranscriptFormat::Plain,
-                        tone: DisplayTone::Warning,
-                        copy_source: "（达到模型输出 token 上限）".into(),
-                        streaming: false,
-                    }),
-                    _ => {}
+                    });
+            }
+        }
+        let surface_seq = event.seq.filter(|_| is_surface_node(&event.kind));
+        let was_active = self.transcript.get(&row_id).is_some_and(|node| {
+            matches!(&node.item, DisplayItem::Activity(existing) if existing.state.is_active())
+        });
+        if was_active && !row.state.is_active() {
+            self.capture_activity_transition(&row_id);
+        }
+        if let Some(existing) = self.transcript.get_mut(&row_id) {
+            if let DisplayItem::Activity(existing_row) = &mut existing.item {
+                let keep_label = existing_row.label.clone();
+                let keep_summary = existing_row.summary.clone();
+                *existing_row = row.clone();
+                if existing_row.label == "tool" {
+                    existing_row.label = keep_label;
+                    existing_row.summary = keep_summary;
                 }
             }
-            HostEventKind::LlmRetry {
-                retry_id,
-                retry,
-                max_retries,
-                delay_ms,
-                message,
-            } => {
-                let id = DisplayId::correlated("retry", retry_id);
-                let summary = match max_retries {
-                    Some(max) => format!("{retry}/{max} · {}ms · {message}", delay_ms),
-                    None => format!("{retry} · {}ms · {message}", delay_ms),
-                };
-                if self.replaying
-                    && self
-                        .projector
-                        .display_position(&id)
-                        .is_some_and(|index| index >= self.msgs.len())
-                {
-                    // The newer retry-started row lives in the saved page.
-                    // Defer the older schedule details until saved rows have
-                    // been restored and their indexes shifted.
-                    self.projector.remember_activity_enrichment(
-                        id,
-                        PendingActivityEnrichment {
-                            summary,
-                            start_ms: event.time_ms,
-                        },
-                    );
+            if let Some(seq) = surface_seq {
+                existing.surface_seq = Some(seq);
+            }
+            self.transcript.touch(&row_id);
+        } else {
+            self.insert_transcript_item(DisplayItem::Activity(row.clone()), surface_seq, None);
+        }
+        #[cfg(test)]
+        self.upsert_tool_legacy_mirror(event, &row);
+        if let Some(pending) = &pending_result {
+            if let (Some(seq), Some(index)) =
+                (pending.surface_seq, self.transcript.position(&row_id))
+            {
+                self.projector.record_surface_owner(seq, index, false);
+            }
+        }
+
+        #[cfg(test)]
+        if let (HostEventKind::ToolCall { call_id, .. }, Some(pending)) =
+            (&event.kind, pending_result)
+        {
+            self.apply_tool_result_to_display(
+                call_id,
+                &pending.output,
+                pending.is_error,
+                pending.output_truncated,
+                pending.time_ms,
+            );
+        }
+
+        #[cfg(test)]
+        if let HostEventKind::ToolResult {
+            call_id,
+            output,
+            is_error,
+            output_truncated,
+        } = &event.kind
+        {
+            self.apply_tool_result_to_display(
+                call_id,
+                output,
+                *is_error,
+                *output_truncated,
+                now_ms,
+            );
+        }
+    }
+
+    #[cfg(test)]
+    fn upsert_tool_legacy_mirror(&mut self, event: &HostEvent, row: &ActivityRow) {
+        let HostEventKind::ToolCall { call_id, .. } = &event.kind else {
+            return;
+        };
+        let msg = if row.id.0.starts_with("file-group:") {
+            let items = self
+                .projector
+                .tool_family
+                .group_items(&row.id)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|item| FileItem {
+                    action: legacy_file_action(item.action.label()),
+                    call_id: item.call_id,
+                    file: item.file,
+                    ok: item.ok,
+                })
+                .collect();
+            Msg::FileGroup(FileGroup {
+                items,
+                frame: 0,
+                done_since: None,
+                done_from: None,
+            })
+        } else {
+            Msg::Tool(ToolCard {
+                call_id: call_id.clone(),
+                name: row.label.clone(),
+                summary: row.summary.clone(),
+                state: ToolState::Running,
+                frame: 0,
+                start_ms: row.start_ms.unwrap_or(0),
+                done_since: None,
+                done_from: None,
+            })
+        };
+
+        if let Msg::FileGroup(new_group) = &msg {
+            let index = self
+                .msgs
+                .iter()
+                .position(|msg| matches!(msg, Msg::FileGroup(group) if group.items.first().is_some_and(|item| row.id == DisplayId::correlated("file-group", &item.call_id))))
+                .or_else(|| {
+                    self.msgs
+                        .iter()
+                        .rposition(|msg| !matches!(msg, Msg::Thinking(_)))
+                        .filter(|index| matches!(self.msgs[*index], Msg::FileGroup(_)))
+                });
+            if let Some(index) = index {
+                if let Some(Msg::FileGroup(existing)) = self.msgs.get_mut(index) {
+                    let old_done = existing.done_since.zip(existing.done_from);
+                    *existing = new_group.clone();
+                    if let Some((since, from)) = old_done {
+                        existing.done_since = Some(since);
+                        existing.done_from = Some(from);
+                    }
+                    self.transcript_cache.invalidate();
                     return;
                 }
-                self.projector.retries.insert(retry_id.clone(), id.clone());
-                let mut row = ActivityRow::root(id, "retry");
-                row.state = ActivityState::Waiting;
-                row.start_ms = event.time_ms;
-                row.summary = summary;
-                self.upsert_activity(row);
             }
-            HostEventKind::LlmRetryStarted { retry_id, retry } => {
-                let id = self
-                    .projector
-                    .retries
-                    .get(retry_id)
-                    .cloned()
-                    .unwrap_or_else(|| DisplayId::correlated("retry", retry_id));
-                self.projector.retries.insert(retry_id.clone(), id.clone());
-                let summary = self
-                    .projector
-                    .display_position(&id)
-                    .and_then(|index| self.msgs.get(index))
-                    .and_then(|msg| match msg {
-                        Msg::Activity(row) => Some(row.summary.clone()),
-                        _ => None,
-                    })
-                    .unwrap_or_else(|| format!("attempt {retry}"));
-                let mut row = ActivityRow::root(id, "retry");
-                row.state = ActivityState::Running;
-                row.summary = summary;
-                self.upsert_activity(row);
-            }
-            HostEventKind::CommandRun {
-                command_id,
-                name,
-                args,
-            } => {
-                let id = DisplayId::correlated("command", command_id);
-                self.projector
-                    .commands
-                    .insert(command_id.clone(), id.clone());
-                let mut row = ActivityRow::root(id.clone(), format!("/{name}"));
-                row.summary = args
-                    .clone()
-                    .unwrap_or_default()
-                    .trim()
-                    .chars()
-                    .take(120)
-                    .collect();
-                row.start_ms = event.time_ms;
-                self.upsert_activity(row);
-            }
-            HostEventKind::CommandDone {
-                command_id,
-                success,
-                text,
-            } => {
-                let id = self
-                    .projector
-                    .commands
-                    .get(command_id)
-                    .cloned()
-                    .unwrap_or_else(|| DisplayId::correlated("command", command_id));
-                self.settle_activity_or_remember(id, *success, text.clone());
-            }
+        }
+        self.msgs.push(msg);
+        self.transcript_cache.invalidate();
+    }
+
+    fn reduce_activity_families(&mut self, event: &HostEvent) -> bool {
+        if let Some(projection) = lifecycle::project(event) {
+            self.apply_lifecycle_projection(event, projection);
+            return true;
+        }
+
+        let retry_id = match &event.kind {
+            HostEventKind::LlmRetry { retry_id, .. }
+            | HostEventKind::LlmRetryStarted { retry_id, .. } => Some(retry_id.as_str()),
+            _ => None,
+        };
+        let existing_retry_summary = retry_id.and_then(|retry_id| {
+            let id = DisplayId::correlated("retry", retry_id);
+            self.transcript.get(&id).and_then(|node| match &node.item {
+                DisplayItem::Activity(row) => Some(row.summary.clone()),
+                _ => None,
+            })
+        });
+        if let Some((key, mutation)) = retry::project(event, existing_retry_summary) {
+            let id = mutation_id(&mutation);
+            self.projector.retries.insert(key, id);
+            self.apply_activity_mutation(mutation);
+            return true;
+        }
+
+        let (parent_id, parent_depth) = match &event.kind {
             HostEventKind::CodeDispatchStart {
                 root_call_id,
                 parent_call_id,
-                sub_call_id,
-                name,
-                arguments,
+                ..
             } => {
-                let id = DisplayId::correlated("code-dispatch", sub_call_id);
-                let parent_call_id = if parent_call_id.is_empty() {
+                let parent_key = if parent_call_id.is_empty() {
                     root_call_id
                 } else {
                     parent_call_id
                 };
-                let parent_id = self
-                    .projector
-                    .nested_calls
-                    .get(parent_call_id)
-                    .or_else(|| self.projector.tool_calls.get(parent_call_id))
-                    .cloned()
-                    .unwrap_or_else(|| DisplayId::correlated("tool-call", parent_call_id));
-                let depth = self
-                    .projector
-                    .display_position(&parent_id)
-                    .and_then(|index| self.msgs.get(index))
-                    .and_then(|msg| match msg {
-                        Msg::Activity(parent) => Some(parent.depth.saturating_add(1)),
-                        _ => None,
-                    })
-                    .unwrap_or(1);
-                self.projector
-                    .nested_calls
-                    .insert(sub_call_id.clone(), id.clone());
-                let mut row = ActivityRow::root(id, name.clone());
-                row.parent_id = Some(parent_id);
-                row.depth = depth;
-                row.summary = arguments.chars().take(120).collect();
-                row.start_ms = event.time_ms;
-                self.upsert_activity(row);
-            }
-            HostEventKind::CodeDispatchEnd {
-                sub_call_id,
-                is_error,
-            } => {
                 let id = self
                     .projector
                     .nested_calls
-                    .get(sub_call_id)
-                    .cloned()
-                    .unwrap_or_else(|| DisplayId::correlated("code-dispatch", sub_call_id));
-                self.settle_activity_or_remember(id, !*is_error, None);
+                    .get(parent_key)
+                    .or_else(|| self.projector.tool_calls.get(parent_key))
+                    .cloned();
+                let depth = id
+                    .as_ref()
+                    .and_then(|id| self.transcript.get(id))
+                    .and_then(|node| match &node.item {
+                        DisplayItem::Activity(row) => Some(row.depth),
+                        _ => None,
+                    })
+                    .unwrap_or(0);
+                (id, depth)
             }
-            HostEventKind::WorkflowRunStart { run_id, name } => {
-                let id = DisplayId::correlated("workflow", run_id);
-                self.projector.workflows.insert(run_id.clone(), id.clone());
-                let mut row = ActivityRow::root(id, "workflow");
-                row.summary = name.chars().take(120).collect();
-                row.start_ms = event.time_ms;
-                self.upsert_activity(row);
-            }
-            HostEventKind::WorkflowAgentStart {
-                run_id,
-                member_seq,
-                label,
-            } => {
-                let key = format!("{run_id}:{member_seq}");
-                let id = DisplayId::correlated("workflow-agent", &key);
-                let mut row = ActivityRow::root(id, "agent");
-                row.summary = label.chars().take(120).collect();
-                row.parent_id = Some(DisplayId::correlated("workflow", run_id));
-                row.depth = 1;
-                row.start_ms = event.time_ms;
-                self.upsert_activity(row);
-            }
-            HostEventKind::WorkflowAgentEnd {
-                run_id,
-                member_seq,
-                outcome,
-            } => {
-                let state = match outcome {
-                    HostLifecycleOutcome::Success => ActivityState::Success,
-                    HostLifecycleOutcome::Failure => ActivityState::Failure,
-                    HostLifecycleOutcome::Cancelled => ActivityState::Cancelled,
-                };
-                self.settle_activity_state_or_remember(
-                    DisplayId::correlated("workflow-agent", &format!("{run_id}:{member_seq}")),
-                    state,
-                    None,
-                );
-            }
-            HostEventKind::WorkflowRunEnd { run_id, outcome } => {
-                let state = match outcome {
-                    HostLifecycleOutcome::Success => ActivityState::Success,
-                    HostLifecycleOutcome::Failure => ActivityState::Failure,
-                    HostLifecycleOutcome::Cancelled => ActivityState::Cancelled,
-                };
-                self.settle_activity_state_or_remember(
-                    DisplayId::correlated("workflow", run_id),
-                    state,
-                    None,
-                );
-            }
-            HostEventKind::CompactionStart { compaction_id } => {
-                let id = DisplayId::correlated("compaction", compaction_id);
-                self.projector
-                    .compactions
-                    .insert(compaction_id.clone(), id.clone());
-                let mut row = ActivityRow::root(id, "compacting");
-                row.start_ms = event.time_ms;
-                self.upsert_activity(row);
-            }
-            HostEventKind::CompactionSummary {
-                compaction_id,
-                summary: _,
-            } => {
-                let id = DisplayId::correlated("compaction", compaction_id);
-                if let Some(index) = self.projector.display_position(&id) {
-                    if let Some(Msg::Activity(row)) = self.msgs.get_mut(index) {
-                        row.summary = "summary ready".into();
-                        self.transcript_cache.invalidate();
-                    }
+            _ => (None, 0),
+        };
+        if let Some(projection) = command::project(event, parent_id, parent_depth) {
+            match projection {
+                CommandProjection::Command { key, mutation } => {
+                    self.projector.commands.insert(key, mutation_id(&mutation));
+                    self.apply_activity_mutation(mutation);
+                }
+                CommandProjection::Nested { key, mutation } => {
+                    self.projector
+                        .nested_calls
+                        .insert(key, mutation_id(&mutation));
+                    self.apply_activity_mutation(mutation);
                 }
             }
-            HostEventKind::CompactionEnd {
-                compaction_id,
-                error,
+            return true;
+        }
+
+        if let Some(projection) = workflow::project(event) {
+            match projection {
+                WorkflowProjection::Workflow { key, mutation } => {
+                    if matches!(event.kind, HostEventKind::WorkflowRunStart { .. }) {
+                        self.projector.workflows.insert(key, mutation_id(&mutation));
+                    }
+                    self.apply_activity_mutation(mutation);
+                }
+                WorkflowProjection::Compaction { key, mutation } => {
+                    self.projector
+                        .compactions
+                        .insert(key, mutation_id(&mutation));
+                    self.apply_activity_mutation(mutation);
+                }
+            }
+            return true;
+        }
+        false
+    }
+
+    fn apply_activity_mutation(&mut self, mutation: ActivityMutation) {
+        match mutation {
+            ActivityMutation::Upsert(row) => {
+                if self.replaying
+                    && row.state == ActivityState::Waiting
+                    && self.replay_newer_display_ids.contains(&row.id)
+                {
+                    self.projector.remember_activity_enrichment(
+                        row.id,
+                        PendingActivityEnrichment {
+                            summary: row.summary,
+                            start_ms: row.start_ms,
+                        },
+                    );
+                    return;
+                }
+                self.upsert_activity(row);
+            }
+            ActivityMutation::Settle { id, state, summary } => {
+                self.settle_activity_state_or_remember(id, state, summary);
+            }
+            ActivityMutation::Enrich {
+                id,
+                summary,
+                start_ms,
             } => {
-                self.settle_activity_or_remember(
-                    DisplayId::correlated("compaction", compaction_id),
-                    error.is_none(),
-                    error.clone(),
-                );
+                let mut applied = false;
+                if let Some(node) = self.transcript.get_mut(&id) {
+                    if let DisplayItem::Activity(row) = &mut node.item {
+                        row.summary = summary.clone();
+                        if start_ms.is_some() {
+                            row.start_ms = start_ms;
+                        }
+                        applied = true;
+                    }
+                    self.transcript.touch(&id);
+                }
+                #[cfg(test)]
+                if let Some(row) = self.msgs.iter_mut().find_map(|msg| match msg {
+                    Msg::Activity(row) if row.id == id => Some(row),
+                    _ => None,
+                }) {
+                    row.summary = summary.clone();
+                    if start_ms.is_some() {
+                        row.start_ms = start_ms;
+                    }
+                    applied = true;
+                }
+                if applied {
+                    self.transcript_cache.invalidate();
+                } else {
+                    self.projector.remember_activity_enrichment(
+                        id,
+                        PendingActivityEnrichment { summary, start_ms },
+                    );
+                }
             }
-            HostEventKind::GoalChange { summary } => {
-                self.goal = (!summary.is_empty()).then(|| summary.clone())
+        }
+    }
+
+    fn apply_lifecycle_projection(&mut self, event: &HostEvent, projection: LifecycleProjection) {
+        match projection {
+            LifecycleProjection::TurnStart => {
+                self.start_thinking();
+                self.activity_epoch
+                    .get_or_insert_with(std::time::Instant::now);
             }
-            HostEventKind::PlanMode { mode } => {
-                self.plan_mode = (!mode.is_empty()).then(|| mode.clone())
+            LifecycleProjection::TurnEnd { cancelled, outcome } => {
+                self.settle_turn(host_event_time(event), cancelled);
+                if let Some(mut item) = outcome {
+                    if let DisplayItem::Block(block) = &mut item {
+                        if block.unit.is_none() {
+                            block.unit = Some(self.allocate_copy_unit(&block.copy_source));
+                        }
+                    }
+                    self.insert_transcript_item(item.clone(), None, None);
+                    #[cfg(test)]
+                    if let DisplayItem::Block(block) = item {
+                        if block.tone == DisplayTone::Error {
+                            self.msgs.push(Msg::Error {
+                                text: block.content,
+                            });
+                        } else if block.content.contains("token 上限") {
+                            self.msgs.push(Msg::Block(block));
+                        } else {
+                            self.msgs.push(Msg::System {
+                                text: block.content,
+                            });
+                        }
+                    }
+                    self.transcript_cache.invalidate();
+                }
             }
-            HostEventKind::AgentPresetSelected { preset } => {
+            LifecycleProjection::Goal(goal) => self.goal = goal,
+            LifecycleProjection::Plan(plan) => self.plan_mode = plan,
+            LifecycleProjection::Preset(preset) => {
                 let is_newest = match (event.seq, self.current_mode_seq) {
                     (Some(incoming), Some(current)) => incoming >= current,
                     (Some(_), None) | (None, None) => true,
                     (None, Some(_)) => false,
                 };
                 if is_newest && !preset.is_empty() {
-                    self.current_mode = Some(preset.clone());
+                    self.current_mode = Some(preset);
                     self.current_mode_seq = event.seq;
                 }
             }
-            HostEventKind::SessionState { event_type } => {
-                self.session_state_events.insert(event_type.clone());
+            LifecycleProjection::SessionState(event_type) => {
+                self.session_state_events.insert(event_type);
             }
-            HostEventKind::SessionTitle { title } => {
-                self.session_title = title.clone();
-            }
-            HostEventKind::StepStart { .. }
-            | HostEventKind::StepEnd { .. }
-            | HostEventKind::TodoWrite { .. }
-            | HostEventKind::AuditOnly { .. }
-            | HostEventKind::Unknown { .. } => {}
+            LifecycleProjection::Ignore => {}
         }
     }
 
@@ -1800,11 +2152,18 @@ impl AppState {
     /// Prepend one typed history page while preserving the current viewport anchor.
     pub fn prepend_host_events(&mut self, events: &[HostEvent]) -> usize {
         let existing_owners = self.projector.owned_seqs();
-        let existing_displays = self.projector.display_ids();
         // Token totals should absorb older pages, but replacement bookkeeping
         // must keep pointing at the newest loaded request.
         let newest_usage_sample = self.last_usage_sample;
+        #[cfg(test)]
         let saved = std::mem::take(&mut self.msgs);
+        let saved_transcript = std::mem::take(&mut self.transcript);
+        let saved_transcript_len = saved_transcript.len();
+        self.replay_newer_display_ids = saved_transcript
+            .nodes()
+            .iter()
+            .map(|node| node.id().clone())
+            .collect();
         self.replaying = true;
         for event in events {
             self.apply_host_event(event);
@@ -1813,22 +2172,38 @@ impl AppState {
         if newest_usage_sample.is_some() {
             self.last_usage_sample = newest_usage_sample;
         }
-        let mut added = self.msgs.len();
-        let dangling = matches!(self.msgs.last(), Some(Msg::Streaming { .. }))
-            && matches!(saved.first(), Some(Msg::Assistant { .. }));
-        if dangling {
-            self.msgs.pop();
-            added -= 1;
+        #[cfg(test)]
+        let legacy_added = {
+            let mut added = self.msgs.len();
+            let dangling = matches!(self.msgs.last(), Some(Msg::Streaming { .. }))
+                && matches!(saved.first(), Some(Msg::Assistant { .. }));
+            if dangling {
+                self.msgs.pop();
+                added -= 1;
+            }
+            self.msgs.extend(saved);
+            added
+        };
+        for node in saved_transcript.nodes() {
+            if node
+                .surface_seq
+                .is_some_and(|seq| self.projector.is_shadowed(seq))
+            {
+                continue;
+            }
+            self.transcript.append(node.item.clone(), node.surface_seq);
         }
-        self.msgs.extend(saved);
+        let added = self.transcript.len().saturating_sub(saved_transcript_len);
         self.projector
             .shift_selected_owners(&existing_owners, added);
-        self.projector
-            .shift_selected_displays(&existing_displays, added);
+        self.replay_newer_display_ids.clear();
         self.apply_pending_activity_enrichments();
         self.transcript_cache.invalidate();
         self.transcript_cache.tail_dirty = false;
         self.transcript_cache.prepend_anchor = Some(self.transcript_cache.display_len());
+        #[cfg(test)]
+        return legacy_added;
+        #[cfg(not(test))]
         added
     }
 }
@@ -1836,6 +2211,7 @@ impl AppState {
 /// Capture the settle transition when a file group's last pending item
 /// settles: the bullet animates from the breathing color toward umber/red
 /// instead of snapping.
+#[cfg(test)]
 fn settle_group(group: &mut FileGroup, from: Color) {
     if !group.pending() && group.done_since.is_none() {
         group.done_since = Some(std::time::Instant::now());
@@ -1844,6 +2220,7 @@ fn settle_group(group: &mut FileGroup, from: Color) {
 }
 
 /// Exit code from the `[exit code: N]` marker in shell tool output.
+#[cfg(test)]
 fn exit_marker(output: &str) -> i64 {
     for line in output.lines().rev().take(4) {
         if let Some(pos) = line.find("[exit code: ") {
@@ -1858,43 +2235,118 @@ fn exit_marker(output: &str) -> i64 {
     0
 }
 
-/// Short summary for a tool card: the shell command, a read target, or
-/// trimmed raw arguments.
-fn tool_summary(name: &str, arguments: &str) -> String {
-    let parsed: Option<Value> = serde_json::from_str(arguments).ok();
-    if let Some(parsed) = &parsed {
-        if let Some(command) = parsed.get("command").and_then(Value::as_str) {
-            return trim_to(command, 120);
-        }
-        if let Some(path) = parsed
-            .get("file_path")
-            .or_else(|| parsed.get("filePath"))
-            .and_then(Value::as_str)
-        {
-            return path.to_string();
-        }
-        if let Some(workdir) = parsed.get("workdir").and_then(Value::as_str) {
-            if let Some(command) = parsed.get("command").and_then(Value::as_str) {
-                return format!("{command} (in {workdir})");
-            }
-        }
+fn mutation_id(mutation: &ActivityMutation) -> DisplayId {
+    match mutation {
+        ActivityMutation::Upsert(row) => row.id.clone(),
+        ActivityMutation::Settle { id, .. } | ActivityMutation::Enrich { id, .. } => id.clone(),
     }
-    let _ = name;
-    trim_to(arguments, 120)
 }
 
-fn trim_to(text: &str, max_chars: usize) -> String {
-    let mut out: String = text.chars().take(max_chars).collect();
-    if text.chars().count() > max_chars {
-        out.push('…');
+#[cfg(test)]
+fn legacy_file_action(label: &str) -> FileAction {
+    match label {
+        "read" => FileAction::Read,
+        "view" => FileAction::View,
+        "edit" => FileAction::Edit,
+        "replace" => FileAction::Replace,
+        "insert" => FileAction::Insert,
+        "create" => FileAction::Create,
+        _ => FileAction::Read,
     }
-    out.replace(['\r', '\n'], " ")
 }
 
 /// Whether an animation deadline is needed. This is separate from advancing
 /// the clock so the event-driven main loop can remain asleep when idle.
 pub fn animation_active(state: &AppState, _now: std::time::Instant) -> bool {
-    let any_pending = state.msgs.iter().any(|m| match m {
+    #[cfg(test)]
+    if state.transcript.is_empty() && !state.msgs.is_empty() {
+        return legacy_animation_active(state);
+    }
+    state
+        .transcript
+        .nodes()
+        .iter()
+        .any(|node| match &node.item {
+            DisplayItem::Activity(row) => row.state.is_active(),
+            DisplayItem::Block(block) => {
+                block.streaming && block.format != TranscriptFormat::Reasoning
+            }
+            DisplayItem::Composite { activity, .. } => activity.state.is_active(),
+            DisplayItem::Card(_) => false,
+        })
+        || !state.activity_transitions.is_empty()
+        || state.working
+        || state.status == AgentStatus::Running
+}
+
+/// Advance the breathing/transition animation clock and mark only the public
+/// display ranges whose colors can change. Expired transitions submit one
+/// final exact-color patch before their sidecar entry is removed.
+pub fn tick_spinners(state: &mut AppState, now: std::time::Instant) -> bool {
+    #[cfg(test)]
+    if state.transcript.is_empty() && !state.msgs.is_empty() {
+        return tick_legacy_spinners(state, now);
+    }
+
+    let mut any_pending = state.working || state.status == AgentStatus::Running;
+    let mut dirty = Vec::new();
+    for (index, node) in state.transcript.nodes().iter().enumerate() {
+        let pending = match &node.item {
+            DisplayItem::Activity(row) => row.state.is_active(),
+            DisplayItem::Block(block) => {
+                block.streaming && block.format != TranscriptFormat::Reasoning
+            }
+            DisplayItem::Composite { activity, .. } => activity.state.is_active(),
+            DisplayItem::Card(_) => false,
+        };
+        if pending {
+            any_pending = true;
+            dirty.push(index);
+        }
+    }
+
+    let transitions = state
+        .activity_transitions
+        .iter()
+        .map(|(id, transition)| {
+            (
+                id.clone(),
+                now.saturating_duration_since(transition.done_since)
+                    .as_millis()
+                    >= SETTLE_TRANSITION_MS,
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut finalized = Vec::new();
+    for (id, expired) in transitions {
+        if let Some(index) = state.transcript.position(&id) {
+            dirty.push(index);
+        }
+        if expired {
+            finalized.push(id);
+        }
+    }
+    for id in finalized {
+        state.activity_transitions.remove(&id);
+    }
+
+    if any_pending {
+        state.activity_epoch.get_or_insert(now);
+    } else if state.activity_transitions.is_empty() {
+        state.activity_epoch = None;
+    }
+    dirty.sort_unstable();
+    dirty.dedup();
+    let animation_changed = !dirty.is_empty();
+    for index in dirty {
+        state.transcript_cache.mark_message_dirty(index);
+    }
+    any_pending || animation_changed
+}
+
+#[cfg(test)]
+fn legacy_animation_active(state: &AppState) -> bool {
+    let any_pending = state.msgs.iter().any(|message| match message {
         Msg::Tool(card) => card.state == ToolState::Running,
         Msg::FileGroup(group) => group.pending(),
         Msg::Thinking(card) => card.state == ThinkState::Running,
@@ -1904,10 +2356,7 @@ pub fn animation_active(state: &AppState, _now: std::time::Instant) -> bool {
     }) || matches!(state.msgs.last(), Some(Msg::Streaming { .. }))
         || state.working
         || state.status == AgentStatus::Running;
-    // A transition marker remains active until `tick_spinners` submits one
-    // final target-color patch and clears it, even if the process slept past
-    // the nominal transition deadline.
-    let transitioning = state.msgs.iter().any(|m| match m {
+    let transitioning = state.msgs.iter().any(|message| match message {
         Msg::Tool(card) => card.done_since.is_some() && card.done_from.is_some(),
         Msg::FileGroup(group) => group.done_since.is_some() && group.done_from.is_some(),
         Msg::Thinking(card) => card.done_since.is_some() && card.done_from.is_some(),
@@ -1916,64 +2365,61 @@ pub fn animation_active(state: &AppState, _now: std::time::Instant) -> bool {
     any_pending || transitioning
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TransitionTick {
+enum LegacyTransitionTick {
     None,
     Active,
     Finalize,
 }
 
-fn advance_transition(
+#[cfg(test)]
+fn advance_legacy_transition(
     done_since: &mut Option<std::time::Instant>,
     done_from: &mut Option<Color>,
     now: std::time::Instant,
-) -> TransitionTick {
+) -> LegacyTransitionTick {
     let (Some(at), Some(_)) = (*done_since, *done_from) else {
-        return TransitionTick::None;
+        return LegacyTransitionTick::None;
     };
     if now.saturating_duration_since(at).as_millis() < SETTLE_TRANSITION_MS {
-        TransitionTick::Active
+        LegacyTransitionTick::Active
     } else {
-        // Clearing the source before the patch makes the renderer choose the
-        // exact target color. Keep `done_since` as the lifecycle sentinel so a
-        // duplicate file result cannot restart an already-finished transition.
         *done_from = None;
-        TransitionTick::Finalize
+        LegacyTransitionTick::Finalize
     }
 }
 
-/// Advance the breathing/transition animation clock and mark only visible
-/// message ranges whose color can change. Status-only activity still requests
-/// a frame but does not dirty transcript lines.
-pub fn tick_spinners(state: &mut AppState, now: std::time::Instant) -> bool {
+#[cfg(test)]
+fn tick_legacy_spinners(state: &mut AppState, now: std::time::Instant) -> bool {
     let mut any_pending = state.working || state.status == AgentStatus::Running;
     let mut animation_changed = false;
     let msg_len = state.msgs.len();
     let mut dirty = Vec::new();
-    for (index, msg) in state.msgs.iter_mut().enumerate() {
-        let (pending, transition) = match msg {
+    for (index, message) in state.msgs.iter_mut().enumerate() {
+        let (pending, transition) = match message {
             Msg::Tool(card) => (
                 card.state == ToolState::Running,
-                advance_transition(&mut card.done_since, &mut card.done_from, now),
+                advance_legacy_transition(&mut card.done_since, &mut card.done_from, now),
             ),
             Msg::FileGroup(group) => (
                 group.pending(),
-                advance_transition(&mut group.done_since, &mut group.done_from, now),
+                advance_legacy_transition(&mut group.done_since, &mut group.done_from, now),
             ),
             Msg::Thinking(card) => (
                 card.state == ThinkState::Running,
-                advance_transition(&mut card.done_since, &mut card.done_from, now),
+                advance_legacy_transition(&mut card.done_since, &mut card.done_from, now),
             ),
-            Msg::Activity(row) => (row.state.is_active(), TransitionTick::None),
+            Msg::Activity(row) => (row.state.is_active(), LegacyTransitionTick::None),
             Msg::Block(block) => (
                 block.streaming && block.format != TranscriptFormat::Reasoning,
-                TransitionTick::None,
+                LegacyTransitionTick::None,
             ),
-            Msg::Streaming { .. } if index + 1 == msg_len => (true, TransitionTick::None),
-            _ => (false, TransitionTick::None),
+            Msg::Streaming { .. } if index + 1 == msg_len => (true, LegacyTransitionTick::None),
+            _ => (false, LegacyTransitionTick::None),
         };
         any_pending |= pending;
-        if pending || transition != TransitionTick::None {
+        if pending || transition != LegacyTransitionTick::None {
             dirty.push(index);
             animation_changed = true;
         }
@@ -1996,73 +2442,6 @@ fn host_event_time(event: &HostEvent) -> u64 {
             .map(|duration| duration.as_millis() as u64)
             .unwrap_or(0)
     })
-}
-
-/// Classify built-in file tools and str_replace_editor commands into the
-/// common activity vocabulary. Editor paths are absolute by schema, so make
-/// them workspace-relative when possible before they reach the display model.
-fn classify_file_call(
-    name: &str,
-    arguments: &str,
-    workspace: Option<&str>,
-) -> Option<(FileAction, String)> {
-    let parsed: Value = serde_json::from_str(arguments).ok()?;
-    let ordinary = match name {
-        "read" | "read_text" | "read_image" => Some(FileAction::Read),
-        "edit" | "write" => Some(FileAction::Edit),
-        _ => None,
-    };
-    if let Some(action) = ordinary {
-        let path = parsed
-            .get("file_path")
-            .or_else(|| parsed.get("filePath"))
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        return Some((action, path.to_owned()));
-    }
-    if name != "str_replace_editor" {
-        return None;
-    }
-    let action = match parsed.get("command").and_then(Value::as_str)? {
-        "view" => FileAction::View,
-        "create" => FileAction::Create,
-        "str_replace" => FileAction::Replace,
-        "insert" => FileAction::Insert,
-        _ => return None,
-    };
-    let path = parsed
-        .get("path")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    Some((action, workspace_relative_path(path, workspace)))
-}
-
-fn workspace_relative_path(path: &str, workspace: Option<&str>) -> String {
-    let normalize = |value: &str| value.trim_end_matches(['/', '\\']).replace('\\', "/");
-    let normalized_path = normalize(path);
-    let Some(workspace) = workspace else {
-        return normalized_path;
-    };
-    let normalized_workspace = normalize(workspace);
-    if normalized_workspace.is_empty() {
-        return normalized_path;
-    }
-    let path_parts: Vec<&str> = normalized_path.split('/').collect();
-    let workspace_parts: Vec<&str> = normalized_workspace.split('/').collect();
-    let inside_workspace = path_parts.len() >= workspace_parts.len()
-        && path_parts
-            .iter()
-            .zip(&workspace_parts)
-            .all(|(path, workspace)| path.eq_ignore_ascii_case(workspace));
-    if !inside_workspace {
-        return normalized_path;
-    }
-    let relative = &path_parts[workspace_parts.len()..];
-    if relative.is_empty() {
-        ".".to_owned()
-    } else {
-        relative.join("/")
-    }
 }
 
 #[cfg(test)]
@@ -2088,6 +2467,11 @@ mod tests {
             }),
         ));
         assert!(matches!(&s.msgs[0], Msg::User { text } if text == "原样展示 # not markdown"));
+        assert!(matches!(
+            &s.transcript.nodes()[0].item,
+            DisplayItem::Card(card)
+                if card.role == CardRole::User && card.content == "原样展示 # not markdown"
+        ));
     }
 
     #[test]
@@ -2146,6 +2530,18 @@ mod tests {
         ));
         assert_eq!(s.msgs.len(), 1);
         assert!(matches!(&s.msgs[0], Msg::Assistant { text, .. } if text == "你好，世界"));
+        assert_eq!(s.transcript.len(), 1);
+        assert!(matches!(
+            &s.transcript.nodes()[0].item,
+            DisplayItem::Block(block)
+                if block.format == TranscriptFormat::Markdown
+                    && block.content == "你好，世界"
+                    && !block.streaming
+        ));
+        assert!(s
+            .markdown_layout
+            .unit_start(s.transcript.nodes()[0].id())
+            .is_some());
     }
 
     #[test]
@@ -2172,6 +2568,10 @@ mod tests {
         ));
         assert!(matches!(&s.msgs[0], Msg::Tool(card)
             if card.state == ToolState::Done { ok: false, lines: 3, lines_truncated: false, duration_ms: 0 }));
+        assert!(matches!(
+            &s.transcript.nodes()[0].item,
+            DisplayItem::Activity(row) if row.state == ActivityState::Failure
+        ));
     }
 
     #[test]
@@ -2211,6 +2611,12 @@ mod tests {
                 .count(),
             1
         );
+        assert_eq!(s.transcript.len(), 1);
+        assert!(matches!(
+            &s.transcript.nodes()[0].item,
+            DisplayItem::Activity(row)
+                if row.label == "read" && row.continuations.len() == 2
+        ));
         // A non-file tool breaks the group; the next read starts a new one.
         s.apply_event(&event_seq(
             "tool/call",
@@ -2491,6 +2897,9 @@ mod tests {
             _ => false,
         });
         assert!(!any_running, "nothing left breathing");
+        for transition in s.activity_transitions.values_mut() {
+            transition.done_since = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        }
         for m in s.msgs.iter_mut() {
             let age = |d: &mut Option<std::time::Instant>| {
                 *d = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
@@ -3085,6 +3494,18 @@ mod tests {
             .msgs
             .iter()
             .any(|msg| matches!(msg, Msg::Block(block) if block.content.contains("future/audit"))));
+        assert!(s.transcript.nodes().iter().any(|node| matches!(
+            &node.item,
+            DisplayItem::Block(block)
+                if block.format == TranscriptFormat::UnknownFallback
+                    && block.content.contains("future/surface")
+        )));
+        assert!(s.transcript.nodes().iter().any(|node| matches!(
+            &node.item,
+            DisplayItem::Block(block)
+                if block.tone == DisplayTone::Error
+                    && block.content.contains("surface operation")
+        )));
     }
 
     #[test]
@@ -3212,6 +3633,17 @@ mod tests {
             before,
             "direct command result is deduplicated"
         );
+    }
+
+    #[test]
+    fn direct_command_result_without_log_activity_uses_public_block() {
+        let mut state = AppState::default();
+        state.apply_command_result("missing", "error", Some("denied"));
+        assert!(matches!(
+            &state.transcript.nodes()[0].item,
+            DisplayItem::Block(block)
+                if block.tone == DisplayTone::Error && block.content == "denied"
+        ));
     }
 
     #[test]
@@ -3516,6 +3948,16 @@ mod tests {
         }));
         assert_eq!(s.msgs.len(), 1);
         assert!(matches!(&s.msgs[0], Msg::Card(card) if card.content == "summary"));
+        assert_eq!(s.transcript.len(), 1);
+        assert!(matches!(
+            &s.transcript.nodes()[0].item,
+            DisplayItem::Card(card) if card.content == "summary"
+        ));
+        assert_eq!(
+            s.transcript.nodes()[0].surface_seq,
+            Some(14),
+            "replacement owns the original surface position"
+        );
         assert!(s.projector.is_shadowed(2));
     }
 
@@ -3682,6 +4124,18 @@ mod tests {
         assert_eq!(s.msgs.len(), 2);
         assert!(matches!(&s.msgs[0], Msg::User { text } if text == "前"));
         assert!(matches!(&s.msgs[1], Msg::User { text } if text == "后"));
+        let transcript_text = s
+            .transcript
+            .nodes()
+            .iter()
+            .filter_map(|node| match &node.item {
+                DisplayItem::Card(card) if card.role == CardRole::User => {
+                    Some(card.content.as_str())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(transcript_text, vec!["前", "后"]);
         assert!(!s.transcript_cache.valid, "prepend forces a full rebuild");
         assert_eq!(s.transcript_cache.prepend_anchor, Some(4));
         assert_eq!(s.min_seq, Some(2));

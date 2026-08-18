@@ -25,6 +25,12 @@ test('canonical contract owns protocol capacities and message roster', () => {
   assert.equal(supportsClientMessage('made-up-message'), false)
   assert.equal(new Set(WIRE_CONTRACT.clientMessages).size, WIRE_CONTRACT.clientMessages.length)
   assert.equal(new Set(WIRE_CONTRACT.serverMessages).size, WIRE_CONTRACT.serverMessages.length)
+  const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  assert.equal(
+    packageJson.dshCompatibility?.wireProtocol,
+    PROTOCOL_VERSION,
+    'package compatibility metadata follows the canonical wire contract',
+  )
   const docs = readFileSync(new URL('../../docs/protocol.md', import.meta.url), 'utf8')
   assert.match(docs, /Protocol version \| 4/)
   assert.match(docs, /`commands`/)

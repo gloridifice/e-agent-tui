@@ -7,7 +7,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::model::AppState;
+use crate::{model::AppState, transcript_layout::CopyLayoutRow};
 
 /// One navigable row: a rendered assistant line plus its provenance.
 #[derive(Debug, Clone)]
@@ -53,8 +53,8 @@ pub enum CopyAction {
     Moved(usize),
 }
 
-fn build_rows(state: &AppState) -> Vec<CopyRow> {
-    crate::ui::copy_layout_rows(state)
+fn build_rows(layout: Vec<CopyLayoutRow>) -> Vec<CopyRow> {
+    layout
         .into_iter()
         .map(|row| CopyRow {
             unit: row.unit,
@@ -81,23 +81,27 @@ pub struct CopyRowsCache {
 }
 
 impl CopyRowsCache {
-    pub fn rows<'a>(&'a mut self, state: &AppState) -> &'a [CopyRow] {
+    pub fn rows_with<'a>(
+        &'a mut self,
+        state: &AppState,
+        build_layout: impl FnOnce() -> Vec<CopyLayoutRow>,
+    ) -> &'a [CopyRow] {
         let transcript = &state.transcript_cache;
         let reusable = self.initialized
             && transcript.valid
             && !transcript.tail_dirty
             && self.generation == transcript.generation
             && self.width == transcript.width
-            && self.message_count == state.msgs.len();
+            && self.message_count == state.transcript.len();
         if !reusable {
-            self.rows = build_rows(state);
+            self.rows = build_rows(build_layout());
             #[cfg(test)]
             {
                 self.rebuilds += 1;
             }
             self.generation = transcript.generation;
             self.width = transcript.width;
-            self.message_count = state.msgs.len();
+            self.message_count = state.transcript.len();
             self.initialized = true;
         }
         &self.rows
@@ -106,11 +110,6 @@ impl CopyRowsCache {
     pub fn invalidate(&mut self) {
         self.initialized = false;
     }
-}
-
-/// Flatten the assistant transcript into navigable rows.
-pub fn flatten(state: &AppState) -> Vec<CopyRow> {
-    build_rows(state)
 }
 
 impl CopyMode {
@@ -329,6 +328,10 @@ mod tests {
     use crate::model::{AppState, Msg};
     use crate::render::{render_markdown, RenderOptions};
 
+    fn flatten(state: &AppState) -> Vec<CopyRow> {
+        build_rows(crate::ui::copy_layout_rows(state))
+    }
+
     fn state_with(md: &str) -> AppState {
         let mut state = AppState::default();
         let lines = render_markdown(
@@ -410,12 +413,18 @@ mod tests {
         state.transcript_cache.width = 3;
         state.transcript_cache.generation = 1;
         let mut cache = CopyRowsCache::default();
-        assert!(!cache.rows(&state).is_empty());
-        assert!(!cache.rows(&state).is_empty());
+        assert!(!cache
+            .rows_with(&state, || crate::ui::copy_layout_rows(&state))
+            .is_empty());
+        assert!(!cache
+            .rows_with(&state, || crate::ui::copy_layout_rows(&state))
+            .is_empty());
         assert_eq!(cache.rebuilds, 1);
 
         state.transcript_cache.generation += 1;
-        assert!(!cache.rows(&state).is_empty());
+        assert!(!cache
+            .rows_with(&state, || crate::ui::copy_layout_rows(&state))
+            .is_empty());
         assert_eq!(cache.rebuilds, 2);
     }
 

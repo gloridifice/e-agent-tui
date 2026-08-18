@@ -1,10 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import {
-  defaultModelSelection,
-  installModelSelection,
-  isExistingDirectory,
-  sessionPresetOf,
-} from './compose.js'
+import { isExistingDirectory, sessionPresetOf } from './compose.js'
 
 /**
  * Session creation/resume policy isolated from WebSocket dispatch. `attach`
@@ -15,11 +10,17 @@ export function createSessionService({
   host,
   ctx,
   modelSelections,
+  modelSelection,
   attach,
   detach,
   isCurrent = () => true,
   warn = console.warn,
 }) {
+  if (typeof modelSelection?.defaultSelection !== 'function'
+    || typeof modelSelection?.install !== 'function') {
+    throw new Error('model-selection adapter is required')
+  }
+
   async function resolvePreset(agentPresets, wanted, fallbackStandard) {
     if (!agentPresets) return undefined
     const attempts = fallbackStandard ? [wanted, 'standard', undefined] : [wanted]
@@ -68,13 +69,16 @@ export function createSessionService({
     const mirror = current?.options?.provider !== undefined && current?.options?.model !== undefined
       ? { provider: current.options.provider, model: current.options.model }
       : undefined
-    const selection = { current: mirror ?? defaultModelSelection(ctx), assembled: undefined }
+    const selection = {
+      current: mirror ?? modelSelection.defaultSelection(ctx),
+      assembled: undefined,
+    }
     const { agent } = await agents.create({
       sessionId: `session-${randomUUID()}`,
       meta: { cwd, ...(preset ? { agentPreset: preset.id } : {}) },
       agentOptions,
       setup: async (agentCtx) => {
-        installModelSelection(agentCtx, selection)
+        await modelSelection.install(agentCtx, selection)
         if (preset) await agentPresets.mount(agentCtx, preset.id)
       },
     })
@@ -104,11 +108,14 @@ export function createSessionService({
           return undefined
         }
       }
-      const selection = { current: defaultModelSelection(ctx), assembled: undefined }
+      const selection = {
+        current: modelSelection.defaultSelection(ctx),
+        assembled: undefined,
+      }
       const { agent } = await agents.resume({
         resumeSessionId: sessionId,
         setup: async (agentCtx) => {
-          installModelSelection(agentCtx, selection)
+          await modelSelection.install(agentCtx, selection)
           if (preset) await agentPresets.mount(agentCtx, preset.id)
         },
       })

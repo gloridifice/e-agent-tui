@@ -11,17 +11,19 @@ use std::{io, time::Instant};
 
 use e::{
     config::Config,
+    display::{
+        CardRole, ContentCard, DisplayId, DisplayItem, DisplayTone, TranscriptBlock,
+        TranscriptFormat,
+    },
     input::InputState,
-    model::{tick_spinners, AppState, Msg},
+    model::{tick_spinners, AppState},
     profile::{percentile, CountingBackend, CountingWriter, IoCounters},
-    render::RenderLine,
     ui::{render, scroll_lines, RenderOverlays, ScrollState},
 };
 use ratatui::{
     backend::{Backend, ClearType, CrosstermBackend, WindowSize},
     buffer::Cell,
     layout::{Position, Size},
-    text::Line,
     Terminal,
 };
 
@@ -99,34 +101,56 @@ fn fixture() -> (AppState, Config) {
     state.config = config.clone();
     for index in 0..1_000usize {
         if index % 5 == 0 {
-            state.msgs.push(Msg::User {
-                text: format!(
-                    "request {index}: {}",
-                    "中文 wrapped content ".repeat(4 + index % 3)
-                ),
-            });
+            let text = format!(
+                "request {index}: {}",
+                "中文 wrapped content ".repeat(4 + index % 3)
+            );
+            state.transcript.append(
+                DisplayItem::Card(ContentCard {
+                    id: DisplayId::correlated("benchmark-user", &index.to_string()),
+                    unit: None,
+                    header: None,
+                    content: text.clone(),
+                    role: CardRole::User,
+                    tone: DisplayTone::Normal,
+                    horizontal_padding: state.config.user_input_padding,
+                    copy_source: text,
+                }),
+                None,
+            );
         } else {
             let text = format!(
                 "response {index}: {}",
                 "rendering benchmark content with markdown-like text ".repeat(3 + index % 4)
             );
-            state.msgs.push(Msg::Assistant {
-                text: text.clone(),
-                lines: vec![RenderLine {
-                    line: Line::from(text),
-                    unit: index as u64 + 1,
-                    raw_line: Some(0),
-                    atomic: false,
-                    fill: false,
-                }],
-                unit_start: index as u64 + 1,
-            });
+            state.transcript.append(
+                DisplayItem::Block(TranscriptBlock {
+                    id: DisplayId::correlated("benchmark-assistant", &index.to_string()),
+                    unit: None,
+                    content: text.clone(),
+                    format: TranscriptFormat::Markdown,
+                    tone: DisplayTone::Normal,
+                    copy_source: text,
+                    streaming: false,
+                }),
+                None,
+            );
         }
     }
     state.start_thinking();
-    state.msgs.push(Msg::Streaming {
-        text: "stream".into(),
-    });
+    let stream_id = DisplayId::correlated("benchmark-assistant", "stream");
+    state.transcript.append(
+        DisplayItem::Block(TranscriptBlock {
+            id: stream_id,
+            unit: None,
+            content: "stream".into(),
+            format: TranscriptFormat::Markdown,
+            tone: DisplayTone::Normal,
+            copy_source: "stream".into(),
+            streaming: true,
+        }),
+        None,
+    );
     (state, config)
 }
 
@@ -166,11 +190,17 @@ fn run(width: u16, height: u16) -> anyhow::Result<()> {
     state.transcript_cache.take_work_stats();
     let mut rebuilds = 0u64;
     let mut patches = 0u64;
+    let stream_id = DisplayId::correlated("benchmark-assistant", "stream");
     for frame_index in 0..FRAMES {
-        if let Some(Msg::Streaming { text }) = state.msgs.last_mut() {
-            text.push(char::from(b'a' + (frame_index % 26) as u8));
-            state.transcript_cache.mark_tail_dirty();
+        if let Some(node) = state.transcript.get_mut(&stream_id) {
+            if let DisplayItem::Block(block) = &mut node.item {
+                let next = char::from(b'a' + (frame_index % 26) as u8);
+                block.content.push(next);
+                block.copy_source.push(next);
+            }
         }
+        state.transcript.touch(&stream_id);
+        state.transcript_cache.mark_tail_dirty();
         tick_spinners(&mut state, Instant::now());
         let visible = height.saturating_sub(7) as usize;
         let total = state.transcript_cache.display_len();

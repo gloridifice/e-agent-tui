@@ -6,23 +6,13 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+pub use crate::command_catalog::NewMode;
+use crate::command_catalog::{
+    completion_context, match_command_catalog, CommandSource, CompletionKind,
+};
 use crate::config::Config;
 use crate::model::AppState;
 use crate::protocol::{ClientMessage, CommandInfo, SkillInfo};
-use crate::runtime_command::{
-    completion_context, match_command_catalog, CommandSource, CompletionKind,
-};
-
-/// One selectable `/new` mode: an agent preset pushed by the bridge's
-/// `presets` roster message (broken presets are filtered out before they
-/// land here).
-#[derive(Debug, Clone)]
-pub struct NewMode {
-    pub id: String,
-    /// Display name; the popup falls back to the id when absent.
-    pub name: Option<String>,
-    pub description: Option<String>,
-}
 
 pub struct InputState {
     pub buf: String,
@@ -797,7 +787,7 @@ impl InputState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime_command::BUILTIN_COMMANDS;
+    use crate::command_catalog::BUILTIN_COMMANDS;
     use crossterm::event::{KeyEvent, KeyModifiers};
 
     fn key(code: KeyCode) -> KeyEvent {

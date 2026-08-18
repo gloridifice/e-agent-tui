@@ -225,7 +225,8 @@ pub fn render_with_cursor(
     } = overlays;
     let area = frame.area();
     // Page: fixed side margins, capped at the configured max width and
-    // centered; text wraps within this content width.
+    // horizontally aligned (居中/左对齐/右对齐); text wraps within this
+    // content width.
     let available = area.width.saturating_sub(PAGE_MARGIN * 2);
     let max_width = state.config.page_max_width as u16;
     let content_width = if max_width > 0 {
@@ -233,8 +234,18 @@ pub fn render_with_cursor(
     } else {
         available
     };
+    let content_x = match state.config.page_align.as_str() {
+        "left" => area.x + PAGE_MARGIN,
+        "right" => {
+            area.x
+                + area
+                    .width
+                    .saturating_sub(content_width.saturating_add(PAGE_MARGIN))
+        }
+        _ => area.x + area.width.saturating_sub(content_width) / 2,
+    };
     let page = ratatui::layout::Rect {
-        x: area.x + area.width.saturating_sub(content_width) / 2,
+        x: content_x,
         y: area.y,
         width: content_width,
         height: area.height,
@@ -2784,6 +2795,75 @@ mod tests {
         );
     }
 
+    /// The configured page alignment positions the capped content area:
+    /// 居中 (default) keeps it centered, 左对齐 pins it to the left margin,
+    /// and 右对齐 pins it to the right margin.
+    #[test]
+    fn page_alignment_moves_the_content_area() {
+        use ratatui::backend::TestBackend;
+
+        let mut config = crate::config::Config::default();
+        // ui tests assert the ferra palette — pin the resolved theme so the
+        // default (deepseek-e) doesn't shift the expected colors.
+        config.resolved_theme = Theme::ferra();
+        config.page_max_width = 40;
+        let input = InputState::new(&config);
+        let theme = Theme::ferra();
+        // (alignment, content start x, content end x) on an 80-col terminal.
+        let cases: &[(&str, u16, u16)] = &[("center", 20, 60), ("left", 4, 44), ("right", 36, 76)];
+        for (align, start, end) in cases {
+            config.page_align = (*align).into();
+            let mut s = AppState::default();
+            s.config = config.clone();
+            s.msgs.push(Msg::Assistant {
+                text: "aligned".into(),
+                lines: vec![RenderLine {
+                    line: Line::from("aligned"),
+                    unit: 0,
+                    raw_line: Some(0),
+                    atomic: false,
+                    fill: false,
+                }],
+                unit_start: 0,
+            });
+            let mut scroll = ScrollState::default();
+            let backend = TestBackend::new(80, 20);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            terminal
+                .draw(|f| {
+                    render(
+                        f,
+                        &mut s,
+                        &input,
+                        &mut scroll,
+                        &theme,
+                        RenderOverlays {
+                            input_page: None,
+                            help_visible: false,
+                            overlay: None,
+                            toast: None,
+                            settings: None,
+                            login: None,
+                        },
+                    )
+                })
+                .unwrap();
+            let buf = terminal.backend().buffer();
+            let content: String = (*start..*end)
+                .map(|x| buf[(x, 0)].symbol().chars().next().unwrap_or(' '))
+                .collect();
+            assert_eq!(content.trim_end(), "aligned", "{align}: content position");
+            assert!(
+                buf[(start - 1, 0)].symbol().trim().is_empty(),
+                "{align}: left gutter is empty"
+            );
+            assert!(
+                buf[(*end, 0)].symbol().trim().is_empty(),
+                "{align}: right gutter is empty"
+            );
+        }
+    }
+
     /// Activity rows use the configured page width for their ellipsis. A
     /// narrower page must not wrap a tool summary that still fits the terminal.
     #[test]
@@ -3626,6 +3706,110 @@ mod tests {
             .any(|cell| cell.symbol() == "续"));
         assert!(text.contains("actual session title"));
         assert!(!text.contains('┌') && !text.contains('┐'));
+    }
+
+    /// Regression: `/resume` rows must not punch the terminal default
+    /// background through the shell — the live-dot and session-id spans
+    /// used to fall back to `Color::Reset` on unselected rows, leaving a
+    /// raw terminal-background strip under the id text. Unselected rows
+    /// must stay on the shell panel color; the selected row fills with the
+    /// highlight across its rendered text.
+    #[test]
+    fn resume_rows_backgrounds_are_themed_not_reset() {
+        use ratatui::backend::TestBackend;
+
+        let theme = Theme::ferra();
+        let config = crate::config::Config::default();
+        let mut page = crate::input_page::InputPageSession::resume();
+        page.apply_sessions(
+            vec![
+                crate::protocol::SessionInfo {
+                    id: "session-1".into(),
+                    title: "first session".into(),
+                    live: true,
+                    created_at: 1,
+                },
+                crate::protocol::SessionInfo {
+                    id: "session-2".into(),
+                    title: "second session".into(),
+                    live: false,
+                    created_at: 2,
+                },
+            ],
+            false,
+        );
+        let backend = TestBackend::new(60, 12);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render_input_page(
+                    frame,
+                    ratatui::layout::Rect::new(0, 0, 60, 12),
+                    &mut page,
+                    &config,
+                    &theme,
+                )
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let row = |y: u16| -> String {
+            (0..60u16)
+                .map(|x| buffer[(x, y)].symbol().chars().next().unwrap_or(' '))
+                .collect()
+        };
+        // Selected (first) row: every rendered cell fills with the highlight.
+        let selected_y = (0..12u16)
+            .find(|&y| row(y).contains("first session"))
+            .expect("selected row rendered");
+        let last_x = (0..60u16)
+            .rev()
+            .find(|&x| buffer[(x, selected_y)].symbol() != " ")
+            .expect("selected row has content");
+        for x in 2..=last_x {
+            assert_eq!(
+                buffer[(x, selected_y)].bg,
+                theme.bg,
+                "selected row bg at ({x},{selected_y})"
+            );
+        }
+        // Unselected (second) row: the whole row stays on the shell panel
+        // color, including the live-dot column and the session id.
+        let unselected_y = (0..12u16)
+            .find(|&y| row(y).contains("second session"))
+            .expect("unselected row rendered");
+        for x in 0..60u16 {
+            assert_eq!(
+                buffer[(x, unselected_y)].bg,
+                theme.bg_soft,
+                "unselected row bg at ({x},{unselected_y})"
+            );
+        }
+        // No *visible* cell anywhere may fall back to the terminal default
+        // background. Wide-glyph continuation cells are exempt: ratatui
+        // resets them (empty style) and the paragraph line fill writes a
+        // space into them, but they stay hidden behind the double-width
+        // glyph, so they must not fail the assertion.
+        let mut visible_resets: Vec<(u16, u16)> = Vec::new();
+        for y in 0..12u16 {
+            let mut skip_continuation = false;
+            for x in 0..60u16 {
+                let cell = &buffer[(x, y)];
+                if skip_continuation {
+                    skip_continuation = false;
+                    continue;
+                }
+                if UnicodeWidthStr::width(cell.symbol()) > 1 {
+                    skip_continuation = true;
+                }
+                if cell.bg == ratatui::style::Color::Reset {
+                    visible_resets.push((x, y));
+                }
+            }
+        }
+        assert!(
+            visible_resets.is_empty(),
+            "no visible cell may fall back to the terminal default background: {visible_resets:?}"
+        );
     }
 
     #[test]

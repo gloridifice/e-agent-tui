@@ -50,7 +50,7 @@ pub(super) fn render_model_page(
                     if active { "● " } else { "○ " },
                     Style::default()
                         .fg(if active { theme.ok } else { theme.dim })
-                        .bg(style.bg.unwrap_or(ratatui::style::Color::Reset)),
+                        .bg(style.bg.unwrap_or(theme.bg_soft)),
                 ),
                 Span::styled(
                     trim_to_width(&provider.name, columns[0].width.saturating_sub(2) as usize),
@@ -91,7 +91,7 @@ pub(super) fn render_model_page(
                     if selected { "● " } else { "○ " },
                     Style::default()
                         .fg(if selected { theme.ok } else { theme.dim })
-                        .bg(style.bg.unwrap_or(ratatui::style::Color::Reset)),
+                        .bg(style.bg.unwrap_or(theme.bg_soft)),
                 ),
                 Span::styled(
                     trim_to_width(&model.name, columns[2].width.saturating_sub(2) as usize),

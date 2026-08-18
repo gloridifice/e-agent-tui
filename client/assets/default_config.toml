@@ -31,3 +31,5 @@ mermaid_enabled = true
 user_input_padding = 2
 # 0 = unlimited (terminal width minus side margins).
 page_max_width = 0
+# Horizontal alignment of the capped content page: center | left | right.
+page_align = "center"

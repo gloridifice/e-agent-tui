@@ -70,9 +70,12 @@ pub struct Config {
     /// box — live-editable via /settings.
     pub user_input_padding: usize,
     /// Maximum page width in columns (0 = unlimited, use the terminal width
-    /// minus the side margins). The content area is centered and capped at
-    /// this width; longer text wraps.
+    /// minus the side margins). The content area is capped at this width;
+    /// longer text wraps.
     pub page_max_width: usize,
+    /// Horizontal alignment of the capped content page: `center` (default),
+    /// `left`, or `right`. Unknown values fall back to `center`.
+    pub page_align: String,
 }
 
 /// Recursively overlay only keys present in the embedded schema. Unknown keys
@@ -183,6 +186,16 @@ impl Config {
             ThinkingDisplayMode::Full => "Full",
         }
     }
+
+    /// Display label of the page horizontal alignment (居中/左对齐/右对齐).
+    /// Unknown values fall back to 居中, matching the layout behavior.
+    pub fn page_align_label(&self) -> &'static str {
+        match self.page_align.as_str() {
+            "left" => "左对齐",
+            "right" => "右对齐",
+            _ => "居中",
+        }
+    }
 }
 
 /// Last-attached session id, remembered across runs (D17).
@@ -225,6 +238,7 @@ mod tests {
         assert_eq!(config.default_mode, "standard");
         assert_eq!(config.paste_placeholder_chars, 64);
         assert_eq!(config.page_max_width, 0);
+        assert_eq!(config.page_align, "center");
         assert_eq!(config.thinking_display, "compact");
         assert_eq!(config.thinking_lines, 2);
         assert_eq!(config.thinking_display_mode(), ThinkingDisplayMode::Compact);
@@ -236,11 +250,13 @@ mod tests {
             r#"
                 theme = "ferra"
                 spinner_frame_ms = 250
+                page_align = "right"
             "#,
         )
         .expect("partial config overlays defaults");
         assert_eq!(config.theme, "ferra");
         assert_eq!(config.spinner_frame_ms, 250);
+        assert_eq!(config.page_align, "right");
         assert_eq!(config.spinner_style, "A");
         assert_eq!(config.history_limit, 1000);
         assert_eq!(config.thinking_display, "compact");

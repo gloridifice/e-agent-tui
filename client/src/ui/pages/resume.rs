@@ -52,14 +52,14 @@ pub(super) fn render_resume_page(
                 if session.live { "● " } else { "  " },
                 Style::default()
                     .fg(if session.live { theme.ok } else { theme.dim })
-                    .bg(style.bg.unwrap_or(ratatui::style::Color::Reset)),
+                    .bg(style.bg.unwrap_or(theme.bg_soft)),
             ),
             Span::styled(trim_to_width(title, title_width), style),
             Span::styled(
                 format!("  {shown_id}"),
                 Style::default()
                     .fg(theme.dim)
-                    .bg(style.bg.unwrap_or(ratatui::style::Color::Reset)),
+                    .bg(style.bg.unwrap_or(theme.bg_soft)),
             ),
         ]));
     }

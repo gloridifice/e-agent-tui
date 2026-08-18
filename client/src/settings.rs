@@ -80,13 +80,29 @@ pub static ITEMS: &[ItemDef] = &[
     ItemDef {
         category: 0,
         label: "页面最大宽度",
-        desc: "正文列最大宽度（列），0 表示不限，内容居中",
+        desc: "正文列最大宽度（列），0 表示不限，配合页面对齐定位",
         kind: ItemKind::Input,
         get: |c| c.page_max_width.to_string(),
         apply: |c, v| {
             if let Ok(n) = v.parse::<usize>() {
                 c.page_max_width = n.min(500);
             }
+        },
+    },
+    ItemDef {
+        category: 0,
+        label: "页面对齐",
+        desc: "页面限宽时的水平对齐：居中/左对齐/右对齐",
+        kind: ItemKind::Choice {
+            options: &["居中", "左对齐", "右对齐"],
+        },
+        get: |c| c.page_align_label().to_string(),
+        apply: |c, v| {
+            c.page_align = match v.as_str() {
+                "左对齐" => "left".into(),
+                "右对齐" => "right".into(),
+                _ => "center".into(),
+            };
         },
     },
     ItemDef {
@@ -625,6 +641,31 @@ mod tests {
     }
 
     #[test]
+    fn page_align_choice_edits() {
+        let mut s = SettingsState::default();
+        let mut config = Config::default();
+        assert_eq!(config.page_align, "center");
+        assert_eq!(config.page_align_label(), "居中");
+        let index = items_in(0)
+            .iter()
+            .position(|item| item.label == "页面对齐")
+            .expect("页面对齐 item exists");
+        s.pos[0] = index;
+        s.handle_key(&key(KeyCode::Enter), &mut config);
+        assert_eq!(s.editing, Some(Edit::Choice { cursor: 0 }));
+        s.handle_key(&key(KeyCode::Right), &mut config); // 左对齐
+        s.handle_key(&key(KeyCode::Enter), &mut config);
+        assert_eq!(config.page_align, "left");
+        // The next edit reopens on the current value and wraps to 右对齐.
+        s.handle_key(&key(KeyCode::Enter), &mut config);
+        assert_eq!(s.editing, Some(Edit::Choice { cursor: 1 }));
+        s.handle_key(&key(KeyCode::Right), &mut config); // 右对齐
+        s.handle_key(&key(KeyCode::Enter), &mut config);
+        assert_eq!(config.page_align, "right");
+        assert_eq!(config.page_align_label(), "右对齐");
+    }
+
+    #[test]
     fn esc_exits() {
         let mut s = SettingsState::default();
         let mut config = Config::default();
@@ -691,7 +732,11 @@ mod tests {
         config.default_mode = "gone".into();
         let modes = vec!["standard".to_string(), "minimal".to_string()];
         let no_themes: Vec<String> = vec![];
-        let opts = dynamic_options(&ITEMS[5], &config, &modes, &no_themes);
+        let mode_def = ITEMS
+            .iter()
+            .find(|item| item.label == "默认模式")
+            .expect("默认模式 item exists");
+        let opts = dynamic_options(mode_def, &config, &modes, &no_themes);
         assert_eq!(opts, vec!["standard", "minimal", "gone"]);
         // Static choices pass through unchanged.
         assert_eq!(

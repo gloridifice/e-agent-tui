@@ -42,7 +42,7 @@ pub(super) fn render_theme_page(
                 if selected { "● " } else { "○ " },
                 Style::default()
                     .fg(if selected { theme.ok } else { theme.dim })
-                    .bg(style.bg.unwrap_or(ratatui::style::Color::Reset)),
+                    .bg(style.bg.unwrap_or(theme.bg_soft)),
             ),
             Span::styled(format!("{:<18}", option.name), style),
         ];

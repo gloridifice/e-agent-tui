@@ -86,9 +86,14 @@ cargo 走 crates.io 官方源（本机网络已修复）。`client/vendor/` 与
 - **思考输出（reasoning）折叠**：`TranscriptFormat::Reasoning` 块在 compact 模式不渲染到屏幕、也不进
   copy provenance（生产 `ui/transcript.rs::is_hidden_item` 让 layout/cache/copy 都跳过它，且不产生行间 gap）；
   活动行邻接必须查找下一个**非隐藏** DisplayItem，隐藏 reasoning 不得拆开本应 glued 的活动行。
+  lines/full 模式直接渲染 reasoning 内容：lines 的上限是**折行后的显示行数**（width-aware wrap 先于
+  `thinking_lines` 截断）；且只要 reasoning 可见，紧邻其前的 `Thinking...` 活动行由
+  `thinking_row_superseded` 接管隐藏（不渲染、不留 gap），隐藏判定对渲染/copy/邻接/隐藏自身都须统一
+  （`is_hidden_node`），动画 patch 对隐藏节点跳过且**不得**落入全量 rebuild fallback。
   思考过程由 `• Thinking... xN` 呼吸灯表示；`assistant/chunk` 只带 reasoning 时不结算，直到真正的
   answer text 到达才结算绿色。因此 Thinking settlement 必须在 `TranscriptStore` 中向后查找 Running
   Thinking 活动，不能假设最后一个节点可见。
+- **上下文注入卡**：`CardRole::Context` 的可见内容按 width-aware wrap 最多展示 5 行；若超出，第 5 行替换为 `...`。卡的 `copy_source`/copy unit 必须保留完整原文，不能因显示裁剪而截断。
 - **文件活动折叠**：`FileGroup` 用统一 `FileItem + FileAction` 保留 `read/view/edit/replace/insert`
   标签，连续的 `str_replace_editor` view/str_replace/insert 与 read/edit 进入同一折叠活动行；编辑器
   的绝对路径按 `session_cwd` 转成工作区相对路径。create 不进入 FileGroup，单独显示为
@@ -321,10 +326,8 @@ cargo 走 crates.io 官方源（本机网络已修复）。`client/vendor/` 与
 
 ## 维护纪律
 
-- **任何任务完成后，必须同步更新 `README.md`、本文件（AGENTS.md）与 `docs/`**
-  （design.md 等）：功能、交互键位、协议字段、配置默认值、命令清单有变时，
-  三处文档要与代码一致，不得滞后。键位变更还要同步 `ui.rs` 的 `help_overlay`。
-- 客户端新增/修改了可见行为时，README「功能」与「快捷键速查」两节按需增补。
+- 任务完成后，按改动范围同步更新本文件（AGENTS.md）及相关 `docs/`（如 design.md）；功能、交互键位、协议字段、配置默认值或命令清单的说明不得滞后。键位变更还要同步 `ui.rs` 的 `help_overlay`。
+- **非必要不更新 `README.md`，并始终保持其简洁。** 仅当安装/构建流程、核心用户可见能力或快捷键速查等面向用户的基础信息发生实质变化时，才更新 README；实现细节、架构说明、协议细节和开发记录应放在 `docs/`，而不是扩充 README。
 
 ## 测试纪律
 

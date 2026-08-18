@@ -41,3 +41,10 @@ Desktop.ini
 .env
 .env.*
 !.env.example
+
+# Agents
+.pi
+.claude
+.opencode
+.dsh
+.brooks-lint-history.json

@@ -609,8 +609,8 @@ roster 快照，每次 attach（hello/`/new`/Resume）后紧随 `welcome` 下发
 | 表面 | 用途 | 代表事件 |
 |---|---|---|
 | `ActivityRow` | Waiting/Running/Success/Failure/Cancelled 活动，可带 parent/depth | Thinking、tool、retry、command、Code Mode、workflow、compaction |
-| `TranscriptBlock` | 无工作状态的 plain/Markdown/fallback 内容；reasoning 块折叠进 `• Thinking...` 呼吸灯，不渲染、不进 copy provenance，并对活动行邻接透明 | assistant、turn notice/error |
-| `ContentCard` | 统一内边距、背景与 copy source 的内容卡 | 用户消息、context、附件占位、compaction summary |
+| `TranscriptBlock` | 无工作状态的 plain/Markdown/fallback 内容；compact 模式下 reasoning 块折叠进 `• Thinking...` 呼吸灯，不渲染、不进 copy provenance，并对活动行邻接透明；lines/full 模式直接渲染内容（lines 按折行后的显示行数截断），此时相邻 Thinking 指示行被接管隐藏 | assistant、turn notice/error |
+| `ContentCard` | 统一内边距、背景与 copy source 的内容卡；context 注入卡按折行后的显示行数最多展示 5 行，超出时最后一行显示 `...`，但 copy source 保留完整原文 | 用户消息、context、附件占位、compaction summary |
 | `InputAccessory` | 输入栏上方、统一高度预算/优先级/焦点 | queue、approval、question、todo、goal、plan |
 
 文件活动由 `FileAction` 保留操作标签：连续的 `read`、`view`、`edit`、`replace`、`insert`

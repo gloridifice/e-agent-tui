@@ -22,6 +22,7 @@ use crate::{
     input_page::{FocusId, InputPage, InputPageSession, ModelPage, ResumePage, ThemePage},
     login::LoginState,
     model::{breathing_color, settle_color, AgentStatus, AppState},
+    projection::TranscriptNode,
     settings::SettingsState,
     transcript_layout::{truncate_activity_line, wrap_line, wrapped_rows, CopyLayoutRow},
 };
@@ -50,7 +51,7 @@ use status::{render_status, render_title};
 pub use transcript::{copy_layout_rows, scroll_lines, scroll_page};
 #[cfg(test)]
 use transcript::{legacy_test_lines, legacy_test_styled_lines};
-use transcript::{render_transcript, InputPageRegions};
+use transcript::{render_transcript, render_transcript_combined, InputPageRegions};
 
 const INPUT_MAX_ROWS: usize = 3;
 
@@ -258,7 +259,8 @@ pub fn render_with_cursor(
     let plan_rows = accessory_rows(InputAccessoryKind::Plan);
     let todo_rows = accessory_rows(InputAccessoryKind::Todo);
     let queue_visible = usize::from(accessory_rows(InputAccessoryKind::Queue));
-    let chunks = Layout::vertical([
+    if input_page_open {
+        let chunks = Layout::vertical([
         Constraint::Min(1),
         Constraint::Length(question_rows),
         Constraint::Length(approval_rows),
@@ -347,6 +349,151 @@ pub fn render_with_cursor(
     if !input_page_open && state.question.is_none() {
         if let Some(suggest) = input.suggest.as_ref() {
             render_suggest(frame, suggest, chunks[7], theme);
+        }
+    }
+    return cursor_anchor;
+    }
+
+    // Ordinary mode: accessories, input bar, status and title are part of the
+    // scrollable content. They are pinned at the screen bottom while following
+    // the transcript, and move down/off-screen when the user scrolls back.
+    let bottom_stack = usize::from(question_rows)
+        + usize::from(approval_rows)
+        + usize::from(goal_rows)
+        + usize::from(plan_rows)
+        + usize::from(todo_rows)
+        + queue_visible
+        + usize::from(bottom_rows)
+        + 3;
+    let transcript_bottom = render_transcript_combined(
+        frame,
+        page,
+        state,
+        scroll,
+        theme,
+        help_visible,
+        overlay,
+        bottom_stack,
+    );
+    let mut cursor_anchor = None;
+    let mut input_rect = None;
+    let mut y = page.y + transcript_bottom as u16;
+    let end_y = page.y + page.height;
+
+    if question_rows > 0 && y < end_y {
+        let h = (end_y - y).min(question_rows);
+        render_question(
+            frame,
+            ratatui::layout::Rect::new(page.x, y, page.width, h),
+            state.question.as_ref().unwrap(),
+            theme,
+        );
+        y = y.saturating_add(question_rows);
+    }
+    if approval_rows > 0 && y < end_y {
+        let h = (end_y - y).min(approval_rows);
+        render_approval(
+            frame,
+            ratatui::layout::Rect::new(page.x, y, page.width, h),
+            state.approval.as_ref().unwrap(),
+            theme,
+        );
+        y = y.saturating_add(approval_rows);
+    }
+    if goal_rows > 0 && y < end_y {
+        let h = (end_y - y).min(goal_rows);
+        render_info_accessory(
+            frame,
+            ratatui::layout::Rect::new(page.x, y, page.width, h),
+            "Goal",
+            state.goal.as_deref().unwrap_or(""),
+            theme,
+        );
+        y = y.saturating_add(goal_rows);
+    }
+    if plan_rows > 0 && y < end_y {
+        let h = (end_y - y).min(plan_rows);
+        render_info_accessory(
+            frame,
+            ratatui::layout::Rect::new(page.x, y, page.width, h),
+            "Plan",
+            state.plan_mode.as_deref().unwrap_or(""),
+            theme,
+        );
+        y = y.saturating_add(plan_rows);
+    }
+    if todo_rows > 0 && y < end_y {
+        let h = (end_y - y).min(todo_rows);
+        render_todo(
+            frame,
+            ratatui::layout::Rect::new(page.x, y, page.width, h),
+            &state.todos,
+            theme,
+        );
+        y = y.saturating_add(todo_rows);
+    }
+    if queue_visible > 0 && y < end_y {
+        let h = (end_y - y).min(queue_visible as u16);
+        render_queue(
+            frame,
+            ratatui::layout::Rect::new(page.x, y, page.width, h),
+            &state.queue,
+            queue_visible,
+            theme,
+        );
+        y = y.saturating_add(queue_visible as u16);
+    }
+    if y < end_y {
+        let h = (end_y - y).min(bottom_rows);
+        let rect = ratatui::layout::Rect::new(page.x, y, page.width, h);
+        input_rect = Some(rect);
+        cursor_anchor = if let Some(question) = state.question.as_ref() {
+            render_question_bar(
+                frame,
+                rect,
+                question,
+                theme,
+                state.config.user_input_padding as u16,
+            )
+        } else {
+            render_input(
+                frame,
+                rect,
+                input,
+                theme,
+                overlay.is_some(),
+                toast,
+                state.config.user_input_padding as u16,
+            )
+        };
+        y = y.saturating_add(bottom_rows);
+    }
+    if y < end_y {
+        y = y.saturating_add(1);
+    }
+    if y < end_y {
+        render_status(
+            frame,
+            ratatui::layout::Rect::new(page.x, y, page.width, 1),
+            state,
+            scroll,
+            theme,
+        );
+        y = y.saturating_add(1);
+    }
+    if y < end_y {
+        render_title(
+            frame,
+            ratatui::layout::Rect::new(page.x, y, page.width, 1),
+            state,
+            theme,
+        );
+    }
+    if state.question.is_none() {
+        if let Some(suggest) = input.suggest.as_ref() {
+            if let Some(rect) = input_rect {
+                render_suggest(frame, suggest, rect, theme);
+            }
         }
     }
     cursor_anchor
@@ -479,6 +626,41 @@ mod tests {
     }
 
     #[test]
+    fn context_cards_cap_wrapped_content_at_five_rows_with_ellipsis() {
+        let mut s = AppState::default();
+        let source = "abcdefghijklmnopqrstuv";
+        s.units.insert(12, source.into());
+        s.msgs.push(Msg::Card(ContentCard {
+            id: DisplayId::event(3, "context"),
+            unit: Some(12),
+            header: Some("Context · instructions".into()),
+            content: source.into(),
+            role: CardRole::Context,
+            tone: DisplayTone::Dim,
+            horizontal_padding: 2,
+            copy_source: source.into(),
+        }));
+
+        // The 24-character source wraps into six rows at the four-column
+        // content width. Only four source rows and the truncation marker show.
+        let lines = legacy_test_styled_lines(&s.msgs[0], &s, 6);
+        let text = |line: &Line<'_>| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+                .trim()
+                .to_owned()
+        };
+        assert_eq!(lines.len(), 8, "top + header + five content + bottom");
+        assert_eq!(
+            lines[2..7].iter().map(text).collect::<Vec<_>>(),
+            ["abcd", "efgh", "ijkl", "mnop", "..."]
+        );
+        assert_eq!(s.units[&12], source, "copy source remains unabridged");
+    }
+
+    #[test]
     fn reasoning_display_modes_render_compact_lines_and_full() {
         let mut s = AppState::default();
         s.transcript_cache.width = 80;
@@ -524,6 +706,219 @@ mod tests {
                 .count(),
             3
         );
+    }
+
+    /// `Lines` mode caps reasoning to the configured number of DISPLAY rows:
+    /// width-aware wrapping happens before the cap, so one long source line
+    /// can consume the whole budget and push later lines out entirely.
+    #[test]
+    fn lines_mode_caps_reasoning_to_wrapped_display_rows() {
+        use ratatui::backend::TestBackend;
+        let mut state = AppState::default();
+        state.config.thinking_display = "lines".into();
+        state.config.thinking_lines = 2;
+        state.apply_event(&serde_json::json!({
+            "type": "assistant/chunk", "seq": 1,
+            "data": {"chunk": {"type": "reasoning-delta", "text": "aaaaaaaaaaaaaaaaaaaaaa\nbb\ncc"}, "turn": 1, "step": 0}
+        }));
+        let mut scroll = ScrollState::default();
+        let theme = state.theme();
+        let backend = TestBackend::new(10, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let area = ratatui::layout::Rect::new(0, 0, 10, 20);
+        terminal
+            .draw(|frame| {
+                render_transcript(frame, area, &mut state, &mut scroll, &theme, false, None)
+            })
+            .unwrap();
+        let rows: Vec<String> = state
+            .transcript_cache
+            .lines
+            .iter()
+            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        // 22 'a's wrap into 3 rows at width 10; the 2-row cap keeps only the
+        // first two, and "bb"/"cc" never render.
+        let content: Vec<&String> = rows.iter().filter(|r| !r.is_empty()).collect();
+        assert_eq!(content.len(), 2, "{rows:?}");
+        assert_eq!(content[0], &"a".repeat(10));
+        assert_eq!(content[1], &"a".repeat(10));
+    }
+
+    /// In `Lines`/`Full` modes the visible reasoning content supersedes the
+    /// breathing `Thinking...` indicator: no indicator row, no gap row, only
+    /// the content. `Compact` keeps the old fold.
+    #[test]
+    fn visible_reasoning_supersedes_the_thinking_indicator() {
+        use ratatui::backend::TestBackend;
+        for mode in ["lines", "full"] {
+            let mut state = AppState::default();
+            state.config.thinking_display = mode.into();
+            state.start_thinking();
+            state.apply_event(&serde_json::json!({
+                "type": "assistant/chunk", "seq": 2,
+                "data": {"chunk": {"type": "reasoning-delta", "text": "thought"}, "turn": 1, "step": 0}
+            }));
+            let mut scroll = ScrollState::default();
+            let theme = state.theme();
+            let backend = TestBackend::new(40, 12);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            let area = ratatui::layout::Rect::new(0, 0, 40, 10);
+            terminal
+                .draw(|frame| {
+                    render_transcript(frame, area, &mut state, &mut scroll, &theme, false, None)
+                })
+                .unwrap();
+            let rows: Vec<String> = state
+                .transcript_cache
+                .lines
+                .iter()
+                .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
+                .collect();
+            assert!(
+                !rows.iter().any(|r| r.contains("Thinking")),
+                "{mode}: indicator must be superseded: {rows:?}"
+            );
+            assert_eq!(
+                rows.first().map(|r| r.trim_end()),
+                Some("thought"),
+                "{mode}: {rows:?}"
+            );
+        }
+        // Compact still folds the content into the indicator.
+        let mut state = AppState::default();
+        state.start_thinking();
+        state.apply_event(&serde_json::json!({
+            "type": "assistant/chunk", "seq": 2,
+            "data": {"chunk": {"type": "reasoning-delta", "text": "thought"}, "turn": 1, "step": 0}
+        }));
+        let mut scroll = ScrollState::default();
+        let theme = state.theme();
+        let backend = TestBackend::new(40, 12);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let area = ratatui::layout::Rect::new(0, 0, 40, 10);
+        terminal
+            .draw(|frame| {
+                render_transcript(frame, area, &mut state, &mut scroll, &theme, false, None)
+            })
+            .unwrap();
+        let rows: Vec<String> = state
+            .transcript_cache
+            .lines
+            .iter()
+            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert!(rows.iter().any(|r| r.contains("Thinking")), "{rows:?}");
+        assert!(!rows.iter().any(|r| r.contains("thought")), "{rows:?}");
+    }
+
+    /// Without reasoning content the indicator keeps its normal place even in
+    /// `Lines`/`Full` (here an answer block follows it).
+    #[test]
+    fn thinking_indicator_stays_before_plain_answer_in_full_mode() {
+        use ratatui::backend::TestBackend;
+        let mut state = AppState::default();
+        state.config.thinking_display = "full".into();
+        state.start_thinking();
+        state.apply_event(&serde_json::json!({
+            "type": "assistant/chunk", "seq": 2,
+            "data": {"chunk": {"type": "text-delta", "text": "hello"}, "turn": 1, "step": 0}
+        }));
+        let mut scroll = ScrollState::default();
+        let theme = state.theme();
+        let backend = TestBackend::new(40, 12);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let area = ratatui::layout::Rect::new(0, 0, 40, 10);
+        terminal
+            .draw(|frame| {
+                render_transcript(frame, area, &mut state, &mut scroll, &theme, false, None)
+            })
+            .unwrap();
+        let rows: Vec<String> = state
+            .transcript_cache
+            .lines
+            .iter()
+            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert!(rows.iter().any(|r| r.contains("Thinking")), "{rows:?}");
+        assert!(rows.iter().any(|r| r.contains("hello")), "{rows:?}");
+    }
+
+    /// A superseded (hidden) Thinking row must not poison the animation
+    /// patch loop: ticks mark it dirty, but hidden rows patch nothing and do
+    /// not trigger a full cache rebuild.
+    #[test]
+    fn hidden_thinking_row_patches_do_not_force_rebuilds() {
+        use ratatui::backend::TestBackend;
+        let mut state = AppState::default();
+        state.config.thinking_display = "lines".into();
+        state.start_thinking();
+        state.apply_event(&serde_json::json!({
+            "type": "assistant/chunk", "seq": 2,
+            "data": {"chunk": {"type": "reasoning-delta", "text": "thought"}, "turn": 1, "step": 0}
+        }));
+        let mut scroll = ScrollState::default();
+        let theme = state.theme();
+        let backend = TestBackend::new(40, 12);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let area = ratatui::layout::Rect::new(0, 0, 40, 10);
+        terminal
+            .draw(|frame| {
+                render_transcript(frame, area, &mut state, &mut scroll, &theme, false, None)
+            })
+            .unwrap();
+        state.transcript_cache.take_work_stats();
+        assert!(crate::model::tick_spinners(
+            &mut state,
+            std::time::Instant::now()
+        ));
+        terminal
+            .draw(|frame| {
+                render_transcript(frame, area, &mut state, &mut scroll, &theme, false, None)
+            })
+            .unwrap();
+        let work = state.transcript_cache.take_work_stats();
+        assert_eq!(
+            work.rebuilds, 0,
+            "hidden thinking row must not force rebuilds"
+        );
+    }
+
+    /// Legacy copy provenance agrees with the supersede rule: the hidden
+    /// Thinking row contributes no rows, so the reasoning content starts at
+    /// the very first display row in `Full` mode.
+    #[test]
+    fn legacy_copy_rows_skip_superseded_thinking_indicator() {
+        let mut s = AppState::default();
+        s.transcript_cache.width = 80;
+        s.config.thinking_display = "full".into();
+        s.units.insert(10, "thought".into());
+        s.msgs.push(Msg::Thinking(crate::model::ThinkingCard {
+            state: crate::model::ThinkState::Done,
+            count: 1,
+            done_since: None,
+            done_from: None,
+        }));
+        s.msgs.push(Msg::Block(TranscriptBlock {
+            id: DisplayId::event(1, "reasoning"),
+            unit: Some(10),
+            content: "thought".into(),
+            format: TranscriptFormat::Reasoning,
+            tone: DisplayTone::Dim,
+            copy_source: "thought".into(),
+            streaming: false,
+        }));
+        let rows = copy_layout_rows(&s);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(
+            rows[0].global_row, 0,
+            "no leading gap for a superseded indicator"
+        );
+        // Compact: the indicator is visible again and the reasoning block
+        // renders nothing.
+        s.config.thinking_display = "compact".into();
+        let rows = copy_layout_rows(&s);
+        assert!(rows.is_empty(), "hidden reasoning contributes no copy rows");
     }
 
     #[test]

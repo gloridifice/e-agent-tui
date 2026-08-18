@@ -1,148 +1,96 @@
-# e
-
 <p align="center">
-<img src="./readme/logo.png" width="200">
+<img src="./readme/logo.png" width="128">
 </p>
 
-**e** (also called **e tui**) is a terminal UI client for DeepSeek Harness (DSH). Its executable is **`dshe`**, a single binary with no extra runtime dependencies.
+`e` is a terminal UI for [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness), designed to be concise, attention-friendly, lightweight, fast, and ready to use out of the box. It does not alter the behavior of the DeepSeek Harness core. The project is still in an early stage of development.
 
-It connects to the same DSH backend as the Web GUI and shares the same session logs, so you can switch between the terminal and the browser at any time.
+<p align="center">
+<a href="#quick-start">Quick Start</a> | <a href="#build-yourself">Build Yourself</a> | <a href="#development">Development</a>
+</p>
 
-## Highlights
+## Quick Start
 
-- **Streaming chat** — live output, thinking lines, spinners, and full Markdown rendering (headings, tables, code blocks, mermaid); inline-code backgrounds stay confined to their chips, while Ferra headings use bold Coral `#`, bold Sage `##`, and plain Blush `###`
-- **Tool cards** — command summaries with line counts and timing stay on one row and ellipsize at the configured page width; `str_replace_editor` view/replace/insert operations fold with read/edit activity while create stays a concise workspace-relative row; nested Code Mode and workflow work is shown as parented activity rows
-- **Event-aware transcript** — model reasoning is folded into a breathing `Thinking...` indicator without adding transcript/copy rows or splitting adjacent activities; context/attachment cards, retries, durable commands, compaction, rich turn outcomes, and DSH surface replacement are projected consistently
-- **Input accessories** — queued prompts, approvals, questions, todos, goals, and plan mode share a bounded area above the editor
-- **Unified Input Pages** — `/settings`, `/login`, `/model`, `/theme`, and `/resume` replace the editor with one borderless, keyboard-navigable page instead of opening floating windows
-- **Model selection** — switch provider and model with `/model`
-- **Themes** — `deepseek-e` (default) and `ferra` are embedded from TOML assets; custom themes use an open-ended color palette plus fixed semantic roles
-- **Sessions** — create, switch, and resume conversations with incremental history; `/resume` shows persisted titles and paints the header list before slower title folding completes
-- **Unified commands** — optimized built-ins and commands contributed by DSH/plugins share one fuzzy-completion menu; `/skill` immediately opens the live user-invocable skill roster and fills canonical `/skill:<name>` commands
-- **Responsive input** — queue prompts while the agent runs; queued dispatch and copy-mode navigation do not block the UI; a software cursor stays stable while the hidden terminal cursor anchors IME input
-- **Managed backend lifecycle** — when `dshe` starts its dedicated DSH service, startup-timeout cleanup and last-TUI shutdown terminate the complete Windows command-shim process tree with bounded waiting; every saved instance lock is revalidated against the bridge endpoint, so an abruptly terminated TUI cannot leave a positive-count stale lock that suppresses the next startup; failed shutdowns retain retry bookkeeping, while confirmed shutdowns print `dsh 服务器已关闭。`; externally started DSH services are left untouched
-- **Fast** — terminal input directly wakes an event-driven frame scheduler; synchronized buffered frames prevent half-painted scrolling, animation patches only active transcript rows, streaming updates only the tail layout suffix, and width-aware grapheme layout materializes only the visible window
+> Windows and PowerShell are currently the primary supported environment.
 
-## Installation
-
-Requires [Git](https://git-scm.com/), [Node.js](https://nodejs.org/) (with npm), and [Rust](https://rustup.rs/) (with Cargo). Windows / PowerShell is the primary platform.
+Before installing, make sure [Git](https://git-scm.com/), [Node.js](https://nodejs.org/) with npm, and [Rust](https://rustup.rs/) with Cargo are available.
 
 ```powershell
-# 1. Install DeepSeek Harness
+# Install DeepSeek Harness.
 npm install --global @deepseek-ai/dsh
 
-# 2. Clone this repository
+# Clone e.
 git clone https://github.com/gloridifice/e.git
 cd e
 
-# 3. Install the TUI bridge (an unset/empty DSH_HOME automatically uses $HOME\.dsh)
-# Optional custom home: $env:DSH_HOME = 'D:\path\to\.dsh'
+# Install the bridge into e's dedicated DSH profile.
+# If DSH_HOME is unset, $HOME\.dsh is used automatically.
 .\tools\mount-bridge.ps1 -Profile dshe
 dsh plugin --profile dshe install
 
-# 4. Build and install the dshe binary
+# Build and install dshe into Cargo's binary directory.
 cargo install --path client --locked
 
-# 5. Start it from the directory you want to work in
+# Start e in the directory you want to work in.
 dshe
 ```
 
-On first launch, `dshe` starts the DSH service automatically, then guides you through signing in (API key / proxy); use `/model` to pick a model. If PowerShell cannot find `dshe`, add `%USERPROFILE%\.cargo\bin` to your `PATH`.
+On first launch, `dshe` starts its dedicated DSH service automatically. Use `/login` to configure an API key or proxy, and `/model` to select a provider and model.
 
-> **Updating**: re-run step 4 after pulling new code. If the bridge changed, repeat step 3 and restart DSH. The bridge is verified against DSH `0.1.0-rc.6`; after upgrading DSH, run the deployed-profile compatibility gate before using it:
->
-> ```powershell
-> $env:DSH_TUI_SMOKE_PROFILE = 'dshe'
-> cd bridge; npm run verify-dsh-upgrade
-> ```
->
-> The gate checks the generated wire contract, the public `@deepseek-ai/dsh-agent` model-selection export, and deployed `/new`, resume, and `/model` request routing.
+If PowerShell cannot find `dshe`, add `%USERPROFILE%\.cargo\bin` to `PATH`.
 
-## Commands
+To update, pull the latest changes and run `cargo install --path client --locked` again. If `bridge/` changed, repeat the bridge installation commands and restart DSH.
 
-Type `/` to open command completion; continue typing for prefix/substring/fuzzy matching, then use `↑`/`↓` or `Tab` and `Enter`.
+### Build Yourself
 
-Commands use two compatibility levels:
-
-- **Built-in commands** are optimized for dshe (for example `/settings`, `/model`, `/new`, `/resume`, and `/skill`). Their effect, description, input hint, and specialized completion policy are declared together in `client/src/runtime_command.rs`; bare `/new` uses the configured default mode, `/new ` completes the live agent-preset roster, and typing `/skill` immediately completes the attached session's user-invocable skills as `/skill:<name>`.
-- **Integrated commands** come from DSH core or any installed DSH plugin. The bridge discovers the effective per-session `ctx.commands` registry automatically, refreshes it on `commands/change`, and forwards execution results directly to the transcript. No dshe code change is needed when a plugin registers a new command.
-
-DSH 0.1.0-rc.6 exposes command names, descriptions, and one free-form input hint, but no typed argument-completion schema. Therefore every integrated command has name completion and shows its input hint; richer argument completion is available only for built-ins that dshe explicitly optimizes.
-
-## Keyboard quick reference
-
-| Keys | Action |
-|---|---|
-| `Enter` | Send the editor contents |
-| `Shift+Enter` | Insert a newline |
-| `↑` / `↓` | Move between editor lines; at the first/last line recall the previous/next prompt |
-| `PageUp` / `PageDown` | Scroll the message transcript by one visible transcript page |
-| mouse wheel | Scroll the message transcript by three rows |
-| `Ctrl+H` | Show help (`^h Help` in the status line) |
-| `Ctrl+B` | Enter transcript copy mode |
-| `Ctrl+N` | Open the `/resume` Input Page |
-| `Esc` | Cancel/return in an Input Page or interrupt active model work |
-| arrows or `hjkl` | Move the single focus between actionable Input Page elements |
-| `Enter` in an Input Page | Execute the focused element |
-
-`/settings`, `/login`, `/model`, `/theme`, and `/resume` use the shared **Input Page** layout: no border or floating window, one row of vertical padding, two columns of horizontal padding, and one stable focus. Text editors consume ordinary letters—including `hjkl`—instead of navigating. In `/resume`, type to filter by title/id, use `↑`/`↓` to select, and press `Enter` to attach. Existing proxies open an explicit confirmation page before deletion.
-
-The two background-free status rows are:
-
-```text
-<work indicator> <mode> [model] [CH<cache-hit%>]                       ^h Help
-<session title, or 新会话>                                   <absolute workspace path>
-```
-
-The optional model and cache-hit fields are omitted until values are available; the status line does not render placeholder dashes. The mode is the preset actually mounted for the attached session, including an explicit `/new <mode>` selection.
-
-## Configuration and themes
-
-User configuration is stored in `%APPDATA%\dshe\config.toml`. Repository defaults live in [`client/assets/default_config.toml`](client/assets/default_config.toml), are embedded with `include_str!`, and are the sole default-value source. A user file may omit fields; known values recursively overlay the embedded TOML and then deserialize through one strict `Config` schema. Obsolete unknown keys are ignored for backward compatibility; malformed TOML or a known key with the wrong type safely falls back to embedded defaults and reports a diagnostic. The `default_mode` setting applies both to startup-created sessions and bare `/new`; `/new <mode>` remains an explicit one-off override. Existing key behavior is unchanged: `Enter` sends and `Shift+Enter` inserts a newline; legacy `enter_sends` is read only for old-file compatibility.
-
-Theme files live in `%APPDATA%\dshe\themes\*.toml`. A theme has two layers: an open-ended `[colors]` palette whose keys are user-defined, and a fixed `[semantics.*]` schema that maps UI roles to palette keys:
-
-```toml
-name = "example"
-
-[colors]
-canvas = "#2b292d"
-accent = "#fecdb2"
-
-[semantics.markdown]
-heading3 = { fg = "accent" }
-inline_code = { fg = "accent", bg = "canvas", bold = true }
-```
-
-Every fixed semantic role requires `fg`; `bg`, `bold`, `italic`, and `underline` are optional. The groups are `surface`, `markdown`, `input` (including status rows), `working_status`, `log`, `activity`, `card`, and `overlay`. See [`client/assets/themes/ferra.toml`](client/assets/themes/ferra.toml) for the complete schema. The built-in TOML files under `client/assets/themes/` are embedded with `include_str!`, parsed by the same validator as user themes, and copied as editable starting points without overwriting existing files.
-
-## Architecture and protocol
-
-`client/` is the Rust TUI and `bridge/` is the DSH host plugin. Their JSON WebSocket contract has one machine-readable source: [`bridge/protocol-contract.json`](bridge/protocol-contract.json). It owns protocol version, limits, rosters, record/message shapes, generated Rust constants, shared Rust/Node fixtures, `bridge/package.json` wire metadata, and [`docs/protocol.md`](docs/protocol.md). Synchronize or verify all derived artifacts with:
+To build without installing:
 
 ```powershell
-node tools/sync-protocol-contract.mjs
-node tools/sync-protocol-contract.mjs --check
+git clone https://github.com/gloridifice/e.git
+cd e
+cargo build --release
 ```
 
-`tools/generate-protocol-doc.mjs` remains a compatibility wrapper around the same synchronizer.
+The executable is written to `target\release\dshe.exe`. The DSH bridge is still required; install it once with:
 
-The normal WebSocket frame limit is 16 MiB. The bridge enforces it on every outgoing frame; oversized snapshot/history frames retain the newest fitting suffix and singular oversized frames become a bounded compatibility error. Only when connecting to an old, not-yet-restarted bridge, set `DSHE_LEGACY_MAX_FRAME_MB` explicitly (for example `64`) before launching `dshe`.
+```powershell
+.\tools\mount-bridge.ps1 -Profile dshe
+dsh plugin --profile dshe install
+```
 
-DSH events are translated into typed `HostEvent` values at the wire boundary and classified by the event projector. User-visible output uses four shared surfaces: status-bearing activity rows, ordinary transcript blocks, padded content cards, and input accessories. DSH `surfaceOp` append/replace metadata is applied before rendering, including across backward history paging, so compaction does not leave shadowed messages visible. Unknown append-surface events also survive reconnect/history replay through bounded metadata-only envelopes, lifecycle pairs split across page boundaries reconcile when their older start arrives, retry schedule details are merged back into newer started rows, and workflow cancellation stays distinct from failure. Title/session state and audit-only records remain outside the transcript.
+For a profiling build, enable the optional Tracy integration:
 
-The transcript renderer owns its cache, and copy-mode navigation reuses the same width/generation-aware display-row provenance as the visible transcript, preventing spacing and wrapping drift without rebuilding all copy rows twice per key. Streaming text dirties only the tail and incrementally updates its layout suffix; pure animation updates patch only active message ranges and commits one exact final settle color; structural replacements invalidate the transcript once. Unicode wrapping follows grapheme clusters so combining marks and emoji ZWJ sequences stay intact. Keyboard/mouse/resize events wake the Tokio loop directly; interactive/content/animation frames use separate deadlines, bridge bursts have a fairness budget, and Crossterm output is buffered and bracketed with synchronized-output frames when supported. Set `DSHE_DISABLE_SYNC_OUTPUT=1` only to diagnose an incompatible terminal.
+```powershell
+cargo build --release --features tracy
+```
 
 ## Development
+
+This project is still a prototype. Issues are welcome, but pull requests are not being accepted yet.
+
+Useful checks:
 
 ```powershell
 cargo fmt --check
 cargo clippy --all-targets
 cargo test
-cargo run --release --example timing_frames  # long-history scroll/frame benchmark
-cd bridge; npm test
+
+cd bridge
+npm test
+cd ..
+
 node tools/sync-protocol-contract.mjs --check
-npm run verify-dsh-upgrade  # after mounting the bridge into the selected profile
 ```
 
-Bridge lifecycle policy is split into testable host, connection, history, session, session-list, command, skill, dispatcher, protocol, and model-selection adapters under `bridge/src/`. The session adapter lazily reuses the public `@deepseek-ai/dsh-agent` `installModelSelection` export, so new/cold-resumed sessions receive provider/model assembly and request routing without carrying a bridge-local waterfall copy. Slash completion merges the effective per-session DSH/plugin command catalog with client-optimized commands and refreshes cwd/scope-sensitive user-invocable skills after attach or `skills/change`; `npm run verify-dsh-upgrade` validates the deployed bridge after a DSH upgrade.
+After changing `bridge/`, mount it again and restart DSH before testing it:
+
+```powershell
+.\tools\mount-bridge.ps1 -Profile dshe
+dsh plugin --profile dshe install
+```
+
+Development documentation is available in [`docs/`](docs/):
+
+- [`docs/design.md`](docs/design.md) — architecture, design decisions, interaction rules, and implementation notes.
+- [`docs/protocol.md`](docs/protocol.md) — generated WebSocket protocol reference. Its canonical source is [`bridge/protocol-contract.json`](bridge/protocol-contract.json).
+- [`docs/tracy.md`](docs/tracy.md) — Tracy setup, startup timing, frame metrics, and performance benchmarks.
+- [`docs/architecture-audit.md`](docs/architecture-audit.md) — current module dependency and architecture health audit.

@@ -1,5 +1,9 @@
 use super::*;
 
+/// Context-injection cards retain their full raw source for copying, but only
+/// expose this many width-aware content rows in the transcript.
+const MAX_CONTEXT_CARD_DISPLAY_LINES: usize = 5;
+
 /// First-seen-ordered per-file counts over full paths.
 #[cfg(test)]
 fn counted_files(files: &[String]) -> Vec<(String, usize)> {
@@ -139,22 +143,32 @@ fn transcript_block_lines(block: &TranscriptBlock, state: &AppState) -> Vec<Line
         .collect()
 }
 
-/// Reasoning content is folded by default, bounded to the configured first-N
-/// lines in `Lines` mode, and shown completely in `Full` mode. The breathing
-/// `Thinking...` row remains visible in every mode.
-fn reasoning_block_lines(block: &TranscriptBlock, state: &AppState) -> Vec<Line<'static>> {
+/// Reasoning content is folded (zero rows) in `Compact`, bounded to the
+/// configured first-N DISPLAY rows (after width-aware wrapping) in `Lines`,
+/// and shown completely in `Full`. Whenever this content renders, the
+/// breathing `Thinking...` indicator row next to it is superseded and
+/// renders nothing (`thinking_row_superseded`).
+fn reasoning_block_lines(
+    block: &TranscriptBlock,
+    state: &AppState,
+    area_width: usize,
+) -> Vec<Line<'static>> {
     let limit = match state.config.thinking_display_mode() {
         ThinkingDisplayMode::Compact => return Vec::new(),
         ThinkingDisplayMode::Lines => state.config.thinking_lines.max(1),
         ThinkingDisplayMode::Full => usize::MAX,
     };
-    let color = state.theme().surface.muted_text.fg;
-    block
-        .content
-        .lines()
-        .take(limit)
-        .map(|line| Line::from(Span::styled(line.to_owned(), Style::default().fg(color))))
-        .collect()
+    let style = Style::default().fg(state.theme().surface.muted_text.fg);
+    let mut out = Vec::new();
+    for source_line in block.content.lines() {
+        for wrapped in wrap_line(Line::from(source_line.to_owned()), area_width.max(1)) {
+            out.push(wrapped.patch_style(style));
+            if out.len() == limit {
+                return out;
+            }
+        }
+    }
+    out
 }
 
 fn content_card_lines(
@@ -179,6 +193,20 @@ fn content_card_lines(
             Style::default().fg(fg).bg(bg),
         ))
     };
+    let content_row = |content: String| {
+        let mut row = Line::from(vec![
+            Span::styled(" ".repeat(gutter), Style::default().fg(fg).bg(bg)),
+            Span::styled(content, Style::default().fg(fg).bg(bg)),
+        ]);
+        let used = row.width();
+        if used < area_width {
+            row.push_span(Span::styled(
+                " ".repeat(area_width - used),
+                Style::default().fg(fg).bg(bg),
+            ));
+        }
+        row
+    };
     let mut out = vec![fill_row()];
     if let Some(header) = &card.header {
         let mut row = Line::from(vec![
@@ -197,26 +225,30 @@ fn content_card_lines(
         }
         out.push(row);
     }
-    for line in card.content.lines() {
-        if line.is_empty() {
-            out.push(fill_row());
-            continue;
-        }
-        for chunk in wrap_text(line, avail) {
-            let mut row = Line::from(vec![
-                Span::styled(" ".repeat(gutter), Style::default().fg(fg).bg(bg)),
-                Span::styled(chunk, Style::default().fg(fg).bg(bg)),
-            ]);
-            let used = row.width();
-            if used < area_width {
-                row.push_span(Span::styled(
-                    " ".repeat(area_width - used),
-                    Style::default().fg(fg).bg(bg),
-                ));
+
+    let content_limit = (card.role == CardRole::Context).then_some(MAX_CONTEXT_CARD_DISPLAY_LINES);
+    let mut content_rows = Vec::new();
+    let mut truncated = false;
+    'content: for line in card.content.lines() {
+        let chunks = if line.is_empty() {
+            vec![String::new()]
+        } else {
+            wrap_text(line, avail)
+        };
+        for chunk in chunks {
+            if content_limit.is_some_and(|limit| content_rows.len() == limit) {
+                truncated = true;
+                break 'content;
             }
-            out.push(row);
+            content_rows.push(content_row(chunk));
         }
     }
+    if truncated {
+        // Reserve the final permitted row for an explicit truncation marker.
+        content_rows.truncate(MAX_CONTEXT_CARD_DISPLAY_LINES - 1);
+        content_rows.push(content_row("...".into()));
+    }
+    out.extend(content_rows);
     out.push(fill_row());
     out
 }
@@ -268,7 +300,7 @@ fn display_item_lines(
             area_width,
         )],
         DisplayItem::Block(block) if block.format == TranscriptFormat::Reasoning => {
-            reasoning_block_lines(block, state)
+            reasoning_block_lines(block, state, area_width)
         }
         DisplayItem::Block(block) if block.format == TranscriptFormat::Markdown => {
             markdown_block_lines(block, state, area_width)
@@ -299,14 +331,42 @@ fn is_hidden_item(item: &DisplayItem, state: &AppState) -> bool {
     )
 }
 
-fn next_visible_item_is_activity(state: &AppState, index: usize) -> bool {
-    state
-        .transcript
-        .nodes()
+/// In `Lines`/`Full` modes the visible reasoning content replaces the
+/// breathing `Thinking...` indicator: a thinking row whose next visible item
+/// is a reasoning block renders nothing (no indicator row, no gap). While
+/// reasoning has not arrived yet the indicator stays visible.
+fn thinking_row_superseded(nodes: &[TranscriptNode], index: usize, state: &AppState) -> bool {
+    let DisplayItem::Activity(row) = &nodes[index].item else {
+        return false;
+    };
+    if !(row.id.0.starts_with("thinking:") || row.label == "Thinking...") {
+        return false;
+    }
+    if !state.config.thinking_display_mode().shows_reasoning() {
+        return false;
+    }
+    nodes
         .iter()
         .skip(index + 1)
         .find(|node| !is_hidden_item(&node.item, state))
-        .is_some_and(|node| is_activity_item(&node.item))
+        .is_some_and(|node| {
+            matches!(&node.item, DisplayItem::Block(block)
+                if block.format == TranscriptFormat::Reasoning)
+        })
+}
+
+fn is_hidden_node(nodes: &[TranscriptNode], index: usize, state: &AppState) -> bool {
+    is_hidden_item(&nodes[index].item, state) || thinking_row_superseded(nodes, index, state)
+}
+
+fn next_visible_item_is_activity(state: &AppState, index: usize) -> bool {
+    let nodes = state.transcript.nodes();
+    nodes
+        .iter()
+        .enumerate()
+        .skip(index + 1)
+        .find(|(position, _)| !is_hidden_node(nodes, *position, state))
+        .is_some_and(|(_, node)| is_activity_item(&node.item))
 }
 
 #[cfg(test)]
@@ -317,7 +377,9 @@ pub(super) fn legacy_test_lines(msg: &Msg, state: &AppState) -> Vec<Line<'static
         // `• Thinking... xN` row; `Lines`/`Full` render the content here.
         Msg::Block(_) if is_hidden_msg(msg, state) => Vec::new(),
         Msg::Block(block) if block.format == TranscriptFormat::Reasoning => {
-            reasoning_block_lines(block, state)
+            // Width-aware wrapping happens in legacy_test_styled_lines; this
+            // no-width path keeps the unwrapped rows.
+            reasoning_block_lines(block, state, usize::MAX)
         }
         Msg::Block(block) => transcript_block_lines(block, state),
         // Cards are built width-aware in legacy_test_styled_lines.
@@ -595,14 +657,39 @@ fn is_hidden_msg(msg: &Msg, state: &AppState) -> bool {
     )
 }
 
+/// Legacy mirror of `thinking_row_superseded`: in `Lines`/`Full` a Thinking
+/// row whose next visible message is reasoning content renders nothing.
+#[cfg(test)]
+fn legacy_thinking_superseded(msgs: &[Msg], index: usize, state: &AppState) -> bool {
+    if !matches!(msgs.get(index), Some(Msg::Thinking(_))) {
+        return false;
+    }
+    if !state.config.thinking_display_mode().shows_reasoning() {
+        return false;
+    }
+    msgs.iter()
+        .skip(index + 1)
+        .find(|msg| !is_hidden_msg(msg, state))
+        .is_some_and(|msg| {
+            matches!(msg, Msg::Block(block)
+                if block.format == TranscriptFormat::Reasoning)
+        })
+}
+
+#[cfg(test)]
+fn is_hidden_msg_at(msgs: &[Msg], index: usize, state: &AppState) -> bool {
+    is_hidden_msg(&msgs[index], state) || legacy_thinking_superseded(msgs, index, state)
+}
+
 /// Whether the next visible message is another activity row. Hidden messages
 /// are transparent to layout adjacency, just as they are to rendering/copy.
 #[cfg(test)]
 fn next_visible_is_activity(msgs: &[Msg], index: usize, state: &AppState) -> bool {
     msgs.iter()
+        .enumerate()
         .skip(index + 1)
-        .find(|msg| !is_hidden_msg(msg, state))
-        .is_some_and(is_activity_msg)
+        .find(|(position, _)| !is_hidden_msg_at(msgs, *position, state))
+        .is_some_and(|(_, msg)| is_activity_msg(msg))
 }
 
 /// One message rendered to transcript lines, including the full-width soft
@@ -616,6 +703,11 @@ pub(super) fn legacy_test_styled_lines(
     area_width: usize,
 ) -> Vec<Line<'static>> {
     let theme = state.theme();
+    if let Msg::Block(block) = msg {
+        if block.format == TranscriptFormat::Reasoning {
+            return reasoning_block_lines(block, state, area_width);
+        }
+    }
     if let Msg::Assistant { lines, .. } = msg {
         // Assistant lines carry per-row fill flags (code/mermaid blocks);
         // those fill with the Night background (#2b292d, the bg slot).
@@ -668,7 +760,7 @@ fn legacy_copy_layout_rows(state: &AppState) -> Vec<CopyLayoutRow> {
     let mut global_row = 0usize;
     let width = state.transcript_cache.width.max(1);
     for (index, msg) in state.msgs.iter().enumerate() {
-        if is_hidden_msg(msg, state) {
+        if is_hidden_msg_at(&state.msgs, index, state) {
             continue;
         }
         let layout_lines = legacy_test_styled_lines(msg, state, width);
@@ -735,9 +827,10 @@ pub fn copy_layout_rows(state: &AppState) -> Vec<CopyLayoutRow> {
     let mut rows = Vec::new();
     let mut global_row = 0usize;
     let width = state.transcript_cache.width.max(1);
-    for (index, node) in state.transcript.nodes().iter().enumerate() {
+    let nodes = state.transcript.nodes();
+    for (index, node) in nodes.iter().enumerate() {
         let item = &node.item;
-        if is_hidden_item(item, state) {
+        if is_hidden_node(nodes, index, state) {
             continue;
         }
         let layout_lines = display_item_lines(item, state, width);
@@ -977,9 +1070,10 @@ fn rebuild_transcript_cache(state: &mut AppState, width: usize) {
     let mut base = Vec::new();
     let mut ranges = vec![None; state.transcript.len()];
     let mut tail_len = 0usize;
-    for (index, node) in state.transcript.nodes().iter().enumerate() {
+    let nodes = state.transcript.nodes();
+    for (index, node) in nodes.iter().enumerate() {
         let item = &node.item;
-        if is_hidden_item(item, state) {
+        if is_hidden_node(nodes, index, state) {
             continue;
         }
         let start = base.len();
@@ -1066,9 +1160,11 @@ fn refresh_transcript_cache(state: &mut AppState, width: usize) {
         let patches = indices
             .iter()
             .filter_map(|index| {
-                state
-                    .transcript
-                    .nodes()
+                let nodes = state.transcript.nodes();
+                if *index >= nodes.len() || is_hidden_node(nodes, *index, state) {
+                    return None;
+                }
+                nodes
                     .get(*index)
                     .map(|node| (*index, display_item_lines(&node.item, state, width)))
             })
@@ -1110,7 +1206,47 @@ pub(super) fn render_transcript(
     help_visible: bool,
     overlay: Option<&CopyOverlay>,
 ) {
-    let visible = area.height as usize;
+    let _ = render_transcript_impl(frame, area, state, scroll, theme, help_visible, overlay, 0);
+}
+
+/// Render transcript with the bottom stack (accessories + input + status +
+/// title) participating in the scroll. `area` is the full content viewport;
+/// `bottom_rows` is the total height of the stack that follows the transcript.
+/// Returns the y offset (within `area`) where that stack begins, so the caller
+/// can draw it at the content-bottom position.
+pub(super) fn render_transcript_combined(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    state: &mut AppState,
+    scroll: &mut ScrollState,
+    theme: &Theme,
+    help_visible: bool,
+    overlay: Option<&CopyOverlay>,
+    bottom_rows: usize,
+) -> usize {
+    render_transcript_impl(
+        frame,
+        area,
+        state,
+        scroll,
+        theme,
+        help_visible,
+        overlay,
+        bottom_rows,
+    )
+}
+
+fn render_transcript_impl(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    state: &mut AppState,
+    scroll: &mut ScrollState,
+    theme: &Theme,
+    help_visible: bool,
+    overlay: Option<&CopyOverlay>,
+    bottom_rows: usize,
+) -> usize {
+    let screen_height = area.height as usize;
     let width = area.width as usize;
     refresh_transcript_cache(state, width);
     state.transcript_cache.ensure_layout(width, wrapped_rows);
@@ -1124,13 +1260,25 @@ pub(super) fn render_transcript(
         scroll.offset = scroll.offset.saturating_add(delta);
     }
     let len = state.transcript_cache.layout.total_rows();
-    let mut available = visible;
-    let show_hint = !scroll.follow && scroll.offset == 0;
+    let bottom_rows = bottom_rows.min(screen_height);
+    let follow = scroll.follow;
+    let show_hint = !follow && scroll.offset == 0;
+    // Where the bottom stack starts on screen. When following, it is pinned at
+    // the screen bottom. When scrolled back, it moves down/off-screen according
+    // to the transcript offset.
+    let bottom_y = if bottom_rows == 0 {
+        screen_height
+    } else if follow {
+        screen_height.saturating_sub(bottom_rows).max(1)
+    } else {
+        len.saturating_sub(scroll.offset).min(screen_height)
+    };
+    let mut available = bottom_y;
     if show_hint {
         available = available.saturating_sub(1).max(1);
     }
-    let start = if scroll.follow {
-        len.saturating_sub(available)
+    let start = if follow {
+        len.saturating_sub(bottom_y)
     } else {
         scroll.offset.min(len.saturating_sub(1))
     };
@@ -1185,7 +1333,12 @@ pub(super) fn render_transcript(
         .transcript_cache
         .record_materialized_rows(display.len());
     if help_visible {
-        display.extend(help_overlay(theme));
+        if bottom_rows == 0 {
+            display.extend(help_overlay(theme));
+        } else {
+            display.clear();
+            display.extend(help_overlay(theme));
+        }
     }
     // Lazy scroll-back hint at the top of the transcript (display-only).
     if show_hint {
@@ -1201,8 +1354,12 @@ pub(super) fn render_transcript(
             Line::from(Span::styled(hint, Style::default().fg(theme.dim))),
         );
     }
+    // In combined mode the bottom stack owns the rows below `bottom_y`, so the
+    // transcript/help/hint paragraph must never paint into that area.
+    display.truncate(bottom_y);
     let paragraph = Paragraph::new(Text::from(display)).style(Style::default().fg(theme.fg));
     frame.render_widget(paragraph, area);
+    bottom_y
 }
 
 /// Scroll the transcript by a bounded number of visible rows.

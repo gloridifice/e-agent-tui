@@ -3106,8 +3106,10 @@ mod tests {
         );
     }
 
-    /// In `Lines` and `Full` modes the reasoning text becomes visible, but
-    /// the breathing `Thinking...` indicator still owns the work lifecycle.
+    /// In `Lines` and `Full` modes the reasoning text becomes visible. The
+    /// breathing `Thinking...` indicator still owns the work lifecycle at the
+    /// model level; the display layer supersedes (hides) the row once the
+    /// reasoning content next to it is rendered.
     #[test]
     fn visible_reasoning_modes_keep_the_thinking_indicator() {
         let mut s = AppState::default();

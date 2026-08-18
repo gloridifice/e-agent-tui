@@ -897,7 +897,7 @@ mod tests {
             m.iter().all(|c| c.starts_with("/c")),
             "prefix group only: {m:?}"
         );
-        assert_eq!(m.len(), 3);
+        assert_eq!(m.len(), 2);
     }
 
     #[test]

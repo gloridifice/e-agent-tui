@@ -204,7 +204,7 @@ pub static ITEMS: &[ItemDef] = &[
     ItemDef {
         category: 2,
         label: "Thinking 行数",
-        desc: "Lines 模式下最多显示思考内容的前几行",
+        desc: "Lines 模式下最多显示的行数（按折行后的显示行）",
         kind: ItemKind::Input,
         get: |c| c.thinking_lines.to_string(),
         apply: |c, v| {

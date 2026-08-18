@@ -85,7 +85,6 @@ pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
     ),
     command!("plan", "计划模式", Some("[off|消息]"), None, Forward),
     command!("copy", "进入复制模式", None, None, Copy),
-    command!("clear", "清空会话列表", None, None, Forward),
     command!("exit", "退出客户端", None, None, Quit),
     command!("q", "退出客户端", None, None, Quit),
     command!("quit", "退出客户端", None, None, Quit),

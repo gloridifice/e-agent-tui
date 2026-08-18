@@ -228,6 +228,8 @@ function apply(ctx, config = {}) {
       off: () => {},
       /** approval id -> resolve(outcome) */
       pending: new Map(),
+      /** Per-execution controllers for interruptible DSH/plugin commands. */
+      commandAborts: new Set(),
       /** persisted log cache (non-live sessions only) */
       log: null,
       /** cached surface list (non-live sessions only) */

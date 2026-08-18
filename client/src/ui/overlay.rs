@@ -4,7 +4,7 @@ pub(super) fn help_overlay(theme: &Theme) -> Vec<Line<'static>> {
     let rows = [
         "帮助 — e",
         "Enter 发送   Shift+Enter 换行   ↑↓ 行间移动/边界切换提示词",
-        "Esc 中断   Ctrl+C 清空输入/空闲退出   /exit /q /quit 退出",
+        "Esc 中断对话/运行中命令   Ctrl+C 清空输入/空闲退出   /exit /q /quit 退出",
         "Ctrl+B 复制模式   Ctrl+N 续接会话 Input Page   Ctrl+H 帮助",
         "输入 /：补全内置命令及当前会话自动接入的 DSH/插件命令   Tab/↑↓ 选择",
         "/settings 设置面板   /login 登录（API key/Proxy）   /new [模式] 新建会话   PgUp/PgDn/滚轮滚动消息",

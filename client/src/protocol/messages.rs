@@ -39,7 +39,7 @@ pub enum ClientMessage {
     NewInput { mode: String, text: String },
     /// Slash command line.
     Command { line: String },
-    /// Interrupt the current turn.
+    /// Interrupt the current turn and any direct commands still executing.
     Interrupt,
     /// Switch the connection to another live session.
     Attach { session_id: String },

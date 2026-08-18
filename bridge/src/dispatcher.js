@@ -113,12 +113,22 @@ export function createClientDispatcher({
     }
     // DSH execution is async and the same socket closure can be re-attached
     // meanwhile. Never deliver one session's direct command result to the
-    // next session occupying that socket.
+    // next session occupying that socket. Each execution gets its own abort
+    // controller so Esc can cancel commands without detaching the session.
     const current = conn
+    const commandAbort = new AbortController()
+    current.commandAborts ??= new Set()
+    current.commandAborts.add(commandAbort)
+    const abortOnDetach = () => commandAbort.abort()
+    current.abort.signal.addEventListener?.('abort', abortOnDetach, { once: true })
     Promise.resolve()
-      .then(() => commands.execute(current.agent, msg.line, current.abort.signal))
+      .then(() => commands.execute(current.agent, msg.line, commandAbort.signal))
       .then((execution) => {
         if (!conns.isCurrent(current, conn)) return
+        if (commandAbort.signal.aborted) {
+          send(ws, { type: 'error', code: 'command-cancelled', message: 'command cancelled' })
+          return
+        }
         if (execution === undefined) {
           send(ws, { type: 'error', code: 'command-unknown', message: `unknown command: ${trimmed}` })
           return
@@ -132,7 +142,15 @@ export function createClientDispatcher({
       })
       .catch((error) => {
         if (!conns.isCurrent(current, conn)) return
-        send(ws, { type: 'error', code: 'command-failed', message: String(error?.message ?? error) })
+        if (commandAbort.signal.aborted) {
+          send(ws, { type: 'error', code: 'command-cancelled', message: 'command cancelled' })
+        } else {
+          send(ws, { type: 'error', code: 'command-failed', message: String(error?.message ?? error) })
+        }
+      })
+      .finally(() => {
+        current.commandAborts.delete(commandAbort)
+        current.abort.signal.removeEventListener?.('abort', abortOnDetach)
       })
   }
 
@@ -279,7 +297,12 @@ export function createClientDispatcher({
         })
         break
       case 'model-set': setModel(msg); break
-      case 'interrupt': conn?.agent.cancel({ kind: 'user' }); break
+      case 'interrupt':
+        if (conn) {
+          for (const commandAbort of conn.commandAborts ?? []) commandAbort.abort()
+          conn.agent.cancel({ kind: 'user' })
+        }
+        break
       case 'ping': send(ws, { type: 'pong' }); break
       default: return false
     }

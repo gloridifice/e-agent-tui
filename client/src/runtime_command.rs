@@ -29,6 +29,9 @@ use crate::{
 #[derive(Default)]
 pub struct CommandOutcome {
     pub outbound: Vec<ClientMessage>,
+    /// The outbound command runs through `commands.execute` and remains
+    /// interruptible until its direct result/error arrives.
+    pub starts_interruptible_command: bool,
     pub reload_config: bool,
     pub new_conversation: bool,
     pub quit: bool,
@@ -54,6 +57,11 @@ fn parse_line(line: &str) -> Option<(&str, &str)> {
     (!name.is_empty()).then_some((name, raw_input))
 }
 
+fn is_colon_skill_invocation(name: &str) -> bool {
+    name.split_once(':')
+        .is_some_and(|(prefix, skill)| prefix.eq_ignore_ascii_case("skill") && !skill.is_empty())
+}
+
 fn reject_arguments(context: &LocalCommandContext<'_>, command: &str, raw_input: &str) -> bool {
     if raw_input.trim().is_empty() {
         return false;
@@ -75,8 +83,9 @@ fn set_new_conversation_notice(state: &Arc<Mutex<AppState>>, text: impl Into<Str
     state.lock().unwrap().set_new_conversation_notice(text);
 }
 
-fn forward(line: String, outcome: &mut CommandOutcome) {
+fn forward(line: String, outcome: &mut CommandOutcome, interruptible: bool) {
     outcome.outbound.push(ClientMessage::Command { line });
+    outcome.starts_interruptible_command = interruptible;
 }
 
 fn new_command_line(raw_input: &str, default_mode: &str) -> Option<String> {
@@ -102,7 +111,8 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
         if has_new_conversation(context.state) {
             set_new_conversation_notice(context.state, "请先发送一条消息创建新对话");
         } else {
-            forward(line, &mut outcome);
+            let interruptible = !is_colon_skill_invocation(name);
+            forward(line, &mut outcome, interruptible);
         }
         return outcome;
     };
@@ -221,7 +231,10 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
             if has_new_conversation(context.state) {
                 set_new_conversation_notice(context.state, "请先发送一条消息创建新对话");
             } else {
-                forward(line, &mut outcome);
+                // `/skill` is injected as a model follow-up and is covered by
+                // agent status. Other forwarded commands run directly through
+                // DSH's abortable command executor.
+                forward(line, &mut outcome, command.action == CommandAction::Forward);
             }
         }
     }
@@ -254,6 +267,14 @@ mod tests {
         let feedback = all.iter().find(|item| item.line == "/feedback").unwrap();
         assert_eq!(feedback.source, CommandSource::Integrated);
         assert!(feedback.description.contains("<text>"));
+    }
+
+    #[test]
+    fn colon_skill_invocations_use_agent_status_instead_of_command_tracking() {
+        assert!(is_colon_skill_invocation("skill:code-review"));
+        assert!(is_colon_skill_invocation("Skill:code-review"));
+        assert!(!is_colon_skill_invocation("skill:"));
+        assert!(!is_colon_skill_invocation("skills:code-review"));
     }
 
     #[test]

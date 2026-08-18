@@ -393,7 +393,9 @@ only has name, description, and optional `input.hint` (free-form text), with no 
 Therefore integrated commands all support **command-name completion** and show the argument hint; argument
 candidate completion is only available for items promoted to built-in optimized commands. Command execution is
 async; the bridge must capture the current conn before the await and verify the connection is still attached to the
-same session before returning the result.
+same session before returning the result. Each execution also gets a dedicated `AbortController`; the client tracks
+unsettled direct commands so Esc sends `interrupt` even while the agent status itself remains idle, and the bridge
+aborts both those command signals and any active agent turn.
 
 ### 4.2 Keybinding table (v1 proposal)
 
@@ -404,11 +406,11 @@ same session before returning the result.
 | ↑ / ↓ | move between input lines; switch prompts at boundary | keep character column |
 | Ctrl+R | reverse history search | |
 | Tab | command completion | |
-| Ctrl+C | running→interrupt turn; idle→exit | |
+| Ctrl+C | clear non-empty input; exit when idle and empty | does not interrupt work |
 | Ctrl+L | redraw | |
 | PgUp / PgDn | page by currently visible transcript height | scrolling up pauses auto-follow |
 | Wheel | scroll the message stream 3 lines per notch | still only scrolls the stream when an Input Page is open |
-| Esc | Input Page back/close; cancel input or close popup | |
+| Esc | interrupt an active turn/direct command; otherwise Input Page back/close or close popup | owning surface takes precedence |
 | Arrows / hjkl (Input Page) | move the single focus | in text-edit state hjkl is text |
 | Enter (folded card) | expand/collapse tool result | focus navigation v2 |
 | Ctrl+N | resume Input Page | input filter, ↑↓ select |
@@ -457,8 +459,12 @@ after the lock is released, to avoid same-thread state-lock reentrancy freezing 
 
 ### 4.5 Interrupt semantics
 
-- `Ctrl+C` once = interrupt the current turn; after the agent returns to idle the input is immediately available;
-  pressing `Ctrl+C` again while idle = exit.
+- `Esc` interrupts the active agent turn and every direct DSH/plugin command currently executing for the attached
+  connection. Direct commands remain interruptible even when the agent reports idle because they use separate
+  execution signals. The client keeps the command active until `command-result` or a command error/cancellation
+  acknowledgment arrives.
+- `Ctrl+C` clears a non-empty input buffer. With an empty buffer it exits only while no turn or direct command is
+  active.
 
 ### 4.6 Session management
 
@@ -640,7 +646,8 @@ overriding same names. `commands/change` triggers a per-connection agent-scoped 
 still execute via `command{line}`, with direct UI results returned as
 `command-result{commandId,kind:success|error,text?}`; followup-type commands continue to be presented through
 ordinary session events; when `execute` returns `undefined` the bridge sends `command-unknown` and does not create
-a model message.
+a model message. The existing `interrupt` frame also aborts every in-flight command execution controller; an
+aborted direct command settles client-side through the silent `command-cancelled` error acknowledgment.
 
 `login` payload `{ providers: [{id,name,apiKeyConfigured,apiKeyWritable,apiKeySource?,apiKeyHint?}],
 proxies: [{id,name,baseUrl,protocol,model}], error? }` (§4.8): API key is a view only, no value.

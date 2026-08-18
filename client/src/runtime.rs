@@ -343,7 +343,8 @@ impl RuntimeController {
 
         let idle = {
             let app = state.lock().unwrap();
-            app.is_new_conversation() || app.status == crate::model::AgentStatus::Idle
+            app.is_new_conversation()
+                || (app.status == crate::model::AgentStatus::Idle && !app.has_active_command())
         };
         let action = ui.input.handle_key(&key, idle);
         let mut outcome = Self::apply_input_action(action, state);
@@ -366,6 +367,9 @@ impl RuntimeController {
                     state,
                 },
             );
+            if command.starts_interruptible_command {
+                state.lock().unwrap().begin_command_execution();
+            }
             outcome
                 .effects
                 .extend(command.outbound.into_iter().map(RuntimeEffect::Send));
@@ -501,10 +505,9 @@ impl RuntimeController {
                 kind,
                 text,
             } => {
-                state
-                    .lock()
-                    .unwrap()
-                    .apply_command_result(command_id, kind, text.as_deref());
+                let mut state = state.lock().unwrap();
+                state.finish_command_execution();
+                state.apply_command_result(command_id, kind, text.as_deref());
                 Vec::new()
             }
             ServerMessage::Login {
@@ -612,11 +615,21 @@ impl RuntimeController {
                             .push_error_message(format!("桥接错误 {code}: {message}"));
                     }
                     Vec::new()
+                } else if code == "command-cancelled" {
+                    state.lock().unwrap().finish_command_execution();
+                    Vec::new()
                 } else {
-                    state
-                        .lock()
-                        .unwrap()
-                        .push_error_message(format!("桥接错误 {code}: {message}"));
+                    let mut state = state.lock().unwrap();
+                    if matches!(
+                        code.as_str(),
+                        "no-commands"
+                            | "command-unknown"
+                            | "command-invalid-result"
+                            | "command-failed"
+                    ) {
+                        state.finish_command_execution();
+                    }
+                    state.push_error_message(format!("桥接错误 {code}: {message}"));
                     Vec::new()
                 }
             }
@@ -976,6 +989,84 @@ mod tests {
             route_terminal_event(Event::Paste("abc".into()), help),
             TerminalRoute::Paste { text: "abc".into() }
         );
+    }
+
+    #[test]
+    fn esc_interrupts_a_command_while_the_agent_is_idle() {
+        let state = Arc::new(Mutex::new(AppState::default()));
+        let mut scroll = ScrollState::default();
+        let mut input = InputState::new(&Config::default());
+        input.buf = "/plugin slow".into();
+        input.cursor = input.buf.chars().count();
+        let mut input_page = None;
+        let mut help_visible = false;
+        let mut copy_mode = None;
+        let mut rows_cache = copy::CopyRowsCache::default();
+        let mut copy_toast = None;
+        let mut config = Config::default();
+        let mut themes = Vec::new();
+        let mut theme = config.theme();
+
+        let command = RuntimeController::apply_terminal_route(
+            TerminalRoute::Ordinary(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            40,
+            Instant::now(),
+            &state,
+            &mut TerminalUiState {
+                scroll: &mut scroll,
+                input: &mut input,
+                input_page: &mut input_page,
+                help_visible: &mut help_visible,
+                copy_mode: &mut copy_mode,
+                copy_rows_cache: &mut rows_cache,
+                copy_toast: &mut copy_toast,
+                config: &mut config,
+                themes: &mut themes,
+                theme: &mut theme,
+            },
+        );
+        assert!(matches!(
+            command.as_slice(),
+            [RuntimeEffect::Send(ClientMessage::Command { line })] if line == "/plugin slow"
+        ));
+        assert!(state.lock().unwrap().has_active_command());
+
+        let interrupt = RuntimeController::apply_terminal_route(
+            TerminalRoute::Ordinary(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            40,
+            Instant::now(),
+            &state,
+            &mut TerminalUiState {
+                scroll: &mut scroll,
+                input: &mut input,
+                input_page: &mut input_page,
+                help_visible: &mut help_visible,
+                copy_mode: &mut copy_mode,
+                copy_rows_cache: &mut rows_cache,
+                copy_toast: &mut copy_toast,
+                config: &mut config,
+                themes: &mut themes,
+                theme: &mut theme,
+            },
+        );
+        assert!(matches!(
+            interrupt.as_slice(),
+            [RuntimeEffect::Send(ClientMessage::Interrupt)]
+        ));
+
+        let before = state.lock().unwrap().transcript.len();
+        let mut bridge_ui = ui(&mut scroll, &mut copy_mode, &mut input, &mut input_page);
+        RuntimeController::apply_bridge(
+            ServerMessage::Error {
+                code: "command-cancelled".into(),
+                message: "command cancelled".into(),
+            },
+            &state,
+            &mut bridge_ui,
+        );
+        let state = state.lock().unwrap();
+        assert!(!state.has_active_command());
+        assert_eq!(state.transcript.len(), before, "cancel ack stays silent");
     }
 
     #[test]

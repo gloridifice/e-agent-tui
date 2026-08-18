@@ -7,10 +7,17 @@ function harness(options = {}) {
   const modelSelections = options.modelSelections ?? new Map()
   const closes = []
   const followups = []
+  const cancellations = []
   const conn = {
-    agent: { id: 'a1', followup: (message) => followups.push(message), options: {} },
-    abort: { signal: {} },
+    agent: {
+      id: 'a1',
+      followup: (message) => followups.push(message),
+      cancel: (reason) => cancellations.push(reason),
+      options: {},
+    },
+    abort: new AbortController(),
     pending: new Map(),
+    commandAborts: new Set(),
     clientCwd: undefined,
   }
   const ws = { close: (code) => closes.push(code) }
@@ -38,7 +45,7 @@ function harness(options = {}) {
     modelSelections,
     createUserMessage: (message) => message,
   })
-  return { dispatcher, frames, closes, followups, conn, conns, modelSelections }
+  return { dispatcher, frames, closes, followups, cancellations, conn, conns, modelSelections }
 }
 
 test('dispatcher authenticates, attaches, and routes typed input', async () => {
@@ -168,6 +175,35 @@ test('dispatcher executes an integrated command and relays its direct UI result'
   assert.deepEqual(h.frames.at(-1), {
     type: 'command-result', commandId: 'cmd-1', kind: 'success', text: 'feedback recorded',
   })
+})
+
+test('dispatcher interrupt aborts an active integrated command', async () => {
+  let commandSignal
+  const h = harness({
+    commands: {
+      execute: (_agent, _line, signal) => {
+        commandSignal = signal
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+        })
+      },
+    },
+  })
+  h.dispatcher.handle(Buffer.from(JSON.stringify({
+    type: 'hello', token: 'secret', protocolVersion: 5,
+  })))
+  await new Promise((resolve) => setImmediate(resolve))
+  h.dispatcher.handle(Buffer.from(JSON.stringify({ type: 'command', line: '/slow' })))
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(commandSignal.aborted, false)
+
+  h.dispatcher.handle(Buffer.from(JSON.stringify({ type: 'interrupt' })))
+  await new Promise((resolve) => setImmediate(resolve))
+
+  assert.equal(commandSignal.aborted, true)
+  assert.deepEqual(h.cancellations, [{ kind: 'user' }])
+  assert.equal(h.frames.at(-1).code, 'command-cancelled')
+  assert.equal(h.conn.commandAborts.size, 0)
 })
 
 test('dispatcher drops a command result after the connection becomes stale', async () => {

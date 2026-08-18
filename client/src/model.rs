@@ -453,6 +453,10 @@ pub struct AppState {
     /// frames until a real welcome commits the switch.
     pub new_conversation: Option<NewConversationDraft>,
     pub status: AgentStatus,
+    /// Generic DSH/plugin commands submitted by this client that have not yet
+    /// returned a direct result/error. They are independently interruptible
+    /// even when the agent itself remains idle.
+    active_commands: usize,
     pub provider: Option<String>,
     pub model: Option<String>,
     /// Active agent-preset mode, updated by `agent-preset/selected` replay.
@@ -536,6 +540,7 @@ impl Default for AppState {
             session_id: None,
             new_conversation: None,
             status: AgentStatus::Idle,
+            active_commands: 0,
             provider: None,
             model: None,
             current_mode: None,
@@ -772,6 +777,18 @@ impl AppState {
         self.transcript_cache.invalidate();
     }
 
+    pub fn begin_command_execution(&mut self) {
+        self.active_commands = self.active_commands.saturating_add(1);
+    }
+
+    pub fn finish_command_execution(&mut self) {
+        self.active_commands = self.active_commands.saturating_sub(1);
+    }
+
+    pub fn has_active_command(&self) -> bool {
+        self.active_commands > 0
+    }
+
     /// Apply the direct command acknowledgment without duplicating the
     /// durable command/run↔command/done activity already seen on the log.
     pub fn apply_command_result(&mut self, command_id: &str, kind: &str, text: Option<&str>) {
@@ -945,6 +962,7 @@ impl AppState {
         self.history_loading = false;
         self.history_exhausted = false;
         self.working = false;
+        self.active_commands = 0;
         self.activity_epoch = None;
         // The title belongs to the session being left (welcome sets the
         // new one right after the switch).

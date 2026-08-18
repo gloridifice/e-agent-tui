@@ -251,9 +251,10 @@ dependencies directly to `client/Cargo.toml` and commit the root `Cargo.lock` (w
   `commands{commands[{name,description,input?:{hint}}]}`; on `commands/change`, recompute the effective catalog
   for each connection (agent-scoped shadowing cannot be done as a global incremental patch). `command{line}` goes
   through `commands.execute(agent,line,signal)`; `undefined` means unregistered/invalid syntax, and the settled
-  result goes through `command-result{commandId,kind,text?}` — never becomes a model message. Execution spans
-  awaits, so a current-conn check is required before returning the result to avoid cross-session leakage after
-  attach.
+  result goes through `command-result{commandId,kind,text?}` — never becomes a model message. Each execution owns
+  an `AbortController`; `interrupt` aborts all active command controllers as well as the agent turn, and the client
+  keeps Esc interruptible while direct commands are unsettled even if agent status is idle. Execution spans awaits,
+  so a current-conn check is required before returning the result to avoid cross-session leakage after attach.
 - **Cross-await conn discipline**: in any message handler that touches `conn` (detach/rebind) after an `await`,
   capture a local `current = conn` before the await and verify `conn === current && conns.has(current)` after it
   before operating — consecutive attach/`/new` swaps the closure's `conn` concurrently, and operating on a stale

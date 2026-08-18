@@ -53,6 +53,37 @@ export function createClientDispatcher({
     }
   }
 
+  async function newInput(msg) {
+    if (!conn || typeof msg.mode !== 'string' || typeof msg.text !== 'string') return
+    const mode = msg.mode.trim()
+    if (mode === '' || mode.split(/\s+/).length !== 1 || msg.text === '') {
+      send(ws, { type: 'error', code: 'new-failed', message: 'invalid new conversation input' })
+      return
+    }
+    const current = conn
+    let next
+    try {
+      next = await sessionService.createNewSession(ws, current, mode)
+    } catch (error) {
+      if (conns.isCurrent(current, conn)) {
+        send(ws, { type: 'error', code: 'new-failed', message: String(error?.message ?? error) })
+      }
+      return
+    }
+    if (next === undefined || !(conn === current || !conns.has(current))) return
+    conn = next
+    try {
+      next.agent.followup(createUserMessage({
+        content: [{ type: 'text', text: msg.text }],
+        source: { kind: 'user' },
+      }))
+    } catch (error) {
+      if (conns.isCurrent(next, conn)) {
+        send(ws, { type: 'error', code: 'new-input-failed', message: String(error?.message ?? error) })
+      }
+    }
+  }
+
   function command(msg) {
     if (!conn || typeof msg.line !== 'string') return
     const trimmed = msg.line.trim()
@@ -199,6 +230,7 @@ export function createClientDispatcher({
           conn.agent.followup(createUserMessage({ content: [{ type: 'text', text: msg.text }], source: { kind: 'user' } }))
         }
         break
+      case 'new-input': void newInput(msg); break
       case 'command': command(msg); break
       case 'attach': void attachSession(msg); break
       case 'history':

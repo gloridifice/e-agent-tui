@@ -820,6 +820,9 @@ fn legacy_copy_layout_rows(state: &AppState) -> Vec<CopyLayoutRow> {
 /// to build the transcript cache. The shared row contract and wrapping rules
 /// live in `transcript_layout`; this renderer supplies message presentation.
 pub fn copy_layout_rows(state: &AppState) -> Vec<CopyLayoutRow> {
+    if state.new_conversation.is_some() {
+        return Vec::new();
+    }
     #[cfg(test)]
     if state.transcript.is_empty() && !state.msgs.is_empty() {
         return legacy_copy_layout_rows(state);
@@ -1248,6 +1251,34 @@ fn render_transcript_impl(
 ) -> usize {
     let screen_height = area.height as usize;
     let width = area.width as usize;
+    if let Some(draft) = state.new_conversation.as_ref() {
+        let bottom_rows = bottom_rows.min(screen_height);
+        let bottom_y = if bottom_rows == 0 {
+            screen_height
+        } else {
+            screen_height.saturating_sub(bottom_rows).max(1)
+        };
+        let mut display = if help_visible {
+            help_overlay(theme)
+        } else {
+            draft
+                .notice
+                .as_ref()
+                .map(|notice| {
+                    vec![Line::from(Span::styled(
+                        notice.clone(),
+                        theme.log.warning.style(),
+                    ))]
+                })
+                .unwrap_or_default()
+        };
+        display.truncate(bottom_y);
+        frame.render_widget(
+            Paragraph::new(Text::from(display)).style(Style::default().fg(theme.fg)),
+            area,
+        );
+        return bottom_y;
+    }
     refresh_transcript_cache(state, width);
     state.transcript_cache.ensure_layout(width, wrapped_rows);
     // History prepend anchors are display-row totals, not unwrapped base lines.

@@ -341,7 +341,10 @@ impl RuntimeController {
             return vec![RuntimeEffect::Send(ClientMessage::ListSessions)];
         }
 
-        let idle = state.lock().unwrap().status == crate::model::AgentStatus::Idle;
+        let idle = {
+            let app = state.lock().unwrap();
+            app.is_new_conversation() || app.status == crate::model::AgentStatus::Idle
+        };
         let action = ui.input.handle_key(&key, idle);
         let mut outcome = Self::apply_input_action(action, state);
         if outcome.activate_copy_mode {
@@ -366,6 +369,11 @@ impl RuntimeController {
             outcome
                 .effects
                 .extend(command.outbound.into_iter().map(RuntimeEffect::Send));
+            if command.new_conversation {
+                *ui.scroll = ScrollState::default();
+                *ui.copy_mode = None;
+                *ui.input_page = None;
+            }
             if command.reload_config {
                 outcome.effects.push(RuntimeEffect::ReloadConfig);
             }
@@ -571,6 +579,27 @@ impl RuntimeController {
                     vec![RuntimeEffect::Fatal(format!(
                         "bridge disconnected: {message}"
                     ))]
+                } else if code == "new-failed" {
+                    let restored = {
+                        let mut app = state.lock().unwrap();
+                        let restored = app.restore_new_conversation_input();
+                        if restored.is_some() {
+                            app.set_new_conversation_notice(format!("创建新对话失败：{message}"));
+                        }
+                        restored
+                    };
+                    if let Some(text) = restored {
+                        ui.input.buf = text;
+                        ui.input.cursor = ui.input.buf.chars().count();
+                        ui.input.pasted = false;
+                        ui.input.multiline = ui.input.buf.contains('\n');
+                    } else {
+                        state
+                            .lock()
+                            .unwrap()
+                            .push_error_message(format!("桥接错误 {code}: {message}"));
+                    }
+                    Vec::new()
                 } else {
                     state
                         .lock()
@@ -595,6 +624,26 @@ impl RuntimeController {
         match action {
             InputAction::None | InputAction::ToggleMultiline => {}
             InputAction::Send(text) => {
+                let new_input = {
+                    let mut state = state.lock().unwrap();
+                    if state.is_new_conversation() {
+                        state.materialize_new_conversation(text.clone())
+                    } else {
+                        None
+                    }
+                };
+                if let Some(message) = new_input {
+                    outcome.effects.push(RuntimeEffect::Send(message));
+                    return outcome;
+                }
+                let is_draft = state.lock().unwrap().is_new_conversation();
+                if is_draft {
+                    state
+                        .lock()
+                        .unwrap()
+                        .set_new_conversation_notice("正在创建新对话，请稍候");
+                    return outcome;
+                }
                 let immediate = {
                     let mut state = state.lock().unwrap();
                     let immediate = state.enqueue_or_immediate(&text);
@@ -1024,6 +1073,62 @@ mod tests {
         let state = state.lock().unwrap();
         assert_eq!(state.config.theme, "ferra");
         assert!(!state.transcript_cache.valid);
+    }
+
+    #[test]
+    fn draft_first_prompt_uses_atomic_new_input_without_old_queue() {
+        let state = Mutex::new(AppState::default());
+        state.lock().unwrap().begin_new_conversation("code");
+        let outcome =
+            RuntimeController::apply_input_action(InputAction::Send("first prompt".into()), &state);
+        assert!(matches!(
+            outcome.effects.as_slice(),
+            [RuntimeEffect::Send(ClientMessage::NewInput { mode, text })]
+                if mode == "code" && text == "first prompt"
+        ));
+        let state = state.lock().unwrap();
+        assert!(state.queue.is_empty());
+        assert_eq!(
+            state
+                .new_conversation
+                .as_ref()
+                .and_then(|draft| draft.pending_input.as_deref()),
+            Some("first prompt")
+        );
+    }
+
+    #[test]
+    fn new_failure_restores_the_retained_first_prompt() {
+        let state = Arc::new(Mutex::new(AppState::default()));
+        state.lock().unwrap().begin_new_conversation("standard");
+        let _ = RuntimeController::apply_input_action(InputAction::Send("retry me".into()), &state);
+        let mut scroll = ScrollState::default();
+        let mut copy_mode = None;
+        let mut input = InputState::new(&Config::default());
+        let mut input_page = None;
+        let effects = RuntimeController::apply_bridge(
+            ServerMessage::Error {
+                code: "new-failed".into(),
+                message: "creation failed".into(),
+            },
+            &state,
+            &mut BridgeUiState {
+                scroll: &mut scroll,
+                copy_mode: &mut copy_mode,
+                input: &mut input,
+                input_page: &mut input_page,
+            },
+        );
+        assert!(effects.is_empty());
+        assert_eq!(input.buf, "retry me");
+        assert_eq!(input.cursor, 8);
+        let app = state.lock().unwrap();
+        assert!(app.is_new_conversation());
+        assert!(app
+            .new_conversation
+            .as_ref()
+            .and_then(|draft| draft.notice.as_deref())
+            .is_some_and(|notice| notice.contains("creation failed")));
     }
 
     #[test]

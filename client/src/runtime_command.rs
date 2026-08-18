@@ -30,6 +30,7 @@ use crate::{
 pub struct CommandOutcome {
     pub outbound: Vec<ClientMessage>,
     pub reload_config: bool,
+    pub new_conversation: bool,
     pub quit: bool,
 }
 
@@ -66,6 +67,14 @@ fn push_error(state: &Arc<Mutex<AppState>>, text: impl Into<String>) {
     state.lock().unwrap().push_error_message(text);
 }
 
+fn has_new_conversation(state: &Arc<Mutex<AppState>>) -> bool {
+    state.lock().unwrap().is_new_conversation()
+}
+
+fn set_new_conversation_notice(state: &Arc<Mutex<AppState>>, text: impl Into<String>) {
+    state.lock().unwrap().set_new_conversation_notice(text);
+}
+
 fn forward(line: String, outcome: &mut CommandOutcome) {
     outcome.outbound.push(ClientMessage::Command { line });
 }
@@ -88,8 +97,13 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
         return outcome;
     };
     let Some(command) = builtin_command(name) else {
-        // Auto-discovered DSH/plugin command: generic command-plane adapter.
-        forward(line, &mut outcome);
+        // A client-only draft is not attached to an agent of its own. Never
+        // let an integrated command mutate the retained old session.
+        if has_new_conversation(context.state) {
+            set_new_conversation_notice(context.state, "请先发送一条消息创建新对话");
+        } else {
+            forward(line, &mut outcome);
+        }
         return outcome;
     };
 
@@ -132,8 +146,15 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
             if reject_arguments(&context, name, raw_input) {
                 return outcome;
             }
-            *context.input_page = Some(InputPageSession::model());
-            outcome.outbound.push(ClientMessage::ModelGet);
+            if has_new_conversation(context.state) {
+                set_new_conversation_notice(
+                    context.state,
+                    "请先发送一条消息创建新对话，再选择模型",
+                );
+            } else {
+                *context.input_page = Some(InputPageSession::model());
+                outcome.outbound.push(ClientMessage::ModelGet);
+            }
         }
         CommandAction::Reload => {
             if reject_arguments(&context, name, raw_input) {
@@ -171,8 +192,24 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
             }
         }
         CommandAction::New => {
-            if let Some(line) = new_command_line(raw_input, &context.config.default_mode) {
-                forward(line, &mut outcome);
+            let (blocked, materializing) = {
+                let state = context.state.lock().unwrap();
+                (
+                    state.question.is_some() || state.approval.is_some(),
+                    state
+                        .new_conversation
+                        .as_ref()
+                        .is_some_and(|draft| draft.pending_input.is_some()),
+                )
+            };
+            if blocked {
+                push_error(context.state, "请先完成当前提问或审批，再新建对话");
+            } else if materializing {
+                set_new_conversation_notice(context.state, "正在创建新对话，请稍候");
+            } else if let Some(line) = new_command_line(raw_input, &context.config.default_mode) {
+                let mode = line.trim_start_matches("/new ").to_owned();
+                context.state.lock().unwrap().begin_new_conversation(mode);
+                outcome.new_conversation = true;
             } else {
                 push_error(context.state, "用法: /new [模式]");
             }
@@ -180,7 +217,13 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
         // Bridge-optimized commands and known DSH commands still use the
         // command plane; their declaration remains local so richer argument
         // completion can be added without duplicating metadata elsewhere.
-        CommandAction::Skill | CommandAction::Forward => forward(line, &mut outcome),
+        CommandAction::Skill | CommandAction::Forward => {
+            if has_new_conversation(context.state) {
+                set_new_conversation_notice(context.state, "请先发送一条消息创建新对话");
+            } else {
+                forward(line, &mut outcome);
+            }
+        }
     }
     outcome
 }
@@ -234,6 +277,87 @@ mod tests {
         );
         assert_eq!(new_command_line("minimal extra", "cordis"), None);
         assert_eq!(new_command_line("", "  "), Some("/new standard".into()));
+    }
+
+    #[test]
+    fn new_command_creates_only_a_local_draft() {
+        let state = Arc::new(Mutex::new(AppState::default()));
+        let mut input_page = None;
+        let mut help_visible = false;
+        let mut copy_mode = None;
+        let mut config = Config::default();
+        let mut themes = Vec::new();
+        let new_modes = Vec::new();
+        let mut paste_chars = config.paste_placeholder_chars;
+        let mut history_limit = config.history_limit;
+        let mut theme = config.theme();
+        let outcome = handle_local_command(
+            "/new code".into(),
+            LocalCommandContext {
+                input_page: &mut input_page,
+                help_visible: &mut help_visible,
+                copy_mode: &mut copy_mode,
+                config: &mut config,
+                themes: &mut themes,
+                new_modes: &new_modes,
+                input_paste_placeholder_chars: &mut paste_chars,
+                input_history_limit: &mut history_limit,
+                theme: &mut theme,
+                state: &state,
+            },
+        );
+        assert!(
+            outcome.outbound.is_empty(),
+            "/new must not reach the bridge"
+        );
+        assert!(outcome.new_conversation);
+        assert_eq!(
+            state
+                .lock()
+                .unwrap()
+                .new_conversation
+                .as_ref()
+                .map(|draft| draft.mode.as_str()),
+            Some("code")
+        );
+    }
+
+    #[test]
+    fn draft_blocks_integrated_commands_from_the_retained_session() {
+        let state = Arc::new(Mutex::new(AppState::default()));
+        state.lock().unwrap().begin_new_conversation("standard");
+        let mut input_page = None;
+        let mut help_visible = false;
+        let mut copy_mode = None;
+        let mut config = Config::default();
+        let mut themes = Vec::new();
+        let new_modes = Vec::new();
+        let mut paste_chars = config.paste_placeholder_chars;
+        let mut history_limit = config.history_limit;
+        let mut theme = config.theme();
+        let outcome = handle_local_command(
+            "/feedback good".into(),
+            LocalCommandContext {
+                input_page: &mut input_page,
+                help_visible: &mut help_visible,
+                copy_mode: &mut copy_mode,
+                config: &mut config,
+                themes: &mut themes,
+                new_modes: &new_modes,
+                input_paste_placeholder_chars: &mut paste_chars,
+                input_history_limit: &mut history_limit,
+                theme: &mut theme,
+                state: &state,
+            },
+        );
+        assert!(outcome.outbound.is_empty());
+        assert!(state
+            .lock()
+            .unwrap()
+            .new_conversation
+            .as_ref()
+            .and_then(|draft| draft.notice.as_deref())
+            .is_some_and(|notice| notice.contains("先发送一条消息")));
     }
 
     #[test]

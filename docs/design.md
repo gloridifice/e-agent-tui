@@ -430,7 +430,11 @@ assistant 消息顶部。**复制的永远是原始 markdown 源码**（经 §2.
   不了（未持久化/preset 已删除）则新建会话——**绝不因"会话不活跃"断连**。仅创建
   失败（agents 缺失等）才以错误帧 + 4001 结束。
 - `Ctrl+N` / `/resume` 打开续接会话 Input Page；`/resume <session-id>` 直接 attach 切换
-  （页面/`/resume` 对冷会话同样先 resume，找不到才报错、不断连）。会话列表先下发 header 与在线日志可直接取得的标题，再异步补齐持久化标题；`sessionQuery.readTitleSnapshots` 的 settled result 必须从 `fulfilled.value.title.title` 解包，不能把结果误当成扁平 `{sessionId,title}`。
+  （页面/`/resume` 对冷会话同样先 resume，找不到才报错、不断连）。会话列表按 DSH 的
+  `turn/start` 边界排除 blank 会话，且先过滤再应用 200 条上限；活跃会话读内存事件，冷会话优先读
+  `sessionListMetadata.blank` projection/cache、再回退 typed persistence 日志，分类失败 fail-open。
+  过滤后的列表先下发 header 与在线日志可直接取得的标题，再异步补齐持久化标题；
+  `sessionQuery.readTitleSnapshots` 的 settled result 必须从 `fulfilled.value.title.title` 解包，不能把结果误当成扁平 `{sessionId,title}`。
 - 状态栏下方固定一行显示当前会话（无背景色）：左侧标题、右侧工作区路径。标题由
   `welcome.title`（会话日志最近一条 `session/title`，由桥接在 attach 时读取）
   初始填充；冷恢复会话日志不在内存，桥接经 `sessionQuery.readTitleSnapshots`
@@ -438,11 +442,8 @@ assistant 消息顶部。**复制的永远是原始 markdown 源码**（经 §2.
   （客户端只更新该行，不重建 transcript 缓存）。路径由 `welcome.cwd`（会话头部
   `header.cwd`，桥接在 attach 时读取）填充；标题过长以 `…` 截断以保住右侧路径，
   标题为空时显示 `新会话`，路径为空时右侧留空。
-- `/new`：新建会话并切换（保留旧会话）。新会话落在 **TUI 启动目录**的工作区——
-  客户端在 `hello` 里带上 `cwd`，桥接用它（校验为真实目录后）作为 `agents.create`
-  的 `meta.cwd`，再把新会话 `attachSession` 进该 cwd 的 workspace 台账（与 host
-  `session.create` 的两步一致）；客户端没发 cwd（旧客户端）时回退当前会话头部的
-  cwd / `process.cwd()`。dshe 的裸 `/new` 会展开为 `/new <config.default_mode>`，因此设置页切换默认模式后立即影响下一次新建；显式 `/new <模式>` 仍是一次性覆盖。兼容旧客户端时，bridge 收到真正的裸 `/new` 才继承当前会话 agent preset。bridge 在 `agents.create` 的 `setup` 里 `agentPresets.mount`，只写 header 不 mount 会拿不到 preset 的工具与提示词。
+- `/new`：先创建**仅客户端草稿**，显示空 transcript 与展示名 `新对话`，但保留并继续归约后台已 attach 的真实会话；不发送 `/new`、不伪造/持久化 session id。第一条普通输入通过原子
+  `new-input{mode,text}` 才让 bridge 创建/attach 会话并 `followup` 新 agent；创建失败恢复完整输入并保留草稿。新会话落在 **TUI 启动目录**的工作区——客户端在 `hello` 里带上 `cwd`，桥接用它（校验为真实目录后）作为 `agents.create` 的 `meta.cwd`，再把新会话 `attachSession` 进该 cwd 的 workspace 台账（与 host `session.create` 的两步一致）；客户端没发 cwd（旧客户端）时回退当前会话头部的 cwd / `process.cwd()`。裸 `/new` 取 `config.default_mode`，显式 `/new <模式>` 一次性覆盖。草稿物化前 `/resume` 可用，但 `/model`、`/skill` 与接入命令不得误投到旧会话。bridge 仍保留旧客户端 `/new` handler，并在 `agents.create` 的 `setup` 里 mount preset。
 - `/new <模式>`：按 agent preset id 新建会话（standard/code/minimal/cordis 及
   用户自建 preset）。桥接在每次 attach 后下发 `presets` roster 帧（id/name/
   description/order/broken）；客户端在输入 `/new `（含尾部空格）时弹出模式提示
@@ -548,7 +549,7 @@ assistant 消息顶部。**复制的永远是原始 markdown 源码**（经 §2.
 - `/theme` 以主题名为可执行焦点，色块仅为装饰；Enter 应用并持久化主题。两页都使用
   §4.7 公共 shell，不再使用居中浮窗；终端过小时采用有界裁剪，不产生越界区域。
 
-## 5. 桥接与协议（wire protocol v4）
+## 5. 桥接与协议（wire protocol v5）
 
 ### 5.1 端点与安全
 

@@ -240,11 +240,16 @@ pub fn render_with_cursor(
         height: area.height,
     };
     let input_page_open = input_page.is_some() || settings.is_some() || login.is_some();
+    let drafting = state.new_conversation.is_some();
     // Input Pages replace the input bar and take two thirds of the page height
     // without a floating window. The transcript keeps the top third.
     let bottom_rows = bottom_area_rows(area.height, input, input_page_open);
     let bottom = Constraint::Length(bottom_rows);
-    let accessories = input_accessories(state);
+    let accessories = if drafting {
+        Vec::new()
+    } else {
+        input_accessories(state)
+    };
     let accessory_budget = area.height.saturating_sub(1 + bottom_rows + 3);
     let accessory_plan = allocate_accessories(&accessories, accessory_budget);
     let accessory_rows = |kind| {
@@ -261,97 +266,99 @@ pub fn render_with_cursor(
     let queue_visible = usize::from(accessory_rows(InputAccessoryKind::Queue));
     if input_page_open {
         let chunks = Layout::vertical([
-        Constraint::Min(1),
-        Constraint::Length(question_rows),
-        Constraint::Length(approval_rows),
-        Constraint::Length(goal_rows),
-        Constraint::Length(plan_rows),
-        Constraint::Length(todo_rows),
-        Constraint::Length(queue_visible as u16),
-        bottom,
-        Constraint::Length(1), // one-row gap between input and status bar
-        Constraint::Length(1), // status bar
-        Constraint::Length(1), // session title row at the very bottom
-    ])
-    .split(page);
+            Constraint::Min(1),
+            Constraint::Length(question_rows),
+            Constraint::Length(approval_rows),
+            Constraint::Length(goal_rows),
+            Constraint::Length(plan_rows),
+            Constraint::Length(todo_rows),
+            Constraint::Length(queue_visible as u16),
+            bottom,
+            Constraint::Length(1), // one-row gap between input and status bar
+            Constraint::Length(1), // status bar
+            Constraint::Length(1), // session title row at the very bottom
+        ])
+        .split(page);
 
-    render_transcript(
-        frame,
-        chunks[0],
-        state,
-        scroll,
-        theme,
-        help_visible,
-        overlay,
-    );
-    if let Some(question) = state.question.as_ref() {
-        render_question(frame, chunks[1], question, theme);
-    }
-    if approval_rows > 0 {
-        render_approval(frame, chunks[2], state.approval.as_ref().unwrap(), theme);
-    }
-    if goal_rows > 0 {
-        render_info_accessory(
+        render_transcript(
             frame,
-            chunks[3],
-            "Goal",
-            state.goal.as_deref().unwrap_or(""),
+            chunks[0],
+            state,
+            scroll,
             theme,
+            help_visible,
+            overlay,
         );
-    }
-    if plan_rows > 0 {
-        render_info_accessory(
-            frame,
-            chunks[4],
-            "Plan",
-            state.plan_mode.as_deref().unwrap_or(""),
-            theme,
-        );
-    }
-    if todo_rows > 0 {
-        render_todo(frame, chunks[5], &state.todos, theme);
-    }
-    if queue_visible > 0 {
-        render_queue(frame, chunks[6], &state.queue, queue_visible, theme);
-    }
-    let cursor_anchor = if let Some(page) = input_page.as_mut() {
-        render_input_page(frame, chunks[7], page, &state.config, theme);
-        None
-    } else if let Some(settings) = settings.as_mut() {
-        render_settings(frame, chunks[7], settings, &state.config, theme);
-        None
-    } else if let Some(login) = login.as_mut() {
-        render_login(frame, chunks[7], login, theme);
-        None
-    } else if let Some(question) = state.question.as_ref() {
-        // The input bar becomes the selection bar while a question pends.
-        render_question_bar(
-            frame,
-            chunks[7],
-            question,
-            theme,
-            state.config.user_input_padding as u16,
-        )
-    } else {
-        render_input(
-            frame,
-            chunks[7],
-            input,
-            theme,
-            overlay.is_some(),
-            toast,
-            state.config.user_input_padding as u16,
-        )
-    };
-    render_status(frame, chunks[9], state, scroll, theme);
-    render_title(frame, chunks[10], state, theme);
-    // Slash-command suggestions float above the input bar (last draw wins).
-    if !input_page_open && state.question.is_none() {
-        if let Some(suggest) = input.suggest.as_ref() {
-            render_suggest(frame, suggest, chunks[7], theme);
+        if !drafting {
+            if let Some(question) = state.question.as_ref() {
+                render_question(frame, chunks[1], question, theme);
+            }
         }
-    }
-    return cursor_anchor;
+        if approval_rows > 0 {
+            render_approval(frame, chunks[2], state.approval.as_ref().unwrap(), theme);
+        }
+        if goal_rows > 0 {
+            render_info_accessory(
+                frame,
+                chunks[3],
+                "Goal",
+                state.goal.as_deref().unwrap_or(""),
+                theme,
+            );
+        }
+        if plan_rows > 0 {
+            render_info_accessory(
+                frame,
+                chunks[4],
+                "Plan",
+                state.plan_mode.as_deref().unwrap_or(""),
+                theme,
+            );
+        }
+        if todo_rows > 0 {
+            render_todo(frame, chunks[5], &state.todos, theme);
+        }
+        if queue_visible > 0 {
+            render_queue(frame, chunks[6], &state.queue, queue_visible, theme);
+        }
+        let cursor_anchor = if let Some(page) = input_page.as_mut() {
+            render_input_page(frame, chunks[7], page, &state.config, theme);
+            None
+        } else if let Some(settings) = settings.as_mut() {
+            render_settings(frame, chunks[7], settings, &state.config, theme);
+            None
+        } else if let Some(login) = login.as_mut() {
+            render_login(frame, chunks[7], login, theme);
+            None
+        } else if let Some(question) = state.question.as_ref().filter(|_| !drafting) {
+            // The input bar becomes the selection bar while a question pends.
+            render_question_bar(
+                frame,
+                chunks[7],
+                question,
+                theme,
+                state.config.user_input_padding as u16,
+            )
+        } else {
+            render_input(
+                frame,
+                chunks[7],
+                input,
+                theme,
+                overlay.is_some(),
+                toast,
+                state.config.user_input_padding as u16,
+            )
+        };
+        render_status(frame, chunks[9], state, scroll, theme);
+        render_title(frame, chunks[10], state, theme);
+        // Slash-command suggestions float above the input bar (last draw wins).
+        if !input_page_open && (drafting || state.question.is_none()) {
+            if let Some(suggest) = input.suggest.as_ref() {
+                render_suggest(frame, suggest, chunks[7], theme);
+            }
+        }
+        return cursor_anchor;
     }
 
     // Ordinary mode: accessories, input bar, status and title are part of the
@@ -447,7 +454,7 @@ pub fn render_with_cursor(
         let h = (end_y - y).min(bottom_rows);
         let rect = ratatui::layout::Rect::new(page.x, y, page.width, h);
         input_rect = Some(rect);
-        cursor_anchor = if let Some(question) = state.question.as_ref() {
+        cursor_anchor = if let Some(question) = state.question.as_ref().filter(|_| !drafting) {
             render_question_bar(
                 frame,
                 rect,
@@ -489,7 +496,7 @@ pub fn render_with_cursor(
             theme,
         );
     }
-    if state.question.is_none() {
+    if drafting || state.question.is_none() {
         if let Some(suggest) = input.suggest.as_ref() {
             if let Some(rect) = input_rect {
                 render_suggest(frame, suggest, rect, theme);
@@ -1557,6 +1564,42 @@ mod tests {
             fallback.replace(' ', "").contains("新会话"),
             "fallback title row: {fallback:?}"
         );
+
+        // `/new` is a presentation-only draft: it hides the retained real
+        // transcript and uses “新对话” without writing a session title.
+        s.push_error_message("retained old transcript");
+        s.begin_new_conversation("code");
+        terminal
+            .draw(|f| {
+                render(
+                    f,
+                    &mut s,
+                    &input,
+                    &mut scroll,
+                    &theme,
+                    RenderOverlays {
+                        input_page: None,
+                        help_visible: false,
+                        overlay: None,
+                        toast: None,
+                        settings: None,
+                        login: None,
+                    },
+                )
+            })
+            .unwrap();
+        let draft_title = title_row(terminal.backend().buffer(), 23);
+        assert!(
+            draft_title.replace(' ', "").contains("新对话"),
+            "draft title row: {draft_title:?}"
+        );
+        let screen = (0u16..24)
+            .map(|y| title_row(terminal.backend().buffer(), y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!screen.contains("retained old transcript"), "{screen}");
+        assert!(title_row(terminal.backend().buffer(), 22).contains("• code"));
+        assert!(copy_layout_rows(&s).is_empty());
     }
 
     /// The title row also carries the workspace path, right-aligned; a long

@@ -30,7 +30,7 @@ use crate::projection::{
     TranscriptStore,
 };
 use crate::protocol::{
-    HostEvent, HostEventKind, HostSurfaceOp, TokenUsage, CLIENT_REPLAY_EVENT_CAP,
+    ClientMessage, HostEvent, HostEventKind, HostSurfaceOp, TokenUsage, CLIENT_REPLAY_EVENT_CAP,
 };
 #[cfg(test)]
 use crate::render::RenderLine;
@@ -415,6 +415,16 @@ impl QuestionBatch {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewConversationDraft {
+    pub mode: String,
+    /// The first prompt is retained until a real welcome commits the new
+    /// session; `Some` means bridge materialization is in flight.
+    pub pending_input: Option<String>,
+    /// Draft-local notice rendered without mutating the retained transcript.
+    pub notice: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ActivityTransition {
     pub done_since: std::time::Instant,
@@ -438,6 +448,10 @@ pub struct AppState {
     pub plan_mode: Option<String>,
     pub session_state_events: std::collections::HashSet<String>,
     pub session_id: Option<String>,
+    /// Client-only `/new` presentation layered over the still-attached real
+    /// session. The retained transcript continues to receive old-session
+    /// frames until a real welcome commits the switch.
+    pub new_conversation: Option<NewConversationDraft>,
     pub status: AgentStatus,
     pub provider: Option<String>,
     pub model: Option<String>,
@@ -520,6 +534,7 @@ impl Default for AppState {
             plan_mode: None,
             session_state_events: std::collections::HashSet::new(),
             session_id: None,
+            new_conversation: None,
             status: AgentStatus::Idle,
             provider: None,
             model: None,
@@ -941,6 +956,46 @@ impl AppState {
 }
 
 impl AppState {
+    pub fn begin_new_conversation(&mut self, mode: impl Into<String>) {
+        self.new_conversation = Some(NewConversationDraft {
+            mode: mode.into(),
+            pending_input: None,
+            notice: None,
+        });
+    }
+
+    /// Retain the first prompt and return the atomic materialization payload.
+    /// A second submission while creation is in flight is rejected by the
+    /// controller rather than entering the retained old session's queue.
+    pub fn materialize_new_conversation(&mut self, text: String) -> Option<ClientMessage> {
+        let draft = self.new_conversation.as_mut()?;
+        if draft.pending_input.is_some() {
+            return None;
+        }
+        draft.pending_input = Some(text.clone());
+        draft.notice = Some("正在创建新对话…".into());
+        Some(ClientMessage::NewInput {
+            mode: draft.mode.clone(),
+            text,
+        })
+    }
+
+    pub fn restore_new_conversation_input(&mut self) -> Option<String> {
+        let draft = self.new_conversation.as_mut()?;
+        draft.notice = None;
+        draft.pending_input.take()
+    }
+
+    pub fn set_new_conversation_notice(&mut self, notice: impl Into<String>) {
+        if let Some(draft) = self.new_conversation.as_mut() {
+            draft.notice = Some(notice.into());
+        }
+    }
+
+    pub fn is_new_conversation(&self) -> bool {
+        self.new_conversation.is_some()
+    }
+
     /// Apply one bridge message payload (welcome / snapshot / event / status).
     pub fn apply(&mut self, kind: &str, data: &Value) {
         match kind {
@@ -957,6 +1012,8 @@ impl AppState {
                     }
                 }
                 self.session_id = new_id;
+                // Only a real bridge welcome can commit/abandon a local draft.
+                self.new_conversation = None;
                 self.session_title = data.get("title").and_then(Value::as_str).map(String::from);
                 self.session_cwd = data.get("cwd").and_then(Value::as_str).map(String::from);
                 self.status = if data.get("status").and_then(Value::as_str) == Some("running") {
@@ -3247,6 +3304,36 @@ mod tests {
             s.current_mode.as_deref(),
             Some(s.config.default_mode.as_str()),
             "welcome from an old bridge keeps the configured fallback"
+        );
+    }
+
+    #[test]
+    fn real_welcome_commits_and_clears_the_local_new_conversation() {
+        let mut s = AppState::default();
+        s.apply(
+            "welcome",
+            &serde_json::json!({"sessionId":"old","status":"idle","mode":"standard"}),
+        );
+        s.begin_new_conversation("code");
+        s.apply_event(&serde_json::json!({
+            "type": "user/message",
+            "seq": 1,
+            "data": {"content": [{"type":"text","text":"old event"}], "source":{"kind":"user"}}
+        }));
+        assert!(s.is_new_conversation());
+        assert!(
+            !s.transcript.is_empty(),
+            "old frames remain retained behind draft"
+        );
+        s.apply(
+            "welcome",
+            &serde_json::json!({"sessionId":"new","status":"idle","mode":"code"}),
+        );
+        assert!(!s.is_new_conversation());
+        assert_eq!(s.session_id.as_deref(), Some("new"));
+        assert!(
+            s.transcript.is_empty(),
+            "normal switch reset commits the draft"
         );
     }
 

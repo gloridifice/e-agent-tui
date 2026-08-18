@@ -3,8 +3,9 @@
 // ctx.get() knowledge through every handler.
 export const REQUIRED_SERVICES = Object.freeze(['agents', 'sessionPersistence'])
 export const OPTIONAL_SERVICES = Object.freeze([
-  'agentPresets', 'workspaceRegistry', 'sessionQuery', 'commands', 'skills',
-  'llm', 'apiProxy', 'agentDefaultModel', 'credentials', 'settings',
+  'agentPresets', 'workspaceRegistry', 'sessionQuery', 'sessionProjections',
+  'sessionProjectionCache', 'commands', 'skills', 'llm', 'apiProxy',
+  'agentDefaultModel', 'credentials', 'settings',
 ])
 
 export function createHostPort(ctx) {
@@ -18,6 +19,8 @@ export function createHostPort(ctx) {
     presets: () => get('agentPresets'),
     workspaces: () => get('workspaceRegistry'),
     sessionQuery: () => get('sessionQuery'),
+    sessionProjections: () => get('sessionProjections'),
+    sessionProjectionCache: () => get('sessionProjectionCache'),
     commands: () => get('commands'),
     skills: () => get('skills'),
     llm: () => get('llm'),

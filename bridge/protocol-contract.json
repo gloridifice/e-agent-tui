@@ -1,5 +1,5 @@
 {
-  "protocolVersion": 4,
+  "protocolVersion": 5,
   "limits": {
     "snapshotEvents": 600,
     "historyEvents": 2000,
@@ -38,6 +38,7 @@
   "clientMessages": [
     "hello",
     "input",
+    "new-input",
     "command",
     "interrupt",
     "attach",
@@ -218,6 +219,13 @@
       },
       "input": {
         "required": {
+          "text": "string"
+        },
+        "optional": {}
+      },
+      "new-input": {
+        "required": {
+          "mode": "string",
           "text": "string"
         },
         "optional": {}

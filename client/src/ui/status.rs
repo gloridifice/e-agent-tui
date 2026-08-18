@@ -11,7 +11,8 @@ pub(super) fn render_status(
     // Running bullet leads the status bar: yellow breathing while the agent
     // is running (or has just been sent work), gray while idle. One space
     // separates it from the elements that follow.
-    let bullet = if state.status == AgentStatus::Running || state.working {
+    let drafting = state.new_conversation.is_some();
+    let bullet = if !drafting && (state.status == AgentStatus::Running || state.working) {
         Span::styled(
             "•",
             Style::default().fg(breathing_color(theme, state.breath_phase())),
@@ -20,8 +21,10 @@ pub(super) fn render_status(
         Span::styled("•", dim)
     };
     let mode = state
-        .current_mode
-        .as_deref()
+        .new_conversation
+        .as_ref()
+        .map(|draft| draft.mode.as_str())
+        .or(state.current_mode.as_deref())
         .unwrap_or(state.config.default_mode.as_str());
     let mut left_spans = vec![
         bullet,
@@ -36,7 +39,7 @@ pub(super) fn render_status(
         left_spans.push(Span::styled(" ", dim));
         left_spans.push(Span::styled(model.to_owned(), dim));
     }
-    if let Some(rate) = state.cache_hit_rate() {
+    if let Some(rate) = (!drafting).then(|| state.cache_hit_rate()).flatten() {
         left_spans.push(Span::styled(" ", dim));
         left_spans.push(Span::styled(format!("CH{rate}%"), dim));
     }
@@ -71,16 +74,24 @@ pub(super) fn render_title(
     // Left-aligned title, truncated to leave the path (plus a small gap)
     // visible. Drawn first so the path below wins any overlap (defensive:
     // the truncation already reserves the path's columns).
-    let title = match state.session_title.as_deref() {
-        Some(title) if !title.trim().is_empty() => title.trim().to_owned(),
-        _ => "新会话".to_owned(),
+    let title = if state.new_conversation.is_some() {
+        "新对话".to_owned()
+    } else {
+        match state.session_title.as_deref() {
+            Some(title) if !title.trim().is_empty() => title.trim().to_owned(),
+            _ => "新会话".to_owned(),
+        }
     };
-    let cwd = state
-        .session_cwd
-        .as_deref()
-        .unwrap_or("")
-        .trim()
-        .to_string();
+    let cwd = if state.new_conversation.is_some() {
+        String::new()
+    } else {
+        state
+            .session_cwd
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    };
     let path_w = UnicodeWidthStr::width(cwd.as_str());
     let avail = width.saturating_sub(path_w.saturating_add(2));
     let shown = if UnicodeWidthStr::width(title.as_str()) > avail {

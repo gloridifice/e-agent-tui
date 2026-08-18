@@ -32,8 +32,11 @@ pub enum ClientMessage {
         /// newer bridges reject only clients requiring a newer contract.
         protocol_version: u64,
     },
-    /// Ordinary user message (enters the agent inbox).
+    /// Ordinary user message (enters the currently attached agent inbox).
     Input { text: String },
+    /// Atomically materialize a client-only `/new` draft and deliver its first
+    /// user prompt to the newly attached agent.
+    NewInput { mode: String, text: String },
     /// Slash command line.
     Command { line: String },
     /// Interrupt the current turn.

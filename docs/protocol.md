@@ -8,7 +8,7 @@ Do not edit capacities, rosters, or payload fields here by hand.
 
 | Field | Value |
 |---|---:|
-| Protocol version | 4 |
+| Protocol version | 5 |
 | Snapshot surface events | 600 |
 | History page events | 2000 |
 | Maximum normal frame | 16777216 bytes |
@@ -18,6 +18,7 @@ Do not edit capacities, rosters, or payload fields here by hand.
 
 - `hello`
 - `input`
+- `new-input`
 - `command`
 - `interrupt`
 - `attach`
@@ -48,6 +49,13 @@ Do not edit capacities, rosters, or payload fields here by hand.
 
 | Presence | Field | Type |
 |---|---|---|
+| required | `text` | `string` |
+
+### `new-input`
+
+| Presence | Field | Type |
+|---|---|---|
+| required | `mode` | `string` |
 | required | `text` | `string` |
 
 ### `command`

@@ -20,7 +20,7 @@
   },
   "dshCompatibility": {
     "testedHost": "0.1.0-rc.6",
-    "wireProtocol": 4,
+    "wireProtocol": 5,
     "modelSelection": {
       "package": "@deepseek-ai/dsh-agent",
       "export": "installModelSelection",

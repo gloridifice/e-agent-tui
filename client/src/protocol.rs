@@ -234,6 +234,19 @@ mod tests {
     }
 
     #[test]
+    fn new_input_serializes_mode_and_complete_first_prompt() {
+        let msg = ClientMessage::NewInput {
+            mode: "code".into(),
+            text: "first\nline".into(),
+        };
+        let value: serde_json::Value =
+            serde_json::from_str(&msg.to_wire().expect("new-input serializes")).unwrap();
+        assert_eq!(value["type"], "new-input");
+        assert_eq!(value["mode"], "code");
+        assert_eq!(value["text"], "first\nline");
+    }
+
+    #[test]
     fn hello_carries_the_launch_cwd() {
         let msg = ClientMessage::Hello {
             token: "t".into(),

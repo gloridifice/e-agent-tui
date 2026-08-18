@@ -443,11 +443,12 @@ async fn run(
         if let Some(event) = pending_event {
             let focus = {
                 let state = state_r.lock().unwrap();
+                let drafting = state.is_new_conversation();
                 e::runtime::TerminalFocus {
                     help_visible,
                     input_page_open: input_page.is_some(),
-                    question_open: state.question.is_some(),
-                    approval_open: state.approval.is_some(),
+                    question_open: !drafting && state.question.is_some(),
+                    approval_open: !drafting && state.approval.is_some(),
                     copy_mode_open: copy_mode.is_some(),
                 }
             };

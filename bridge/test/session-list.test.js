@@ -30,7 +30,10 @@ test('session list sends headers first then enriches persisted titles', async ()
     agents: () => ({
       list: () => [{
         id: 'live',
-        session: { events: [{ type: 'session/title', data: { title: '在线标题' } }] },
+        session: { events: [
+          { type: 'turn/start', seq: 0, data: { turn: 0 } },
+          { type: 'session/title', seq: 1, data: { title: '在线标题' } },
+        ] },
       }],
     }),
     sessionQuery: () => ({
@@ -58,4 +61,67 @@ test('session list sends headers first then enriches persisted titles', async ()
     ['live', '在线标题'],
     ['cold', '冷会话标题'],
   ])
+})
+
+test('session list excludes live and cold setup-only sessions before applying the cap', async () => {
+  const headers = [
+    { id: 'live-blank', createdAt: 5 },
+    { id: 'cold-blank', createdAt: 4 },
+    { id: 'real-new', createdAt: 3 },
+    { id: 'real-old', createdAt: 2 },
+  ]
+  const reads = []
+  const host = {
+    persistence: () => ({
+      list: async () => headers,
+      readFrom: async (id) => {
+        reads.push(id)
+        return { events: id === 'cold-blank'
+          ? [
+              { type: 'permission/preset', seq: 0 },
+              { type: 'sandbox/mode', seq: 1 },
+            ]
+          : [{ type: 'turn/start', seq: 0 }] }
+      },
+    }),
+    agents: () => ({
+      list: () => [{
+        id: 'live-blank',
+        session: {
+          header: headers[0],
+          events: [{ type: 'approval/policy', seq: 0 }],
+        },
+      }],
+    }),
+    sessionQuery: () => undefined,
+  }
+  const sessions = await createSessionLister(host, 2)()
+  assert.deepEqual(sessions.map((session) => session.id), ['real-new', 'real-old'])
+  assert.ok(reads.includes('cold-blank'))
+})
+
+test('blank classification uses the persisted projection cache before log reads', async () => {
+  let logReads = 0
+  const host = {
+    persistence: () => ({
+      list: async () => [
+        { id: 'blank', createdAt: 2 },
+        { id: 'real', createdAt: 1 },
+      ],
+      readFrom: async () => { logReads += 1; return { events: [] } },
+    }),
+    agents: () => ({ list: () => [] }),
+    sessionProjectionCache: () => ({
+      cachedSnapshot: (header) => ({
+        values: { sessionListMetadata: { blank: header.id === 'blank' } },
+      }),
+      coldSnapshot: async (id) => ({
+        values: { sessionListMetadata: { blank: id === 'blank' } },
+      }),
+    }),
+    sessionQuery: () => undefined,
+  }
+  const sessions = await createSessionLister(host)()
+  assert.deepEqual(sessions.map((session) => session.id), ['real'])
+  assert.equal(logReads, 0)
 })

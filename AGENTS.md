@@ -179,10 +179,10 @@ cargo 走 crates.io 官方源（本机网络已修复）。`client/vendor/` 与
   输入完整 `/skill` 即展示当前 user-invocable roster，候选统一填成 `/skill:<name>`。收到新
   `commands`/`skills` 帧要立即刷新已打开的提示框，切会话先清旧 agent-scoped 目录。通用执行不得预先 `start_thinking`，结果
   由 `command-result` 直接投影为 System/Error。
-- **启动即新会话**：新进程不带 `resumeSessionId` 发 hello，桥接就地建会话（
+- **启动与延迟 `/new`**：新进程不带 `resumeSessionId` 发 hello，桥接仍就地建会话（
   `hello.cwd` 工作区 + `hello.mode` 默认模式，失效回退 standard）；只有 CLI 会话
   id 与「记住上次会话」（默认关）走续接。`/resume` 打开续接 Input Page、`/resume <id>`
-  直接 attach（都是纯客户端命令）；裸 `/new` 由客户端展开为 `/new <config.default_mode>`，设置修改应立即影响新会话。
+  直接 attach。交互中的裸 `/new` 只建立客户端 `NewConversationDraft`（展示名 `新对话`），不发 bridge、不替换真实 session id/TranscriptStore；第一条普通输入才发原子 `new-input{mode,text}` 创建并投递。草稿期间旧会话帧继续归约但不显示，创建失败恢复输入；`/model`、`/skill` 和接入命令不得误投旧会话。
 - **Input Page 控制器**（`input_page.rs` + `settings.rs` + `login.rs`）：主循环只持有一个
   `Option<InputPageSession>`，闭集 variant 为 Settings/Login/Model/Theme/Resume；页面按键只返回
   `PageOutcome`/`PageEffect`，caller 在释放页面借用和状态锁后再 save 或 `.await` 发送。
@@ -233,15 +233,15 @@ cargo 走 crates.io 官方源（本机网络已修复）。`client/vendor/` 与
   accessory 所需事件；approval/request/header/title-llm 等审计或重建记录默认不进 transcript。工具结果、
   Code Mode 子调用、compaction summary 与 `meta` 都必须有界裁剪，裁剪后带 `data.dshTuiTrimmed: true`，
   客户端不得把尾部行数冒充完整输出行数。
-- **`/new` 的工作区继承**：新会话必须同时做两件事，缺一不可——`agents.create`
+- **空会话历史与 `/new` 工作区继承**：`/resume` 以是否存在 `turn/start` 判断 blank，会话资格先于 200 条上限；活跃会话查内存，冷会话优先 `sessionListMetadata.blank` projection/cache、再退化 `readFrom`，错误 fail-open。旧 setup-only 日志不删除但不进入历史。真正物化新会话时必须同时做两件事，缺一不可——`agents.create`
   的 `meta.cwd` 指向目标目录，然后经 `ctx.get('workspaceRegistry')` 的
   `resolveByPath`（无则 `create`）找到该 cwd 的工作区并 `attachSession(agent.id)`。
   只有 cwd 头、不 attach，会话不会进入工作区的 `sessionIds` 台账（host 自己的
   `session.create` 也是两步都做）。**cwd 优先级**：客户端 `hello.cwd`（TUI 的
   启动目录，桥接侧用 `isExistingDirectory` 校验）> 当前会话 `header.cwd` >
   `process.cwd()`——TUI 在哪个目录启动，`/new` 就落在哪个目录的工作区。
-- **`/new <mode>` 与模式提示**：`/new` 是桥接自有命令（DSH 命令注册表没有它）。
-  dshe 的裸 `/new` 必须先按客户端 `Config.default_mode` 展开为显式模式；bridge 为旧客户端保留真正裸 `/new` 的兼容语义：继承当前会话 preset（`agentPresets.composedPreset(current.ctx)`，
+- **`/new <mode>` 与模式提示**：`/new` 是客户端草稿命令，首条输入以 wire v5 `new-input` 原子物化；bridge 仍为旧客户端保留 `/new` 命令 handler（DSH 命令注册表没有它）。
+  dshe 的裸 `/new` 按客户端 `Config.default_mode` 建草稿；bridge 收到旧客户端真正裸 `/new` 时兼容继承当前会话 preset（`agentPresets.composedPreset(current.ctx)`，
   回退 `header.agentPreset`，再回退 roster 默认）。`/new <mode>` 直接按 preset
   id 解析（`agentPresets.resolve`，未知名会带 available 列表报错）。新会话必须
   在 `agents.create` 的 `setup` 里 `agentPresets.mount(agentCtx, preset.id)`——
@@ -326,12 +326,14 @@ cargo 走 crates.io 官方源（本机网络已修复）。`client/vendor/` 与
 
 ## 维护纪律
 
+- Rust 中、小型任务结束后不运行 `cargo fmt --all` 或 `cargo clippy`；大型任务结束后运行 `cargo fmt --all` 和 `cargo clippy`。无论任务规模，提交前必须运行 `cargo fmt --all`。
 - 任务完成后，按改动范围同步更新本文件（AGENTS.md）及相关 `docs/`（如 design.md）；功能、交互键位、协议字段、配置默认值或命令清单的说明不得滞后。键位变更还要同步 `ui.rs` 的 `help_overlay`。
 - **非必要不更新 `README.md`，并始终保持其简洁。** 仅当安装/构建流程、核心用户可见能力或快捷键速查等面向用户的基础信息发生实质变化时，才更新 README；实现细节、架构说明、协议细节和开发记录应放在 `docs/`，而不是扩充 README。
 
 ## 测试纪律
 
-- 每次改动跑 `cargo test`；渲染/间距类改动必须有 ui 层回归测试（TestBackend
+- 谨慎添加测试：仅在确有必要、能够覆盖实际风险或防止回归时添加；不要为形式上的覆盖率添加测试。
+- 除非用户明确要求，非必要不跑全量 `cargo test`：优先只跑与改动相关的局部测试；小修改不跑测试。渲染/间距类改动必须有 ui 层回归测试（TestBackend
   断言缓存行数/颜色/内容），不能只靠模型层测试。
 - 已知偶发：全量并行测试偶有一次 flake（tool 卡片断言），单跑或复跑即过，勿
   据此大改。

@@ -1,354 +1,433 @@
 # AGENTS.md
 
-面向编码 agent 的项目说明。人类读者请看 [README.md](README.md)；设计决策看
-[docs/design.md](docs/design.md)（D1–D30、协议、里程碑）。
+Project notes for coding agents. Human readers should see [README.md](README.md); for design decisions see
+[docs/design.md](docs/design.md) (D1–D30, protocol, milestones).
 
-## 项目是什么
+> **Language policy:** All project documentation — this file and everything under `docs/` — is written and
+> maintained in **English**. When adding or updating documentation, write English prose; do not introduce new
+> Chinese (or other non-English) prose. Code identifiers, file paths, and command names stay as-is.
 
-DeepSeek Harness（DSH）的终端客户端（项目名 **e**，可执行文件 **`dshe`**），两部分：
+## What this project is
 
-- `bridge/` — Node.js（ESM）DSH **host-composition 插件**。注册一条 WS 升级路由
-  （`/dsh-tui`），把会话事件转发给 TUI，并接受输入/命令/中断/审批应答/会话切换/
-  历史分页，以及 `/login` `/model` `/skill:<名称>` 桥接。注入依赖只有 `webServer`。
-- `client/` — Rust（ratatui + crossterm）单 exe 客户端（crate `e`，产物
-  `dshe.exe`）。含启动器（`launcher.rs`：探测/spawn `dsh --profile dshe`/桥接）与
-  主题系统（`theme.rs` + `config.rs`）。无 TLS/网络依赖（除 WebSocket 本体）。
+Terminal client for DeepSeek Harness (DSH) (project name **e**, executable **`dshe`**), in two parts:
 
-两个进程通过 JSON WebSocket 通信；唯一机器可读契约是
-`bridge/protocol-contract.json`（版本/容量/roster/shapeTypes/records/messageShapes 的唯一手写事实）。
-`tools/sync-protocol-contract.mjs` 由它同步 `docs/protocol.md`、`client/build.rs` 常量/shape JSON、
-Rust/Node conformance fixtures 及 `bridge/package.json.dshCompatibility.wireProtocol`；`--check` 必须在改契约后通过。
-`bridge/src/protocol.js` 运行时读取同一 JSON，`tools/generate-protocol-doc.mjs` 只是兼容 wrapper。token 认证，token
-在 `%DSH_HOME%\dsh-tui.token`。
-客户端配置在 `%APPDATA%\dshe\config.toml`，默认配置源是
-`client/assets/default_config.toml`（`include_str!` 嵌入并解析，用户 TOML 只覆盖已知键后经单一严格 `Config`
-schema 反序列化；缺字段继承、废弃未知键忽略、malformed/已知类型错误安全回退）；主题在 `%APPDATA%\dshe\themes\`。
+- `bridge/` — Node.js (ESM) DSH **host-composition plugin**. Registers one WS upgrade route
+  (`/dsh-tui`), forwards session events to the TUI, and accepts input/commands/interrupt/approval answers/
+  session switching/history paging, plus `/login` `/model` `/skill:<name>` bridging. The only injected
+  dependency is `webServer`.
+- `client/` — Rust (ratatui + crossterm) single-exe client (crate `e`, artifact `dshe.exe`). Includes the
+  launcher (`launcher.rs`: probe/spawn `dsh --profile dshe`/bridge) and the theme system (`theme.rs` +
+  `config.rs`). No TLS/network dependencies (except WebSocket itself).
 
-## 常用命令（Windows / PowerShell）
+The two processes communicate over JSON WebSocket; the only machine-readable contract is
+`bridge/protocol-contract.json` (the sole hand-written source of truth for version/capacities/roster/
+shapeTypes/records/messageShapes). `tools/sync-protocol-contract.mjs` syncs `docs/protocol.md`,
+`client/build.rs` constants/shape JSON, Rust/Node conformance fixtures, and
+`bridge/package.json.dshCompatibility.wireProtocol` from it; `--check` must pass after changing the contract.
+`bridge/src/protocol.js` reads the same JSON at runtime; `tools/generate-protocol-doc.mjs` is only a
+compatibility wrapper. Token auth; the token lives at `%DSH_HOME%\dsh-tui.token`.
+Client config lives at `%APPDATA%\dshe\config.toml`; the default config source is
+`client/assets/default_config.toml` (embedded via `include_str!` and parsed; the user TOML only overrides
+known keys and is then deserialized through a single strict `Config` schema; missing fields inherit,
+deprecated unknown keys are ignored, malformed/known-type errors fall back safely); themes live in
+`%APPDATA%\dshe\themes\`.
 
-面向用户的源码安装流程记录在 README「Quick Start」：全局安装
-`@deepseek-ai/dsh`，设置/沿用 `DSH_HOME`，挂载并安装专属 `dshe` profile 桥接，最后用
-`cargo install --path client --locked` 把 `dshe.exe` 安装到 Cargo bin 目录。
+## Common commands (Windows / PowerShell)
+
+The user-facing source install flow is documented in the README "Quick Start": install
+`@deepseek-ai/dsh` globally, set/reuse `DSH_HOME`, mount and install the dedicated `dshe` profile bridge,
+then use `cargo install --path client --locked` to install `dshe.exe` into the Cargo bin directory.
 
 ```powershell
-# 首次安装
+# First install
 npm install --global @deepseek-ai/dsh
-# DSH_HOME 未设置/空值时 mount 脚本自动用 $HOME\.dsh；自定义 home 才需先设置环境变量
+# When DSH_HOME is unset/empty, the mount script falls back to $HOME\.dsh; set the env var first only for a custom home
 .\tools\mount-bridge.ps1 -Profile dshe
 dsh plugin --profile dshe install
 cargo install --path client --locked
 
-# 客户端（根目录是 Cargo workspace，默认成员 client，crate 名 e，产物 dshe.exe）
-cargo run                                # 根目录编译并启动 dshe
-cargo build --release                    # 产物 target\release\dshe.exe
-cargo build --release --features tracy   # Tracy profiling 版（DSH_TUI_TRACY=1 激活）
+# Client (repo root is a Cargo workspace, default member client, crate name e, artifact dshe.exe)
+cargo run                                # build from root and launch dshe
+cargo build --release                    # artifact target\release\dshe.exe
+cargo build --release --features tracy   # Tracy profiling build (activated by DSH_TUI_TRACY=1)
 cargo fmt --check
 cargo clippy --all-targets
-cargo test                               # 全量单测
+cargo test                               # full unit tests
 
-# 桥接同步（改 bridge/ 后必做；重启 dsh 后生效）
-.\tools\mount-bridge.ps1 -Profile web    # 或 -Profile dshe（dshe 启动器的专属 profile）
-# 等价手动：robocopy bridge\src "$env:DSH_HOME\profiles\<p>\packages\dsh-tui-bridge\src" /MIR
-# 脚本须兼容 Windows PowerShell 5.1：空 DSH_HOME 回退 $HOME\.dsh；变量名不区分大小写；Node JSON 必须 UTF-8 无 BOM
+# Bridge sync (required after changing bridge/; takes effect after restarting dsh)
+.\tools\mount-bridge.ps1 -Profile web    # or -Profile dshe (the dshe launcher's dedicated profile)
+# Equivalent manual command: robocopy bridge\src "$env:DSH_HOME\profiles\<p>\packages\dsh-tui-bridge\src" /MIR
+# The script must be compatible with Windows PowerShell 5.1: empty DSH_HOME falls back to $HOME\.dsh;
+# variable names are case-insensitive; Node JSON must be UTF-8 without BOM
 
-# 桥接测试（node:test；含 protocol/session/model-selection 边界）
+# Bridge tests (node:test; includes protocol/session/model-selection edges)
 cd bridge; npm test                      # = node --test --test-isolation=none "test/*.test.js"
 node tools/sync-protocol-contract.mjs --check
-# DSH 升级或改 bridge 后：mount + dsh plugin install 后，对部署副本执行完整 compatibility gate
+# After a DSH upgrade or bridge change: mount + dsh plugin install, then run the full compatibility gate against the deployed copy
 $env:DSH_TUI_SMOKE_PROFILE = 'dshe'; cd bridge; npm run verify-dsh-upgrade
 
-# 联调
-node tools/probe-online.mjs       # 桥接是否在线
-node tools/hello-test.mjs         # 发 hello 打印全部帧（验证启动路径）
-node tools/probe-startup.mjs      # attach 延迟/快照大小
-node tools/dump-snapshot.mjs      # 抓快照样本 → tools/cache/snapshot-sample.json
+# Integration debugging
+node tools/probe-online.mjs       # is the bridge online
+node tools/hello-test.mjs         # send hello and print all frames (verify the startup path)
+node tools/probe-startup.mjs      # attach latency / snapshot size
+node tools/dump-snapshot.mjs      # capture a snapshot sample -> tools/cache/snapshot-sample.json
 cargo run --release --example timing_snapshot -- tools/cache/snapshot-sample.json
-cargo run --release --example timing_frames # 1002 消息持续滚动/流式/动画帧基准
+cargo run --release --example timing_frames # 1002-message continuous scroll/stream/animation frame benchmark
 cargo run --example smoke_snapshot -- tools/cache/snapshot-sample.json
 ```
 
-cargo 走 crates.io 官方源（本机网络已修复）。`client/vendor/` 与
-`tools/vendor-crates.mjs` 是历史遗留的离线兜底，已停用，勿再依赖；新依赖直接加
-`client/Cargo.toml` 并提交根目录 `Cargo.lock`（workspace 锁文件）。
+cargo uses the official crates.io registry (local network is fixed). `client/vendor/` and
+`tools/vendor-crates.mjs` are legacy offline fallbacks, now retired — do not depend on them again; add new
+dependencies directly to `client/Cargo.toml` and commit the root `Cargo.lock` (workspace lockfile).
 
-## 关键架构约定
+## Key architecture conventions
 
-### client（Rust）
+### client (Rust)
 
-- **事件显示模型**（`display.rs` + `projection/{store,assistant,tool,lifecycle,retry,command,workflow,surface}.rs` +
-  `transcript_layout.rs`）：所有可见事件归入四类公共表面：`ActivityRow`（带
-  Waiting/Running/Success/Failure/Cancelled 状态，可带 parent/depth）、`TranscriptBlock`
-  （plain/markdown/reasoning/unknown fallback）、`ContentCard`（统一 padding/背景/copy source）与
-  `InputAccessory`（输入栏上方）。生产 `AppState` **只**持有 `TranscriptStore`；`EventProjector`
-  先产出 display/surface mutation/page state/accessory/ignore effect，再由状态层应用；禁止在 `ui` 新增
-  绕过公共表面的事件专用顶层渲染。`LegacyTestMsg`/`Msg` alias 仅能在 `#[cfg(test)]` characterization
-  fixture 出现，不能重新进入 production transcript、renderer、cache 或 copy path。
-- **思考输出（reasoning）折叠**：`TranscriptFormat::Reasoning` 块在 compact 模式不渲染到屏幕、也不进
-  copy provenance（生产 `ui/transcript.rs::is_hidden_item` 让 layout/cache/copy 都跳过它，且不产生行间 gap）；
-  活动行邻接必须查找下一个**非隐藏** DisplayItem，隐藏 reasoning 不得拆开本应 glued 的活动行。
-  lines/full 模式直接渲染 reasoning 内容：lines 的上限是**折行后的显示行数**（width-aware wrap 先于
-  `thinking_lines` 截断）；且只要 reasoning 可见，紧邻其前的 `Thinking...` 活动行由
-  `thinking_row_superseded` 接管隐藏（不渲染、不留 gap），隐藏判定对渲染/copy/邻接/隐藏自身都须统一
-  （`is_hidden_node`），动画 patch 对隐藏节点跳过且**不得**落入全量 rebuild fallback。
-  思考过程由 `• Thinking... xN` 呼吸灯表示；`assistant/chunk` 只带 reasoning 时不结算，直到真正的
-  answer text 到达才结算绿色。因此 Thinking settlement 必须在 `TranscriptStore` 中向后查找 Running
-  Thinking 活动，不能假设最后一个节点可见。
-- **上下文注入卡**：`CardRole::Context` 的可见内容按 width-aware wrap 最多展示 5 行；若超出，第 5 行替换为 `...`。卡的 `copy_source`/copy unit 必须保留完整原文，不能因显示裁剪而截断。
-- **文件活动折叠**：`FileGroup` 用统一 `FileItem + FileAction` 保留 `read/view/edit/replace/insert`
-  标签，连续的 `str_replace_editor` view/str_replace/insert 与 read/edit 进入同一折叠活动行；编辑器
-  的绝对路径按 `session_cwd` 转成工作区相对路径。create 不进入 FileGroup，单独显示为
-  `<指示灯> create <相对路径>`，完成后也不追加输出行数/耗时。所有活动行保持单显示行，超宽时由
-  `transcript_layout`/`ui::transcript` 按已解析的页面内容宽度（含 `page_max_width`）截断并追加 `…`，
-  不得按终端宽度预截断后在较窄页面中折行。
-- **Surface 语义**：`HostEvent` 解析事件顶层 `time`、`surfaceOp`、`sourceEventSeqs`；replace
-  必须先移除 shadowed surface owner，再在原 surface 位置插入替代节点。未知但带 `surfaceOp` 的事件
-  也必须进入快照/历史兼容路径。历史前插时保存 shadowed seq，后到的旧页不得复活压缩内容；被分页
-  拆开的 tool/command/Code Mode/workflow terminal half 先暂存，旧页 start 到达时直接重建最终状态；retry
-  schedule 与较新 retry-started 跨页时须在恢复 saved rows 后回填 delay/failure/maxRetries，不得只为去重而
-  丢详情；只按真正新增渲染行数移动 viewport。workflow 的 completed/failed/cancelled 必须保留为 typed
-  outcome 并映射到 Success/Failure/Cancelled。compaction 的 log-only summary 不单独画卡，唯一 summary
-  card 由 replacement 创建并拥有，确保后续 replace 能精确删除。
-- **渲染缓存**（`cache.rs::TranscriptRenderCache` + `transcript_layout.rs` + `ui/transcript.rs`）：只有
-  结构性事件使缓存失效并全量重建；流式 chunk 只标记 `tail_dirty`，渲染时**尾部拼接**并仅重算 tail
-  display-row suffix/prefix，不得清空整份 layout；spinner/settle 只 patch 活动 `DisplayId` range，
-  settle 到期必须再提交一次精确目标色 patch 后才停钟。复制行号由与 UI 相同的 `TranscriptLayout`
-  产生，主循环用 `CopyRowsCache` 按 width/generation 复用 provenance，禁止每个 copy 按键和随后绘帧
-  各自全量 `flatten`。折行扫描按 Unicode grapheme cluster 计算显示宽度，combining mark/emoji ZWJ
-  即使跨 style span 也不得拆开。
-- **性能红线**（都有回归测试）：终端输入通过 `EventStream` 直接唤醒主循环，禁止恢复固定
-  ticker 轮询；交互/内容/动画 deadline 分离，bridge backlog 每轮受条数+时间预算约束。终端由
-  `terminal_runtime.rs::TerminalOwner` 单点初始化/恢复，帧用 64KiB `BufWriter` + DEC 2026
-  synchronized output 原子提交（`DSHE_DISABLE_SYNC_OUTPUT=1` 仅作兼容诊断）。每事件不得全量
-  重渲染；重绘 P95 ≤30ms 且只在 dirty/deadline 到期时；动画只 patch 活动消息 range，流式只
-  splice tail；display-row layout 按 width/generation 缓存，每帧只物化/克隆可见窗口。禁止破坏
-  `valid/tail_dirty/dirty_messages`、history display-row anchor 与 copy provenance 共用布局语义。
-- **Runtime controller / 锁纪律**：`runtime.rs::RuntimeController` 接收 typed `RuntimeInput`，在单个
-  scoped guard 内消费 `ControllerAction`，只把完整 payload 的 `RuntimeEffect` 交给 `main.rs` 的 executor；
-  `runtime_ports.rs` 提供 transport、terminal、config/state、clipboard、clock production/scripted ports。
-  executor 不得借用 UI state 或静默忽略 effect，禁止恢复固定 ticker。Rust 2021 的 `if let`/`match`
-  scrutinee 临时值会活到整个表达式结束；不得把 `state_r.lock()` 直接写进 scrutinee 后又在分支中重锁或
-  `.await`，否则会自死锁。先在独立作用域算普通值/动作再匹配，或在单个 guard 内完成原子状态变更；
-  `main.rs` 已 deny `clippy::significant_drop_in_scrutinee`，并有队列派发/复制模式释放锁回归测试。
-- **输入交互与字符边界**：`InputState.cursor` 是**字符索引**，`String::insert/remove`
-  和切片要字节索引——用 `char_to_byte()`（`input.rs`），CJK 有回归测试；光标 x 坐标用
-  `unicode_width`。普通输入固定 `Enter` 发送、`Shift+Enter` 换行；`↑/↓` 先按字符列在
-  输入行间移动，到首/末行边界才切换上一/下一条历史提示词；`PageUp`/`PageDown` 按当前可见
-  transcript 高度翻页，鼠标滚轮每格移动 3 行（Input Page 打开时也始终操作 transcript）。
-  `Ctrl+H` 是 Input Page 之前处理的全局帮助键，带 Control/Alt/Super 的 `hjkl` 不得进入焦点图。
-  `Config.enter_sends` 仅为旧配置反序列化
-  兼容，不得再改变键位语义。终端硬件光标在 TUI 内必须始终隐藏，屏幕只画软件反色光标；
-  `ui.rs::render_with_cursor` 只返回 IME anchor，主循环在帧完成后移动隐藏光标。禁止重新调用
-  `Frame::set_cursor_position`，它会让 ratatui 在差量绘制期间显示并拖动光标，导致状态灯/输入栏闪烁。
-- **覆盖层与 Input Page 渲染**：真正画在 transcript 之上的命令提示必须先
-  `frame.render_widget(Clear, rect)` 再画背景，否则底下文字会透出（有测试
-  `suggest_popup_is_opaque_over_transcript`）。`/settings` `/login` `/model` `/theme` `/resume` 不是
-  overlay：它们统一由 `InputPageSession` 替代输入区，无边框、不得 `Clear`，公共 shell 固定
-  上下各 1 行、左右各 2 列内边距。
-- **copy 语义**：复制永远取原始 markdown（`units` 表）；表格/代码/mermaid 是
-  原子块（`RenderLine.atomic`）。渲染单元 id 在重渲染时复用（`unit_start`），
-  别重新分配。
-- **Markdown 标题与局部背景**：标题直接使用固定语义 `semantics.markdown.heading1..6`；当前
-  ferra 的一级为 Coral `#ffa07a` 粗体（无背景），二级为 Sage `#b1b695` 粗体，三级为
-  Blush `#fecdb2` 非粗体。inline code 的 `bg` 只能作用于 chip span；`render_transcript` 只允许
-  `Line.style.bg` 触发整行补色，禁止从任意 span 的背景推断整行背景，否则会污染源码分隔空格与
-  行尾空白。修改这些样式须同步内置主题 TOML、`render.rs` 与 TestBackend 回归测试。
-- **表格单元格**：必须经 `cell_spans()`（`render.rs`）做行内渲染 + 显示列宽
-  截断/补齐，不能塞裸字符串。
-- **历史分页**：`min_seq`/`history_loading`/`history_exhausted`；前插走
-  `prepend_events`（设置 `prepend_line_anchor`，渲染器按真正新增 display rows 平移
-  `scroll.offset` 保持视口）。顶部历史提示行是**纯显示**，不进缓存；Thinking 是一个公共
-  `ActivityRow`，但快照回放/历史前插时不生成（`state.replaying`），文件组合并/结算扫描会跳过它。
-- **Tracy/计时**（`profile.rs`）：埋点用 `e::tracy_zone!("字面量")`（宏，
-  无 client 时安全空转）；阶段打点用 `PhaseTimers`。zone 名必须是字符串字面量。
-- **底部布局与双行状态栏**：页面底部固定行序为 输入栏或 Input Page / gap / 状态第一行 /
-  **会话标题行**（`ui.rs::render` 的 chunks 数组；accessory budget 公式里的 `+3` 与之一致）。
-  两行都不设置背景色：第一行左侧依次为工作指示灯、`AppState.current_mode`、当前模型、
-  `CH<缓存命中率%>`，其中模型和 CH 暂无值时整项省略（不画占位横线），右侧固定 `^h Help`；第二行左侧是 `AppState.session_title`（空时显示
-  `新会话`），右侧是 `AppState.session_cwd` 绝对路径，标题过长以 `…` 截断以保住路径。
-  mode 初值取 `welcome.mode`（最近 selection，缺省为创建 header），再由 `agent-preset/selected` 回放更新，
-  按 event seq 保留最新值（历史前插不得回退）；CH 从
-  assistant usage 的 input/cache read/cache write 累计计算，历史前插可增加旧总量但不得替换最新
-  request 的 usage 锚点；这些页面状态更新**不得**触碰 `TranscriptRenderCache`。改底部行数时必须
-  同步 ui 层测试里硬编码的行号。
-- **命令范式**（`runtime_command.rs` + `input.rs`）：命令分为内置优化命令与 DSH
-  接入命令。所有内置项只在 `BUILTIN_COMMANDS` 声明一次（名称/说明/input hint/补全策略/
-  action 同项），禁止在 `input.rs` 再维护平行名称表；`match_command_catalog` 合并桥接下发
-  的 `CommandInfo`，同名时内置优先。接入命令来自每个 agent 的有效 `ctx.commands.list`
-  视图，至少支持名称模糊补全并显示 DSH 的 free-form input hint；DSH 当前无 typed argument
-  completion schema，只有内置项可做 `/new ` 这类参数补全；`/skill` 是另一项内置参数补全，
-  输入完整 `/skill` 即展示当前 user-invocable roster，候选统一填成 `/skill:<name>`。收到新
-  `commands`/`skills` 帧要立即刷新已打开的提示框，切会话先清旧 agent-scoped 目录。通用执行不得预先 `start_thinking`，结果
-  由 `command-result` 直接投影为 System/Error。
-- **启动与延迟 `/new`**：新进程不带 `resumeSessionId` 发 hello，桥接仍就地建会话（
-  `hello.cwd` 工作区 + `hello.mode` 默认模式，失效回退 standard）；只有 CLI 会话
-  id 与「记住上次会话」（默认关）走续接。`/resume` 打开续接 Input Page、`/resume <id>`
-  直接 attach。交互中的裸 `/new` 只建立客户端 `NewConversationDraft`（展示名 `新对话`），不发 bridge、不替换真实 session id/TranscriptStore；第一条普通输入才发原子 `new-input{mode,text}` 创建并投递。草稿期间旧会话帧继续归约但不显示，创建失败恢复输入；`/model`、`/skill` 和接入命令不得误投旧会话。
-- **Input Page 控制器**（`input_page.rs` + `settings.rs` + `login.rs`）：主循环只持有一个
-  `Option<InputPageSession>`，闭集 variant 为 Settings/Login/Model/Theme/Resume；页面按键只返回
-  `PageOutcome`/`PageEffect`，caller 在释放页面借用和状态锁后再 save 或 `.await` 发送。
-  浏览态方向键与 `hjkl` 共用稳定焦点图、Enter 执行，文本编辑态 `hjkl` 必须作为普通字符。
-  动态 login/model/session roster 以 provider/model/proxy/session id 对焦点做 reconcile，空列表不得制造假焦点；Resume 始终把普通字符（含 hjkl）用于标题/id 筛选，仅 ↑↓ 选会话。
-- **/login 页面**：一层二选一菜单（API key / Proxy）→ 子页面（Menu /
-  Providers / ApiKey / ProxyList / ProxyForm / ProxyDelete）。状态来自桥接 `login`
-  帧；API key 永不回传、编辑态画 ●，不可写 provider 不得获得操作焦点；已有代理 Enter
-  必须先进入删除确认页，只有显式选择删除才发送 `login-proxy-delete`。
-- 新增交互键位后同步更新：`ui.rs` 的 `help_overlay`、README 速查表、input 测试。
+- **Event display model** (`display.rs` + `projection/{store,assistant,tool,lifecycle,retry,command,workflow,surface}.rs` +
+  `transcript_layout.rs`): all visible events fall into four public surfaces: `ActivityRow` (with
+  Waiting/Running/Success/Failure/Cancelled state, optionally with parent/depth), `TranscriptBlock`
+  (plain/markdown/reasoning/unknown fallback), `ContentCard` (uniform padding/background/copy source), and
+  `InputAccessory` (above the input bar). Production `AppState` holds **only** `TranscriptStore`;
+  `EventProjector` first produces display/surface mutation/page state/accessory/ignore effects, which the
+  state layer then applies; adding event-specific top-level rendering in `ui` that bypasses the public
+  surfaces is forbidden. `LegacyTestMsg`/`Msg` alias may only appear in `#[cfg(test)]` characterization
+  fixtures and must not re-enter production transcript, renderer, cache, or copy paths.
+- **Reasoning output folding**: `TranscriptFormat::Reasoning` blocks are not rendered to screen in compact
+  mode and do not enter copy provenance (production `ui/transcript.rs::is_hidden_item` makes layout/cache/copy
+  skip them, without producing an inter-row gap); activity-row adjacency must look up the next **non-hidden**
+  DisplayItem — hidden reasoning must not split apart activity rows that should be glued together.
+  lines/full mode renders reasoning content directly: the lines cap is the **post-wrap display row count**
+  (width-aware wrap happens before `thinking_lines` truncation); and whenever reasoning is visible, the
+  immediately preceding `Thinking...` activity row is taken over and hidden by `thinking_row_superseded`
+  (not rendered, no gap). The hidden determination must be uniform across rendering/copy/adjacency/hiding
+  itself (`is_hidden_node`); animation patches skip hidden nodes and must **not** fall into the full-rebuild
+  fallback. Thinking is represented by a `• Thinking... xN` breathing indicator; `assistant/chunk` carrying
+  only reasoning does not settle until the real answer text arrives, which settles to green. Therefore
+  Thinking settlement must search backwards in `TranscriptStore` for a Running Thinking activity — never
+  assume the last node is visible.
+- **Context injection card**: the visible content of `CardRole::Context` shows at most 5 lines under
+  width-aware wrap; if it overflows, the 5th line is replaced with `...`. The card's `copy_source`/copy unit
+  must preserve the complete original text and must not be truncated by the display clip.
+- **File activity folding**: `FileGroup` keeps the `read/view/edit/replace/insert` labels via a unified
+  `FileItem + FileAction`; consecutive `str_replace_editor` view/str_replace/insert and read/edit calls enter
+  the same folded activity row; the editor's absolute path is converted to a workspace-relative path using
+  `session_cwd`. create does not enter FileGroup and is shown separately as
+  `<indicator> create <relative-path>`, and does not append output line count/elapsed time after completion.
+  All activity rows stay on a single display row; when too wide, `transcript_layout`/`ui::transcript`
+  truncate and append `…` using the resolved page content width (including `page_max_width`) — never
+  pre-truncate to terminal width and then wrap inside a narrower page.
+- **Surface semantics**: `HostEvent` parses the event top-level `time`, `surfaceOp`, `sourceEventSeqs`;
+  replace must first remove the shadowed surface owner, then insert the replacement node at the original
+  surface position. Unknown events that carry `surfaceOp` must also enter the snapshot/history compatibility
+  path. On history prepend, save the shadowed seq so later older pages cannot revive compacted content; when a
+  tool/command/Code Mode/workflow terminal half is split from its start by a page boundary, stage it and
+  rebuild the final state directly when the older page's start arrives; when a retry schedule and a newer
+  retry-started span a page boundary, backfill delay/failure/maxRetries after restoring saved rows — do not
+  drop details just for dedup; move the viewport only by the truly newly added rendered rows. workflow
+  completed/failed/cancelled must be kept as a typed outcome and mapped to Success/Failure/Cancelled.
+  compaction's log-only summary is not drawn as its own card; the single summary card is created and owned by
+  the replacement, so a later replace can delete it precisely.
+- **Render cache** (`cache.rs::TranscriptRenderCache` + `transcript_layout.rs` + `ui/transcript.rs`): only
+  structural events invalidate the cache and trigger a full rebuild; streaming chunks only set `tail_dirty`,
+  and rendering **splices the tail** and recomputes only the tail display-row suffix/prefix — never clear the
+  entire layout; spinner/settle only patch the active `DisplayId` range, and settle must submit one more
+  precise target-color patch after expiry before stopping the clock. Copy line numbers come from the same
+  `TranscriptLayout` the UI uses; the main loop uses `CopyRowsCache` keyed by width/generation to reuse
+  provenance — never fully `flatten` on each copy keypress and each subsequent frame. Wrap scanning computes
+  display width by Unicode grapheme cluster; combining marks / emoji ZWJ must not be split even across style
+  spans.
+- **Performance red lines** (all have regression tests): terminal input wakes the main loop directly through
+  `EventStream` — do not restore fixed ticker polling; interaction/content/animation deadlines are separated,
+  and the bridge backlog is bounded per turn by a count+time budget. The terminal is initialized/restored at a
+  single point via `terminal_runtime.rs::TerminalOwner`; frames are committed atomically with a 64KiB
+  `BufWriter` + DEC 2026 synchronized output (`DSHE_DISABLE_SYNC_OUTPUT=1` only as a compatibility diagnostic).
+  Never full-render per event; redraw P95 ≤30ms and only when dirty/deadline expires; animation only patches
+  the active message range, streaming only splices the tail; display-row layout is cached by width/generation,
+  and each frame only materializes/clones the visible window. Do not break the shared layout semantics of
+  `valid/tail_dirty/dirty_messages`, history display-row anchor, and copy provenance.
+- **Runtime controller / lock discipline**: `runtime.rs::RuntimeController` receives typed `RuntimeInput`,
+  consumes `ControllerAction` inside a single scoped guard, and hands only complete-payload `RuntimeEffect`s
+  to the `main.rs` executor; `runtime_ports.rs` provides transport, terminal, config/state, clipboard, and
+  clock production/scripted ports. The executor must not borrow UI state or silently ignore effects; do not
+  restore a fixed ticker. In Rust 2021, `if let`/`match` scrutinee temporaries live until the end of the whole
+  expression; never write `state_r.lock()` directly into a scrutinee and then re-lock or `.await` in a branch,
+  or you will self-deadlock. Compute plain values/actions in a separate scope before matching, or perform
+  atomic state changes within a single guard; `main.rs` already denies `clippy::significant_drop_in_scrutinee`
+  and has queue-dispatch/copy-mode lock-release regression tests.
+- **Input interaction and character boundaries**: `InputState.cursor` is a **character index**;
+  `String::insert/remove` and slicing need byte indices — use `char_to_byte()` (`input.rs`); CJK has regression
+  tests; cursor x uses `unicode_width`. Plain input is fixed: `Enter` sends, `Shift+Enter` inserts a newline;
+  `↑/↓` move between input lines by character column first, and only switch to the previous/next history prompt
+  at the first/last line boundary; `PageUp`/`PageDown` page by the currently visible transcript height, and the
+  mouse wheel moves 3 lines per notch (always operating on the transcript even when an Input Page is open).
+  `Ctrl+H` is a global help key handled before the Input Page, and `hjkl` with Control/Alt/Super must not enter
+  the focus graph. `Config.enter_sends` exists only for legacy config deserialization compatibility and must
+  no longer change key semantics. The terminal hardware cursor must always be hidden inside the TUI; the screen
+  only draws a software reverse-video cursor; `ui.rs::render_with_cursor` only returns the IME anchor, and the
+  main loop moves the hidden cursor after the frame completes. Do not call `Frame::set_cursor_position` again —
+  it makes ratatui show and drag the cursor during diff drawing, causing the status light/input bar to flicker.
+- **Overlays and Input Page rendering**: a command prompt that truly draws over the transcript must first call
+  `frame.render_widget(Clear, rect)` before drawing the background, otherwise underlying text bleeds through
+  (there is a test `suggest_popup_is_opaque_over_transcript`). `/settings` `/login` `/model` `/theme` `/resume`
+  are not overlays: they are uniformly handled by `InputPageSession` replacing the input area, no border, no
+  `Clear`, with the shared shell fixed at 1 row top/bottom and 2 columns left/right padding.
+- **copy semantics**: copy always takes the original markdown (`units` table); tables/code/mermaid are atomic
+  blocks (`RenderLine.atomic`). Render unit ids are reused across re-renders (`unit_start`) — do not reassign
+  them.
+- **Markdown headings and localized backgrounds**: headings directly use the fixed semantics
+  `semantics.markdown.heading1..6`; in ferra, level 1 is Coral `#ffa07a` bold (no background), level 2 is Sage
+  `#b1b695` bold, level 3 is Blush `#fecdb2` non-bold. inline code `bg` may only apply to the chip span;
+  `render_transcript` only lets `Line.style.bg` trigger full-line fill — never infer a full-line background from
+  an arbitrary span's background, or you will pollute source separator spaces and trailing whitespace. Changing
+  these styles must sync the built-in theme TOML, `render.rs`, and TestBackend regression tests.
+- **Table cells**: must go through `cell_spans()` (`render.rs`) for inline rendering + display column-width
+  truncation/padding — never stuff bare strings in.
+- **History paging**: `min_seq`/`history_loading`/`history_exhausted`; prepend goes through `prepend_events`
+  (sets `prepend_line_anchor`, and the renderer shifts `scroll.offset` by the truly newly added display rows to
+  keep the viewport). The top "history" hint row is **display-only** and does not enter the cache; Thinking is a
+  public `ActivityRow`, but is not generated during snapshot replay/history prepend (`state.replaying`), and
+  file-group merge/settlement scans skip it.
+- **Tracy/timing** (`profile.rs`): instrument with `e::tracy_zone!("literal")` (a macro that safely no-ops when
+  no client is present); use `PhaseTimers` for stage timing. Zone names must be string literals.
+- **Bottom layout and two-line status bar**: the fixed bottom row order is input bar or Input Page / gap /
+  status line 1 / **session title line** (the `ui.rs::render` chunks array; the `+3` in the accessory budget
+  formula matches it). Neither line sets a background color: line 1 is, left to right, the working indicator,
+  `AppState.current_mode`, the current model, and `CH<cache-hit %>`, where the model and CH entries are omitted
+  entirely when they have no value yet (no placeholder dash), and the right side is fixed `^h Help`; line 2's
+  left side is `AppState.session_title` (shows `新会话` when empty) and the right side is the absolute
+  `AppState.session_cwd` path, with the title truncated with `…` when too long so the path is preserved.
+  mode's initial value comes from `welcome.mode` (most recent selection, else the creation header), then is
+  updated by `agent-preset/selected` replay, keeping the latest value by event seq (history prepend must not
+  regress it); CH accumulates from assistant usage input/cache read/cache write, where history prepend may add
+  older totals but must not replace the latest request's usage anchor; these page-state updates must **not**
+  touch `TranscriptRenderCache`. When changing the bottom row count, sync the hardcoded line numbers in the UI
+  layer tests.
+- **Command paradigm** (`runtime_command.rs` + `input.rs`): commands are split into built-in optimized commands
+  and DSH integrated commands. All built-ins are declared exactly once in `BUILTIN_COMMANDS` (name/description/
+  input hint/completion strategy/action in one entry) — never maintain a parallel name table in `input.rs`;
+  `match_command_catalog` merges the `CommandInfo` sent by the bridge, with built-ins winning on name
+  collision. Integrated commands come from each agent's effective `ctx.commands.list` view, and at minimum
+  support fuzzy name completion and show DSH's free-form input hint; DSH currently has no typed argument
+  completion schema, so only built-ins can do argument completion like `/new `; `/skill` is another built-in
+  argument completion — typing the full `/skill` shows the current user-invocable roster and fills candidates as
+  `/skill:<name>`. On receiving a new `commands`/`skills` frame, refresh any open prompt immediately; on session
+  switch, clear the old agent-scoped catalog first. Generic execution must not pre-`start_thinking`; the result
+  is projected directly to System/Error by `command-result`.
+- **Startup and deferred `/new`**: a new process sends hello without `resumeSessionId`, and the bridge still
+  creates a session in place (`hello.cwd` workspace + `hello.mode` default mode, falling back to standard on
+  failure); only a CLI session id and "remember last session" (default off) resume. `/resume` opens the resume
+  Input Page, `/resume <id>` attaches directly. A bare `/new` while interactive only creates a client-side
+  `NewConversationDraft` (display name `新对话`) — it does not send to the bridge or replace the real session
+  id/TranscriptStore; only the first plain input sends the atomic `new-input{mode,text}` to create and deliver.
+  During the draft, old-session frames keep reducing but are not displayed; on create failure restore the input;
+  `/model`, `/skill`, and integrated commands must not be misrouted to the old session.
+- **Input Page controller** (`input_page.rs` + `settings.rs` + `login.rs`): the main loop holds a single
+  `Option<InputPageSession>` with the closed variant set Settings/Login/Model/Theme/Resume; page keys only return
+  `PageOutcome`/`PageEffect`, and the caller saves or `.await`s sending only after releasing the page borrow and
+  state lock. Browse-state arrow keys and `hjkl` share a stable focus graph, Enter executes; text-edit-state
+  `hjkl` must be ordinary characters. Dynamic login/model/session rosters reconcile focus by
+  provider/model/proxy/session id, and an empty list must not fabricate a fake focus; Resume always uses plain
+  characters (including hjkl) for title/id filtering, with only ↑↓ selecting a session.
+- **/login page**: a one-level two-choice menu (API key / Proxy) → sub-pages (Menu / Providers / ApiKey /
+  ProxyList / ProxyForm / ProxyDelete). State comes from bridge `login` frames; the API key is never sent back
+  and is drawn as ● when editing; non-writable providers must not receive action focus; an existing proxy must
+  enter the delete confirmation page on Enter, and `login-proxy-delete` is only sent after explicitly choosing
+  delete.
+- After adding interaction keys, sync: `ui.rs`'s `help_overlay`, the README quick-reference table, and input
+  tests.
 
-### bridge（Node.js）
+### bridge (Node.js)
 
-- **模块布局**：`index.js` 只留 WebSocket 生命周期与 composition wiring；`dispatcher.js` 是客户端帧路由；
-  `host.js` 显式封装 DSH service locator，`connection.js` 统一 detach/过期连接判定，`history.js` 管
-  surface 缓存与分页，`session.js` 管创建/冷恢复/workspace/preset 组合，`session-list.js` 管渐进会话
-  目录与标题折叠，`model-selection.js` 是唯一 DSH model-selection adapter，`command.js` 投影宿主命令
-  目录/直接结果，`protocol.js` 读取共享 wire contract；`trim.js`、`compose.js`、`login.js`、`skill.js`、
-  `model.js`、`frame.js` 留各自纯逻辑。每个边界均须有 `bridge/test/` 的 `node:test`，新代码不得再堆回
-  `index.js`。
-- **DSH 命令接入**：attach 后用 `ctx.commands.list(agent)` 下发 handler-free
-  `commands{commands[{name,description,input?:{hint}}]}`；监听 `commands/change` 后为每个连接
-  重算有效目录（agent-scoped shadow 不能做全局增量 patch）。`command{line}` 走
-  `commands.execute(agent,line,signal)`；`undefined` 是未注册/语法无效，settled result 走
-  `command-result{commandId,kind,text?}`，不得变成模型消息。执行跨 await，回结果前必须做
-  current-conn 校验，防止 attach 后串会话。
-- **跨 await 的 conn 纪律**：消息处理器里凡是 `await` 之后要动 `conn`（detach/
-  重绑）的，必须在 await 前捕获局部 `current = conn`，await 后校验
-  `conn === current && conns.has(current)` 再操作——连续 attach/`/new` 会并发
-  交换闭包里的 `conn`，操作过期连接会串会话（`attach` 分支有对照实现）。
-- 一切副作用挂 `ctx.effect()`；连接对象在 `conns` 集合，detach 必须清理监听、
-  撤销待审批（`done('cancelled')`）。
-- **快照/历史数据源**：活跃会话取 `agent.session.events`（内存，零磁盘读）；
-  只有非常驻会话才回退 `persistence.readFrom(id, 0)`（全量读盘，慢，结果缓存到
-  `conn.log`）。跨该异步读取后必须先检查 `conn.abort.signal.aborted`，旧连接不得被写入或发送快照。
-  surface 列表按会话缓存并增量追加（`surfaceState`），除契约 roster 外还保留任何显式带
-  `surfaceOp` 的未知事件；未知事件进入 wire 前必须裁成有界的 type/seq/time/surface 元数据 envelope，
-  不得携带任意 data。所有下行帧经 `frame.js::encodeBoundedFrame` 执行 `MAX_FRAME_BYTES`：snapshot/history
-  只留最新可容纳后缀并置 truncated/hasMore，单体超限帧改发 `frame-too-large` 错误。
-- **负载裁剪**：`trimToolResultEvent`（模块级纯函数，导出为
-  `_trimToolResultEvent` 供测试）——read 结果整段剥掉、其余工具只留末尾 2000
-  字符（exit marker 在末尾）。实时事件转发也要过它，别恢复全量转发。
-- 改消息 roster、surface 类型、容量或 payload shape 时只改 `bridge/protocol-contract.json`，随后运行
-  `node tools/sync-protocol-contract.mjs`；它校验并生成 docs、Rust constants/shape JSON、Rust/Node
-  fixtures 与 package wire metadata，`--check` 必须通过。载荷结构仍同步改 `client/src/protocol/`
-  （serde camelCase）与桥接 handler，并加双方 contract-driven tests。会话事件必须先解析为
-  `HostEventKind`，不得让 `serde_json::Value` 进入 reducer。历史 roster 只收录重建已支持显示/输入
-  accessory 所需事件；approval/request/header/title-llm 等审计或重建记录默认不进 transcript。工具结果、
-  Code Mode 子调用、compaction summary 与 `meta` 都必须有界裁剪，裁剪后带 `data.dshTuiTrimmed: true`，
-  客户端不得把尾部行数冒充完整输出行数。
-- **空会话历史与 `/new` 工作区继承**：`/resume` 以是否存在 `turn/start` 判断 blank，会话资格先于 200 条上限；活跃会话查内存，冷会话优先 `sessionListMetadata.blank` projection/cache、再退化 `readFrom`，错误 fail-open。旧 setup-only 日志不删除但不进入历史。真正物化新会话时必须同时做两件事，缺一不可——`agents.create`
-  的 `meta.cwd` 指向目标目录，然后经 `ctx.get('workspaceRegistry')` 的
-  `resolveByPath`（无则 `create`）找到该 cwd 的工作区并 `attachSession(agent.id)`。
-  只有 cwd 头、不 attach，会话不会进入工作区的 `sessionIds` 台账（host 自己的
-  `session.create` 也是两步都做）。**cwd 优先级**：客户端 `hello.cwd`（TUI 的
-  启动目录，桥接侧用 `isExistingDirectory` 校验）> 当前会话 `header.cwd` >
-  `process.cwd()`——TUI 在哪个目录启动，`/new` 就落在哪个目录的工作区。
-- **`/new <mode>` 与模式提示**：`/new` 是客户端草稿命令，首条输入以 wire v5 `new-input` 原子物化；bridge 仍为旧客户端保留 `/new` 命令 handler（DSH 命令注册表没有它）。
-  dshe 的裸 `/new` 按客户端 `Config.default_mode` 建草稿；bridge 收到旧客户端真正裸 `/new` 时兼容继承当前会话 preset（`agentPresets.composedPreset(current.ctx)`，
-  回退 `header.agentPreset`，再回退 roster 默认）。`/new <mode>` 直接按 preset
-  id 解析（`agentPresets.resolve`，未知名会带 available 列表报错）。新会话必须
-  在 `agents.create` 的 `setup` 里 `agentPresets.mount(agentCtx, preset.id)`——
-  只写 `meta.agentPreset` 头不 mount，会话拿不到 preset 的工具/提示词（与 host
-  `session.create` 的 compose 一致）。attach 后桥接下发 `presets{presets[]}`
-  roster 帧（id/name/description/order/broken），客户端用它渲染 `/new ` 后的
-  模式提示弹窗（broken 的 preset 不下发）。
-- 连接对象跨会话复用（`/new`、Resume attach）时必须保留 `conn.clientCwd`，
-  否则重连后工作区继承退化回 header.cwd。
-- **hello 即建会话**：hello 不带 `resumeSessionId` 时桥接调用同一个
-  `createNewSession(ws, null, mode, { clientCwd, fallbackStandard: true })`
-  就地建会话（`conn` 为 null，无镜像/无 detach）；`fallbackStandard` 把
-  `resolve` 失败链降级为 `standard` → roster 默认，供 /settings「默认模式」
-  失效回退。带 `resumeSessionId`（或 Resume/`/resume` attach）而 id 不在
-  活跃注册表时，先 `resumePersistedSession`：`sessionPersistence.list/inspect`
-  + `agents.resume`，preset 取会话记录（`sessionPresetOf`：最近一条
-  `agent-preset/selected` > `header.agentPreset`）并在 resume `setup` 里
-  `agentPresets.mount`（历史不得换组合重放；preset 没了就不恢复）——都拿不到
-  就新建会话，**任何"会话不活跃"都不许 close 连接**（重启竞态不是用户错误）。
-  仅创建失败发 `hello-failed` 错误帧 + `ws.close(4001)`。
-- **会话标题**：`welcome.title` 取 `agent.session.events` 里最近一条
-  `session/title`（`latestTitle` 纯函数）；冷恢复会话日志不在内存，attach 后经
-  `sessionQuery.readTitleSnapshots` 补发 `title{title}` 帧（发送前校验连接仍挂在
-  同一会话，防跨会话串标题）；此后的标题更新不必专门推送——`session/event`
-  全量转发已把 `session/title` 事件带给客户端。`session/title` **不进**
-  `SNAPSHOT_SURFACE`：历史前插会经 `apply_event` 回放，旧标题会覆盖新标题。
-  工作区路径走 `welcome.cwd`（会话头部 `header.cwd`，attach 时随 welcome 下发），
-  客户端存进 `session_cwd` 渲染在标题行右侧。`sessionQuery.readTitleSnapshots` 返回 settled result，标题须从 `fulfilled.value.title.title` 解包；`list-sessions` 先发最多 200 条 header/在线标题的 `sessions{titlesPending:true}`，再异步补发持久化标题，且只为截断后的候选读标题。
-- **model selection 必须装**：桥接创建/恢复的每个会话都要在 `setup` 里先调用
-  `model-selection.js` adapter 的 `install(agentCtx, { current, assembled })`。adapter lazy-load 并复用
-  `@deepseek-ai/dsh-agent@0.1.0-rc.6` 公开 package-root `installModelSelection` export，生产 bridge
-  **不得**复制 waterfall；它负责 `system-prompt/assemble` 的 `variables.{provider,model}` 注入与
-  snapshot 后的 `agent/request` 路由，否则 persona 的 `{{model}}` 无值。`current` 取 `/new` 镜像的
-  当前会话 provider/model（`mirror`），否则取 `agentDefaultModel.currentSelection()`；adapter 安装与
-  preset mount 是两个正交步骤，且 adapter 先执行。改 DSH/compatibility metadata 后必须 mount/restart，
-  再运行 `npm run verify-dsh-upgrade`；它检查 canonical contract、精确 host/agent version/export、
-  deployed helper 以及 `/new`/cold-resume/`/model` routing。
-- **/login 字段落点**（桥接 `login.js`）：上行 `login-get` / `login-set-api-key`
-  / `login-proxy-create` / `login-proxy-delete`；下行 `login{providers[],proxies[],error?}`。
-  - API key：`ctx.llm.listProviders()` 列提供商，`providerCredentialRef` 从
-    settings 读 `apiKeyEnv`（缺省回退 `<ID>_API_KEY`），走 `ctx.credentials` 的
-    `describe/set/unset(ref)`（**值永不回传**，只发 `…末四位` hint，env 来源只读）。
-  - Proxy：存 `%DSH_HOME%\dsh-tui-proxies.json`（api key 不回传）。
-  写失败经同一 `login` 帧的 `error` 回给面板，不走 transcript 错误流。
-- **/model（桥接）**：上行 `model-get` / `model-set{provider,model}`；下行
-  `model{providers[{id,name,models[{id,name,description?}]}],current?}`。
-  `sendModel` 用 `ctx.llm.listProviders()` + `ctx.llm.listModels(id)`（adapter
-  无目录时该 provider 返回空列表不整体失败）。会话创建/恢复时把
-  `modelSelections.set(agent.id, selection)` 存下那个 `{current,assembled}` 对；
-  `model-set` 改 `selection.current`（下一次 `system-prompt/assemble` 生效）并
-  顺手更新 `agent.options`，再回 `model` 帧刷新客户端状态栏。
-- **/skill（桥接）**：`/skill:<名称>` 或 `/skill <名称>` 由桥接拦截（`skill.js`
-  的 `parseSkillCommand`）。每次 attach 及 `skills/change` 后按会话 cwd/scope 调
-  `ctx.skills.list`，只把 `invocation.userInvocable` 的 `{name,description}` 通过 `skills`
-  roster 下发；客户端打出完整 `/skill` 即开始模糊补全，并填入规范 colon 形式。执行时经
-  `ctx.get('skills').get(name, {cwd, signal, scope})`
-  查技能——**DSH 的 skill-filesystem 已按 `<workspace>/.agents/skills/` >
-  `~/.agents/skills/` 优先级发现**，桥接只负责把 `renderSkillContent(skill)`
-  （`<skill_content>` 块）以 `createUserMessage` + `source:{kind:"skill-invocation"}`
-  `followup` 进会话（镜像 dsh-tool-skill 的用户显式调用注入）；未知名回
-  `error{code:"skill-unknown"}`。跨 await 后要校验 `conns.has(current)`。
-- **配置/主题/启动器（客户端）**：配置默认值只维护在
-  `client/assets/default_config.toml`，由 `config.rs` 用 `include_str!` 嵌入并解析；持久化 `Config`
-  直接 `Deserialize` + `#[serde(deny_unknown_fields)]`，`resolved_theme` 是 `#[serde(skip)]` 的运行时
-  缓存。`from_user_toml` 先以 embedded TOML 为 schema 递归 `overlay_known` 用户值，再只严格反序列化
-  一次：旧文件缺字段继承、废弃未知键忽略、malformed/已知类型错误安全回退；`Config::default()` 不得恢复
-  Rust 字段字面量。`Config.theme` 存主题名，渲染期零磁盘读。主题是两层
-  TOML：开放 `[colors]` 允许任意色名，固定 `[semantics.*]`（surface/markdown/input/
-  working_status/log/activity/card/overlay）把语义样式链接到色名；每个样式仅 `fg` 必填，`bg`/
-  `bold`/`italic`/`underline` 可选，未知引用、缺少固定字段或非法 hex 整个文件拒绝。内置
-  `deepseek-e`/`ferra` 源文件在 `client/assets/themes/`，由 `include_str!` 嵌入并走与用户文件
-  相同的解析器，同时无覆盖地复制到 `%APPDATA%\dshe\themes\`；合法同名用户文件优先，非法
-  旧文件不得遮蔽嵌入回退。`launcher.rs`：`probe(url)` TCP 探测 → 无 dsh 则 spawn
-  `dsh --profile dshe`（`dsh` 或 `npx @deepseek-ai/dsh`）→ `%DSH_HOME%\dsh-tui.lock`
-  计数「最后一个 tui 关闭时关 dsh」；Windows 的 child handle 指向 `cmd /C` shim，正常关闭和启动超时
-  清理都必须 `taskkill /T` 整棵进程树，禁止只 `Child::kill` 留下孤儿 Node；子进程回收必须有界，终止失败时
-  保留 `instances: 0` 的锁供下次 attach 重试；读取任何锁都必须重新 `probe(url)`，即使 `instances > 0` 也不能
-  当作服务存活证据（TUI 被强杀会留下正计数 stale 锁），服务已消失则清锁并重建。`release` 只在确实关闭托管服务时返回
-  `true`，主程序退出 alternate screen 后输出 `dsh 服务器已关闭。`。启动器必须使用专属 `dshe` profile，不能复用
-  DSH 自带/用户已有的 `tui` profile（其中的终端 UI 会抢占 stdio，且不提供桥接依赖的
-  `webServer`）。`/reload` 重读 config + 重扫主题。
+- **Module layout**: `index.js` only keeps WebSocket lifecycle and composition wiring; `dispatcher.js` is the
+  client frame router; `host.js` explicitly wraps the DSH service locator, `connection.js` unifies detach/
+  expired-connection determination, `history.js` manages surface cache and paging, `session.js` manages
+  create/cold-resume/workspace/preset composition, `session-list.js` manages the progressive session catalog and
+  title folding, `model-selection.js` is the sole DSH model-selection adapter, `command.js` projects the host
+  command catalog/direct results, `protocol.js` reads the shared wire contract; `trim.js`, `compose.js`,
+  `login.js`, `skill.js`, `model.js`, `frame.js` keep their own pure logic. Every boundary must have
+  `node:test` under `bridge/test/`; new code must not pile back into `index.js`.
+- **DSH command integration**: after attach, use `ctx.commands.list(agent)` to send handler-free
+  `commands{commands[{name,description,input?:{hint}}]}`; on `commands/change`, recompute the effective catalog
+  for each connection (agent-scoped shadowing cannot be done as a global incremental patch). `command{line}` goes
+  through `commands.execute(agent,line,signal)`; `undefined` means unregistered/invalid syntax, and the settled
+  result goes through `command-result{commandId,kind,text?}` — never becomes a model message. Execution spans
+  awaits, so a current-conn check is required before returning the result to avoid cross-session leakage after
+  attach.
+- **Cross-await conn discipline**: in any message handler that touches `conn` (detach/rebind) after an `await`,
+  capture a local `current = conn` before the await and verify `conn === current && conns.has(current)` after it
+  before operating — consecutive attach/`/new` swaps the closure's `conn` concurrently, and operating on a stale
+  connection leaks across sessions (the `attach` branch has a reference implementation).
+- All side effects go through `ctx.effect()`; connection objects live in the `conns` set; detach must clean up
+  listeners and revoke pending approvals (`done('cancelled')`).
+- **Snapshot/history data sources**: active sessions read `agent.session.events` (in memory, zero disk reads);
+  only non-resident sessions fall back to `persistence.readFrom(id, 0)` (full disk read, slow, result cached into
+  `conn.log`). After that async read you must first check `conn.abort.signal.aborted`; a stale connection must
+  not be written to or sent a snapshot. The surface list is cached per session and appended incrementally
+  (`surfaceState`), and besides the contract roster it also keeps any unknown event that explicitly carries
+  `surfaceOp`; unknown events must be trimmed to a bounded type/seq/time/surface metadata envelope before
+  entering the wire — never carry arbitrary data. All downstream frames go through
+  `frame.js::encodeBoundedFrame` enforcing `MAX_FRAME_BYTES`: snapshot/history keep only the newest fitting
+  suffix and set truncated/hasMore, and a single over-limit frame becomes a `frame-too-large` error.
+- **Payload trimming**: `trimToolResultEvent` (a module-level pure function exported as `_trimToolResultEvent`
+  for tests) — read results are stripped entirely, other tools keep only the last 2000 characters (the exit
+  marker is at the end). Real-time event forwarding must also go through it — do not restore full forwarding.
+- When changing the message roster, surface types, capacities, or payload shape, only change
+  `bridge/protocol-contract.json`, then run `node tools/sync-protocol-contract.mjs`; it validates and generates
+  docs, Rust constants/shape JSON, Rust/Node fixtures, and package wire metadata, and `--check` must pass.
+  Still also update the payload structures in `client/src/protocol/` (serde camelCase) and the bridge handler,
+  and add contract-driven tests on both sides. Session events must first be parsed into `HostEventKind` — never
+  let `serde_json::Value` into the reducer. The history roster only includes the events needed to rebuild the
+  supported display/input accessories; approval/request/header/title-llm and similar audit or rebuild records
+  are not in the transcript by default. Tool results, Code Mode sub-calls, compaction summaries, and `meta` must
+  all be bounded-trimmed, with `data.dshTuiTrimmed: true` after trimming; the client must not pass off trailing
+  line counts as complete output line counts.
+- **Blank-session history and `/new` workspace inheritance**: `/resume` judges blankness by the presence of
+  `turn/start`, and session eligibility comes before the 200-entry cap; active sessions read memory, cold
+  sessions prefer the `sessionListMetadata.blank` projection/cache and then degrade to `readFrom`, failing open
+  on error. Old setup-only logs are not deleted but do not enter history. Materializing a new session must do
+  two things together — `agents.create`'s `meta.cwd` points at the target directory, then find that cwd's
+  workspace via `ctx.get('workspaceRegistry')`'s `resolveByPath` (or `create` if absent) and
+  `attachSession(agent.id)`. With only the cwd header and no attach, the session will not enter the workspace's
+  `sessionIds` ledger (host's own `session.create` also does both steps). **cwd priority**: client `hello.cwd`
+  (the TUI's launch directory, validated on the bridge side with `isExistingDirectory`) > current session
+  `header.cwd` > `process.cwd()` — `/new` lands in the workspace of whichever directory the TUI launched in.
+- **`/new <mode>` and mode prompts**: `/new` is a client draft command; the first input materializes atomically
+  as wire v5 `new-input`; the bridge still keeps the `/new` command handler for older clients (it is not in the
+  DSH command registry). dshe's bare `/new` builds a draft using client `Config.default_mode`; when the bridge
+  receives a genuinely bare `/new` from an older client, it compatibly inherits the current session preset
+  (`agentPresets.composedPreset(current.ctx)`, falling back to `header.agentPreset`, then the roster default).
+  `/new <mode>` resolves directly by preset id (`agentPresets.resolve`, unknown names error with an available
+  list). New sessions must `agentPresets.mount(agentCtx, preset.id)` inside `agents.create`'s `setup` — writing
+  only the `meta.agentPreset` header without mounting leaves the session without the preset's tools/prompts
+  (consistent with host `session.create` composition). After attach the bridge sends a `presets{presets[]}`
+  roster frame (id/name/description/order/broken), which the client uses to render the mode prompt popup after
+  `/new ` (broken presets are not sent).
+- When a connection object is reused across sessions (`/new`, Resume attach), it must keep `conn.clientCwd`,
+  otherwise workspace inheritance degrades back to header.cwd after reconnect.
+- **hello creates a session immediately**: when hello carries no `resumeSessionId`, the bridge calls the same
+  `createNewSession(ws, null, mode, { clientCwd, fallbackStandard: true })` to create a session in place (`conn`
+  is null, no mirror/detach); `fallbackStandard` degrades the `resolve` failure chain to `standard` → roster
+  default, for /settings "default mode" invalidation fallback. When carrying a `resumeSessionId` (or Resume/
+  `/resume` attach) whose id is not in the active registry, first `resumePersistedSession`:
+  `sessionPersistence.list/inspect` + `agents.resume`, taking the preset from the session record
+  (`sessionPresetOf`: most recent `agent-preset/selected` > `header.agentPreset`) and mounting it via
+  `agentPresets.mount` in the resume `setup` (history must not replay under a different composition; if the
+  preset is gone, don't restore) — if none of these work, create a new session, and **never close the connection
+  for any "session not active"** (restart races are not user errors). Only a create failure sends a
+  `hello-failed` error frame + `ws.close(4001)`.
+- **Session title**: `welcome.title` takes the most recent `session/title` in `agent.session.events`
+  (`latestTitle` pure function); cold-resumed session logs are not in memory, so after attach the bridge
+  re-sends a `title{title}` frame via `sessionQuery.readTitleSnapshots` (verifying before sending that the
+  connection is still attached to the same session, to prevent cross-session title leakage); later title updates
+  need no dedicated push — `session/event` full forwarding already brings `session/title` events to the client.
+  `session/title` does **not** enter `SNAPSHOT_SURFACE`: history prepend replays via `apply_event`, and an old
+  title would overwrite the new one. The workspace path goes through `welcome.cwd` (the session header
+  `header.cwd`, sent with welcome at attach), and the client stores it in `session_cwd` to render on the right of
+  the title line. `sessionQuery.readTitleSnapshots` returns a settled result; the title must be unwrapped from
+  `fulfilled.value.title.title`; `list-sessions` first sends at most 200 header/online-title
+  `sessions{titlesPending:true}`, then asynchronously sends persisted titles, and reads titles only for the
+  truncated candidates.
+- **model selection must be installed**: every session the bridge creates/resumes must first call the
+  `model-selection.js` adapter's `install(agentCtx, { current, assembled })` inside `setup`. The adapter
+  lazy-loads and reuses the `@deepseek-ai/dsh-agent@0.1.0-rc.6` public package-root `installModelSelection`
+  export — the production bridge must **not** copy a waterfall; it is responsible for the
+  `system-prompt/assemble` `variables.{provider,model}` injection and post-snapshot `agent/request` routing,
+  otherwise the persona's `{{model}}` has no value. `current` takes the `/new` mirror's current session
+  provider/model (`mirror`), else `agentDefaultModel.currentSelection()`; adapter install and preset mount are
+  two orthogonal steps, and the adapter runs first. After changing DSH/compatibility metadata you must
+  mount/restart, then run `npm run verify-dsh-upgrade`; it checks the canonical contract, exact host/agent
+  version/export, deployed helper, and `/new`/cold-resume/`/model` routing.
+- **/login field destinations** (bridge `login.js`): upstream `login-get` / `login-set-api-key` /
+  `login-proxy-create` / `login-proxy-delete`; downstream `login{providers[],proxies[],error?}`.
+  - API key: `ctx.llm.listProviders()` lists providers; `providerCredentialRef` reads `apiKeyEnv` from settings
+    (defaulting to `<ID>_API_KEY`), going through `ctx.credentials`' `describe/set/unset(ref)` (**the value is
+    never sent back**, only a `…last four` hint is sent; env sources are read-only).
+  - Proxy: stored in `%DSH_HOME%\dsh-tui-proxies.json` (api key not sent back).
+  Write failures return to the panel via the same `login` frame's `error`, not through the transcript error
+  stream.
+- **/model (bridge)**: upstream `model-get` / `model-set{provider,model}`; downstream
+  `model{providers[{id,name,models[{id,name,description?}]}],current?}`. `sendModel` uses
+  `ctx.llm.listProviders()` + `ctx.llm.listModels(id)` (a provider without an adapter catalog returns an empty
+  list rather than failing the whole thing). On session create/resume, store that `{current,assembled}` pair via
+  `modelSelections.set(agent.id, selection)`; `model-set` changes `selection.current` (effective on the next
+  `system-prompt/assemble`) and also updates `agent.options`, then replies with a `model` frame to refresh the
+  client status bar.
+- **/skill (bridge)**: `/skill:<name>` or `/skill <name>` is intercepted by the bridge (`skill.js`'s
+  `parseSkillCommand`). After each attach and `skills/change`, call `ctx.skills.list` by session cwd/scope and
+  send only `invocation.userInvocable` `{name,description}` via the `skills` roster; the client starts fuzzy
+  completion when the full `/skill` is typed and fills the canonical colon form. Execution looks up the skill via
+  `ctx.get('skills').get(name, {cwd, signal, scope})` — **DSH's skill-filesystem already discovers with
+  `<workspace>/.agents/skills/` > `~/.agents/skills/` priority**; the bridge only injects
+  `renderSkillContent(skill)` (the `<skill_content>` block) into the session via `createUserMessage` +
+  `source:{kind:"skill-invocation"}` `followup` (mirroring dsh-tool-skill's explicit user invocation injection);
+  unknown names return `error{code:"skill-unknown"}`. Verify `conns.has(current)` after the await.
+- **Config/theme/launcher (client)**: config defaults live only in `client/assets/default_config.toml`,
+  embedded and parsed by `config.rs` via `include_str!`; the persisted `Config` is deserialized directly with
+  `Deserialize` + `#[serde(deny_unknown_fields)]`, and `resolved_theme` is a `#[serde(skip)]` runtime cache.
+  `from_user_toml` first recursively `overlay_known`s user values onto the embedded TOML as the schema, then
+  strictly deserializes exactly once: old files inherit missing fields, deprecated unknown keys are ignored,
+  malformed/known-type errors fall back safely; `Config::default()` must not re-derive from Rust field literals.
+  `Config.theme` stores the theme name; rendering does zero disk reads. Themes are two-layer TOML: an open
+  `[colors]` allows arbitrary color names, and fixed `[semantics.*]` (surface/markdown/input/working_status/log/
+  activity/card/overlay) link semantic styles to color names; each style requires only `fg`, with `bg`/`bold`/
+  `italic`/`underline` optional; unknown references, missing fixed fields, or illegal hex reject the whole file.
+  Built-in `deepseek-e`/`ferra` sources are in `client/assets/themes/`, embedded via `include_str!` and parsed by
+  the same parser as user files, and copied without overwrite to `%APPDATA%\dshe\themes\`; a valid same-named user
+  file wins, and an illegal old file must not shadow the embedded fallback. `launcher.rs`: `probe(url)` TCP probe
+  → if no dsh, spawn `dsh --profile dshe` (`dsh` or `npx @deepseek-ai/dsh`) → `%DSH_HOME%\dsh-tui.lock` counts
+  "close dsh when the last tui closes"; on Windows the child handle points at the `cmd /C` shim, and both normal
+  shutdown and startup-timeout cleanup must `taskkill /T` the whole process tree — never only `Child::kill`,
+  which leaves orphan Node processes; child reaping must be bounded, and on terminate failure keep an
+  `instances: 0` lock for the next attach to retry; reading any lock must re-`probe(url)` — even `instances > 0`
+  is not proof of a live service (a force-killed TUI leaves a stale positive-count lock), and if the service is
+  gone, clear the lock and rebuild. `release` returns `true` only when it actually shut down a managed service,
+  and after the main program exits the alternate screen it prints `dsh 服务器已关闭。`. The launcher must use the
+  dedicated `dshe` profile and must not reuse DSH's own / user's existing `tui` profile (whose terminal UI grabs
+  stdio and does not provide the `webServer` the bridge depends on). Hello-terminal bridge errors (`protocol-newer`,
+  `bad-token`, `hello-failed`) must become actionable fatal client errors before the following WebSocket close can
+  overwrite them with a generic disconnect; protocol mismatch guidance must mention remount/install/restart.
+  `/reload` re-reads config + rescans themes.
 
-## 维护纪律
+## Maintenance discipline
 
-- Rust 中、小型任务结束后不运行 `cargo fmt --all` 或 `cargo clippy`；大型任务结束后运行 `cargo fmt --all` 和 `cargo clippy`。无论任务规模，提交前必须运行 `cargo fmt --all`。
-- 任务完成后，按改动范围同步更新本文件（AGENTS.md）及相关 `docs/`（如 design.md）；功能、交互键位、协议字段、配置默认值或命令清单的说明不得滞后。键位变更还要同步 `ui.rs` 的 `help_overlay`。
-- **非必要不更新 `README.md`，并始终保持其简洁。** 仅当安装/构建流程、核心用户可见能力或快捷键速查等面向用户的基础信息发生实质变化时，才更新 README；实现细节、架构说明、协议细节和开发记录应放在 `docs/`，而不是扩充 README。
+- **Maintain all documentation in English.** AGENTS.md and everything under `docs/` are written in English and
+  must be kept in English: write new or edited prose in English, and do not introduce Chinese (or other
+  non-English) prose. Code identifiers, file paths, and command names stay as-is.
+- For small and medium Rust tasks, do not run `cargo fmt --all` or `cargo clippy` at the end; for large tasks,
+  run `cargo fmt --all` and `cargo clippy` at the end. Regardless of task size, `cargo fmt --all` must pass
+  before committing.
+- After a task, sync this file (AGENTS.md) and related `docs/` (e.g. design.md) to the scope of the change;
+  descriptions of features, interaction keys, protocol fields, config defaults, or command lists must not lag.
+  Key changes must also sync `ui.rs`'s `help_overlay`.
+- **Do not update `README.md` unless necessary, and keep it concise.** Only update README when user-facing
+  basics materially change — install/build flow, core user-visible capabilities, or keybinding quick reference;
+  implementation details, architecture notes, protocol details, and development records belong in `docs/`, not
+  in an expanded README.
 
-## 测试纪律
+## Test discipline
 
-- 谨慎添加测试：仅在确有必要、能够覆盖实际风险或防止回归时添加；不要为形式上的覆盖率添加测试。
-- 除非用户明确要求，非必要不跑全量 `cargo test`：优先只跑与改动相关的局部测试；小修改不跑测试。渲染/间距类改动必须有 ui 层回归测试（TestBackend
-  断言缓存行数/颜色/内容），不能只靠模型层测试。
-- 已知偶发：全量并行测试偶有一次 flake（tool 卡片断言），单跑或复跑即过，勿
-  据此大改。
-- 桥接侧有 `node:test`（`bridge/test/`，`cd bridge && npm test`，用
-  `--test-isolation=none` 避免沙箱 spawn EPERM）：除 trim/compose/login/skill/model/model-selection 外，
-  host/connection/history/session/session-list/protocol/dispatcher 边界也必须覆盖；文件层测试走 temp
-  home（不要碰真实 `%DSH_HOME%`）。协议改动还要跑 `node tools/sync-protocol-contract.mjs --check`。
-  DSH 升级后先 mount + `dsh plugin --profile <p> install`，再从 `bridge/` 运行
-  `npm run verify-dsh-upgrade`（必要时设 `DSH_TUI_SMOKE_PROFILE=<p>`）；它对部署副本做公开 export、
-  helper、`/new`、cold resume 与 `/model` routing smoke，而不是依赖本地 waterfall 副本。
+- Add tests cautiously: only when genuinely necessary, when they cover real risk or prevent regression; do not
+  add tests for formal coverage's sake.
+- Unless the user explicitly asks, avoid running the full `cargo test`: prefer running only the local tests
+  relevant to the change; skip tests for small changes. Rendering/spacing changes must have UI-layer regression
+  tests (TestBackend asserting cached line counts/colors/content), not only model-layer tests.
+- Known flake: full parallel tests occasionally flake once (tool card assertion); a single or rerun passes — do
+  not make big changes based on it.
+- The bridge side has `node:test` (`bridge/test/`, `cd bridge && npm test`, using `--test-isolation=none` to
+  avoid sandbox spawn EPERM): besides trim/compose/login/skill/model/model-selection,
+  host/connection/history/session/session-list/protocol/dispatcher edges must also be covered; file-layer tests
+  use a temp home (do not touch the real `%DSH_HOME%`). Protocol changes must also run
+  `node tools/sync-protocol-contract.mjs --check`. After a DSH upgrade, mount + `dsh plugin --profile <p>
+  install`, then run `npm run verify-dsh-upgrade` from `bridge/` (set `DSH_TUI_SMOKE_PROFILE=<p>` if needed);
+  it smokes public exports, helpers, `/new`, cold resume, and `/model` routing against the deployed copy rather
+  than relying on a local waterfall copy.
 
-## 已知事项
+## Known issues
 
-- **重启 DSH 才能加载新桥接**：改动 `bridge/src` 后需重新挂载（
-  `.\tools\mount-bridge.ps1 -Profile <web|dshe>`，等价 robocopy）+ 用户重启 dsh。
-  旧桥接的启动全量读盘约 14s；新桥接活跃会话 <100ms。
-- 设计文档里 M 里程碑编号已落后于实现（功能已超出 M6），以代码与 README 为准。
-- `DSH_TUI_TIMING=1` 下各启动阶段耗时打印到 stderr，定位启动回归用。
+- **Restart DSH to load a new bridge**: after changing `bridge/src`, re-mount
+  (`.\tools\mount-bridge.ps1 -Profile <web|dshe>`, equivalent to robocopy) + user restarts dsh. The old bridge's
+  startup full disk read is ~14s; the new bridge's active-session path is <100ms.
+- Design-doc M milestone numbering has fallen behind the implementation (features exceed M6); code and README
+  are authoritative.
+- Under `DSH_TUI_TIMING=1`, per-stage startup timings print to stderr, for locating startup regressions.

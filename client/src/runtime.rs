@@ -579,6 +579,18 @@ impl RuntimeController {
                     vec![RuntimeEffect::Fatal(format!(
                         "bridge disconnected: {message}"
                     ))]
+                } else if code == "protocol-newer" {
+                    vec![RuntimeEffect::Fatal(format!(
+                        "bridge protocol mismatch: {message}. Remount the dshe bridge, run `dsh plugin --profile dshe install`, and restart DSH"
+                    ))]
+                } else if code == "bad-token" {
+                    vec![RuntimeEffect::Fatal(format!(
+                        "bridge authentication failed: {message}"
+                    ))]
+                } else if code == "hello-failed" {
+                    vec![RuntimeEffect::Fatal(format!(
+                        "bridge startup failed: {message}"
+                    ))]
                 } else if code == "new-failed" {
                     let restored = {
                         let mut app = state.lock().unwrap();
@@ -849,25 +861,55 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn disconnected_error_is_a_deferred_fatal_effect() {
+    fn bridge_error(code: &str, message: &str) -> Vec<RuntimeEffect> {
         let state = Arc::new(Mutex::new(AppState::default()));
         let mut scroll = ScrollState::default();
         let mut copy_mode = None;
         let mut input = InputState::new(&Config::default());
         let mut page = None;
-        let effects = RuntimeController::apply_bridge(
+        RuntimeController::apply_bridge(
             ServerMessage::Error {
-                code: "disconnected".into(),
-                message: "gone".into(),
+                code: code.into(),
+                message: message.into(),
             },
             &state,
             &mut ui(&mut scroll, &mut copy_mode, &mut input, &mut page),
-        );
+        )
+    }
+
+    #[test]
+    fn disconnected_error_is_a_deferred_fatal_effect() {
+        let effects = bridge_error("disconnected", "gone");
         assert!(matches!(
             effects.as_slice(),
             [RuntimeEffect::Fatal(reason)] if reason.contains("gone")
         ));
+    }
+
+    #[test]
+    fn handshake_errors_remain_actionable_before_the_close_frame() {
+        let protocol = bridge_error(
+            "protocol-newer",
+            "client protocol 5 is newer than bridge protocol 4",
+        );
+        assert!(matches!(
+            protocol.as_slice(),
+            [RuntimeEffect::Fatal(reason)]
+                if reason.contains("protocol mismatch")
+                    && reason.contains("mount")
+                    && reason.contains("restart DSH")
+        ));
+
+        for (code, expected) in [
+            ("bad-token", "authentication failed"),
+            ("hello-failed", "startup failed"),
+        ] {
+            let effects = bridge_error(code, "rejected");
+            assert!(matches!(
+                effects.as_slice(),
+                [RuntimeEffect::Fatal(reason)] if reason.contains(expected)
+            ));
+        }
     }
 
     fn key(code: KeyCode) -> Event {

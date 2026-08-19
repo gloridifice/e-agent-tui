@@ -382,12 +382,16 @@ dependencies directly to `client/Cargo.toml` and commit the root `Cargo.lock` (w
   which leaves orphan Node processes; child reaping must be bounded, and on terminate failure keep an
   `instances: 0` lock for the next attach to retry; reading any lock must re-`probe(url)` — even `instances > 0`
   is not proof of a live service (a force-killed TUI leaves a stale positive-count lock), and if the service is
-  gone, clear the lock and rebuild. `release` returns `true` only when it actually shut down a managed service,
-  and after the main program exits the alternate screen it prints `dsh 服务器已关闭。`. The launcher must use the
-  dedicated `dshe` profile and must not reuse DSH's own / user's existing `tui` profile (whose terminal UI grabs
-  stdio and does not provide the `webServer` the bridge depends on). Hello-terminal bridge errors (`protocol-newer`,
-  `bad-token`, `hello-failed`) must become actionable fatal client errors before the following WebSocket close can
-  overwrite them with a generic disconnect; protocol mismatch guidance must mention remount/install/restart.
+  gone, clear the lock and rebuild. A spawn error, child exit before readiness, or startup timeout must fail the
+  launcher immediately with the attempted command and actionable mount/install guidance — never continue to token
+  read/WebSocket connect and expose a raw connection-refused error. The WebSocket upgrade retries only transient I/O
+  races briefly. `release` returns `true` only when it actually shut down a managed service, and after the main
+  program exits the alternate screen it prints `dsh 服务器已关闭。`. The launcher must use the dedicated `dshe`
+  profile and must not reuse DSH's own / user's existing `tui` profile (whose terminal UI grabs stdio and does not
+  provide the `webServer` the bridge depends on). Hello-terminal bridge errors (`protocol-newer`, `bad-token`,
+  `hello-failed`) must become actionable fatal client errors before the following WebSocket close can overwrite them
+  with a generic disconnect; the client must also reject a differing protocol version in `welcome`, and protocol
+  mismatch guidance must mention updating/rebuilding the client plus remount/install/restart.
   `/reload` re-reads config + rescans themes.
 
 ## Maintenance discipline

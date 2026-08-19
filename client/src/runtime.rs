@@ -21,7 +21,7 @@ use crate::{
     input_page::{InputPageSession, PageEffect},
     login::LoginView,
     model::{AppState, ApprovalCard, QuestionBatch},
-    protocol::{ClientMessage, ServerMessage},
+    protocol::{ClientMessage, ServerMessage, WIRE_PROTOCOL_VERSION},
     runtime_command::{self, LocalCommandContext},
     theme::{self, Theme, ThemeFile},
     ui::{scroll_lines, scroll_page, transcript_view_height, ScrollState},
@@ -183,6 +183,12 @@ pub struct TerminalUiState<'a> {
 }
 
 pub struct RuntimeController;
+
+fn protocol_mismatch_fatal(detail: &str) -> String {
+    format!(
+        "bridge protocol mismatch: {detail}. Update the client and bridge from the same checkout: remount with `tools\\mount-bridge.ps1 -Profile dshe`, run `dsh plugin --profile dshe install`, rebuild/reinstall `dshe`, and restart DSH"
+    )
+}
 
 impl RuntimeController {
     pub fn apply_terminal_route(
@@ -396,6 +402,7 @@ impl RuntimeController {
     ) -> Vec<RuntimeEffect> {
         match &msg {
             ServerMessage::Welcome {
+                protocol_version,
                 session_id,
                 status,
                 provider,
@@ -405,6 +412,13 @@ impl RuntimeController {
                 cwd,
                 ..
             } => {
+                if let Some(bridge_version) = protocol_version {
+                    if *bridge_version != WIRE_PROTOCOL_VERSION {
+                        return vec![RuntimeEffect::Fatal(protocol_mismatch_fatal(&format!(
+                            "client protocol {WIRE_PROTOCOL_VERSION}, bridge protocol {bridge_version}"
+                        )))];
+                    }
+                }
                 let switched = {
                     let mut state = state.lock().unwrap();
                     let switched = state.session_id.as_deref() != Some(session_id.as_str());
@@ -583,9 +597,7 @@ impl RuntimeController {
                         "bridge disconnected: {message}"
                     ))]
                 } else if code == "protocol-newer" {
-                    vec![RuntimeEffect::Fatal(format!(
-                        "bridge protocol mismatch: {message}. Remount the dshe bridge, run `dsh plugin --profile dshe install`, and restart DSH"
-                    ))]
+                    vec![RuntimeEffect::Fatal(protocol_mismatch_fatal(message))]
                 } else if code == "bad-token" {
                     vec![RuntimeEffect::Fatal(format!(
                         "bridge authentication failed: {message}"
@@ -852,7 +864,7 @@ mod tests {
         let mut page = None;
         let effects = RuntimeController::apply_bridge(
             ServerMessage::Welcome {
-                protocol_version: Some(4),
+                protocol_version: Some(WIRE_PROTOCOL_VERSION),
                 max_frame_bytes: None,
                 session_id: "s1".into(),
                 status: "idle".into(),
@@ -874,20 +886,24 @@ mod tests {
         ));
     }
 
-    fn bridge_error(code: &str, message: &str) -> Vec<RuntimeEffect> {
+    fn bridge_effects(message: ServerMessage) -> Vec<RuntimeEffect> {
         let state = Arc::new(Mutex::new(AppState::default()));
         let mut scroll = ScrollState::default();
         let mut copy_mode = None;
         let mut input = InputState::new(&Config::default());
         let mut page = None;
         RuntimeController::apply_bridge(
-            ServerMessage::Error {
-                code: code.into(),
-                message: message.into(),
-            },
+            message,
             &state,
             &mut ui(&mut scroll, &mut copy_mode, &mut input, &mut page),
         )
+    }
+
+    fn bridge_error(code: &str, message: &str) -> Vec<RuntimeEffect> {
+        bridge_effects(ServerMessage::Error {
+            code: code.into(),
+            message: message.into(),
+        })
     }
 
     #[test]
@@ -910,7 +926,26 @@ mod tests {
             [RuntimeEffect::Fatal(reason)]
                 if reason.contains("protocol mismatch")
                     && reason.contains("mount")
+                    && reason.contains("rebuild")
                     && reason.contains("restart DSH")
+        ));
+
+        let newer_bridge = bridge_effects(ServerMessage::Welcome {
+            protocol_version: Some(WIRE_PROTOCOL_VERSION + 1),
+            max_frame_bytes: None,
+            session_id: "ignored".into(),
+            status: "idle".into(),
+            provider: None,
+            model: None,
+            mode: None,
+            title: None,
+            cwd: None,
+        });
+        assert!(matches!(
+            newer_bridge.as_slice(),
+            [RuntimeEffect::Fatal(reason)]
+                if reason.contains(&format!("client protocol {WIRE_PROTOCOL_VERSION}"))
+                    && reason.contains(&format!("bridge protocol {}", WIRE_PROTOCOL_VERSION + 1))
         ));
 
         for (code, expected) in [

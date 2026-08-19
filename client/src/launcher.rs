@@ -18,6 +18,7 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
+use std::{error::Error, fmt};
 
 use serde::{Deserialize, Serialize};
 
@@ -29,6 +30,7 @@ const DSH_PROFILE: &str = "dshe";
 
 pub trait ProcessHandle {
     fn id(&self) -> u32;
+    fn has_exited(&mut self) -> bool;
     fn terminate_and_reap(&mut self, timeout: Duration) -> bool;
 }
 
@@ -68,6 +70,13 @@ impl StdProcessHandle {
 impl ProcessHandle for StdProcessHandle {
     fn id(&self) -> u32 {
         self.child.as_ref().map_or(0, Child::id)
+    }
+
+    fn has_exited(&mut self) -> bool {
+        match self.child.as_mut() {
+            Some(child) => matches!(child.try_wait(), Ok(Some(_))),
+            None => true,
+        }
     }
 
     fn terminate_and_reap(&mut self, _timeout: Duration) -> bool {
@@ -346,63 +355,139 @@ pub struct LauncherCoordinator<P: LauncherPorts> {
     ports: P,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum LauncherError {
+    Spawn {
+        command: String,
+        message: String,
+    },
+    Exited {
+        command: String,
+        url: String,
+    },
+    Timeout {
+        command: String,
+        url: String,
+        seconds: u64,
+    },
+}
+
+impl fmt::Display for LauncherError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Spawn { command, message } => write!(
+                f,
+                "cannot launch DSH with `{command}`: {message}. Install `@deepseek-ai/dsh`, then retry"
+            ),
+            Self::Exited { command, url } => write!(
+                f,
+                "DSH exited before its bridge became available at {url}. Run `{command}` directly to inspect its startup error; then remount the bridge with `tools\\mount-bridge.ps1 -Profile dshe` and run `dsh plugin --profile dshe install`"
+            ),
+            Self::Timeout {
+                command,
+                url,
+                seconds,
+            } => write!(
+                f,
+                "DSH bridge did not become available at {url} within {seconds}s after starting `{command}`. Run that command directly to inspect startup output; then remount the bridge with `tools\\mount-bridge.ps1 -Profile dshe` and run `dsh plugin --profile dshe install`"
+            ),
+        }
+    }
+}
+
+impl Error for LauncherError {}
+
+enum ServiceWait {
+    Ready,
+    Exited,
+    TimedOut,
+}
+
 impl<P: LauncherPorts> LauncherCoordinator<P> {
     pub fn new(ports: P) -> Self {
         Self { ports }
     }
 
-    fn wait_for_service(&mut self, url: &str, timeout: Duration) -> bool {
+    fn wait_for_service(
+        &mut self,
+        url: &str,
+        timeout: Duration,
+        child: &mut P::Process,
+    ) -> ServiceWait {
         let deadline = self.ports.clock().now() + timeout;
         while self.ports.clock().now() < deadline {
             if self.ports.probe(url) {
-                return true;
+                return ServiceWait::Ready;
+            }
+            if child.has_exited() {
+                return ServiceWait::Exited;
             }
             self.ports.clock().sleep(Duration::from_millis(300));
         }
-        false
+        if self.ports.probe(url) {
+            ServiceWait::Ready
+        } else {
+            ServiceWait::TimedOut
+        }
     }
 
-    pub fn acquire(&mut self, url: &str, dsh_home: &Path) -> ManagedDshSession<P::Process> {
+    pub fn acquire(
+        &mut self,
+        url: &str,
+        dsh_home: &Path,
+    ) -> Result<ManagedDshSession<P::Process>, LauncherError> {
         let path = lock_path(dsh_home);
         if let Some(mut lock) = self.ports.locks().read(&path) {
             if reusable_lock(&lock, self.ports.probe(url)) {
                 lock.instances = lock.instances.saturating_add(1);
                 self.ports.locks().write(&path, &lock);
-                return ManagedDshSession {
+                return Ok(ManagedDshSession {
                     child: None,
                     in_lock: true,
                     path,
-                };
+                });
             }
             self.ports.locks().remove(&path);
         }
         if self.ports.probe(url) {
-            return ManagedDshSession {
+            return Ok(ManagedDshSession {
                 child: None,
                 in_lock: false,
                 path,
-            };
+            });
         }
 
         let argv = dsh_command();
-        let mut child = match self.ports.spawn(&argv) {
-            Ok(child) => child,
-            Err(_) => {
-                return ManagedDshSession {
-                    child: None,
-                    in_lock: false,
-                    path,
-                };
-            }
-        };
+        let command = argv.join(" ");
+        let mut child = self
+            .ports
+            .spawn(&argv)
+            .map_err(|error| LauncherError::Spawn {
+                command: command.clone(),
+                message: error.to_string(),
+            })?;
         let pid = child.id();
-        if !self.wait_for_service(url, Duration::from_secs(SPAWN_WAIT_TIMEOUT_SECS)) {
-            child.terminate_and_reap(Duration::from_millis(CHILD_REAP_TIMEOUT_MS));
-            return ManagedDshSession {
-                child: None,
-                in_lock: false,
-                path,
-            };
+        match self.wait_for_service(
+            url,
+            Duration::from_secs(SPAWN_WAIT_TIMEOUT_SECS),
+            &mut child,
+        ) {
+            ServiceWait::Ready => {}
+            ServiceWait::Exited => {
+                child.terminate_and_reap(Duration::from_millis(CHILD_REAP_TIMEOUT_MS));
+                return Err(LauncherError::Exited {
+                    command,
+                    url: url.to_owned(),
+                });
+            }
+            ServiceWait::TimedOut => {
+                child.terminate_and_reap(Duration::from_millis(CHILD_REAP_TIMEOUT_MS));
+                return Err(LauncherError::Timeout {
+                    command,
+                    url: url.to_owned(),
+                    seconds: SPAWN_WAIT_TIMEOUT_SECS,
+                });
+            }
         }
         self.ports.locks().write(
             &path,
@@ -411,11 +496,11 @@ impl<P: LauncherPorts> LauncherCoordinator<P> {
                 instances: 1,
             },
         );
-        ManagedDshSession {
+        Ok(ManagedDshSession {
             child: Some(child),
             in_lock: true,
             path,
-        }
+        })
     }
 
     pub fn release(&mut self, session: &mut ManagedDshSession<P::Process>) -> bool {
@@ -450,7 +535,7 @@ impl<P: LauncherPorts> LauncherCoordinator<P> {
 }
 
 /// Ensure a bridge is available using production launcher adapters.
-pub fn acquire(url: &str, dsh_home: &Path) -> DshSession {
+pub fn acquire(url: &str, dsh_home: &Path) -> Result<DshSession, LauncherError> {
     LauncherCoordinator::new(ProductionLauncherPorts::default()).acquire(url, dsh_home)
 }
 
@@ -473,6 +558,7 @@ mod tests {
 
     struct FakeProcess {
         id: u32,
+        exited: bool,
         stopped: Arc<AtomicBool>,
         stop_result: bool,
     }
@@ -480,6 +566,10 @@ mod tests {
     impl ProcessHandle for FakeProcess {
         fn id(&self) -> u32 {
             self.id
+        }
+
+        fn has_exited(&mut self) -> bool {
+            self.exited
         }
 
         fn terminate_and_reap(&mut self, _timeout: Duration) -> bool {
@@ -531,6 +621,7 @@ mod tests {
         spawned: usize,
         spawn_fails: bool,
         child_stopped: Arc<AtomicBool>,
+        child_exited: bool,
         child_stop_result: bool,
         terminate_result: bool,
     }
@@ -545,6 +636,7 @@ mod tests {
                 spawned: 0,
                 spawn_fails: false,
                 child_stopped: Arc::new(AtomicBool::new(false)),
+                child_exited: false,
                 child_stop_result: true,
                 terminate_result: true,
             }
@@ -567,6 +659,7 @@ mod tests {
             self.spawned += 1;
             Ok(FakeProcess {
                 id: 42,
+                exited: self.child_exited,
                 stopped: self.child_stopped.clone(),
                 stop_result: self.child_stop_result,
             })
@@ -599,7 +692,7 @@ mod tests {
         );
         ports.probes = [false, false, true].into_iter().collect();
         let mut coordinator = LauncherCoordinator::new(ports);
-        let session = coordinator.acquire("ws://fake", &home);
+        let session = coordinator.acquire("ws://fake", &home).unwrap();
         assert!(session.in_lock);
         assert_eq!(coordinator.ports.spawned, 1);
         assert_eq!(coordinator.ports.locks.0[&path].instances, 1);
@@ -619,7 +712,7 @@ mod tests {
         );
         ports.probes.push_back(true);
         let mut coordinator = LauncherCoordinator::new(ports);
-        let session = coordinator.acquire("ws://fake", &home);
+        let session = coordinator.acquire("ws://fake", &home).unwrap();
         assert!(session.in_lock && session.child.is_none());
         assert_eq!(coordinator.ports.spawned, 0);
         assert_eq!(coordinator.ports.locks.0[&path].instances, 2);
@@ -630,10 +723,38 @@ mod tests {
         let ports = FakePorts::default();
         let stopped = ports.child_stopped.clone();
         let mut coordinator = LauncherCoordinator::new(ports);
-        let session = coordinator.acquire("ws://fake", Path::new("fake-home"));
-        assert!(!session.in_lock);
+        let error = match coordinator.acquire("ws://fake", Path::new("fake-home")) {
+            Err(error) => error,
+            Ok(_) => panic!("unreachable bridge must time out"),
+        };
+        assert!(matches!(error, LauncherError::Timeout { .. }));
         assert!(stopped.load(Ordering::SeqCst));
         assert_eq!(coordinator.ports.spawned, 1);
+    }
+
+    #[test]
+    fn coordinator_reports_spawn_and_early_exit_failures() {
+        let mut spawn_ports = FakePorts::default();
+        spawn_ports.spawn_fails = true;
+        let mut coordinator = LauncherCoordinator::new(spawn_ports);
+        let spawn_error = match coordinator.acquire("ws://fake", Path::new("fake-home")) {
+            Err(error) => error,
+            Ok(_) => panic!("failed spawn must be reported"),
+        };
+        assert!(matches!(spawn_error, LauncherError::Spawn { .. }));
+        assert!(spawn_error.to_string().contains("cannot launch DSH"));
+
+        let mut exit_ports = FakePorts::default();
+        exit_ports.child_exited = true;
+        let stopped = exit_ports.child_stopped.clone();
+        let mut coordinator = LauncherCoordinator::new(exit_ports);
+        let exit_error = match coordinator.acquire("ws://fake", Path::new("fake-home")) {
+            Err(error) => error,
+            Ok(_) => panic!("early exit must be reported"),
+        };
+        assert!(matches!(exit_error, LauncherError::Exited { .. }));
+        assert!(exit_error.to_string().contains("mount-bridge.ps1"));
+        assert!(stopped.load(Ordering::SeqCst));
     }
 
     #[test]
@@ -862,7 +983,7 @@ mod tests {
             },
         );
 
-        let session = acquire(&url, &dir);
+        let session = acquire(&url, &dir).unwrap();
 
         assert!(session.in_lock, "live failed-shutdown service is rejoined");
         assert!(session.child.is_none(), "rejoin must not spawn another dsh");

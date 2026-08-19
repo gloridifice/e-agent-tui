@@ -131,7 +131,11 @@ protocol (typed DTO + HostEvent family parser)
 short-lived state lock only produces internal actions or a complete `RuntimeEffect`. `main.rs` only handles
 `tokio::select!`, bounded inbound, deadlines, terminal lifecycle, and the effect executor; transport, terminal
 events, config/state files, clipboard, clock, and the launcher's processes/locks are all adapted through narrow
-ports, so scripted stand-ins can verify races without awaiting/I/O inside the lock.
+ports, so scripted stand-ins can verify races without awaiting/I/O inside the lock. The launcher treats process
+spawn failure, exit-before-readiness, and readiness timeout as explicit startup failures rather than continuing
+with a stale token into a raw WebSocket connection error. The transport briefly retries transient upgrade races;
+wire compatibility is then checked in both directions (the bridge rejects a newer client, and the client rejects a
+mismatched `welcome.protocolVersion`) with one same-checkout update/remount/rebuild recovery path.
 
 Production `AppState` stores only `ActivityRow`, `TranscriptBlock`, `ContentCard`, and composite `DisplayItem` in
 `TranscriptStore`. `EventProjector` and the family projections are the only HostEvent→display entry point;

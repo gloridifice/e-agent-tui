@@ -1,7 +1,9 @@
 //! WebSocket tasks and bounded channels for the TUI runtime.
 
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use futures_util::{SinkExt, StreamExt};
+use std::io::ErrorKind;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_tungstenite::{connect_async_with_config, tungstenite::Message};
@@ -13,6 +15,20 @@ pub struct BridgeIo {
     pub inbound: mpsc::Receiver<ServerMessage>,
     writer: JoinHandle<()>,
     reader: JoinHandle<()>,
+}
+
+fn is_transient_connect_error(error: &tokio_tungstenite::tungstenite::Error) -> bool {
+    matches!(
+        error,
+        tokio_tungstenite::tungstenite::Error::Io(error)
+            if matches!(
+                error.kind(),
+                ErrorKind::ConnectionRefused
+                    | ErrorKind::ConnectionReset
+                    | ErrorKind::ConnectionAborted
+                    | ErrorKind::NotConnected
+            )
+    )
 }
 
 impl BridgeIo {
@@ -31,9 +47,23 @@ impl BridgeIo {
             max_frame_size: Some(max_frame_bytes.max(MAX_WIRE_FRAME_BYTES)),
             ..Default::default()
         };
-        let (ws, _) = connect_async_with_config(url, Some(config), false)
-            .await
-            .with_context(|| format!("connect {url}"))?;
+        // A process can disappear in the small gap between the launcher's TCP
+        // readiness probe and the WebSocket upgrade. Retry only transient I/O
+        // failures; handshake/auth/protocol failures must surface immediately.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let ws = loop {
+            match connect_async_with_config(url, Some(config.clone()), false).await {
+                Ok((ws, _)) => break ws,
+                Err(error) if is_transient_connect_error(&error) && Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(150)).await;
+                }
+                Err(error) => {
+                    return Err(anyhow!(
+                        "cannot connect to the DSH bridge at {url}: {error}. The DSH service stopped or the `dsh-tui` route is unavailable. Run `dsh --profile dshe` to inspect startup output; if DSH runs, remount with `tools\\mount-bridge.ps1 -Profile dshe`, run `dsh plugin --profile dshe install`, and restart DSH"
+                    ));
+                }
+            }
+        };
         let (sink, mut stream) = ws.split();
         let (outbound, mut outbound_rx) = mpsc::channel::<ClientMessage>(128);
         let writer = tokio::spawn(async move {
@@ -90,5 +120,39 @@ impl Drop for BridgeIo {
     fn drop(&mut self) {
         self.writer.abort();
         self.reader.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::WIRE_PROTOCOL_VERSION;
+    use std::net::TcpListener;
+
+    #[tokio::test]
+    async fn refused_connection_has_actionable_dsh_guidance() {
+        let port = {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            drop(listener);
+            port
+        };
+        let url = format!("ws://127.0.0.1:{port}/dsh-tui");
+        let hello = ClientMessage::Hello {
+            token: "test".into(),
+            resume_session_id: None,
+            cwd: None,
+            mode: None,
+            protocol_version: WIRE_PROTOCOL_VERSION,
+        };
+
+        let error = match BridgeIo::connect(&url, hello, MAX_WIRE_FRAME_BYTES).await {
+            Err(error) => error,
+            Ok(_) => panic!("closed port must refuse the connection"),
+        };
+        let message = error.to_string();
+        assert!(message.contains("cannot connect to the DSH bridge"));
+        assert!(message.contains("dsh --profile dshe"));
+        assert!(message.contains("mount-bridge.ps1"));
     }
 }

@@ -156,14 +156,19 @@ async fn main() -> anyhow::Result<()> {
     // `dsh --profile dshe` when none is (global dsh, else npx). `dsh_session`
     // records whether this process owns the spawned service so `release`
     // below can shut it down when the last TUI closes.
-    let mut dsh_session = e::launcher::acquire(&url, &e::launcher::dsh_home());
+    let mut dsh_session = e::launcher::acquire(&url, &e::launcher::dsh_home())?;
 
     let _z = e::tracy_zone!("read_token");
-    let token = read_token()?;
+    let token = read_token();
     drop(_z);
     phases.mark("read token");
 
-    let result = run(url, token, resume_session_id, &mut phases).await;
+    // Always release launcher ownership after a successful acquire, including
+    // token-read and connection failures before the TUI has started.
+    let result = match token {
+        Ok(token) => run(url, token, resume_session_id, &mut phases).await,
+        Err(error) => Err(error),
+    };
 
     // On TUI exit: release the launcher bookkeeping. A dshe-spawned service
     // is shut down when this is the last attached TUI; an out-of-band dsh is

@@ -35,16 +35,17 @@ deprecated unknown keys are ignored, malformed/known-type errors fall back safel
 ## Common commands (Windows / PowerShell)
 
 The user-facing source install flow is documented in the README "Quick Start": install
-`@deepseek-ai/dsh` globally, set/reuse `DSH_HOME`, mount and install the dedicated `dshe` profile bridge,
-then use `cargo install --path client --locked` to install `dshe.exe` into the Cargo bin directory.
+`@deepseek-ai/dsh` globally, use `cargo install --path client --locked` to install `dshe.exe` into the
+Cargo bin directory, then run `dshe setup` (which embeds the bridge at build time and installs it into the
+dedicated `dshe` profile).
 
 ```powershell
 # First install
 npm install --global @deepseek-ai/dsh
-# When DSH_HOME is unset/empty, the mount script falls back to $HOME\.dsh; set the env var first only for a custom home
-.\tools\mount-bridge.ps1 -Profile dshe
-dsh plugin --profile dshe install
 cargo install --path client --locked
+# Embeds and installs the bridge into the dedicated dshe profile.
+# When DSH_HOME is unset/empty, setup falls back to $HOME\.dsh.
+dshe setup
 
 # Client (repo root is a Cargo workspace, default member client, crate name e, artifact dshe.exe)
 cargo run                                # build from root and launch dshe
@@ -55,6 +56,9 @@ cargo clippy --all-targets
 cargo test                               # full unit tests
 
 # Bridge sync (required after changing bridge/; takes effect after restarting dsh)
+# Rebuild the client + `dshe setup` to install the re-embedded bridge into the dshe profile.
+# The mount script below remains the fastest dev path to hot-sync bridge/ without a rebuild
+# (also used for the `web` profile).
 .\tools\mount-bridge.ps1 -Profile web    # or -Profile dshe (the dshe launcher's dedicated profile)
 # Equivalent manual command: robocopy bridge\src "$env:DSH_HOME\profiles\<p>\packages\dsh-tui-bridge\src" /MIR
 # The script must be compatible with Windows PowerShell 5.1: empty DSH_HOME falls back to $HOME\.dsh;
@@ -63,7 +67,7 @@ cargo test                               # full unit tests
 # Bridge tests (node:test; includes protocol/session/model-selection edges)
 cd bridge; npm test                      # = node --test --test-isolation=none "test/*.test.js"
 node tools/sync-protocol-contract.mjs --check
-# After a DSH upgrade or bridge change: mount + dsh plugin install, then run the full compatibility gate against the deployed copy
+# After a DSH upgrade or bridge change: mount + dsh plugin install (or rebuild + `dshe setup`), then run the full compatibility gate against the deployed copy
 $env:DSH_TUI_SMOKE_PROFILE = 'dshe'; cd bridge; npm run verify-dsh-upgrade
 
 # Integration debugging
@@ -383,7 +387,8 @@ dependencies directly to `client/Cargo.toml` and commit the root `Cargo.lock` (w
   `instances: 0` lock for the next attach to retry; reading any lock must re-`probe(url)` — even `instances > 0`
   is not proof of a live service (a force-killed TUI leaves a stale positive-count lock), and if the service is
   gone, clear the lock and rebuild. A spawn error, child exit before readiness, or startup timeout must fail the
-  launcher immediately with the attempted command and actionable mount/install guidance — never continue to token
+  launcher immediately with the attempted command and actionable setup guidance (run `dshe setup` and restart DSH)
+  — never continue to token
   read/WebSocket connect and expose a raw connection-refused error. The WebSocket upgrade retries only transient I/O
   races briefly. `release` returns `true` only when it actually shut down a managed service, and after the main
   program exits the alternate screen it prints `dsh 服务器已关闭。`. The launcher must use the dedicated `dshe`
@@ -391,7 +396,7 @@ dependencies directly to `client/Cargo.toml` and commit the root `Cargo.lock` (w
   provide the `webServer` the bridge depends on). Hello-terminal bridge errors (`protocol-newer`, `bad-token`,
   `hello-failed`) must become actionable fatal client errors before the following WebSocket close can overwrite them
   with a generic disconnect; the client must also reject a differing protocol version in `welcome`, and protocol
-  mismatch guidance must mention updating/rebuilding the client plus remount/install/restart.
+  mismatch guidance must mention updating/rebuilding the client, running `dshe setup`, and restarting DSH.
   `/reload` re-reads config + rescans themes.
 
 ## Maintenance discipline
@@ -430,9 +435,11 @@ dependencies directly to `client/Cargo.toml` and commit the root `Cargo.lock` (w
 
 ## Known issues
 
-- **Restart DSH to load a new bridge**: after changing `bridge/src`, re-mount
-  (`.\tools\mount-bridge.ps1 -Profile <web|dshe>`, equivalent to robocopy) + user restarts dsh. The old bridge's
-  startup full disk read is ~14s; the new bridge's active-session path is <100ms.
+- **Restart DSH to load a new bridge**: after changing `bridge/src`, rebuild the client and run `dshe setup`
+  (or re-mount with `.\tools\mount-bridge.ps1 -Profile <web|dshe>`, equivalent to robocopy) + user restarts dsh.
+  The old bridge's startup full disk read is ~14s; the new bridge's active-session path is <100ms.
+- The `dshe` binary embeds the bridge runtime and gates startup on a current `.dshe-setup.json` record; a
+  missing/stale/damaged setup fails with English guidance to run `dshe setup` before the launcher runs.
 - Design-doc M milestone numbering has fallen behind the implementation (features exceed M6); code and README
   are authoritative.
 - Under `DSH_TUI_TIMING=1`, per-stage startup timings print to stderr, for locating startup regressions.

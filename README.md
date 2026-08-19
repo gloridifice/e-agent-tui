@@ -14,31 +14,17 @@
 
 Before installing, make sure [Git](https://git-scm.com/), [Node.js](https://nodejs.org/) with npm, and [Rust](https://rustup.rs/) with Cargo are available.
 
-```powershell
-# Install DeepSeek Harness.
-npm install --global @deepseek-ai/dsh
+1. Install DeepSeek Harness: `npm install -g @deepseek-ai/dsh`
+2. Install `e`: `cargo install dshe`
+3. Run `dshe setup`
 
-# Clone e.
-git clone https://github.com/gloridifice/e.git
-cd e
-
-# Install the bridge into e's dedicated DSH profile.
-# If DSH_HOME is unset, $HOME\.dsh is used automatically.
-.\tools\mount-bridge.ps1 -Profile dshe
-dsh plugin --profile dshe install
-
-# Build and install dshe into Cargo's binary directory.
-cargo install --path client --locked
-
-# Start e in the directory you want to work in.
-dshe
-```
+Then just run `dshe`, e will open dsh and e-tui.
 
 On first launch, `dshe` starts its dedicated DSH service automatically. Use `/login` to configure an API key or proxy, and `/model` to select a provider and model.
 
 If PowerShell cannot find `dshe`, add `%USERPROFILE%\.cargo\bin` to `PATH`.
 
-To update, pull the latest changes and run `cargo install --path client --locked` again. If `bridge/` changed, repeat the bridge installation commands and restart DSH.
+To update, pull the latest changes, run `cargo install --path client --locked`, then run `dshe setup` to refresh the embedded bridge. Restart DSH if it is already running.
 
 ### Build Yourself
 
@@ -53,8 +39,7 @@ cargo build --release
 The executable is written to `target\release\dshe.exe`. The DSH bridge is still required; install it once with:
 
 ```powershell
-.\tools\mount-bridge.ps1 -Profile dshe
-dsh plugin --profile dshe install
+dshe setup
 ```
 
 For a profiling build, enable the optional Tracy integration:
@@ -81,11 +66,11 @@ cd ..
 node tools/sync-protocol-contract.mjs --check
 ```
 
-After changing `bridge/`, mount it again and restart DSH before testing it:
+After changing `bridge/`, rebuild the client and re-run `dshe setup` so the embedded bridge is current, then restart DSH before testing it:
 
 ```powershell
-.\tools\mount-bridge.ps1 -Profile dshe
-dsh plugin --profile dshe install
+cargo build --release
+dshe setup
 ```
 
 Development documentation is available in [`docs/`](docs/):

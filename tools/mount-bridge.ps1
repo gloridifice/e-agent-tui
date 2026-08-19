@@ -36,7 +36,8 @@ if (-not (Test-Path (Join-Path $profileDir 'package.json'))) {
     $pkgJson = @{
         name = "dsh-profile-$Profile"
         private = $true
-        dependencies = @{ 'dsh-win32' = '0.11.2' }
+        # Keep in sync with DSH_WIN32_VERSION in client/src/setup.rs.
+        dependencies = @{ 'dsh-win32' = '0.13.0' }
         dsh = @{ profile = @{ bundles = @('@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'dsh-win32') } }
     } | ConvertTo-Json -Depth 5
     # Windows PowerShell 5.1's `Set-Content -Encoding utf8` emits a BOM, which

@@ -135,7 +135,7 @@ ports, so scripted stand-ins can verify races without awaiting/I/O inside the lo
 spawn failure, exit-before-readiness, and readiness timeout as explicit startup failures rather than continuing
 with a stale token into a raw WebSocket connection error. The transport briefly retries transient upgrade races;
 wire compatibility is then checked in both directions (the bridge rejects a newer client, and the client rejects a
-mismatched `welcome.protocolVersion`) with one same-checkout update/remount/rebuild recovery path.
+mismatched `welcome.protocolVersion`) with one same-checkout update/`dshe setup`/rebuild/restart recovery path.
 
 Production `AppState` stores only `ActivityRow`, `TranscriptBlock`, `ContentCard`, and composite `DisplayItem` in
 `TranscriptStore`. `EventProjector` and the family projections are the only HostEvent→display entry point;
@@ -747,16 +747,29 @@ disables it for diagnosis.
 ### 6.1 Source install path
 
 The README "Quick Start" is the current user-facing install entry: on Windows / PowerShell, first prepare Git,
-Node.js/npm, and Rust/Cargo, install `@deepseek-ai/dsh` globally, mount `bridge/` into the dedicated `dshe`
-profile and run `dsh plugin --profile dshe install`, then use `cargo install --path client --locked` to install
-`dshe.exe` into the Cargo bin directory. When `DSH_HOME` is not explicitly set (including set-but-empty env vars),
-the install command and client both use `%USERPROFILE%\.dsh`, and the mount script auto-falls-back and prints the
-actual directory; a custom directory can also be passed explicitly via `-DshHome`. The mount script must be
-compatible with Windows PowerShell 5.1, be idempotent, and write the `package.json` that Node reads as UTF-8
-without BOM. After install the client runtime remains a single exe; Node.js is only used for DSH itself and the
-first install/update of the bridge. After changing the bridge or upgrading DSH, remount/restart and then run
-`npm run verify-dsh-upgrade` from `bridge/`; it checks the generated contract, declared DSH/agent versions, and
-public exports, and runs helper and session-routing smoke against the deployed copy.
+Node.js/npm, and Rust/Cargo, install `@deepseek-ai/dsh` globally, use `cargo install --path client --locked` to
+install `dshe.exe` into the Cargo bin directory, then run `dshe setup`. The bridge runtime (package manifest,
+canonical protocol contract, and every production `bridge/src/*.js` module) is embedded in `dshe.exe` at build
+time; `dshe setup` materializes it into the dedicated `dshe` profile, registers it idempotently, runs the
+equivalent of `dsh plugin --profile dshe install`, validates the result, and atomically records the successful
+bridge digest in `%DSH_HOME%\profiles\dshe\.dshe-setup.json`. When `DSH_HOME` is unset, empty, or whitespace-only,
+setup and the client both use `%USERPROFILE%\.dsh`, and the resolved value is passed to the DSH plugin child
+process. Setup only merges the bridge-owned registrations (`dependencies["dsh-tui-bridge"] = "workspace:*"`,
+the `packages/*` workspace entry, and the `tui-bridge` patch insert) and preserves unrelated profile
+configuration; malformed profile files are refused with an actionable error rather than rewritten. The
+`tools/mount-bridge.ps1` script remains a development-only shortcut for hot-syncing `bridge/` (and the `web`
+profile) without a client rebuild, but it is no longer a user prerequisite.
+
+Normal TUI startup is gated on the setup record: before acquiring DSH, reading the token, opening WebSocket, or
+initializing the terminal, the client classifies setup as ready, missing, outdated, or damaged from the record's
+embedded bridge digest plus cheap structural checks, and refuses to proceed unless ready. A client-only update
+whose embedded bridge is unchanged remains ready; any bridge change (or a legacy script-mounted profile without a
+record) requires a one-time `dshe setup`. All setup and startup-gate failures are English and actionable, naming
+the failed condition and the exact next command or repair step. After install the client runtime remains a single
+exe; Node.js is only used for DSH itself and for installing the bridge's npm dependencies. After changing the
+bridge or upgrading DSH, rebuild/`dshe setup`/restart and then run `npm run verify-dsh-upgrade` from `bridge/`;
+it checks the generated contract, declared DSH/agent versions, and public exports, and runs helper and
+session-routing smoke against the deployed copy.
 
 ## 7. Platform and boundaries
 

@@ -26,7 +26,6 @@ const PROBE_TIMEOUT_MS: u64 = 400;
 const SPAWN_WAIT_TIMEOUT_SECS: u64 = 45;
 const CHILD_REAP_TIMEOUT_MS: u64 = 2_000;
 const CHILD_REAP_POLL_MS: u64 = 20;
-const DSH_PROFILE: &str = "dshe";
 
 pub trait ProcessHandle {
     fn id(&self) -> u32;
@@ -147,16 +146,9 @@ impl LauncherPorts for ProductionLauncherPorts {
 }
 
 /// DSH home (the bridge token and the instance lock live here), matching the
-/// bridge's own `dshHome()` resolution.
-pub fn dsh_home() -> PathBuf {
-    if let Ok(home) = std::env::var("DSH_HOME") {
-        return PathBuf::from(home);
-    }
-    let user = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_else(|_| ".".into());
-    PathBuf::from(user).join(".dsh")
-}
+/// bridge's own `dshHome()` resolution. Empty or whitespace-only `DSH_HOME`
+/// values fall back to the platform default just like an unset variable.
+pub use crate::dsh_env::{current_dsh_home as dsh_home, dsh_command};
 
 // ---------- URL / probe (pure) ----------
 
@@ -190,30 +182,6 @@ pub fn probe(url: &str) -> bool {
 }
 
 // ---------- dsh command resolution ----------
-
-fn command_exists(cmd: &str) -> bool {
-    #[cfg(windows)]
-    let out = Command::new("where").arg(cmd).output();
-    #[cfg(not(windows))]
-    let out = Command::new("which").arg(cmd).output();
-    out.map(|o| o.status.success()).unwrap_or(false)
-}
-
-/// The argv that boots the dedicated `dshe` profile: global `dsh` when
-/// installed, else `npx @deepseek-ai/dsh` (downloads on first run).
-pub fn dsh_command() -> Vec<String> {
-    if command_exists("dsh") {
-        vec!["dsh".into(), "--profile".into(), DSH_PROFILE.into()]
-    } else {
-        vec![
-            "npx".into(),
-            "-y".into(),
-            "@deepseek-ai/dsh".into(),
-            "--profile".into(),
-            DSH_PROFILE.into(),
-        ]
-    }
-}
 
 /// Spawn the dsh command. On Windows the `dsh`/`npx` shims are `.cmd`
 /// files, which need `cmd /C` to be created as a child process.
@@ -381,7 +349,7 @@ impl fmt::Display for LauncherError {
             ),
             Self::Exited { command, url } => write!(
                 f,
-                "DSH exited before its bridge became available at {url}. Run `{command}` directly to inspect its startup error; then remount the bridge with `tools\\mount-bridge.ps1 -Profile dshe` and run `dsh plugin --profile dshe install`"
+                "DSH exited before its bridge became available at {url}. Run `{command}` directly to inspect its startup error; then run `dshe setup` to repair the bridge and restart any running DSH service"
             ),
             Self::Timeout {
                 command,
@@ -389,7 +357,7 @@ impl fmt::Display for LauncherError {
                 seconds,
             } => write!(
                 f,
-                "DSH bridge did not become available at {url} within {seconds}s after starting `{command}`. Run that command directly to inspect startup output; then remount the bridge with `tools\\mount-bridge.ps1 -Profile dshe` and run `dsh plugin --profile dshe install`"
+                "DSH bridge did not become available at {url} within {seconds}s after starting `{command}`. Run that command directly to inspect startup output; then run `dshe setup` to repair the bridge and restart any running DSH service"
             ),
         }
     }
@@ -457,7 +425,10 @@ impl<P: LauncherPorts> LauncherCoordinator<P> {
             });
         }
 
-        let argv = dsh_command();
+        let argv = dsh_command().ok_or_else(|| LauncherError::Spawn {
+            command: "dsh --profile dshe".to_string(),
+            message: "neither `dsh` nor `npx` is available on PATH".to_string(),
+        })?;
         let command = argv.join(" ");
         let mut child = self
             .ports
@@ -753,7 +724,7 @@ mod tests {
             Ok(_) => panic!("early exit must be reported"),
         };
         assert!(matches!(exit_error, LauncherError::Exited { .. }));
-        assert!(exit_error.to_string().contains("mount-bridge.ps1"));
+        assert!(exit_error.to_string().contains("dshe setup"));
         assert!(stopped.load(Ordering::SeqCst));
     }
 
@@ -805,10 +776,12 @@ mod tests {
 
     #[test]
     fn dsh_command_uses_the_dedicated_dshe_profile() {
-        let command = dsh_command();
+        let Some(command) = dsh_command() else {
+            return; // dsh/npx unavailable in this environment.
+        };
         assert!(command
             .windows(2)
-            .any(|args| args[0] == "--profile" && args[1] == DSH_PROFILE));
+            .any(|args| args[0] == "--profile" && args[1] == crate::dsh_env::PROFILE_NAME));
     }
 
     #[test]

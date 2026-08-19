@@ -1,6 +1,6 @@
 [package]
 name = "e"
-version = "0.1.0"
+version = "0.0.3"
 edition = "2021"
 description = "e — terminal client for DeepSeek Harness (DSH); the dshe executable"
 
@@ -31,7 +31,12 @@ arboard = "3"
 wasmi = "0.40"
 toml = "0.8"
 directories = "5"
-tracy-client = { version = "0.18", optional = true, default-features = false, features = ["enable", "manual-lifetime", "ondemand"] }
+tracy-client = { version = "0.18", optional = true, default-features = false, features = [
+    "enable",
+    "manual-lifetime",
+    "ondemand",
+] }
 
 [build-dependencies]
 serde_json = "1"
+sha2 = "0.10"

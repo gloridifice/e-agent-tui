@@ -139,24 +139,71 @@ fn read_token() -> anyhow::Result<String> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CliAction {
+    Setup,
+    Run {
+        url: String,
+        resume_session_id: Option<String>,
+    },
+}
+
+fn parse_cli() -> anyhow::Result<CliAction> {
+    parse_cli_from(std::env::args().skip(1))
+}
+
+fn parse_cli_from(mut args: impl Iterator<Item = String>) -> anyhow::Result<CliAction> {
+    let Some(first) = args.next() else {
+        return Ok(CliAction::Run {
+            url: "ws://127.0.0.1:3080/dsh-tui".to_string(),
+            resume_session_id: None,
+        });
+    };
+    match first.as_str() {
+        "setup" => {
+            if args.next().is_some() {
+                bail!("`dshe setup` takes no arguments. Run `dshe setup` alone.");
+            }
+            Ok(CliAction::Setup)
+        }
+        "install" => bail!("Unknown command `install`. Run `dshe setup` instead."),
+        url => Ok(CliAction::Run {
+            url: url.to_string(),
+            resume_session_id: args.next(),
+        }),
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    match parse_cli()? {
+        CliAction::Setup => run_setup(),
+        CliAction::Run {
+            url,
+            resume_session_id,
+        } => run_tui(url, resume_session_id).await,
+    }
+}
+
+fn run_setup() -> anyhow::Result<()> {
+    let home = e::launcher::dsh_home();
+    e::setup::run_setup(&home).map_err(|error| anyhow::anyhow!("{error}"))
+}
+
+async fn run_tui(url: String, resume_session_id: Option<String>) -> anyhow::Result<()> {
     let mut phases = e::profile::PhaseTimers::new();
     // Tracy: active only with `--features tracy` AND DSH_TUI_TRACY=1.
     #[allow(unused_variables)]
     let _tracy = e::profile::start_tracy();
 
-    let mut args = std::env::args().skip(1);
-    let url = args
-        .next()
-        .unwrap_or_else(|| "ws://127.0.0.1:3080/dsh-tui".to_string());
-    let resume_session_id = args.next();
+    let home = e::launcher::dsh_home();
+    e::setup::require_ready(&home).map_err(|error| anyhow::anyhow!("{error}"))?;
 
     // Launcher preamble: ensure a DSH bridge is listening at `url`, spawning
     // `dsh --profile dshe` when none is (global dsh, else npx). `dsh_session`
     // records whether this process owns the spawned service so `release`
     // below can shut it down when the last TUI closes.
-    let mut dsh_session = e::launcher::acquire(&url, &e::launcher::dsh_home())?;
+    let mut dsh_session = e::launcher::acquire(&url, &home)?;
 
     let _z = e::tracy_zone!("read_token");
     let token = read_token();
@@ -608,6 +655,42 @@ mod tests {
     #[test]
     fn shutdown_confirmation_has_the_required_text() {
         assert_eq!(DSH_SERVER_CLOSED_MESSAGE, "dsh 服务器已关闭。");
+    }
+
+    fn args<'a>(items: &'a [&'a str]) -> impl Iterator<Item = String> + 'a {
+        items.iter().map(|s| s.to_string())
+    }
+
+    #[test]
+    fn cli_routes_setup_and_run_without_launcher_for_setup() {
+        assert_eq!(
+            parse_cli_from(args(&[])).unwrap(),
+            CliAction::Run {
+                url: "ws://127.0.0.1:3080/dsh-tui".to_string(),
+                resume_session_id: None,
+            }
+        );
+        assert_eq!(parse_cli_from(args(&["setup"])).unwrap(), CliAction::Setup);
+        assert_eq!(
+            parse_cli_from(args(&["ws://host/dsh-tui", "sess-1"])).unwrap(),
+            CliAction::Run {
+                url: "ws://host/dsh-tui".to_string(),
+                resume_session_id: Some("sess-1".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn cli_rejects_install_and_setup_arguments() {
+        let install = parse_cli_from(args(&["install"])).unwrap_err().to_string();
+        assert!(install.contains("`dshe setup`"), "{install}");
+        assert!(install.contains("install"));
+
+        let extra = parse_cli_from(args(&["setup", "extra"]))
+            .unwrap_err()
+            .to_string();
+        assert!(extra.contains("`dshe setup`"));
+        assert!(extra.contains("no arguments"));
     }
 
     #[test]

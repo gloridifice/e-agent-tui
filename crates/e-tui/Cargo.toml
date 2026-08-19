@@ -1,0 +1,24 @@
+[package]
+name = "e-tui"
+version = "0.0.3"
+edition = "2021"
+description = "Kernel-neutral terminal frontend for interactive agent sessions"
+
+[features]
+default = []
+tracy = ["dep:tracy-client"]
+
+[dependencies]
+crossterm = "0.29"
+ratatui = "0.30"
+pulldown-cmark = "0.13"
+serde = { version = "1", features = ["derive"] }
+toml = "1.1"
+tracy-client = { version = "0.18", optional = true, default-features = false, features = [
+    "enable",
+    "manual-lifetime",
+    "ondemand",
+] }
+unicode-segmentation = "1.13"
+unicode-width = "0.2"
+wasmi = "1.1"

@@ -43,7 +43,7 @@ Architecture conventions for the Node.js (ESM) DSH host-composition plugin.
 - When changing the message roster, surface types, capacities, or payload shape, only change
   `bridge/protocol-contract.json`, then run `node tools/sync-protocol-contract.mjs`; it validates and generates
   docs, Rust constants/shape JSON, Rust/Node fixtures, and package wire metadata, and `--check` must pass.
-  Still also update the payload structures in `client/src/protocol/` (serde camelCase) and the bridge handler,
+  Still also update the payload structures in `crates/e-dsh/src/protocol/` (serde camelCase) and the bridge handler,
   and add contract-driven tests on both sides. Session events must first be parsed into `HostEventKind` — never
   let `serde_json::Value` into the reducer. The history roster only includes the events needed to rebuild the
   supported display/input accessories; approval/request/header/title-llm and similar audit or rebuild records

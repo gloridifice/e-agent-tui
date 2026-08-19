@@ -24,7 +24,7 @@ On first launch, `dshe` starts its dedicated DSH service automatically. Use `/lo
 
 If PowerShell cannot find `dshe`, add `%USERPROFILE%\.cargo\bin` to `PATH`.
 
-To update, pull the latest changes, run `cargo install --path client --locked`, then run `dshe setup` to refresh the embedded bridge. Restart DSH if it is already running.
+To update, pull the latest changes, run `cargo install --path crates/e-dsh --locked`, then run `dshe setup` to refresh the embedded bridge. Restart DSH if it is already running.
 
 ### Build Yourself
 

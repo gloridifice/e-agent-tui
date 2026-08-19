@@ -15,8 +15,8 @@ Terminal client for DeepSeek Harness (DSH) (project name **e**, executable **`ds
 
 - `bridge/` — Node.js (ESM) DSH **host-composition plugin** (one WS upgrade route `/dsh-tui`). Conventions:
   [docs/bridge.md](docs/bridge.md).
-- `client/` — Rust (ratatui + crossterm) single-exe client (crate `e`, artifact `dshe.exe`). Conventions:
-  [docs/client.md](docs/client.md).
+- `crates/e-dsh/` — Rust DSH adapter and executable package (`e-dsh`, artifact `dshe.exe`; transitional library import name `e`).
+- `crates/e-tui/` — kernel-neutral frontend library package (`e-tui`); UI ownership moves here phase by phase. Rust conventions: [docs/client.md](docs/client.md).
 
 The two processes communicate over JSON WebSocket; the machine-readable contract is
 `bridge/protocol-contract.json` (see [docs/protocol.md](docs/protocol.md)). Token auth lives at
@@ -26,19 +26,19 @@ Full overview: [docs/README.md](docs/README.md).
 ## Common commands (Windows / PowerShell)
 
 The user-facing source install flow is documented in the README "Quick Start": install
-`@deepseek-ai/dsh` globally, use `cargo install --path client --locked` to install `dshe.exe` into the
+`@deepseek-ai/dsh` globally, use `cargo install --path crates/e-dsh --locked` to install `dshe.exe` into the
 Cargo bin directory, then run `dshe setup` (which embeds the bridge at build time and installs it into the
 dedicated `dshe` profile).
 
 ```powershell
 # First install
 npm install --global @deepseek-ai/dsh
-cargo install --path client --locked
+cargo install --path crates/e-dsh --locked
 # Embeds and installs the bridge into the dedicated dshe profile.
 # When DSH_HOME is unset/empty, setup falls back to $HOME\.dsh.
 dshe setup
 
-# Client (repo root is a Cargo workspace, default member client, crate name e, artifact dshe.exe)
+# Rust workspace (default member e-dsh, artifact dshe.exe; e-dsh -> e-tui)
 cargo run                                # build from root and launch dshe
 cargo build --release                    # artifact target\release\dshe.exe
 cargo build --release --features tracy   # Tracy profiling build (activated by DSH_TUI_TRACY=1)
@@ -71,9 +71,9 @@ cargo run --release --example timing_frames # 1002-message continuous scroll/str
 cargo run --example smoke_snapshot -- tools/cache/snapshot-sample.json
 ```
 
-cargo uses the official crates.io registry (local network is fixed). `client/vendor/` and
+cargo uses the official crates.io registry (local network is fixed). `crates/e-dsh/vendor/` and
 `tools/vendor-crates.mjs` are legacy offline fallbacks, now retired — do not depend on them again; add new
-dependencies directly to `client/Cargo.toml` and commit the root `Cargo.lock` (workspace lockfile).
+dependencies directly to the owning package manifest (`crates/e-dsh/Cargo.toml` for DSH/infrastructure, `crates/e-tui/Cargo.toml` for frontend values/rendering) and commit the root `Cargo.lock` workspace lockfile.
 
 ## Key architecture conventions
 

@@ -477,13 +477,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "e"
+name = "e-dsh"
 version = "0.0.3"
 dependencies = [
  "anyhow",
  "arboard",
  "crossterm",
  "directories",
+ "e-tui",
  "futures-util",
  "pulldown-cmark",
  "ratatui",
@@ -497,6 +498,21 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width",
  "url",
+ "wasmi",
+]
+
+[[package]]
+name = "e-tui"
+version = "0.0.3"
+dependencies = [
+ "crossterm",
+ "pulldown-cmark",
+ "ratatui",
+ "serde",
+ "toml",
+ "tracy-client",
+ "unicode-segmentation",
+ "unicode-width",
  "wasmi",
 ]
 

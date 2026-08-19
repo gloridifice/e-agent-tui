@@ -1,13 +1,14 @@
-# client (Rust)
+# Rust client
 
-Architecture conventions for the Rust TUI client (crate `e`, artifact `dshe.exe`).
+Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-dsh` and owns the `dshe.exe` artifact (with transitional library import name `e`); `crates/e-tui` is the kernel-neutral frontend library. During the staged extraction, modules not yet moved remain under `e-dsh`, and current ownership is always determined by the code rather than the target plan.
 
-- **Event display model** (`display.rs` + `projection/{store,assistant,tool,lifecycle,retry,command,workflow,surface}.rs` +
-  `transcript_layout.rs`): all visible events fall into four public surfaces: `ActivityRow` (with
+- **Current package boundary**: DSH `ServerMessage`/`ClientMessage` and raw host-event parsing remain in `e-dsh::protocol`. `e-dsh::bridge::adapter` converts inbound values to `e-tui::AgentEvent` and outbound `e-tui::AgentRequest` values back to wire messages. `e-tui::TimelineModel` is the sole owner of the transcript store and normalized projection-family state. The transitional `e-dsh::AppState` forwards timeline field access to that owner while retaining the UI lifecycles not yet extracted. `RuntimeController` consumes normalized events and returns owned `e-tui::UiAction` values; the runner executes actions only after releasing state guards. `e-tui` contains no DSH message/event names, WebSocket, filesystem-path, persistence, clipboard, or process dependencies, enforced by `crates/e-dsh/tests/architecture.rs`.
+- **Event display model** (`crates/e-tui/src/display.rs` + `crates/e-tui/src/projection/{store,assistant,tool,lifecycle,retry,command,workflow,surface}.rs` +
+  the not-yet-extracted `e-dsh::transcript_layout`): all visible events fall into four public surfaces: `ActivityRow` (with
   Waiting/Running/Success/Failure/Cancelled state, optionally with parent/depth), `TranscriptBlock`
   (plain/markdown/reasoning/unknown fallback), `ContentCard` (uniform padding/background/copy source), and
-  `InputAccessory` (above the input bar). Production `AppState` holds **only** `TranscriptStore`;
-  `EventProjector` first produces display/surface mutation/page state/accessory/ignore effects, which the
+  `InputAccessory` (above the input bar). Production `TimelineModel` holds the sole `TranscriptStore` and
+  `EventProjector`; the projector first produces display/surface mutation/page state/accessory/ignore effects, which the
   state layer then applies; adding event-specific top-level rendering in `ui` that bypasses the public
   surfaces is forbidden. `LegacyTestMsg`/`Msg` alias may only appear in `#[cfg(test)]` characterization
   fixtures and must not re-enter production transcript, renderer, cache, or copy paths.
@@ -76,6 +77,7 @@ Architecture conventions for the Rust TUI client (crate `e`, artifact `dshe.exe`
   or you will self-deadlock. Compute plain values/actions in a separate scope before matching, or perform
   atomic state changes within a single guard; `main.rs` already denies `clippy::significant_drop_in_scrutinee`
   and has queue-dispatch/copy-mode lock-release regression tests.
+- **Frontend interaction ownership**: `e-tui::{command_catalog,input,page_core,input_page,login,settings,question,interaction}` owns composer state, catalog presentation/completion, Input Page focus/editing, login/settings page state, retained question batches, and approval answer construction. The `e-dsh` modules with those names are temporary re-export facades; protocol DTO conversion and external action execution remain in the runtime adapter.
 - **Input interaction and character boundaries**: `InputState.cursor` is a **character index**;
   `String::insert/remove` and slicing need byte indices — use `char_to_byte()` (`input.rs`); CJK has regression
   tests; cursor x uses `unicode_width`. Plain input is fixed: `Enter` sends, `Shift+Enter` inserts a newline;
@@ -159,8 +161,7 @@ Architecture conventions for the Rust TUI client (crate `e`, artifact `dshe.exe`
   and is drawn as ● when editing; non-writable providers must not receive action focus; an existing proxy must
   enter the delete confirmation page on Enter, and `login-proxy-delete` is only sent after explicitly choosing
   delete.
-- **Config/theme/launcher (client)**: config defaults live only in `client/assets/default_config.toml`,
-  embedded and parsed by `config.rs` via `include_str!`; the persisted `Config` is deserialized directly with
+- **Config/theme/launcher (Rust boundary)**: the `Config`/theme value schemas and defaults live in `e-tui`; config defaults live only in `crates/e-tui/assets/default_config.toml`, embedded and parsed by `e-tui::config` via `include_str!`. `e-dsh::config` owns platform paths, config/state file reads and writes, and theme discovery/installation; `e-tui` performs no filesystem I/O. The persisted `Config` is deserialized directly with
   `Deserialize` + `#[serde(deny_unknown_fields)]`, and `resolved_theme` is a `#[serde(skip)]` runtime cache.
   `from_user_toml` first recursively `overlay_known`s user values onto the embedded TOML as the schema, then
   strictly deserializes exactly once: old files inherit missing fields, deprecated unknown keys are ignored,
@@ -169,7 +170,7 @@ Architecture conventions for the Rust TUI client (crate `e`, artifact `dshe.exe`
   `[colors]` allows arbitrary color names, and fixed `[semantics.*]` (surface/markdown/input/working_status/log/
   activity/card/overlay) link semantic styles to color names; each style requires only `fg`, with `bg`/`bold`/
   `italic`/`underline` optional; unknown references, missing fixed fields, or illegal hex reject the whole file.
-  Built-in `deepseek-e`/`ferra` sources are in `client/assets/themes/`, embedded via `include_str!` and parsed by
+  Built-in `deepseek-e`/`ferra` sources are in `crates/e-tui/assets/themes/`, embedded via `include_str!` and parsed by
   the same parser as user files, and copied without overwrite to `%APPDATA%\dshe\themes\`; a valid same-named user
   file wins, and an illegal old file must not shadow the embedded fallback. `launcher.rs`: `probe(url)` TCP probe
   → if no dsh, spawn `dsh --profile dshe` (`dsh` or `npx @deepseek-ai/dsh`) → `%DSH_HOME%\dsh-tui.lock` counts

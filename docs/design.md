@@ -16,7 +16,7 @@
 > rebuilt. After a confirmed shutdown it leaves the alternate screen and prints `dsh 服务器已关闭。`. It does not
 > print this when the DSH was started externally by the bridge or when other TUIs remain.
 > v0.6 architecture convergence: the production client module graph is auto-checked as SCC-free by
-> `client/tests/architecture.rs`; the transcript only stores public Display surfaces; wire shape/fixture/doc are
+> `crates/e-dsh/tests/architecture.rs`; the transcript only stores public Display surfaces; wire shape/fixture/doc are
 > synced from the same JSON contract; config uses a single strict schema; DSH model selection is installed via the
 > public upstream adapter and verified by the deployed-copy upgrade check.
 
@@ -50,7 +50,7 @@
 | D24 | Overlong paste placeholder | paste over the config threshold shows Rose `[N text pasted]`; sends the full content verbatim; plain text inserts newlines with `Shift+Enter` |
 | D25 | Spinner configurable | default A half-moon rotation `◐◓◑◒` (~120ms/frame); frame sequence made a configurable enum (`config.toml` can switch B/C/D/E); missing glyphs degrade to ASCII `\|/-\` |
 | D26 | Input Page | `/settings` `/login` `/model` `/theme` `/resume` uniformly replace the input area (not a floating window); 1-row top/bottom, 2-column left/right padding; single focus moves with arrows/`hjkl`, `Enter` executes, `Esc` returns |
-| D27 | Config storage | the sole source of defaults is `client/assets/default_config.toml` (embedded via `include_str!` and parsed); `%APPDATA%\dshe\config.toml` is an overlay allowed to omit fields; priority embedded defaults < user file < runtime; **save immediately, take effect immediately** |
+| D27 | Config storage | the sole source of defaults is `crates/e-tui/assets/default_config.toml` (embedded via `include_str!` and parsed); `%APPDATA%\dshe\config.toml` is an overlay allowed to omit fields; priority embedded defaults < user file < runtime; **save immediately, take effect immediately** |
 | D28 | In-TUI editable items | see §4.7 list: appearance/behavior/display are all editable, advanced is read-only |
 | D29 | Not editable in TUI | connection parameters (startup flag), font size (terminal side), clipboard backend (platform), key rebinding (v2), syntax highlighting theme (phase two) |
 | D30 | Send key semantics | fixed `Enter` send, `Shift+Enter` newline; the legacy `enter_sends` config only keeps deserialization compatibility and no longer changes interaction |
@@ -113,7 +113,7 @@ copy mode: cursor line → look up map → hit table/mermaid/code block ⇒ sele
 ### 2.2 Dependency direction, runtime, and projection boundary
 
 Client production modules obey one-way dependencies, continuously guarded by the source edge scanner, Tarjan SCC
-check, and forbidden-reverse-edge assertions in `client/tests/architecture.rs`:
+check, and forbidden-reverse-edge assertions in `crates/e-dsh/tests/architecture.rs`:
 
 ```text
 main (Tokio composition root)
@@ -282,7 +282,7 @@ inline_code = { fg = "blush", bg = "night" }
 
 A missing fixed semantic field, an unknown semantic field, a reference to a nonexistent color name, or an illegal
 color makes the whole theme file invalid and it is skipped from the theme directory. The built-in `deepseek-e` and
-`ferra` are also not hardcoded Rust palettes: their source files live in `client/assets/themes/`, compiled in via
+`ferra` are also not hardcoded Rust palettes: their source files live in `crates/e-tui/assets/themes/`, compiled in via
 `include_str!` and parsed by the same parser; on first load they are copied verbatim to
 `%APPDATA%\dshe\themes\` without overwriting existing user files. A valid same-named user theme takes priority
 over the embedded version, and an illegal old file does not shadow the built-in fallback. The parsed fixed
@@ -378,7 +378,7 @@ The ferra palette comes from the casperstorm/ferra README:
 Commands uniformly use `/name [raw input]` interaction and the same completion popup, but split into two classes
 by compatibility depth:
 
-1. **Built-in commands**: commands dshe has interaction-optimized. `client/src/runtime_command.rs`'s
+1. **Built-in commands**: commands dshe has interaction-optimized. `crates/e-dsh/src/runtime_command.rs`'s
    `BUILTIN_COMMANDS` is the only registry; one entry declares name, description, DSH-style input hint, argument
    completion strategy, and action together. Registering an entry registers both behavior and completion;
    `input.rs` must not maintain a second command table. Currently `/settings`, `/login`, `/new`, `/resume`,
@@ -562,7 +562,7 @@ after the lock is released, to avoid same-thread state-lock reentrancy freezing 
   choice-type editing moves the cursor with `←/→`, with the option under the cursor on a Night base.
 - **Edit semantics**: `Enter` confirms, `Esc` cancels back; keys do not leak during editing. After leaving the
   panel the message stream/input bar state restores as-is.
-- Default config: `client/assets/default_config.toml` is compiled into the single exe via `include_str!` and
+- Default config: `crates/e-tui/assets/default_config.toml` is compiled into the single exe via `include_str!` and
   parsed into `Config::default()` at startup; defaults must not maintain parallel Rust literals. The persisted
   `Config` itself is the only `#[serde(deny_unknown_fields)]` schema, with the runtime resolved theme cached via
   `#[serde(skip)]`. Loading first recursively overlays the user TOML's known keys onto the embedded TOML, then
@@ -634,7 +634,7 @@ font size (terminal side), clipboard backend (platform-decided), key rebinding (
 ### 5.2 Message protocol (JSON, single-contract generation)
 
 The only machine-readable source for message names, surface events, capacities, `shapeTypes`, payload `records`,
-and client/server `messageShapes` is [`bridge/protocol-contract.json`](../bridge/protocol-contract.json).
+and crates/e-dsh/server `messageShapes` is [`bridge/protocol-contract.json`](../bridge/protocol-contract.json).
 `node tools/sync-protocol-contract.mjs` validates that JSON and sync-generates [`docs/protocol.md`](protocol.md),
 Rust `build.rs` constants/shape JSON, Rust/Node conformance fixtures, and
 `bridge/package.json.dshCompatibility.wireProtocol`; `--check` fails on any unsynced derivative.
@@ -746,14 +746,14 @@ disables it for diagnosis.
 | Mermaid | **wasmi + grok-mermaid WASM** | in-process interpretation; degrade to source fence on failure |
 | Code highlight | plain color + language label | syntect deferred |
 | Clipboard | arboard (system clipboard) | Windows writes the clipboard directly |
-| Config | toml + serde (embedded `client/assets/default_config.toml` + `%APPDATA%\dshe\config.toml` overlay) | missing fields inherit defaults, save immediately (§4.7) |
+| Config | toml + serde (embedded `crates/e-tui/assets/default_config.toml` + `%APPDATA%\dshe\config.toml` overlay) | missing fields inherit defaults, save immediately (§4.7) |
 | Wide chars | unicode-width | CJK/emoji width |
 | Distribution | single exe (repo root is a Cargo workspace, root `cargo run` launches) | client runtime has no Node dependency; first install/update of the bridge needs Node.js/DSH |
 
 ### 6.1 Source install path
 
 The README "Quick Start" is the current user-facing install entry: on Windows / PowerShell, first prepare Git,
-Node.js/npm, and Rust/Cargo, install `@deepseek-ai/dsh` globally, use `cargo install --path client --locked` to
+Node.js/npm, and Rust/Cargo, install `@deepseek-ai/dsh` globally, use `cargo install --path crates/e-dsh --locked` to
 install `dshe.exe` into the Cargo bin directory, then run `dshe setup`. The bridge runtime (package manifest,
 canonical protocol contract, and every production `bridge/src/*.js` module) is embedded in `dshe.exe` at build
 time; `dshe setup` materializes it into the dedicated `dshe` profile, registers it idempotently, runs the

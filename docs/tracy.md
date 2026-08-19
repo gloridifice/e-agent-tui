@@ -20,7 +20,7 @@ Tracy ([wolfpld/tracy](https://github.com/wolfpld/tracy)) is used to locate star
 
 Normal runs save no frame samples and print no performance logs. Frame diagnostics keep at most the last 240 samples, compute count, P50, P95, P99, and max uniformly via nearest-rank `ceil(N×p)`, to avoid per-frame stderr corrupting the TUI.
 
-## 3. Metric wrappers (`client/src/profile.rs`)
+## 3. Metric wrappers (`crates/e-dsh/src/profile.rs`)
 
 - `PhaseTimers`: startup-stage timing.
 - `IoCounters` + `CountingWriter`: count the ANSI bytes actually handed to the writer in one frame.
@@ -119,4 +119,4 @@ All three sizes are far below the 30ms P95 red line; for now we do not introduce
 - New zone names must be string literals and only wrap real work regions.
 - When adding a frame path, sync the `FrameSample`/benchmark fields; normal runs must not introduce unbounded history or per-frame logging.
 - Performance changes must also assert cache workload and UI results; do not use local wall-clock to mask semantic regressions.
-- New dependencies go directly into `client/Cargo.toml` and the workspace `Cargo.lock`; the historical `client/vendor/` is no longer used.
+- New dependencies go directly into `crates/e-dsh/Cargo.toml` and the workspace `Cargo.lock`; the historical `crates/e-dsh/vendor/` is no longer used.

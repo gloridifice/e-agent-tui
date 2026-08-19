@@ -4,9 +4,9 @@
 # the default member below, so `cargo run` here launches the TUI client.
 # bridge/ and tools/ are Node.js and live outside the workspace.
 [workspace]
-members = ["client"]
-default-members = ["client"]
+members = ["crates/e-dsh", "crates/e-tui"]
+default-members = ["crates/e-dsh"]
 # Historical offline vendoring (discontinued; see AGENTS.md) — excluded so
-# the ~2000 vendored crates under client/vendor never join the workspace.
-exclude = ["client/vendor"]
+# a local legacy fallback can never join the workspace again.
+exclude = ["crates/e-dsh/vendor"]
 resolver = "2"

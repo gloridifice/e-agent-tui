@@ -6,7 +6,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const contractPath = join(root, 'bridge', 'protocol-contract.json')
 const packagePath = join(root, 'bridge', 'package.json')
 const docsPath = join(root, 'docs', 'protocol.md')
-const rustFixturesPath = join(root, 'client', 'testdata', 'wire-contract-fixtures.json')
+const rustFixturesPath = join(root, 'crates', 'e-dsh', 'testdata', 'wire-contract-fixtures.json')
 const nodeFixturesPath = join(root, 'bridge', 'test', 'fixtures', 'wire-contract-fixtures.json')
 
 const own = (object, key) => Object.prototype.hasOwnProperty.call(object, key)

@@ -16,6 +16,8 @@ Design and architecture documentation for the **e** / `dshe` project. Everything
   `bridge/protocol-contract.json`).
 - [tracy.md](tracy.md) — Tracy profiling notes.
 - [architecture-audit.md](architecture-audit.md) — architecture audit notes.
+- [plan/](plan/README.md): planned Rust workspace refactor, agent-kernel boundary, unified Preview pane,
+  Reading View, runtime model, and phased migration. These documents describe future work, not current behavior.
 
 ## Project overview
 
@@ -25,19 +27,18 @@ Terminal client for DeepSeek Harness (DSH) (project name **e**, executable **`ds
   (`/dsh-tui`), forwards session events to the TUI, and accepts input/commands/interrupt/approval answers/
   session switching/history paging, plus `/login` `/model` `/skill:<name>` bridging. The only injected
   dependency is `webServer`.
-- `client/` — Rust (ratatui + crossterm) single-exe client (crate `e`, artifact `dshe.exe`). Includes the
-  launcher (`launcher.rs`: probe/spawn `dsh --profile dshe`/bridge) and the theme system (`theme.rs` +
-  `config.rs`). No TLS/network dependencies (except WebSocket itself).
+- `crates/e-dsh/` — Rust DSH adapter and executable package (`e-dsh`, artifact `dshe.exe`; transitional library import name `e`). It currently includes the launcher, protocol/setup infrastructure, and legacy UI modules while extraction proceeds.
+- `crates/e-tui/` — kernel-neutral frontend library package (`e-tui`). The package boundary exists now; normalized contracts and UI ownership move into it phase by phase.
 
 The two processes communicate over JSON WebSocket; the only machine-readable contract is
 `bridge/protocol-contract.json` (the sole hand-written source of truth for version/capacities/roster/
 shapeTypes/records/messageShapes). `tools/sync-protocol-contract.mjs` syncs `docs/protocol.md`,
-`client/build.rs` constants/shape JSON, Rust/Node conformance fixtures, and
+`crates/e-dsh/build.rs` constants/shape JSON, Rust/Node conformance fixtures, and
 `bridge/package.json.dshCompatibility.wireProtocol` from it; `--check` must pass after changing the contract.
 `bridge/src/protocol.js` reads the same JSON at runtime; `tools/generate-protocol-doc.mjs` is only a
 compatibility wrapper. Token auth; the token lives at `%DSH_HOME%\dsh-tui.token`.
 Client config lives at `%APPDATA%\dshe\config.toml`; the default config source is
-`client/assets/default_config.toml` (embedded via `include_str!` and parsed; the user TOML only overrides
+`crates/e-tui/assets/default_config.toml` (embedded via `include_str!` and parsed; the user TOML only overrides
 known keys and is then deserialized through a single strict `Config` schema; missing fields inherit,
 deprecated unknown keys are ignored, malformed/known-type errors fall back safely); themes live in
 `%APPDATA%\dshe\themes\`.

@@ -5,8 +5,8 @@ Design and architecture documentation for the **e** / `dshe` project. Everything
 
 ## Index
 
-- [client.md](client.md) — Rust TUI client architecture conventions (event display model, reasoning/folding,
-  render cache, performance red lines, input/character boundaries, overlays/Input Page, command paradigm,
+- [client.md](client.md) — Rust TUI architecture conventions (kernel boundary, lifecycle state, event display,
+  layered rendering, responsive Preview, semantic Reading/copy, performance, input precedence, Input Pages,
   deferred `/new`, config/theme/launcher).
 - [bridge.md](bridge.md) — Node.js bridge architecture conventions (module layout, DSH command integration,
   cross-await conn discipline, snapshot/history data sources, payload trimming, `/new` workspace inheritance,
@@ -16,8 +16,8 @@ Design and architecture documentation for the **e** / `dshe` project. Everything
   `bridge/protocol-contract.json`).
 - [tracy.md](tracy.md) — Tracy profiling notes.
 - [architecture-audit.md](architecture-audit.md) — architecture audit notes.
-- [plan/](plan/README.md): planned Rust workspace refactor, agent-kernel boundary, unified Preview pane,
-  Reading View, runtime model, and phased migration. These documents describe future work, not current behavior.
+- [plan/](plan/README.md): completed migration baselines, package/state/render extraction record, performance
+  gates, and the Reading binding compatibility decision.
 
 ## Project overview
 
@@ -27,8 +27,8 @@ Terminal client for DeepSeek Harness (DSH) (project name **e**, executable **`ds
   (`/dsh-tui`), forwards session events to the TUI, and accepts input/commands/interrupt/approval answers/
   session switching/history paging, plus `/login` `/model` `/skill:<name>` bridging. The only injected
   dependency is `webServer`.
-- `crates/e-dsh/` — Rust DSH adapter and executable package (`e-dsh`, artifact `dshe.exe`; transitional library import name `e`). It currently includes the launcher, protocol/setup infrastructure, and legacy UI modules while extraction proceeds.
-- `crates/e-tui/` — kernel-neutral frontend library package (`e-tui`). The package boundary exists now; normalized contracts and UI ownership move into it phase by phase.
+- `crates/e-dsh/` — Rust DSH adapter and executable package (`e-dsh`, artifact `dshe.exe`; transitional library import name `e`). It owns protocol/setup/launcher infrastructure, terminal/runtime composition, effect ports, clipboard, persistence, and deferred Preview resolution.
+- `crates/e-tui/` — kernel-neutral frontend library package (`e-tui`). It owns normalized contracts, lifecycle state, projection, rendering, themes/config values, responsive Preview, Reading Document/Layout, and Reading View.
 
 The two processes communicate over JSON WebSocket; the only machine-readable contract is
 `bridge/protocol-contract.json` (the sole hand-written source of truth for version/capacities/roster/

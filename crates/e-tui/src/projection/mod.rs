@@ -2,7 +2,11 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::display::{DisplayId, DisplayItem};
+use crate::{
+    agent::tool::ToolItem,
+    display::{DisplayId, DisplayItem},
+    preview::PreviewRef,
+};
 
 pub mod activity;
 pub mod assistant;
@@ -55,6 +59,22 @@ pub enum AccessoryStateEffect {
 pub struct TimelineModel {
     pub transcript: TranscriptStore,
     pub projector: EventProjector,
+    /// Current whole-list todo projection rendered as an input accessory.
+    pub todos: Vec<(String, String)>,
+    pub goal: Option<String>,
+    pub plan_mode: Option<String>,
+    pub session_state_events: HashSet<String>,
+    pub next_thinking_id: u64,
+    pub next_local_display_id: u64,
+    pub pending_transcript_insert: Option<usize>,
+    /// Stable display ids already present in the newer page while older
+    /// history is replayed.
+    pub replay_newer_display_ids: HashSet<DisplayId>,
+    pub replaying: bool,
+    /// Adapter-provided specialized Preview annotations keyed by canonical
+    /// display ownership. Unannotated nodes use complete-source fallback.
+    pub preview_refs: HashMap<DisplayId, PreviewRef>,
+    pub tool_items: HashMap<DisplayId, Vec<ToolItem>>,
 }
 
 #[derive(Debug, Default)]

@@ -11,9 +11,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context};
-use e::copy;
-use e::input::InputState;
-use e::input_page::InputPageSession;
 use e::model::{animation_active, tick_spinners, AppState};
 use e::profile::{FrameMetrics, FrameSample};
 use e::protocol::{ClientMessage, MAX_WIRE_FRAME_BYTES, WIRE_PROTOCOL_VERSION};
@@ -23,7 +20,7 @@ use e::runtime_ports::{
     TerminalLifecyclePort, UiActionPorts,
 };
 use e::terminal_runtime::TerminalOwner;
-use e::ui::{render_with_cursor, CopyOverlay, ScrollState};
+use e_tui::ui::render_with_cursor;
 
 const DSH_SERVER_CLOSED_MESSAGE: &str = "dsh 服务器已关闭。";
 const INTERACTIVE_FRAME_INTERVAL: Duration = Duration::from_millis(16);
@@ -251,9 +248,14 @@ async fn execute_runtime_effects(
                     break;
                 }
             }
-            UiAction::ResolvePreview(_) => {
-                execution.fatal = Some("Preview resolution is not installed yet".into());
-                break;
+            UiAction::ResolvePreview(request) => {
+                let result = ports.resolve_preview(request.clone()).await;
+                execution.completed.push(EffectResult::PreviewResolved {
+                    request_id: request.request_id,
+                    key: request.key,
+                    revision: request.revision,
+                    result,
+                });
             }
             UiAction::PersistConfig(config) => {
                 execution
@@ -338,14 +340,8 @@ async fn run(
     let theme = config.theme();
     let mut app = AppState::default();
     app.config = config.clone();
+    app.interaction = e_tui::InteractionModel::new(&config);
     let state = Arc::new(std::sync::Mutex::new(app));
-    let mut input = InputState::new(&config);
-    let mut scroll = ScrollState::default();
-    let mut help_visible = false;
-    let mut copy_mode: Option<copy::CopyMode> = None;
-    let mut copy_rows_cache = copy::CopyRowsCache::default();
-    let mut copy_toast: Option<(String, std::time::Instant)> = None;
-    let mut input_page: Option<InputPageSession> = None;
     let mut theme = theme;
 
     let max_frame_bytes =
@@ -442,13 +438,17 @@ async fn run(
                     phases.mark("snapshot received");
                 }
                 let update_started = Instant::now();
+                let mut interaction = {
+                    let mut app = state_r.lock().unwrap();
+                    std::mem::take(&mut app.interaction)
+                };
                 let mut ui = BridgeUiState {
-                    scroll: &mut scroll,
-                    copy_mode: &mut copy_mode,
-                    input: &mut input,
-                    input_page: &mut input_page,
+                    scroll: &mut interaction.scroll,
+                    input: &mut interaction.input,
+                    input_page: &mut interaction.input_page,
                 };
                 let effects = RuntimeController::apply_agent(event, &state_r, &mut ui);
+                state_r.lock().unwrap().interaction = interaction;
                 let execution =
                     execute_runtime_effects(effects, &tx_out, &mut scheduler, &mut runtime_ports)
                         .await;
@@ -505,60 +505,73 @@ async fn run(
                 let state = state_r.lock().unwrap();
                 let drafting = state.is_new_conversation();
                 e::runtime::TerminalFocus {
-                    help_visible,
-                    input_page_open: input_page.is_some(),
-                    approval_open: !drafting && state.approval.is_some(),
-                    copy_mode_open: copy_mode.is_some(),
+                    help_visible: state.interaction.help_visible,
+                    input_page_open: state.interaction.input_page.is_some(),
+                    approval_open: !drafting && state.interaction.approval.is_some(),
+                    reading_view_open: state.reading.is_some(),
                 }
             };
             let route = e::runtime::route_terminal_event(event, focus);
             let terminal_height = terminal.size().map(|size| size.height).unwrap_or(40);
+            let mut interaction = {
+                let mut app = state_r.lock().unwrap();
+                std::mem::take(&mut app.interaction)
+            };
             let effects = RuntimeController::apply_terminal_route(
                 route,
                 terminal_height,
                 runtime_ports.now(),
                 &state_r,
                 &mut e::runtime::TerminalUiState {
-                    scroll: &mut scroll,
-                    input: &mut input,
-                    input_page: &mut input_page,
-                    help_visible: &mut help_visible,
-                    copy_mode: &mut copy_mode,
-                    copy_rows_cache: &mut copy_rows_cache,
-                    copy_toast: &mut copy_toast,
+                    scroll: &mut interaction.scroll,
+                    input: &mut interaction.input,
+                    input_page: &mut interaction.input_page,
+                    help_visible: &mut interaction.help_visible,
+                    copy_toast: &mut interaction.copy_toast,
                     config: &mut config,
                     themes: &mut themes,
                     theme: &mut theme,
                 },
             );
+            state_r.lock().unwrap().interaction = interaction;
             let execution =
                 execute_runtime_effects(effects, &tx_out, &mut scheduler, &mut runtime_ports).await;
             for result in execution.completed {
                 match result {
                     EffectResult::ClipboardWritten { lines } => {
-                        copy_toast = Some((format!("已复制 {lines} 行"), runtime_ports.now()));
+                        state_r.lock().unwrap().interaction.copy_toast =
+                            Some((format!("已复制 {lines} 行"), runtime_ports.now()));
                     }
                     EffectResult::ConfigReloaded {
                         config: loaded,
                         themes: loaded_themes,
-                    } => RuntimeController::apply_reloaded_config(
-                        *loaded,
-                        loaded_themes,
-                        &state_r,
-                        &mut e::runtime::TerminalUiState {
-                            scroll: &mut scroll,
-                            input: &mut input,
-                            input_page: &mut input_page,
-                            help_visible: &mut help_visible,
-                            copy_mode: &mut copy_mode,
-                            copy_rows_cache: &mut copy_rows_cache,
-                            copy_toast: &mut copy_toast,
-                            config: &mut config,
-                            themes: &mut themes,
-                            theme: &mut theme,
-                        },
-                    ),
-                    other => RuntimeController::apply_effect_result(other, &state_r),
+                    } => {
+                        let mut interaction = {
+                            let mut app = state_r.lock().unwrap();
+                            std::mem::take(&mut app.interaction)
+                        };
+                        RuntimeController::apply_reloaded_config(
+                            *loaded,
+                            loaded_themes,
+                            &state_r,
+                            &mut e::runtime::TerminalUiState {
+                                scroll: &mut interaction.scroll,
+                                input: &mut interaction.input,
+                                input_page: &mut interaction.input_page,
+                                help_visible: &mut interaction.help_visible,
+                                copy_toast: &mut interaction.copy_toast,
+                                config: &mut config,
+                                themes: &mut themes,
+                                theme: &mut theme,
+                            },
+                        );
+                        state_r.lock().unwrap().interaction = interaction;
+                    }
+                    other => {
+                        if RuntimeController::apply_effect_result(other, &state_r) {
+                            scheduler.request(DirtyReason::Content, runtime_ports.now());
+                        }
+                    }
                 }
             }
             if let Some(reason) = execution.fatal {
@@ -582,24 +595,12 @@ async fn run(
 
         let now = Instant::now();
         if let Some(requested_at) = scheduler.take_due(now) {
+            let mut interaction = {
+                let mut app = state_r.lock().unwrap();
+                std::mem::take(&mut app.interaction)
+            };
             let mut state = state_r.lock().unwrap();
-            // Copy-mode overlay: cursor + selection as global row ranges.
-            let overlay = copy_mode.as_ref().and_then(|cm| {
-                let rows = copy_rows_cache.rows_with(
-                    &state.transcript_cache,
-                    state.transcript.len(),
-                    || e::ui::copy_layout_rows(&state),
-                );
-                if rows.is_empty() {
-                    return None;
-                }
-                let cursor_row = rows[cm.cursor.min(rows.len() - 1)].global_row;
-                let sel = cm
-                    .selection_range(rows)
-                    .map(|(lo, hi)| (rows[lo].global_row, rows[hi].global_row));
-                Some(CopyOverlay { cursor_row, sel })
-            });
-            let toast = copy_toast.as_ref().map(|(t, _)| t.as_str());
+            let toast = interaction.copy_toast.as_ref().map(|(t, _)| t.as_str());
             let first_frame = !first_draw_done;
             let _first_zone = if first_frame {
                 e::tracy_zone!("first frame")
@@ -607,26 +608,28 @@ async fn run(
                 None
             };
             let transaction = terminal.draw(|frame| {
-                let cursor_anchor = render_with_cursor(
+                render_with_cursor(
                     frame,
                     &mut state,
-                    &input,
-                    &mut scroll,
+                    &interaction.input,
+                    &mut interaction.scroll,
                     &theme,
-                    e::ui::RenderOverlays {
-                        help_visible,
-                        overlay: overlay.as_ref(),
+                    e_tui::ui::RenderOverlays {
+                        help_visible: interaction.help_visible,
                         toast,
-                        input_page: input_page.as_mut(),
+                        input_page: interaction.input_page.as_mut(),
                         settings: None,
                         login: None,
                     },
-                );
-                cursor_anchor
-            })?;
+                )
+            });
+            let cache_work = state.render.transcript_cache.take_work_stats();
+            let preview_work = state.preview.take_work_stats();
+            drop(state);
+            state_r.lock().unwrap().interaction = interaction;
+            let transaction = transaction?;
             scheduler.complete(Instant::now());
             let io = transaction.io;
-            let cache_work = state.transcript_cache.take_work_stats();
             let report = frame_metrics.record(FrameSample {
                 scheduler_delay: now.saturating_duration_since(requested_at),
                 update: pending_update_elapsed,
@@ -639,6 +642,9 @@ async fn run(
                 cache_rebuilds: cache_work.rebuilds,
                 cache_patches: cache_work.patches,
                 materialized_rows: cache_work.materialized_rows,
+                preview_rebuilds: preview_work.rebuilds,
+                preview_patches: preview_work.patches,
+                preview_materialized_rows: preview_work.materialized_rows,
             });
             pending_update_elapsed = Duration::ZERO;
             if let Some(report) = report {
@@ -715,7 +721,7 @@ mod tests {
     #[test]
     fn queued_dispatch_releases_the_state_lock() {
         let state = std::sync::Mutex::new(AppState::default());
-        state.lock().unwrap().queue.push("next".into());
+        state.lock().unwrap().interaction.queue.push("next".into());
 
         let effects = RuntimeController::dispatch_next_queued(&state);
         assert!(matches!(
@@ -725,8 +731,36 @@ mod tests {
         let guard = state
             .try_lock()
             .expect("dispatch must not retain the mutex guard");
-        assert!(guard.working);
-        assert!(guard.queue.is_empty());
+        assert!(guard.session.working);
+        assert!(guard.interaction.queue.is_empty());
+    }
+
+    #[tokio::test]
+    async fn preview_executor_returns_owned_completion_without_ui_state() {
+        let now = Instant::now();
+        let mut ports = ProductionRuntimePorts;
+        let (transport, _receiver) = tokio::sync::mpsc::channel(1);
+        let mut scheduler = FrameScheduler::new(now);
+        let request = e_tui::PreviewRequest {
+            request_id: e_tui::PreviewRequestId(7),
+            key: e_tui::PreviewKey("unsupported:test".into()),
+            revision: e_tui::PreviewRevision(3),
+        };
+        let execution = execute_runtime_effects(
+            vec![UiAction::ResolvePreview(request.clone())],
+            &transport,
+            &mut scheduler,
+            &mut ports,
+        )
+        .await;
+        assert!(matches!(
+            execution.completed.as_slice(),
+            [EffectResult::PreviewResolved { request_id, key, revision, result: Err(error) }]
+                if *request_id == request.request_id
+                    && *key == request.key
+                    && *revision == request.revision
+                    && error.contains("unsupported")
+        ));
     }
 
     #[test]

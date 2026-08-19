@@ -7,17 +7,22 @@
 
 use serde_json::Value;
 
+#[cfg(test)]
 use ratatui::style::Color;
 
-use crate::cache::TranscriptRenderCache;
-use crate::config::{Config, Theme};
 #[cfg(test)]
-use crate::display::ContentCard;
-use crate::display::{
+use crate::config::Theme;
+use crate::protocol::{ClientMessage, HostEvent, CLIENT_REPLAY_EVENT_CAP};
+pub use e_tui::app::{
+    breathing_color, lerp_color, settle_color, BREATH_CYCLE_MS, SETTLE_TRANSITION_MS,
+};
+#[cfg(test)]
+use e_tui::display::ContentCard;
+use e_tui::display::{
     ActivityRow, ActivityState, CardRole, DisplayId, DisplayItem, DisplayTone, TranscriptBlock,
     TranscriptFormat,
 };
-use crate::projection::{
+use e_tui::projection::{
     assistant::{self, AssistantMutation},
     command::{self, CommandProjection},
     is_surface_node,
@@ -28,57 +33,13 @@ use crate::projection::{
     AccessoryStateEffect, ActivityMutation, EventProjector, PageStateEffect,
     PendingActivityEnrichment, PendingActivityResult, PendingToolResult, ProjectionEffect,
 };
-use crate::protocol::{ClientMessage, HostEvent, CLIENT_REPLAY_EVENT_CAP};
 #[cfg(test)]
-use crate::render::RenderLine;
-use crate::render::RenderOptions;
-use crate::transcript_layout::MarkdownLayoutRegistry;
+use e_tui::render::RenderLine;
+use e_tui::render::RenderOptions;
 use e_tui::{
     agent::timeline::{SurfaceOperation, TimelineFact, TimelineRecord, TokenUsage},
-    TimelineModel,
+    ActivityTransition, PreviewContent, PreviewKey, PreviewRef, PreviewRevision, TuiApp,
 };
-
-/// One breathing cycle (gray → yellow → gray) of the running indicator.
-pub const BREATH_CYCLE_MS: u128 = 1600;
-/// Completion color transition: the running bullet interpolates from the
-/// captured breathing color to the settled color over this duration.
-pub const SETTLE_TRANSITION_MS: u128 = 500;
-
-/// Linear interpolation between two RGB colors (`t` clamped to [0, 1]).
-pub fn lerp_color(from: Color, to: Color, t: f64) -> Color {
-    let t = t.clamp(0.0, 1.0);
-    match (from, to) {
-        (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) => {
-            let l = |a: u8, b: u8| (f64::from(a) + (f64::from(b) - f64::from(a)) * t).round() as u8;
-            Color::Rgb(l(r1, r2), l(g1, g2), l(b1, b2))
-        }
-        _ => to,
-    }
-}
-
-/// Breathing color of the running indicator: `working_status.idle` at phase
-/// 0, `working_status.running` at 0.5, then idle again at 1.
-pub fn breathing_color(theme: &Theme, phase: f64) -> Color {
-    let t = (1.0 - (phase * std::f64::consts::TAU).cos()) / 2.0;
-    lerp_color(
-        theme.working_status.idle.fg,
-        theme.working_status.running.fg,
-        t,
-    )
-}
-
-/// Interpolate from the captured breathing color to the settled color over
-/// `SETTLE_TRANSITION_MS`; returns `to` once the transition completes.
-pub fn settle_color(from: Color, to: Color, elapsed: std::time::Duration) -> Color {
-    if elapsed.as_millis() >= SETTLE_TRANSITION_MS {
-        return to;
-    }
-    lerp_color(
-        from,
-        to,
-        elapsed.as_millis() as f64 / SETTLE_TRANSITION_MS as f64,
-    )
-}
 
 /// Test-only characterization model retained while fixtures are rewritten.
 #[cfg(test)]
@@ -234,11 +195,11 @@ pub fn file_group_line_count(group: &FileGroup) -> usize {
 #[derive(Debug, Clone)]
 pub enum LegacyTestMsg {
     /// Shared ordinary transcript display surface.
-    Block(crate::display::TranscriptBlock),
+    Block(e_tui::display::TranscriptBlock),
     /// Shared padded content-card display surface.
-    Card(crate::display::ContentCard),
+    Card(e_tui::display::ContentCard),
     /// Shared status-bearing activity display surface.
-    Activity(crate::display::ActivityRow),
+    Activity(e_tui::display::ActivityRow),
     /// User message, shown verbatim (D20).
     User {
         text: String,
@@ -298,184 +259,39 @@ pub struct ThinkingCard {
     pub done_from: Option<Color>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum AgentStatus {
-    Idle,
-    Running,
-}
-
-pub use e_tui::{interaction::ApprovalCard, question::QuestionBatch};
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NewConversationDraft {
-    pub mode: String,
-    /// The first prompt is retained until a real welcome commits the new
-    /// session; `Some` means bridge materialization is in flight.
-    pub pending_input: Option<String>,
-    /// Draft-local notice rendered without mutating the retained transcript.
-    pub notice: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ActivityTransition {
-    pub done_since: std::time::Instant,
-    pub from: Color,
-}
+pub use e_tui::{
+    interaction::ApprovalCard, question::QuestionBatch, NewConversationDraft,
+    SessionStatus as AgentStatus,
+};
 
 pub struct AppState {
-    /// Sole timeline/transcript owner. Existing field-style callers are
-    /// temporarily forwarded through `Deref` until lifecycle decomposition.
-    pub timeline: TimelineModel,
-    pub(crate) markdown_layout: MarkdownLayoutRegistry,
-    pub(crate) activity_transitions: std::collections::HashMap<DisplayId, ActivityTransition>,
+    /// Kernel-neutral application root. Existing field-style callers are
+    /// temporarily forwarded through `Deref` while lifecycle owners move.
+    pub tui: TuiApp,
     #[cfg(test)]
     pub msgs: Vec<Msg>,
-    /// Current whole-list todo projection (rendered as an input accessory).
-    pub todos: Vec<(String, String)>,
-    pub goal: Option<String>,
-    pub plan_mode: Option<String>,
-    pub session_state_events: std::collections::HashSet<String>,
-    pub session_id: Option<String>,
-    /// Client-only `/new` presentation layered over the still-attached real
-    /// session. The retained transcript continues to receive old-session
-    /// frames until a real welcome commits the switch.
-    pub new_conversation: Option<NewConversationDraft>,
-    pub status: AgentStatus,
-    /// Generic DSH/plugin commands submitted by this client that have not yet
-    /// returned a direct result/error. They are independently interruptible
-    /// even when the agent itself remains idle.
-    active_commands: usize,
-    pub provider: Option<String>,
-    pub model: Option<String>,
-    /// Active agent-preset mode, updated by `agent-preset/selected` replay.
-    pub current_mode: Option<String>,
-    /// Sequence that supplied `current_mode`; older history pages cannot
-    /// overwrite newer page state.
-    current_mode_seq: Option<u64>,
-    /// Provider-reported usage totals used by the status-line cache-hit rate.
-    pub token_usage: TokenUsage,
-    last_usage_sample: Option<(Option<u64>, Option<u64>, TokenUsage)>,
-    /// Latest `session/title` of the attached session — rendered in the
-    /// title row below the status bar (live-updated by event frames).
-    pub session_title: Option<String>,
-    /// Workspace path of the attached session (its header cwd) — rendered
-    /// right-aligned in the title row below the status bar.
-    pub session_cwd: Option<String>,
-    /// Snapshot replay is truncated (guard for huge session logs).
-    pub snapshot_truncated: bool,
-    /// Live configuration (persisted TOML, editable via /settings).
-    pub config: Config,
-    /// Render-unit id allocator for the source map.
-    pub(crate) next_unit: u64,
-    next_thinking_id: u64,
-    next_local_display_id: u64,
-    pending_transcript_insert: Option<usize>,
-    /// Stable ids already present in the newer page while an older history
-    /// page is replayed. This preserves cross-page half correlation without
-    /// a second DisplayId-to-index adapter.
-    replay_newer_display_ids: std::collections::HashSet<DisplayId>,
-    /// unit id -> raw markdown source (copy mode).
-    pub units: std::collections::HashMap<u64, String>,
-    /// Units whose collapsed window is expanded (D13).
-    pub expanded: std::collections::HashSet<u64>,
-    /// Pending approval awaiting a Y/n answer.
-    pub approval: Option<ApprovalCard>,
-    /// rpcId of the pending user-question batch (ask_user_question), kept for
-    /// session ownership and command blocking while the Question Input Page
-    /// holds the interactive batch state.
-    pub question: Option<String>,
-    /// Prompts typed while the agent runs: queued here and auto-dispatched
-    /// one at a time whenever the agent returns to idle.
-    pub queue: Vec<String>,
-    /// Last fetched session list (`/resume` Input Page data).
-    pub sessions: Vec<crate::protocol::SessionInfo>,
-    /// Rendering-owned transcript cache. Session/event projection mutates
-    /// messages and invalidates this boundary without owning ratatui details.
-    pub transcript_cache: TranscriptRenderCache,
-    /// Spinner frame for the streaming indicator.
-    pub stream_frame: usize,
-    /// Earliest event seq among the loaded transcript (history paging base).
-    pub min_seq: Option<u64>,
-    /// A scroll-back history request is in flight.
-    pub history_loading: bool,
-    /// No older events exist (the whole log is loaded).
-    pub history_exhausted: bool,
-    /// The agent is "working": set as soon as the user sends a message (even
-    /// before the turn starts) and cleared by visible activity or an idle
-    /// status. Drives the Thinking card; the status-bar breathing bullet is
-    /// driven by the running status (plus this flag for the pre-turn window).
-    pub working: bool,
-    /// While true (snapshot replay / history prepend), the working flag
-    /// updates but no Thinking rows enter the transcript — history is
-    /// reconstructed without per-phase indicators.
-    pub replaying: bool,
-    /// Start of the current running period — the global clock of the
-    /// breathing animation (all running bullets breathe in sync).
-    pub activity_epoch: Option<std::time::Instant>,
 }
 
 impl std::ops::Deref for AppState {
-    type Target = TimelineModel;
+    type Target = TuiApp;
 
     fn deref(&self) -> &Self::Target {
-        &self.timeline
+        &self.tui
     }
 }
 
 impl std::ops::DerefMut for AppState {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.timeline
+        &mut self.tui
     }
 }
 
 impl Default for AppState {
     fn default() -> Self {
         Self {
-            timeline: TimelineModel::default(),
-            markdown_layout: MarkdownLayoutRegistry::default(),
-            activity_transitions: std::collections::HashMap::new(),
+            tui: TuiApp::default(),
             #[cfg(test)]
             msgs: Vec::new(),
-            todos: Vec::new(),
-            goal: None,
-            plan_mode: None,
-            session_state_events: std::collections::HashSet::new(),
-            session_id: None,
-            new_conversation: None,
-            status: AgentStatus::Idle,
-            active_commands: 0,
-            provider: None,
-            model: None,
-            current_mode: None,
-            current_mode_seq: None,
-            token_usage: TokenUsage::default(),
-            last_usage_sample: None,
-            session_title: None,
-            session_cwd: None,
-            snapshot_truncated: false,
-            config: Config::default(),
-            next_unit: 0,
-            next_thinking_id: 0,
-            next_local_display_id: 0,
-            pending_transcript_insert: None,
-            replay_newer_display_ids: std::collections::HashSet::new(),
-            units: std::collections::HashMap::new(),
-            expanded: std::collections::HashSet::new(),
-            approval: None,
-            question: None,
-            queue: Vec::new(),
-            sessions: Vec::new(),
-            transcript_cache: TranscriptRenderCache {
-                width: 80,
-                ..TranscriptRenderCache::default()
-            },
-            stream_frame: 0,
-            min_seq: None,
-            history_loading: false,
-            history_exhausted: false,
-            working: false,
-            replaying: false,
-            activity_epoch: None,
         }
     }
 }
@@ -486,54 +302,17 @@ impl AppState {
     }
 
     pub fn cache_hit_rate(&self) -> Option<u64> {
-        let prompt_tokens = self
-            .token_usage
-            .input_tokens
-            .saturating_add(self.token_usage.cache_read_tokens)
-            .saturating_add(self.token_usage.cache_write_tokens);
-        (prompt_tokens > 0).then(|| {
-            self.token_usage
-                .cache_read_tokens
-                .saturating_mul(100)
-                .saturating_add(prompt_tokens / 2)
-                / prompt_tokens
-        })
+        self.session.cache_hit_rate()
     }
 
     fn record_usage(&mut self, turn: Option<u64>, step: Option<u64>, usage: Option<TokenUsage>) {
-        let Some(usage) = usage else { return };
-        let previous = self
-            .last_usage_sample
-            .filter(|(old_turn, old_step, _)| *old_turn == turn && *old_step == step)
-            .map(|(_, _, usage)| usage)
-            .unwrap_or_default();
-        self.token_usage.input_tokens = self
-            .token_usage
-            .input_tokens
-            .saturating_sub(previous.input_tokens)
-            .saturating_add(usage.input_tokens);
-        self.token_usage.output_tokens = self
-            .token_usage
-            .output_tokens
-            .saturating_sub(previous.output_tokens)
-            .saturating_add(usage.output_tokens);
-        self.token_usage.cache_read_tokens = self
-            .token_usage
-            .cache_read_tokens
-            .saturating_sub(previous.cache_read_tokens)
-            .saturating_add(usage.cache_read_tokens);
-        self.token_usage.cache_write_tokens = self
-            .token_usage
-            .cache_write_tokens
-            .saturating_sub(previous.cache_write_tokens)
-            .saturating_add(usage.cache_write_tokens);
-        self.last_usage_sample = Some((turn, step, usage));
+        self.session.record_usage(turn, step, usage);
     }
 
     /// Breathing phase in [0, 1) from the current activity epoch; 0 while no
     /// activity has started (gray).
     pub fn breath_phase(&self) -> f64 {
-        match self.activity_epoch {
+        match self.session.activity_epoch {
             Some(epoch) => {
                 let elapsed = epoch.elapsed().as_millis() % BREATH_CYCLE_MS;
                 elapsed as f64 / BREATH_CYCLE_MS as f64
@@ -548,7 +327,7 @@ impl AppState {
     /// visible activity in between starts a fresh row. History replays
     /// update the flag without pushing rows.
     pub fn start_thinking(&mut self) {
-        self.working = true;
+        self.session.working = true;
         if self.replaying {
             return;
         }
@@ -582,7 +361,7 @@ impl AppState {
                 card.done_since = None;
                 card.done_from = None;
                 card.count += 1;
-                self.transcript_cache.valid = false;
+                self.render.transcript_cache.valid = false;
             }
             _ => {
                 self.msgs.push(Msg::Thinking(ThinkingCard {
@@ -591,20 +370,21 @@ impl AppState {
                     done_since: None,
                     done_from: None,
                 }));
-                self.transcript_cache.valid = false;
+                self.render.transcript_cache.valid = false;
             }
         }
     }
 
     fn capture_activity_transition(&mut self, id: &DisplayId) {
-        if self.replaying || self.activity_transitions.contains_key(id) {
+        if self.replaying || self.render.activity_transitions.contains_key(id) {
             return;
         }
-        self.activity_transitions.insert(
+        let from = breathing_color(&self.config.theme(), self.breath_phase());
+        self.render.activity_transitions.insert(
             id.clone(),
             ActivityTransition {
                 done_since: std::time::Instant::now(),
-                from: breathing_color(&self.config.theme(), self.breath_phase()),
+                from,
             },
         );
     }
@@ -612,7 +392,7 @@ impl AppState {
     /// The thinking phase ended (visible activity took over, the turn
     /// ended, or the agent went idle): settle the running Thinking row green.
     pub fn stop_thinking(&mut self) {
-        self.working = false;
+        self.session.working = false;
         if self.replaying {
             return;
         }
@@ -641,7 +421,7 @@ impl AppState {
                 card.state = ThinkState::Done;
                 card.done_since = Some(std::time::Instant::now());
                 card.done_from = Some(breath_now);
-                self.transcript_cache.valid = false;
+                self.render.transcript_cache.valid = false;
             }
         }
     }
@@ -677,19 +457,19 @@ impl AppState {
         } else {
             self.msgs.push(Msg::System { text });
         }
-        self.transcript_cache.invalidate();
+        self.render.transcript_cache.invalidate();
     }
 
     pub fn begin_command_execution(&mut self) {
-        self.active_commands = self.active_commands.saturating_add(1);
+        self.session.active_commands = self.session.active_commands.saturating_add(1);
     }
 
     pub fn finish_command_execution(&mut self) {
-        self.active_commands = self.active_commands.saturating_sub(1);
+        self.session.active_commands = self.session.active_commands.saturating_sub(1);
     }
 
     pub fn has_active_command(&self) -> bool {
-        self.active_commands > 0
+        self.session.active_commands > 0
     }
 
     /// Apply the direct command acknowledgment without duplicating the
@@ -711,8 +491,8 @@ impl AppState {
     /// Queue a prompt typed while the agent runs. Returns true when the
     /// caller must send it immediately instead (the agent is idle).
     pub fn enqueue_or_immediate(&mut self, text: &str) -> bool {
-        if self.status == AgentStatus::Running {
-            self.queue.push(text.to_string());
+        if self.session.status == AgentStatus::Running {
+            self.interaction.queue.push(text.to_string());
             false
         } else {
             true
@@ -723,8 +503,11 @@ impl AppState {
     /// one at a time (each dispatch keeps the agent busy until it returns
     /// to idle again).
     pub fn take_next_queued(&mut self) -> Option<String> {
-        if self.status == AgentStatus::Idle && !self.working && !self.queue.is_empty() {
-            Some(self.queue.remove(0))
+        if self.session.status == AgentStatus::Idle
+            && !self.session.working
+            && !self.interaction.queue.is_empty()
+        {
+            Some(self.interaction.queue.remove(0))
         } else {
             None
         }
@@ -825,13 +608,13 @@ impl AppState {
                     self.msgs.push(Msg::Assistant {
                         text,
                         lines: Vec::new(),
-                        unit_start: self.next_unit,
+                        unit_start: self.render.next_unit,
                     });
                 }
             }
         }
-        self.working = false;
-        self.transcript_cache.valid = false;
+        self.session.working = false;
+        self.render.transcript_cache.valid = false;
     }
 }
 
@@ -839,46 +622,46 @@ impl AppState {
     /// Drop the whole transcript (used when attaching to another session).
     pub fn reset_transcript(&mut self) {
         self.transcript.clear();
-        self.markdown_layout.clear();
-        self.activity_transitions.clear();
+        self.render.markdown_layout.clear();
+        self.render.activity_transitions.clear();
         #[cfg(test)]
         self.msgs.clear();
         self.projector = EventProjector::default();
         self.todos.clear();
         self.goal = None;
         self.plan_mode = None;
-        self.current_mode = None;
-        self.current_mode_seq = None;
-        self.token_usage = TokenUsage::default();
-        self.last_usage_sample = None;
+        self.session.current_mode = None;
+        self.session.current_mode_seq = None;
+        self.session.token_usage = TokenUsage::default();
+        self.session.last_usage_sample = None;
         self.session_state_events.clear();
-        self.units.clear();
-        self.expanded.clear();
-        self.next_unit = 0;
+        self.render.units.clear();
+        self.render.expanded.clear();
+        self.render.next_unit = 0;
         self.next_thinking_id = 0;
         self.next_local_display_id = 0;
         self.pending_transcript_insert = None;
         self.replay_newer_display_ids.clear();
-        self.snapshot_truncated = false;
-        self.transcript_cache.reset();
-        self.min_seq = None;
-        self.history_loading = false;
-        self.history_exhausted = false;
-        self.working = false;
-        self.active_commands = 0;
-        self.activity_epoch = None;
+        self.session.snapshot_truncated = false;
+        self.render.transcript_cache.reset();
+        self.session.min_seq = None;
+        self.session.history_loading = false;
+        self.session.history_exhausted = false;
+        self.session.working = false;
+        self.session.active_commands = 0;
+        self.session.activity_epoch = None;
         // The title belongs to the session being left (welcome sets the
         // new one right after the switch).
-        self.session_title = None;
-        self.session_cwd = None;
+        self.session.session_title = None;
+        self.session.session_cwd = None;
         // Queued prompts belong to the session they were typed for.
-        self.queue.clear();
+        self.interaction.queue.clear();
     }
 }
 
 impl AppState {
     pub fn begin_new_conversation(&mut self, mode: impl Into<String>) {
-        self.new_conversation = Some(NewConversationDraft {
+        self.session.new_conversation = Some(NewConversationDraft {
             mode: mode.into(),
             pending_input: None,
             notice: None,
@@ -889,7 +672,7 @@ impl AppState {
     /// A second submission while creation is in flight is rejected by the
     /// controller rather than entering the retained old session's queue.
     pub fn materialize_new_conversation(&mut self, text: String) -> Option<ClientMessage> {
-        let draft = self.new_conversation.as_mut()?;
+        let draft = self.session.new_conversation.as_mut()?;
         if draft.pending_input.is_some() {
             return None;
         }
@@ -902,19 +685,19 @@ impl AppState {
     }
 
     pub fn restore_new_conversation_input(&mut self) -> Option<String> {
-        let draft = self.new_conversation.as_mut()?;
+        let draft = self.session.new_conversation.as_mut()?;
         draft.notice = None;
         draft.pending_input.take()
     }
 
     pub fn set_new_conversation_notice(&mut self, notice: impl Into<String>) {
-        if let Some(draft) = self.new_conversation.as_mut() {
+        if let Some(draft) = self.session.new_conversation.as_mut() {
             draft.notice = Some(notice.into());
         }
     }
 
     pub fn is_new_conversation(&self) -> bool {
-        self.new_conversation.is_some()
+        self.session.new_conversation.is_some()
     }
 
     /// Apply one bridge message payload (welcome / snapshot / event / status).
@@ -925,37 +708,40 @@ impl AppState {
                     .get("sessionId")
                     .and_then(Value::as_str)
                     .map(String::from);
-                if let (Some(prev), Some(next)) = (&self.session_id, &new_id) {
+                if let (Some(prev), Some(next)) = (&self.session.session_id, &new_id) {
                     if prev != next {
                         self.reset_transcript();
                         // A pending question belongs to the old session.
-                        self.question = None;
+                        self.interaction.question = None;
                     }
                 }
-                self.session_id = new_id;
+                self.session.session_id = new_id;
                 // Only a real bridge welcome can commit/abandon a local draft.
-                self.new_conversation = None;
-                self.session_title = data.get("title").and_then(Value::as_str).map(String::from);
-                self.session_cwd = data.get("cwd").and_then(Value::as_str).map(String::from);
-                self.status = if data.get("status").and_then(Value::as_str) == Some("running") {
-                    AgentStatus::Running
-                } else {
-                    AgentStatus::Idle
-                };
+                self.session.new_conversation = None;
+                self.session.session_title =
+                    data.get("title").and_then(Value::as_str).map(String::from);
+                self.session.session_cwd =
+                    data.get("cwd").and_then(Value::as_str).map(String::from);
+                self.session.status =
+                    if data.get("status").and_then(Value::as_str) == Some("running") {
+                        AgentStatus::Running
+                    } else {
+                        AgentStatus::Idle
+                    };
                 // Snapshot replay refines this: activity events clear it,
                 // a mid-thought tail keeps it.
-                self.working = self.status == AgentStatus::Running;
-                self.provider = data
+                self.session.working = self.session.status == AgentStatus::Running;
+                self.session.provider = data
                     .get("provider")
                     .and_then(Value::as_str)
                     .map(String::from);
-                self.model = data.get("model").and_then(Value::as_str).map(String::from);
-                self.current_mode = data
+                self.session.model = data.get("model").and_then(Value::as_str).map(String::from);
+                self.session.current_mode = data
                     .get("mode")
                     .and_then(Value::as_str)
                     .map(String::from)
                     .or_else(|| Some(self.config.default_mode.clone()));
-                self.current_mode_seq = None;
+                self.session.current_mode_seq = None;
             }
             "snapshot" => {
                 let events: Vec<TimelineRecord> = data
@@ -975,12 +761,13 @@ impl AppState {
             }
             "event" => self.apply_event(data),
             "status" => {
-                self.status = if data.get("status").and_then(Value::as_str) == Some("running") {
-                    AgentStatus::Running
-                } else {
-                    AgentStatus::Idle
-                };
-                if self.status == AgentStatus::Idle {
+                self.session.status =
+                    if data.get("status").and_then(Value::as_str) == Some("running") {
+                        AgentStatus::Running
+                    } else {
+                        AgentStatus::Idle
+                    };
+                if self.session.status == AgentStatus::Idle {
                     self.stop_thinking();
                 }
             }
@@ -998,7 +785,7 @@ impl AppState {
         let truncated = bridge_truncated || surface.len() > CLIENT_REPLAY_EVENT_CAP;
         if truncated {
             surface = surface.split_off(surface.len().saturating_sub(CLIENT_REPLAY_EVENT_CAP));
-            self.snapshot_truncated = true;
+            self.session.snapshot_truncated = true;
             self.push_system_message("（历史较长，仅回放最近消息）");
         }
         self.replaying = true;
@@ -1006,11 +793,11 @@ impl AppState {
             self.apply_host_event(event);
         }
         self.replaying = false;
-        if self.working {
+        if self.session.working {
             self.start_thinking();
         }
-        self.history_exhausted = !truncated;
-        self.history_loading = false;
+        self.session.history_exhausted = !truncated;
+        self.session.history_loading = false;
     }
 
     /// Compatibility entry for tests and persisted JSON callers. Raw host
@@ -1025,7 +812,7 @@ impl AppState {
     /// reduce the event into the compatibility message projection.
     pub fn apply_host_event(&mut self, event: &TimelineRecord) {
         if let Some(seq) = event.sequence {
-            self.min_seq = Some(self.min_seq.map_or(seq, |m| m.min(seq)));
+            self.session.min_seq = Some(self.session.min_seq.map_or(seq, |m| m.min(seq)));
         }
         let effects = self.projector.effects(event);
         #[cfg(test)]
@@ -1059,7 +846,7 @@ impl AppState {
                     }
                     #[cfg(not(test))]
                     let _ = insert_at;
-                    self.transcript_cache.invalidate();
+                    self.render.transcript_cache.invalidate();
                 }
                 ProjectionEffect::Reduce { insert_at } => {
                     #[cfg(not(test))]
@@ -1091,7 +878,7 @@ impl AppState {
                 }
                 ProjectionEffect::Display(item) => {
                     match item {
-                        crate::display::DisplayItem::Block(mut block) => {
+                        e_tui::display::DisplayItem::Block(mut block) => {
                             if block.unit.is_none() {
                                 block.unit = Some(self.allocate_copy_unit(&block.copy_source));
                             }
@@ -1110,7 +897,7 @@ impl AppState {
                                 self.projector.record_surface_owner(seq, index, false);
                             }
                         }
-                        crate::display::DisplayItem::Card(mut card) => {
+                        e_tui::display::DisplayItem::Card(mut card) => {
                             if card.unit.is_none() {
                                 card.unit = Some(self.allocate_copy_unit(&card.copy_source));
                             }
@@ -1122,8 +909,8 @@ impl AppState {
                             #[cfg(test)]
                             self.msgs.push(Msg::Card(card));
                         }
-                        crate::display::DisplayItem::Activity(row) => self.upsert_activity(row),
-                        crate::display::DisplayItem::Composite {
+                        e_tui::display::DisplayItem::Activity(row) => self.upsert_activity(row),
+                        e_tui::display::DisplayItem::Composite {
                             activity,
                             mut detail,
                         } => {
@@ -1145,10 +932,10 @@ impl AppState {
                             }
                         }
                     }
-                    self.transcript_cache.invalidate();
+                    self.render.transcript_cache.invalidate();
                 }
                 ProjectionEffect::PageState(PageStateEffect::Title(title)) => {
-                    self.session_title = title;
+                    self.session.session_title = title;
                 }
                 ProjectionEffect::AccessoryState(AccessoryStateEffect::Todo(todos)) => {
                     self.todos = todos;
@@ -1163,6 +950,15 @@ impl AppState {
             }
         }
         self.pending_transcript_insert = None;
+        let active_ids = self
+            .transcript
+            .nodes()
+            .iter()
+            .map(|node| node.id().clone())
+            .collect::<std::collections::HashSet<_>>();
+        self.preview_refs.retain(|id, _| active_ids.contains(id));
+        self.tool_items.retain(|id, _| active_ids.contains(id));
+        self.reconcile_latest_preview();
     }
 
     fn record_surface_owner(&mut self, event: &TimelineRecord) {
@@ -1184,9 +980,9 @@ impl AppState {
     }
 
     fn allocate_copy_unit(&mut self, source: &str) -> u64 {
-        let unit = self.next_unit;
-        self.next_unit += 1;
-        self.units.insert(unit, source.to_owned());
+        let unit = self.render.next_unit;
+        self.render.next_unit += 1;
+        self.render.units.insert(unit, source.to_owned());
         unit
     }
 
@@ -1203,7 +999,7 @@ impl AppState {
         }
     }
 
-    fn upsert_activity(&mut self, mut row: crate::display::ActivityRow) {
+    fn upsert_activity(&mut self, mut row: e_tui::display::ActivityRow) {
         let id = row.id.clone();
         if let Some(pending) = self.projector.take_activity_result(&id) {
             row.state = pending.state;
@@ -1228,7 +1024,7 @@ impl AppState {
                 self.msgs.push(Msg::Activity(row.clone()));
             }
         }
-        self.transcript_cache.invalidate();
+        self.render.transcript_cache.invalidate();
     }
 
     fn apply_pending_activity_enrichments(&mut self) {
@@ -1242,7 +1038,7 @@ impl AppState {
                 if enrichment.start_ms.is_some() {
                     row.start_ms = enrichment.start_ms;
                 }
-                self.transcript_cache.invalidate();
+                self.render.transcript_cache.invalidate();
             }
             if let Some(node) = self.transcript.get_mut(&id) {
                 if let DisplayItem::Activity(row) = &mut node.item {
@@ -1291,7 +1087,7 @@ impl AppState {
             self.transcript.touch(id);
         }
         if settled {
-            self.transcript_cache.invalidate();
+            self.render.transcript_cache.invalidate();
         }
         settled
     }
@@ -1359,7 +1155,7 @@ impl AppState {
             }
             _ => return false,
         }
-        self.transcript_cache.invalidate();
+        self.render.transcript_cache.invalidate();
         true
     }
 
@@ -1418,7 +1214,7 @@ impl AppState {
                 (block.copy_source.clone(), block.unit)
             };
             if let Some(unit) = unit {
-                self.units.insert(unit, source);
+                self.render.units.insert(unit, source);
             }
             if reasoning_visible && !self.replaying {
                 let is_tail = self
@@ -1426,9 +1222,9 @@ impl AppState {
                     .last()
                     .is_some_and(|msg| matches!(msg, Msg::Block(block) if block.id == id));
                 if is_tail {
-                    self.transcript_cache.mark_tail_dirty();
+                    self.render.transcript_cache.mark_tail_dirty();
                 } else {
-                    self.transcript_cache.invalidate();
+                    self.render.transcript_cache.invalidate();
                 }
             }
             return;
@@ -1447,7 +1243,7 @@ impl AppState {
             // The new block is a structural append: the previous tail was the
             // Thinking row (or an earlier message), so tail splicing would
             // drop it. Rebuild the cache instead.
-            self.transcript_cache.invalidate();
+            self.render.transcript_cache.invalidate();
         }
     }
     fn reduce_assistant_event(
@@ -1458,8 +1254,8 @@ impl AppState {
         match &event.fact {
             TimelineFact::UserMessage { .. } => {
                 self.projector.tool_family.close_group();
-                self.transcript_cache.invalidate();
-                if self.status == AgentStatus::Idle {
+                self.render.transcript_cache.invalidate();
+                if self.session.status == AgentStatus::Idle {
                     self.stop_thinking();
                 }
             }
@@ -1498,7 +1294,7 @@ impl AppState {
             match mutation {
                 AssistantMutation::Append(item) => {
                     self.append_assistant_item(event, item);
-                    self.transcript_cache.invalidate();
+                    self.render.transcript_cache.invalidate();
                 }
                 AssistantMutation::UpsertReasoning(block) => {
                     self.upsert_reasoning_store(block.clone());
@@ -1599,15 +1395,15 @@ impl AppState {
             self.insert_transcript_item(DisplayItem::Block(incoming), None, None);
         }
         if let (Some(unit), Some(source)) = (existing_unit, updated_source) {
-            self.units.insert(unit, source);
+            self.render.units.insert(unit, source);
             self.transcript.touch(&id);
         }
         if self.config.thinking_display_mode().shows_reasoning() && !self.replaying {
             let is_tail = self.transcript.position(&id) == self.transcript.len().checked_sub(1);
             if existed && is_tail {
-                self.transcript_cache.mark_tail_dirty();
+                self.render.transcript_cache.mark_tail_dirty();
             } else {
-                self.transcript_cache.invalidate();
+                self.render.transcript_cache.invalidate();
             }
         }
     }
@@ -1645,9 +1441,9 @@ impl AppState {
                 }),
             }
             if existed && is_tail {
-                self.transcript_cache.mark_tail_dirty();
+                self.render.transcript_cache.mark_tail_dirty();
             } else {
-                self.transcript_cache.invalidate();
+                self.render.transcript_cache.invalidate();
             }
             return;
         }
@@ -1666,26 +1462,30 @@ impl AppState {
             .unwrap_or_else(|| incoming.content.clone());
         let theme = self.config.theme();
         let options = RenderOptions {
-            expanded: self.expanded.clone(),
+            expanded: self.render.expanded.clone(),
             collapse_rows: self.config.atomic_collapse_rows,
             mermaid_enabled: self.config.mermaid_enabled,
         };
-        let lines = self
-            .markdown_layout
-            .materialize(
-                &id,
-                &source,
-                &theme,
-                &mut self.next_unit,
-                &options,
-                &mut self.units,
-            )
-            .to_vec();
+        let lines = {
+            let render = &mut self.render;
+            render
+                .markdown_layout
+                .materialize(
+                    &id,
+                    &source,
+                    &theme,
+                    &mut render.next_unit,
+                    &options,
+                    &mut render.units,
+                )
+                .to_vec()
+        };
         #[cfg(test)]
         let unit_start = self
+            .render
             .markdown_layout
             .unit_start(&id)
-            .unwrap_or(self.next_unit);
+            .unwrap_or(self.render.next_unit);
         if let Some(primary) = lines.first().map(|line| line.unit) {
             if let Some(node) = self.transcript.get_mut(&id) {
                 if let DisplayItem::Block(block) = &mut node.item {
@@ -1699,14 +1499,14 @@ impl AppState {
             lines,
             unit_start,
         });
-        self.transcript_cache.invalidate();
+        self.render.transcript_cache.invalidate();
     }
 
     fn project_tool_family(&mut self, event: &TimelineRecord) -> Option<ToolMutation> {
         let now_ms = host_event_time(event);
         match &event.fact {
             TimelineFact::ToolCall(_) => {
-                let session_cwd = self.session_cwd.clone();
+                let session_cwd = self.session.session_cwd.clone();
                 let read_merge = self.config.read_merge;
                 self.projector.tool_family.project_call(
                     event,
@@ -1761,7 +1561,7 @@ impl AppState {
         };
         match &event.fact {
             TimelineFact::ToolCall(_) => {
-                self.transcript_cache.invalidate();
+                self.render.transcript_cache.invalidate();
                 self.stop_thinking();
             }
             TimelineFact::ToolResult { .. } => self.start_thinking(),
@@ -1769,10 +1569,37 @@ impl AppState {
         }
 
         let row_id = row.id.clone();
-        if let TimelineFact::ToolCall(activity) = &event.fact {
-            self.projector
-                .tool_calls
-                .insert(activity.id.clone(), row_id.clone());
+        match &event.fact {
+            TimelineFact::ToolCall(activity) => {
+                self.projector
+                    .tool_calls
+                    .insert(activity.id.clone(), row_id.clone());
+                self.tool_items
+                    .insert(row_id.clone(), activity.items.clone());
+                if let Some(reference) = activity.reference.as_ref().and_then(|reference| {
+                    reference.preview_reference(
+                        &format!("tool:{}", activity.id),
+                        PreviewRevision(event.sequence.unwrap_or_default()),
+                    )
+                }) {
+                    self.preview_refs.insert(row_id.clone(), reference);
+                }
+            }
+            TimelineFact::ToolResult {
+                activity_id,
+                output,
+                ..
+            } if !output.is_empty() => {
+                self.preview_refs.insert(
+                    row_id.clone(),
+                    PreviewRef::Inline {
+                        key: PreviewKey(format!("tool:{activity_id}")),
+                        revision: PreviewRevision(event.sequence.unwrap_or_default()),
+                        content: PreviewContent::PlainText(output.clone()),
+                    },
+                );
+            }
+            _ => {}
         }
         let pending_result = match &event.fact {
             TimelineFact::ToolCall(activity) => self.projector.take_tool_result(&activity.id),
@@ -1912,13 +1739,13 @@ impl AppState {
                         existing.done_since = Some(since);
                         existing.done_from = Some(from);
                     }
-                    self.transcript_cache.invalidate();
+                    self.render.transcript_cache.invalidate();
                     return;
                 }
             }
         }
         self.msgs.push(msg);
-        self.transcript_cache.invalidate();
+        self.render.transcript_cache.invalidate();
     }
 
     fn reduce_activity_families(&mut self, event: &TimelineRecord) -> bool {
@@ -2059,7 +1886,7 @@ impl AppState {
                     applied = true;
                 }
                 if applied {
-                    self.transcript_cache.invalidate();
+                    self.render.transcript_cache.invalidate();
                 } else {
                     self.projector.remember_activity_enrichment(
                         id,
@@ -2078,7 +1905,8 @@ impl AppState {
         match projection {
             LifecycleProjection::TurnStart => {
                 self.start_thinking();
-                self.activity_epoch
+                self.session
+                    .activity_epoch
                     .get_or_insert_with(std::time::Instant::now);
             }
             LifecycleProjection::TurnEnd { cancelled, outcome } => {
@@ -2104,20 +1932,20 @@ impl AppState {
                             });
                         }
                     }
-                    self.transcript_cache.invalidate();
+                    self.render.transcript_cache.invalidate();
                 }
             }
             LifecycleProjection::Goal(goal) => self.goal = goal,
             LifecycleProjection::Plan(plan) => self.plan_mode = plan,
             LifecycleProjection::Preset(preset) => {
-                let is_newest = match (event.sequence, self.current_mode_seq) {
+                let is_newest = match (event.sequence, self.session.current_mode_seq) {
                     (Some(incoming), Some(current)) => incoming >= current,
                     (Some(_), None) | (None, None) => true,
                     (None, Some(_)) => false,
                 };
                 if is_newest && !preset.is_empty() {
-                    self.current_mode = Some(preset);
-                    self.current_mode_seq = event.sequence;
+                    self.session.current_mode = Some(preset);
+                    self.session.current_mode_seq = event.sequence;
                 }
             }
             LifecycleProjection::SessionState(event_type) => {
@@ -2143,7 +1971,7 @@ impl AppState {
         let existing_owners = self.projector.owned_seqs();
         // Token totals should absorb older pages, but replacement bookkeeping
         // must keep pointing at the newest loaded request.
-        let newest_usage_sample = self.last_usage_sample;
+        let newest_usage_sample = self.session.last_usage_sample;
         #[cfg(test)]
         let saved = std::mem::take(&mut self.msgs);
         let saved_transcript = std::mem::take(&mut self.transcript);
@@ -2159,7 +1987,7 @@ impl AppState {
         }
         self.replaying = false;
         if newest_usage_sample.is_some() {
-            self.last_usage_sample = newest_usage_sample;
+            self.session.last_usage_sample = newest_usage_sample;
         }
         #[cfg(test)]
         let legacy_added = {
@@ -2187,9 +2015,10 @@ impl AppState {
             .shift_selected_owners(&existing_owners, added);
         self.replay_newer_display_ids.clear();
         self.apply_pending_activity_enrichments();
-        self.transcript_cache.invalidate();
-        self.transcript_cache.tail_dirty = false;
-        self.transcript_cache.prepend_anchor = Some(self.transcript_cache.display_len());
+        self.render.transcript_cache.invalidate();
+        self.render.transcript_cache.tail_dirty = false;
+        self.render.transcript_cache.prepend_anchor =
+            Some(self.render.transcript_cache.display_len());
         #[cfg(test)]
         return legacy_added;
         #[cfg(not(test))]
@@ -2263,9 +2092,9 @@ pub fn animation_active(state: &AppState, _now: std::time::Instant) -> bool {
             DisplayItem::Composite { activity, .. } => activity.state.is_active(),
             DisplayItem::Card(_) => false,
         })
-        || !state.activity_transitions.is_empty()
-        || state.working
-        || state.status == AgentStatus::Running
+        || !state.render.activity_transitions.is_empty()
+        || state.session.working
+        || state.session.status == AgentStatus::Running
 }
 
 /// Advance the breathing/transition animation clock and mark only the public
@@ -2277,7 +2106,7 @@ pub fn tick_spinners(state: &mut AppState, now: std::time::Instant) -> bool {
         return tick_legacy_spinners(state, now);
     }
 
-    let mut any_pending = state.working || state.status == AgentStatus::Running;
+    let mut any_pending = state.session.working || state.session.status == AgentStatus::Running;
     let mut dirty = Vec::new();
     for (index, node) in state.transcript.nodes().iter().enumerate() {
         let pending = match &node.item {
@@ -2295,6 +2124,7 @@ pub fn tick_spinners(state: &mut AppState, now: std::time::Instant) -> bool {
     }
 
     let transitions = state
+        .render
         .activity_transitions
         .iter()
         .map(|(id, transition)| {
@@ -2316,19 +2146,19 @@ pub fn tick_spinners(state: &mut AppState, now: std::time::Instant) -> bool {
         }
     }
     for id in finalized {
-        state.activity_transitions.remove(&id);
+        state.render.activity_transitions.remove(&id);
     }
 
     if any_pending {
-        state.activity_epoch.get_or_insert(now);
-    } else if state.activity_transitions.is_empty() {
-        state.activity_epoch = None;
+        state.session.activity_epoch.get_or_insert(now);
+    } else if state.render.activity_transitions.is_empty() {
+        state.session.activity_epoch = None;
     }
     dirty.sort_unstable();
     dirty.dedup();
     let animation_changed = !dirty.is_empty();
     for index in dirty {
-        state.transcript_cache.mark_message_dirty(index);
+        state.render.transcript_cache.mark_message_dirty(index);
     }
     any_pending || animation_changed
 }
@@ -2343,8 +2173,8 @@ fn legacy_animation_active(state: &AppState) -> bool {
         Msg::Block(block) => block.streaming && block.format != TranscriptFormat::Reasoning,
         _ => false,
     }) || matches!(state.msgs.last(), Some(Msg::Streaming { .. }))
-        || state.working
-        || state.status == AgentStatus::Running;
+        || state.session.working
+        || state.session.status == AgentStatus::Running;
     let transitioning = state.msgs.iter().any(|message| match message {
         Msg::Tool(card) => card.done_since.is_some() && card.done_from.is_some(),
         Msg::FileGroup(group) => group.done_since.is_some() && group.done_from.is_some(),
@@ -2381,7 +2211,7 @@ fn advance_legacy_transition(
 
 #[cfg(test)]
 fn tick_legacy_spinners(state: &mut AppState, now: std::time::Instant) -> bool {
-    let mut any_pending = state.working || state.status == AgentStatus::Running;
+    let mut any_pending = state.session.working || state.session.status == AgentStatus::Running;
     let mut animation_changed = false;
     let msg_len = state.msgs.len();
     let mut dirty = Vec::new();
@@ -2414,12 +2244,12 @@ fn tick_legacy_spinners(state: &mut AppState, now: std::time::Instant) -> bool {
         }
     }
     if any_pending {
-        state.activity_epoch.get_or_insert(now);
+        state.session.activity_epoch.get_or_insert(now);
     } else {
-        state.activity_epoch = None;
+        state.session.activity_epoch = None;
     }
     for index in dirty {
-        state.transcript_cache.mark_message_dirty(index);
+        state.render.transcript_cache.mark_message_dirty(index);
     }
     any_pending || animation_changed
 }
@@ -2528,6 +2358,7 @@ mod tests {
                     && !block.streaming
         ));
         assert!(s
+            .render
             .markdown_layout
             .unit_start(s.transcript.nodes()[0].id())
             .is_some());
@@ -2560,6 +2391,25 @@ mod tests {
         assert!(matches!(
             &s.transcript.nodes()[0].item,
             DisplayItem::Activity(row) if row.state == ActivityState::Failure
+        ));
+    }
+
+    #[test]
+    fn deferred_file_preview_emits_owned_resolver_action() {
+        let mut state = AppState::default();
+        state.apply_event(&event_seq(
+            "tool/call",
+            1,
+            serde_json::json!({
+                "callId": "view-1",
+                "name": "str_replace_editor",
+                "arguments": "{\"command\":\"view\",\"path\":\"src/main.rs\"}"
+            }),
+        ));
+        assert!(matches!(
+            state.take_actions().as_slice(),
+            [e_tui::UiAction::ResolvePreview(request)]
+                if request.key.0.starts_with("lines:src/main.rs:")
         ));
     }
 
@@ -2630,7 +2480,7 @@ mod tests {
     #[test]
     fn str_replace_editor_folds_operations_but_keeps_create_standalone() {
         let mut s = AppState::default();
-        s.session_cwd = Some(r"G:\workspace".into());
+        s.session.session_cwd = Some(r"G:\workspace".into());
         for (seq, id, command, path) in [
             (1, "v1", "view", r"G:\workspace\src\a.rs"),
             (2, "r1", "str_replace", r"G:\workspace\src\b.rs"),
@@ -2786,14 +2636,14 @@ mod tests {
     fn working_tracks_turn_activity() {
         let mut s = AppState::default();
         s.apply_event(&event("turn/start", serde_json::json!({})));
-        assert!(s.working, "Working after turn/start");
+        assert!(s.session.working, "Working after turn/start");
         s.apply_event(&event(
             "tool/call",
             serde_json::json!({
                 "callId": "c1", "name": "bash", "arguments": "{}"
             }),
         ));
-        assert!(!s.working, "tool call is visible activity");
+        assert!(!s.session.working, "tool call is visible activity");
         s.apply_event(&event(
             "tool/result",
             serde_json::json!({
@@ -2803,24 +2653,24 @@ mod tests {
                 }]}
             }),
         ));
-        assert!(s.working, "model works again after a tool result");
+        assert!(s.session.working, "model works again after a tool result");
         s.apply_event(&event(
             "assistant/chunk",
             serde_json::json!({
                 "chunk": {"type": "text-delta", "text": "hi"}
             }),
         ));
-        assert!(!s.working);
+        assert!(!s.session.working);
         s.apply_event(&event("turn/end", serde_json::json!({})));
-        assert!(!s.working);
+        assert!(!s.session.working);
         // Idle status clears a stale flag.
-        s.working = true;
+        s.session.working = true;
         s.apply("status", &serde_json::json!({"status": "idle"}));
-        assert!(!s.working);
+        assert!(!s.session.working);
         // The echo of the user's own message keeps Working while the agent
         // runs, and clears it when idle (no work follows the echo).
-        s.working = true;
-        s.status = AgentStatus::Running;
+        s.session.working = true;
+        s.session.status = AgentStatus::Running;
         s.apply_event(&event(
             "user/message",
             serde_json::json!({
@@ -2828,8 +2678,8 @@ mod tests {
                 "source": {"kind": "user"}
             }),
         ));
-        assert!(s.working, "running echo keeps Working alive");
-        s.status = AgentStatus::Idle;
+        assert!(s.session.working, "running echo keeps Working alive");
+        s.session.status = AgentStatus::Idle;
         s.apply_event(&event(
             "user/message",
             serde_json::json!({
@@ -2837,7 +2687,7 @@ mod tests {
                 "source": {"kind": "user"}
             }),
         ));
-        assert!(!s.working, "idle echo clears Working");
+        assert!(!s.session.working, "idle echo clears Working");
     }
 
     /// Esc interrupt regression: a turn ending without result events must
@@ -2869,7 +2719,7 @@ mod tests {
             ),
             "interrupted tool settles as failed"
         );
-        assert!(!s.working);
+        assert!(!s.session.working);
         assert!(
             s.msgs
                 .iter()
@@ -2886,7 +2736,7 @@ mod tests {
             _ => false,
         });
         assert!(!any_running, "nothing left breathing");
-        for transition in s.activity_transitions.values_mut() {
+        for transition in s.render.activity_transitions.values_mut() {
             transition.done_since = std::time::Instant::now() - std::time::Duration::from_secs(1);
         }
         for m in s.msgs.iter_mut() {
@@ -2904,7 +2754,7 @@ mod tests {
             tick_spinners(&mut s, std::time::Instant::now()),
             "expired settle transition emits its final target-color patch"
         );
-        s.transcript_cache.dirty_messages.clear();
+        s.render.transcript_cache.dirty_messages.clear();
         assert!(
             !tick_spinners(&mut s, std::time::Instant::now()),
             "animation clock stops after the final patch"
@@ -3003,7 +2853,7 @@ mod tests {
                 .all(|m| !matches!(m, Msg::Thinking(card) if card.state == ThinkState::Running)),
             "thinking rows settled"
         );
-        assert!(!s.working);
+        assert!(!s.session.working);
     }
 
     #[test]
@@ -3045,7 +2895,7 @@ mod tests {
             matches!(s.msgs.last(), Some(Msg::Thinking(card)) if card.state == ThinkState::Done),
             "turn/end settles the Thinking row"
         );
-        assert!(!s.working);
+        assert!(!s.session.working);
     }
 
     /// Thinking output (reasoning) is collapsed into the breathing
@@ -3067,7 +2917,7 @@ mod tests {
                 "chunk": {"type": "reasoning-delta", "text": "thinking out loud"}
             }),
         ));
-        assert!(s.working, "still working while reasoning streams");
+        assert!(s.session.working, "still working while reasoning streams");
         assert!(
             matches!(
                 s.msgs.iter().rev().find(|m| matches!(m, Msg::Thinking(_))),
@@ -3184,22 +3034,22 @@ mod tests {
         let mut s = AppState::default();
         // Idle: the prompt goes out immediately, nothing queued.
         assert!(s.enqueue_or_immediate("直接发"), "idle sends immediately");
-        assert!(s.queue.is_empty());
+        assert!(s.interaction.queue.is_empty());
         // Running: prompts queue up.
-        s.status = AgentStatus::Running;
+        s.session.status = AgentStatus::Running;
         assert!(!s.enqueue_or_immediate("排队1"), "running queues");
         assert!(!s.enqueue_or_immediate("排队2"));
-        assert_eq!(s.queue, vec!["排队1", "排队2"]);
+        assert_eq!(s.interaction.queue, vec!["排队1", "排队2"]);
         // Still running (or working on a just-dispatched item): hold.
         assert_eq!(s.take_next_queued(), None);
-        s.status = AgentStatus::Idle;
-        s.working = true;
+        s.session.status = AgentStatus::Idle;
+        s.session.working = true;
         assert_eq!(
             s.take_next_queued(),
             None,
             "a just-dispatched prompt holds the queue"
         );
-        s.working = false;
+        s.session.working = false;
         assert_eq!(s.take_next_queued().as_deref(), Some("排队1"));
         assert_eq!(s.take_next_queued().as_deref(), Some("排队2"));
         assert_eq!(s.take_next_queued(), None);
@@ -3208,13 +3058,16 @@ mod tests {
     #[test]
     fn queue_clears_on_session_switch() {
         let mut s = AppState::default();
-        s.session_id = Some("a".into());
-        s.queue.push("排队".into());
+        s.session.session_id = Some("a".into());
+        s.interaction.queue.push("排队".into());
         s.apply(
             "welcome",
             &serde_json::json!({"sessionId": "b", "status": "idle"}),
         );
-        assert!(s.queue.is_empty(), "queued prompts stay with their session");
+        assert!(
+            s.interaction.queue.is_empty(),
+            "queued prompts stay with their session"
+        );
     }
 
     #[test]
@@ -3226,14 +3079,14 @@ mod tests {
                 "sessionId": "a", "status": "idle", "mode": "cordis"
             }),
         );
-        assert_eq!(s.current_mode.as_deref(), Some("cordis"));
+        assert_eq!(s.session.current_mode.as_deref(), Some("cordis"));
 
         s.apply(
             "welcome",
             &serde_json::json!({"sessionId": "b", "status": "idle"}),
         );
         assert_eq!(
-            s.current_mode.as_deref(),
+            s.session.current_mode.as_deref(),
             Some(s.config.default_mode.as_str()),
             "welcome from an old bridge keeps the configured fallback"
         );
@@ -3262,7 +3115,7 @@ mod tests {
             &serde_json::json!({"sessionId":"new","status":"idle","mode":"code"}),
         );
         assert!(!s.is_new_conversation());
-        assert_eq!(s.session_id.as_deref(), Some("new"));
+        assert_eq!(s.session.session_id.as_deref(), Some("new"));
         assert!(
             s.transcript.is_empty(),
             "normal switch reset commits the draft"
@@ -3278,14 +3131,17 @@ mod tests {
                 "sessionId": "a", "status": "idle", "title": "第一个标题"
             }),
         );
-        assert_eq!(s.session_title.as_deref(), Some("第一个标题"));
+        assert_eq!(s.session.session_title.as_deref(), Some("第一个标题"));
         // Switching sessions clears the old title; the new welcome's title
         // (or absence of one) replaces it.
         s.apply(
             "welcome",
             &serde_json::json!({"sessionId": "b", "status": "idle"}),
         );
-        assert_eq!(s.session_title, None, "title follows the session switch");
+        assert_eq!(
+            s.session.session_title, None,
+            "title follows the session switch"
+        );
     }
 
     #[test]
@@ -3297,14 +3153,20 @@ mod tests {
                 "sessionId": "a", "status": "idle", "cwd": r"D:\MyProjects\Chore\dsh"
             }),
         );
-        assert_eq!(s.session_cwd.as_deref(), Some(r"D:\MyProjects\Chore\dsh"));
+        assert_eq!(
+            s.session.session_cwd.as_deref(),
+            Some(r"D:\MyProjects\Chore\dsh")
+        );
         // Switching sessions clears the old path; the new welcome's cwd
         // (or absence of one) replaces it.
         s.apply(
             "welcome",
             &serde_json::json!({"sessionId": "b", "status": "idle"}),
         );
-        assert_eq!(s.session_cwd, None, "cwd follows the session switch");
+        assert_eq!(
+            s.session.session_cwd, None,
+            "cwd follows the session switch"
+        );
     }
 
     #[test]
@@ -3328,7 +3190,7 @@ mod tests {
                 }
             }),
         ));
-        assert_eq!(s.current_mode.as_deref(), Some("cordis"));
+        assert_eq!(s.session.current_mode.as_deref(), Some("cordis"));
         assert_eq!(s.cache_hit_rate(), Some(80));
     }
 
@@ -3379,9 +3241,9 @@ mod tests {
             })),
         ];
         s.prepend_host_events(&older);
-        assert_eq!(s.current_mode.as_deref(), Some("cordis"));
-        assert_eq!(s.token_usage.input_tokens, 30);
-        assert_eq!(s.token_usage.cache_read_tokens, 80);
+        assert_eq!(s.session.current_mode.as_deref(), Some("cordis"));
+        assert_eq!(s.session.token_usage.input_tokens, 30);
+        assert_eq!(s.session.token_usage.cache_read_tokens, 80);
 
         // The final report for the newest request replaces its usage chunk;
         // it must not be added a second time after older history was loaded.
@@ -3400,8 +3262,8 @@ mod tests {
                 }
             }
         }));
-        assert_eq!(s.token_usage.input_tokens, 40);
-        assert_eq!(s.token_usage.cache_read_tokens, 70);
+        assert_eq!(s.session.token_usage.input_tokens, 40);
+        assert_eq!(s.session.token_usage.cache_read_tokens, 70);
     }
 
     #[test]
@@ -3411,7 +3273,7 @@ mod tests {
             "session/title",
             serde_json::json!({ "title": "自动生成" }),
         ));
-        assert_eq!(s.session_title.as_deref(), Some("自动生成"));
+        assert_eq!(s.session.session_title.as_deref(), Some("自动生成"));
         // The title is not part of the transcript cache.
         assert!(s.msgs.is_empty());
     }
@@ -3442,7 +3304,7 @@ mod tests {
             !s.msgs.iter().any(|m| matches!(m, Msg::Thinking(_))),
             "history replay has no Thinking rows"
         );
-        assert!(!s.working, "replayed turn ended");
+        assert!(!s.session.working, "replayed turn ended");
     }
 
     #[test]
@@ -3466,7 +3328,7 @@ mod tests {
                 "truncated": false
             }),
         );
-        assert!(s.working, "tail ended inside a thinking phase");
+        assert!(s.session.working, "tail ended inside a thinking phase");
         assert!(
             matches!(s.msgs.last(), Some(Msg::Thinking(card)) if card.state == ThinkState::Running),
             "mid-turn attach shows one live Thinking row"
@@ -3534,11 +3396,14 @@ mod tests {
     #[test]
     fn cache_invalidation_is_incremental() {
         let mut s = AppState::default();
-        s.transcript_cache.valid = true;
-        s.transcript_cache.tail_dirty = false;
+        s.render.transcript_cache.valid = true;
+        s.render.transcript_cache.tail_dirty = false;
         // Non-rendered events don't touch the cache.
         s.apply_event(&event("step/tool", serde_json::json!({"x": 1})));
-        assert!(s.transcript_cache.valid, "step events must not invalidate");
+        assert!(
+            s.render.transcript_cache.valid,
+            "step events must not invalidate"
+        );
         // Structural change invalidates.
         s.apply_event(&event(
             "user/message",
@@ -3547,9 +3412,9 @@ mod tests {
                 "source": {"kind": "user"}
             }),
         ));
-        assert!(!s.transcript_cache.valid);
-        s.transcript_cache.valid = true;
-        s.transcript_cache.tail_dirty = false;
+        assert!(!s.render.transcript_cache.valid);
+        s.render.transcript_cache.valid = true;
+        s.render.transcript_cache.tail_dirty = false;
         // The first chunk creates a Streaming message → structural.
         s.apply_event(&event(
             "assistant/chunk",
@@ -3557,9 +3422,9 @@ mod tests {
                 "chunk": {"type": "text-delta", "text": "a"}
             }),
         ));
-        assert!(!s.transcript_cache.valid);
-        s.transcript_cache.valid = true;
-        s.transcript_cache.tail_dirty = false;
+        assert!(!s.render.transcript_cache.valid);
+        s.render.transcript_cache.valid = true;
+        s.render.transcript_cache.tail_dirty = false;
         // Appended chunks only dirty the tail.
         s.apply_event(&event(
             "assistant/chunk",
@@ -3568,11 +3433,11 @@ mod tests {
             }),
         ));
         assert!(
-            s.transcript_cache.valid,
+            s.render.transcript_cache.valid,
             "chunk append must not invalidate the cache"
         );
         assert!(
-            s.transcript_cache.tail_dirty,
+            s.render.transcript_cache.tail_dirty,
             "chunk append must mark the tail dirty"
         );
         assert!(matches!(&s.msgs[1], Msg::Streaming { text } if text == "ab"));
@@ -3804,15 +3669,21 @@ mod tests {
             done_from: None,
         };
         s.msgs.push(Msg::Tool(card.clone()));
-        s.transcript_cache.valid = true;
+        s.render.transcript_cache.valid = true;
         assert!(
             tick_spinners(&mut s, std::time::Instant::now()),
             "running drives redraws"
         );
-        assert!(s.activity_epoch.is_some(), "epoch set while running");
-        assert!(s.transcript_cache.valid, "animation keeps the base cache");
         assert!(
-            s.transcript_cache.dirty_messages.contains(&0),
+            s.session.activity_epoch.is_some(),
+            "epoch set while running"
+        );
+        assert!(
+            s.render.transcript_cache.valid,
+            "animation keeps the base cache"
+        );
+        assert!(
+            s.render.transcript_cache.dirty_messages.contains(&0),
             "only the running message is dirty"
         );
         // Settle: the transition still drives redraws.
@@ -3825,13 +3696,13 @@ mod tests {
         card.done_since = Some(std::time::Instant::now());
         card.done_from = Some(Theme::ferra().dim);
         s.msgs[0] = Msg::Tool(card.clone());
-        s.transcript_cache.valid = true;
-        s.transcript_cache.dirty_messages.clear();
+        s.render.transcript_cache.valid = true;
+        s.render.transcript_cache.dirty_messages.clear();
         assert!(
             tick_spinners(&mut s, std::time::Instant::now()),
             "transition animates"
         );
-        assert!(s.transcript_cache.dirty_messages.contains(&0));
+        assert!(s.render.transcript_cache.dirty_messages.contains(&0));
         // An expired transition gets one exact target-color patch, then the
         // clock stops without an extra animation deadline.
         card.done_since = Some(
@@ -3839,21 +3710,24 @@ mod tests {
                 - std::time::Duration::from_millis(SETTLE_TRANSITION_MS as u64 + 10),
         );
         s.msgs[0] = Msg::Tool(card);
-        s.transcript_cache.valid = true;
-        s.transcript_cache.dirty_messages.clear();
+        s.render.transcript_cache.valid = true;
+        s.render.transcript_cache.dirty_messages.clear();
         assert!(
             tick_spinners(&mut s, std::time::Instant::now()),
             "expired transition submits its final patch"
         );
-        assert!(s.transcript_cache.dirty_messages.contains(&0));
+        assert!(s.render.transcript_cache.dirty_messages.contains(&0));
         assert!(matches!(
             &s.msgs[0],
             Msg::Tool(card) if card.done_since.is_some() && card.done_from.is_none()
         ));
-        s.transcript_cache.dirty_messages.clear();
+        s.render.transcript_cache.dirty_messages.clear();
         assert!(!tick_spinners(&mut s, std::time::Instant::now()));
-        assert!(s.transcript_cache.valid);
-        assert!(s.activity_epoch.is_none(), "epoch cleared when idle");
+        assert!(s.render.transcript_cache.valid);
+        assert!(
+            s.session.activity_epoch.is_none(),
+            "epoch cleared when idle"
+        );
     }
 
     #[test]
@@ -3871,7 +3745,7 @@ mod tests {
             done_since: Some(completed_at),
             done_from: Some(Theme::ferra().dim),
         }));
-        state.transcript_cache.valid = true;
+        state.render.transcript_cache.valid = true;
         assert!(tick_spinners(&mut state, std::time::Instant::now()));
         let Msg::FileGroup(group) = &mut state.msgs[0] else {
             unreachable!()
@@ -3891,26 +3765,32 @@ mod tests {
     #[test]
     fn running_status_drives_breathing_without_visible_activity() {
         let mut s = AppState::default();
-        s.status = AgentStatus::Running;
-        s.working = false;
-        s.transcript_cache.valid = true;
+        s.session.status = AgentStatus::Running;
+        s.session.working = false;
+        s.render.transcript_cache.valid = true;
         assert!(
             tick_spinners(&mut s, std::time::Instant::now()),
             "running drives redraws"
         );
-        assert!(s.activity_epoch.is_some(), "epoch set while running");
         assert!(
-            s.transcript_cache.valid,
+            s.session.activity_epoch.is_some(),
+            "epoch set while running"
+        );
+        assert!(
+            s.render.transcript_cache.valid,
             "status-only animation does not dirty transcript rows"
         );
-        assert!(s.transcript_cache.dirty_messages.is_empty());
+        assert!(s.render.transcript_cache.dirty_messages.is_empty());
         // Idle with nothing animating stops the clock again.
-        s.status = AgentStatus::Idle;
+        s.session.status = AgentStatus::Idle;
         assert!(
             !tick_spinners(&mut s, std::time::Instant::now()),
             "idle stops redraws"
         );
-        assert!(s.activity_epoch.is_none(), "epoch cleared when idle");
+        assert!(
+            s.session.activity_epoch.is_none(),
+            "epoch cleared when idle"
+        );
     }
 
     #[test]
@@ -3931,9 +3811,12 @@ mod tests {
                 "truncated": true
             }),
         );
-        assert_eq!(s.min_seq, Some(5), "earliest seq tracked");
-        assert!(!s.history_exhausted, "truncated snapshot has older history");
-        assert!(!s.history_loading);
+        assert_eq!(s.session.min_seq, Some(5), "earliest seq tracked");
+        assert!(
+            !s.session.history_exhausted,
+            "truncated snapshot has older history"
+        );
+        assert!(!s.session.history_loading);
 
         let mut s2 = AppState::default();
         s2.apply(
@@ -3947,7 +3830,7 @@ mod tests {
             }),
         );
         assert!(
-            s2.history_exhausted,
+            s2.session.history_exhausted,
             "full snapshot = nothing older to load"
         );
     }
@@ -4133,8 +4016,8 @@ mod tests {
                 "source": {"kind": "user"}
             }),
         ));
-        s.transcript_cache.valid = true;
-        s.transcript_cache.lines = vec![ratatui::text::Line::default(); 4];
+        s.render.transcript_cache.valid = true;
+        s.render.transcript_cache.lines = vec![ratatui::text::Line::default(); 4];
         let added = s.prepend_events(&[event_seq(
             "user/message",
             2,
@@ -4159,9 +4042,12 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(transcript_text, vec!["前", "后"]);
-        assert!(!s.transcript_cache.valid, "prepend forces a full rebuild");
-        assert_eq!(s.transcript_cache.prepend_anchor, Some(4));
-        assert_eq!(s.min_seq, Some(2));
+        assert!(
+            !s.render.transcript_cache.valid,
+            "prepend forces a full rebuild"
+        );
+        assert_eq!(s.render.transcript_cache.prepend_anchor, Some(4));
+        assert_eq!(s.session.min_seq, Some(2));
     }
 
     #[test]

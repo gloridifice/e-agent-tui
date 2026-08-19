@@ -2,7 +2,10 @@
 
 use std::time::Instant;
 
-use crate::{Config, ThemeFile};
+use crate::{
+    preview::{PreviewContent, PreviewKey, PreviewRequest, PreviewRequestId, PreviewRevision},
+    Config, ThemeFile,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuestionAnswer {
@@ -65,13 +68,6 @@ pub enum AgentRequest {
     Ping,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PreviewRequest {
-    pub request_id: u64,
-    pub key: String,
-    pub revision: u64,
-}
-
 #[derive(Debug, Clone)]
 pub enum EffectResult {
     ConfigPersisted(Result<(), String>),
@@ -84,6 +80,12 @@ pub enum EffectResult {
         lines: usize,
     },
     ClipboardFailed(String),
+    PreviewResolved {
+        request_id: PreviewRequestId,
+        key: PreviewKey,
+        revision: PreviewRevision,
+        result: Result<PreviewContent, String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

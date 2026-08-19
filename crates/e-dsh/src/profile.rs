@@ -257,6 +257,9 @@ pub struct FrameSample {
     pub cache_rebuilds: u64,
     pub cache_patches: u64,
     pub materialized_rows: u64,
+    pub preview_rebuilds: u64,
+    pub preview_patches: u64,
+    pub preview_materialized_rows: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -367,8 +370,15 @@ impl FrameMetrics {
         let rebuilds: u64 = self.samples.iter().map(|s| s.cache_rebuilds).sum();
         let patches: u64 = self.samples.iter().map(|s| s.cache_patches).sum();
         let rows: u64 = self.samples.iter().map(|s| s.materialized_rows).sum();
+        let preview_rebuilds: u64 = self.samples.iter().map(|s| s.preview_rebuilds).sum();
+        let preview_patches: u64 = self.samples.iter().map(|s| s.preview_patches).sum();
+        let preview_rows: u64 = self
+            .samples
+            .iter()
+            .map(|s| s.preview_materialized_rows)
+            .sum();
         format!(
-            "[dshe frames] n={} total_ms p50={:.2} p95={:.2} p99={:.2} max={:.2}; scheduler_p95={:.2}; render_p95={:.2}; draw_p95={:.2}; cells_p95={:.0}; bytes_p95={:.0}; rebuilds={rebuilds}; patches={patches}; visible_rows={rows}",
+            "[dshe frames] n={} total_ms p50={:.2} p95={:.2} p99={:.2} max={:.2}; scheduler_p95={:.2}; render_p95={:.2}; draw_p95={:.2}; cells_p95={:.0}; bytes_p95={:.0}; rebuilds={rebuilds}; patches={patches}; visible_rows={rows}; preview_rebuilds={preview_rebuilds}; preview_patches={preview_patches}; preview_rows={preview_rows}",
             total.count,
             total.p50,
             total.p95,

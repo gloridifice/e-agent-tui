@@ -32,7 +32,7 @@ pub enum CommandAction {
     Skill,
     Forward,
     Help,
-    Copy,
+    Reading,
     Quit,
 }
 
@@ -84,7 +84,7 @@ pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
         Forward
     ),
     command!("plan", "计划模式", Some("[off|消息]"), None, Forward),
-    command!("copy", "进入复制模式", None, None, Copy),
+    command!("read", "进入阅读视图", None, None, Reading),
     command!("exit", "退出客户端", None, None, Quit),
     command!("q", "退出客户端", None, None, Quit),
     command!("quit", "退出客户端", None, None, Quit),

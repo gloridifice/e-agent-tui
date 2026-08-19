@@ -1,6 +1,6 @@
 # Architecture refactor plan
 
-This directory describes a planned refactor of the Rust client. It is not a description of the current implementation. Until the migration is complete, [../client.md](../client.md), [../design.md](../design.md), and the code remain the source of truth for current behavior.
+This directory records the completed Rust client migration and its baselines. [../client.md](../client.md), [../design.md](../design.md), and the code are authoritative for current behavior; these files retain the staged rationale and gate evidence.
 
 ## Plan documents
 
@@ -8,10 +8,11 @@ This directory describes a planned refactor of the Rust client. It is not a desc
 - [reading-view.md](reading-view.md): the Reading View, semantic Block and Item model, unified Preview pane, navigation, copying, and preview resolution.
 - [migration.md](migration.md): phased migration, current-to-target module map, test gates, risks, and documentation work.
 - [baseline.md](baseline.md): pre-migration scoped tests, visual characterization fixtures, install/setup behavior, and performance measurements.
+- [terminal-binding-gate.md](terminal-binding-gate.md): why `Ctrl+V` failed the universal paste gate and `Ctrl+Y` is the selected Reading binding.
 
 ## Decisions captured by this plan
 
-1. The workspace will contain an `e-dsh` executable package and an `e-tui` library package.
+1. The workspace contains an `e-dsh` executable package and an `e-tui` library package.
 2. `e-tui` is a dedicated agent TUI library. It is not tied to the DSH wire protocol and may support other agent kernels through adapters.
 3. Cargo dependency direction is `e-dsh -> e-tui`. Runtime data flows in both directions through `AgentEvent` and `UiAction` values.
 4. The current Tokio runtime, bounded channels, event-driven frame scheduling, and short lock discipline remain in place during the refactor.

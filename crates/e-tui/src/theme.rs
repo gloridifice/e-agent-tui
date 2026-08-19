@@ -427,7 +427,7 @@ mod tests {
     fn unknown_palette_reference_and_missing_semantic_are_rejected() {
         let unknown = FERRA_SOURCE.replacen("fg = \"mist\"", "fg = \"missing\"", 1);
         assert!(parse_theme(&unknown).is_none());
-        let missing = FERRA_SOURCE.replace("heading6 = { fg = \"bark\" }\n", "");
+        let missing = FERRA_SOURCE.replace("heading6 = { fg = \"bark\" }", "");
         assert!(parse_theme(&missing).is_none());
     }
 

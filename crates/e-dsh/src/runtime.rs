@@ -6,29 +6,30 @@
 
 use std::{
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind};
-use e_tui::AgentEvent;
 #[cfg(test)]
 use e_tui::AgentRequest;
+use e_tui::{
+    command_catalog::NewMode,
+    input::{InputAction, InputState},
+    input_page::{InputPageSession, PageEffect},
+    login::LoginView,
+    ui::{scroll_lines, scroll_page, transcript_view_height, ScrollState},
+    AgentEvent,
+};
 pub use e_tui::{DrawPriority, EffectResult, UiAction};
 
 #[cfg(test)]
 use crate::model::Msg;
 use crate::{
-    command_catalog::NewMode,
     config::Config,
-    copy,
-    input::{InputAction, InputState},
-    input_page::{InputPageSession, PageEffect},
-    login::LoginView,
     model::{AppState, ApprovalCard, QuestionBatch},
     protocol::{ClientMessage, ServerMessage, WIRE_PROTOCOL_VERSION},
     runtime_command::{self, LocalCommandContext},
     theme::{self, Theme, ThemeFile},
-    ui::{scroll_lines, scroll_page, transcript_view_height, ScrollState},
 };
 
 pub enum RuntimeInput {
@@ -44,7 +45,7 @@ pub struct TerminalFocus {
     pub help_visible: bool,
     pub input_page_open: bool,
     pub approval_open: bool,
-    pub copy_mode_open: bool,
+    pub reading_view_open: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,7 +57,7 @@ pub enum TerminalRoute {
     TranscriptPage { up: bool },
     InputPage(KeyEvent),
     Approval(KeyEvent),
-    Copy(KeyEvent),
+    Reading(KeyEvent),
     Ordinary(KeyEvent),
     Ignore,
 }
@@ -70,6 +71,7 @@ pub fn route_terminal_event(event: Event, focus: TerminalFocus) -> TerminalRoute
             MouseEventKind::ScrollDown => TerminalRoute::MouseScroll { up: false },
             _ => TerminalRoute::Ignore,
         },
+        Event::Paste(_) if focus.reading_view_open => TerminalRoute::Ignore,
         Event::Paste(text) => TerminalRoute::Paste { text },
         Event::Key(key) if key.kind == KeyEventKind::Release => TerminalRoute::Ignore,
         Event::Key(key) if focus.help_visible => TerminalRoute::Help {
@@ -89,12 +91,8 @@ pub fn route_terminal_event(event: Event, focus: TerminalFocus) -> TerminalRoute
             }
         }
         Event::Key(key) if focus.input_page_open => TerminalRoute::InputPage(key),
-        Event::Key(key)
-            if focus.approval_open && matches!(key.code, KeyCode::Char('y' | 'Y' | 'n' | 'N')) =>
-        {
-            TerminalRoute::Approval(key)
-        }
-        Event::Key(key) if focus.copy_mode_open => TerminalRoute::Copy(key),
+        Event::Key(key) if focus.approval_open => TerminalRoute::Approval(key),
+        Event::Key(key) if focus.reading_view_open => TerminalRoute::Reading(key),
         Event::Key(key) => TerminalRoute::Ordinary(key),
         _ => TerminalRoute::Ignore,
     }
@@ -118,7 +116,6 @@ fn agent_action(message: ClientMessage) -> UiAction {
 /// handler ownership of terminal or transport infrastructure.
 pub struct BridgeUiState<'a> {
     pub scroll: &'a mut ScrollState,
-    pub copy_mode: &'a mut Option<copy::CopyMode>,
     pub input: &'a mut InputState,
     pub input_page: &'a mut Option<InputPageSession>,
 }
@@ -126,7 +123,7 @@ pub struct BridgeUiState<'a> {
 #[derive(Default)]
 pub struct InputHandlerOutcome {
     pub command: Option<String>,
-    pub activate_copy_mode: bool,
+    pub activate_reading: bool,
     pub effects: Vec<UiAction>,
 }
 
@@ -143,8 +140,6 @@ pub struct TerminalUiState<'a> {
     pub input: &'a mut InputState,
     pub input_page: &'a mut Option<InputPageSession>,
     pub help_visible: &'a mut bool,
-    pub copy_mode: &'a mut Option<copy::CopyMode>,
-    pub copy_rows_cache: &'a mut copy::CopyRowsCache,
     pub copy_toast: &'a mut Option<(String, Instant)>,
     pub config: &'a mut Config,
     pub themes: &'a mut Vec<ThemeFile>,
@@ -163,7 +158,7 @@ impl RuntimeController {
     pub fn apply_terminal_route(
         route: TerminalRoute,
         terminal_height: u16,
-        now: Instant,
+        _now: Instant,
         state: &Arc<Mutex<AppState>>,
         ui: &mut TerminalUiState<'_>,
     ) -> Vec<UiAction> {
@@ -180,18 +175,29 @@ impl RuntimeController {
                         ui.input_page.is_some(),
                     );
                     if page {
-                        scroll_page(ui.scroll, height, app.transcript_cache.display_len(), up);
+                        scroll_page(
+                            ui.scroll,
+                            height,
+                            app.render.transcript_cache.display_len(),
+                            up,
+                        );
                     } else {
-                        scroll_lines(ui.scroll, height, app.transcript_cache.display_len(), up, 3);
+                        scroll_lines(
+                            ui.scroll,
+                            height,
+                            app.render.transcript_cache.display_len(),
+                            up,
+                            3,
+                        );
                     }
                     if up
                         && ui.scroll.offset == 0
                         && !ui.scroll.follow
-                        && !app.history_exhausted
-                        && !app.history_loading
+                        && !app.session.history_exhausted
+                        && !app.session.history_loading
                     {
-                        app.min_seq.map(|seq| {
-                            app.history_loading = true;
+                        app.session.min_seq.map(|seq| {
+                            app.session.history_loading = true;
                             seq
                         })
                     } else {
@@ -231,58 +237,94 @@ impl RuntimeController {
                 ));
             }
             TerminalRoute::Approval(key) => effects.extend(Self::answer_approval(&key, state)),
-            TerminalRoute::Copy(key) => {
-                let action = {
-                    let app = state.lock().unwrap();
-                    let rows = ui.copy_rows_cache.rows_with(
-                        &app.transcript_cache,
-                        app.transcript.len(),
-                        || crate::ui::copy_layout_rows(&app),
-                    );
-                    ui.copy_mode
-                        .as_mut()
-                        .expect("terminal router requires active copy mode")
-                        .handle_key(&key, rows, &app.units)
-                };
-                match action {
-                    copy::CopyAction::None => {}
-                    copy::CopyAction::Exit => *ui.copy_mode = None,
-                    copy::CopyAction::Copy(text) => {
-                        *ui.copy_mode = None;
-                        effects.push(UiAction::WriteClipboard(text));
-                    }
-                    copy::CopyAction::ToggleExpand(unit) => {
-                        crate::presentation::toggle_expand(&mut state.lock().unwrap(), unit);
-                    }
-                    copy::CopyAction::Moved(global_row) => {
-                        let visible = (terminal_height as usize).saturating_sub(5);
-                        ui.scroll.follow = false;
-                        let first = ui.scroll.offset;
-                        let last = ui.scroll.offset + visible;
-                        if global_row < first {
-                            ui.scroll.offset = global_row;
-                        } else if global_row >= last {
-                            ui.scroll.offset = global_row.saturating_sub(visible) + 1;
-                        }
-                    }
-                }
-                if ui.copy_toast.as_ref().is_some_and(|(_, at)| {
-                    now.saturating_duration_since(*at)
-                        > Duration::from_secs(ui.config.copy_toast_secs)
-                }) {
-                    *ui.copy_toast = None;
-                }
+            TerminalRoute::Reading(key) => {
+                effects.extend(Self::apply_reading_key(&key, terminal_height, state, ui));
             }
             TerminalRoute::Ordinary(key) => {
-                effects.extend(Self::apply_ordinary_key(key, state, ui));
+                effects.extend(Self::apply_ordinary_key(key, terminal_height, state, ui));
             }
             TerminalRoute::Ignore => {}
         }
         effects
     }
 
+    fn apply_reading_key(
+        key: &KeyEvent,
+        terminal_height: u16,
+        state: &Arc<Mutex<AppState>>,
+        ui: &mut TerminalUiState<'_>,
+    ) -> Vec<UiAction> {
+        let viewport_height = {
+            let app = state.lock().unwrap();
+            transcript_view_height(terminal_height, &app, ui.input, ui.input_page.is_some())
+        };
+        let item_mode = state
+            .lock()
+            .unwrap()
+            .reading
+            .as_ref()
+            .is_some_and(|reading| reading.item_cursor.is_some());
+        match key.code {
+            KeyCode::Esc => {
+                let mut app = state.lock().unwrap();
+                if !app.leave_reading_items() {
+                    app.exit_reading(ui.input);
+                }
+                app.take_actions()
+            }
+            KeyCode::Down | KeyCode::Char('j') if key.modifiers.is_empty() => {
+                let mut app = state.lock().unwrap();
+                if item_mode {
+                    app.move_reading_item(
+                        e_tui::ReadingDirection::Down,
+                        ui.scroll,
+                        viewport_height,
+                    );
+                } else {
+                    app.move_reading_block(1, ui.scroll, viewport_height);
+                }
+                app.take_actions()
+            }
+            KeyCode::Up | KeyCode::Char('k') if key.modifiers.is_empty() => {
+                let mut app = state.lock().unwrap();
+                if item_mode {
+                    app.move_reading_item(e_tui::ReadingDirection::Up, ui.scroll, viewport_height);
+                } else {
+                    app.move_reading_block(-1, ui.scroll, viewport_height);
+                }
+                app.take_actions()
+            }
+            KeyCode::Left | KeyCode::Char('h') if key.modifiers.is_empty() && item_mode => {
+                let mut app = state.lock().unwrap();
+                app.move_reading_item(e_tui::ReadingDirection::Left, ui.scroll, viewport_height);
+                app.take_actions()
+            }
+            KeyCode::Right | KeyCode::Char('l') if key.modifiers.is_empty() => {
+                let mut app = state.lock().unwrap();
+                if item_mode {
+                    app.move_reading_item(
+                        e_tui::ReadingDirection::Right,
+                        ui.scroll,
+                        viewport_height,
+                    );
+                } else {
+                    app.enter_reading_items();
+                }
+                app.take_actions()
+            }
+            KeyCode::Char('y') if key.modifiers.is_empty() => state
+                .lock()
+                .unwrap()
+                .reading_copy_text()
+                .map(|text| vec![UiAction::WriteClipboard(text)])
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        }
+    }
+
     fn apply_ordinary_key(
         key: KeyEvent,
+        terminal_height: u16,
         state: &Arc<Mutex<AppState>>,
         ui: &mut TerminalUiState<'_>,
     ) -> Vec<UiAction> {
@@ -294,15 +336,31 @@ impl RuntimeController {
             return vec![agent_action(ClientMessage::ListSessions)];
         }
 
-        let idle = {
+        let (idle, catalogs) = {
             let app = state.lock().unwrap();
-            app.is_new_conversation()
-                || (app.status == crate::model::AgentStatus::Idle && !app.has_active_command())
+            (
+                app.is_new_conversation()
+                    || (app.session.status == crate::model::AgentStatus::Idle
+                        && !app.has_active_command()),
+                app.catalogs.clone(),
+            )
         };
-        let action = ui.input.handle_key(&key, idle);
+        let action = ui.input.handle_key_with_catalog(&key, idle, &catalogs);
         let mut outcome = Self::apply_input_action(action, state);
-        if outcome.activate_copy_mode {
-            *ui.copy_mode = Some(copy::CopyMode::default());
+        if outcome.activate_reading {
+            let viewport_height = {
+                let app = state.lock().unwrap();
+                transcript_view_height(terminal_height, &app, ui.input, ui.input_page.is_some())
+            };
+            let (entered, actions) = {
+                let mut app = state.lock().unwrap();
+                let entered = app.enter_reading(ui.input, ui.scroll, viewport_height);
+                (entered, app.take_actions())
+            };
+            outcome.effects.extend(actions);
+            if !entered {
+                *ui.copy_toast = Some(("没有可阅读的内容".into(), Instant::now()));
+            }
         }
         if let Some(line) = outcome.command {
             let command = runtime_command::handle_local_command(
@@ -310,10 +368,9 @@ impl RuntimeController {
                 LocalCommandContext {
                     input_page: ui.input_page,
                     help_visible: ui.help_visible,
-                    copy_mode: ui.copy_mode,
                     config: ui.config,
                     themes: ui.themes,
-                    new_modes: &ui.input.new_modes,
+                    new_modes: &catalogs.new_modes,
                     input_paste_placeholder_chars: &mut ui.input.paste_placeholder_chars,
                     input_history_limit: &mut ui.input.history_limit,
                     theme: ui.theme,
@@ -326,9 +383,19 @@ impl RuntimeController {
             outcome
                 .effects
                 .extend(command.outbound.into_iter().map(agent_action));
+            if command.activate_reading {
+                let viewport_height = {
+                    let app = state.lock().unwrap();
+                    transcript_view_height(terminal_height, &app, ui.input, ui.input_page.is_some())
+                };
+                let mut app = state.lock().unwrap();
+                if !app.enter_reading(ui.input, ui.scroll, viewport_height) {
+                    *ui.copy_toast = Some(("没有可阅读的内容".into(), Instant::now()));
+                }
+                outcome.effects.extend(app.take_actions());
+            }
             if command.new_conversation {
                 *ui.scroll = ScrollState::default();
-                *ui.copy_mode = None;
                 *ui.input_page = None;
             }
             if command.reload_config {
@@ -351,19 +418,44 @@ impl RuntimeController {
         match event {
             AgentEvent::Timeline(e_tui::agent::TimelineEvent::Snapshot { records, truncated }) => {
                 let _zone = crate::tracy_zone!("snapshot apply");
-                state.lock().unwrap().apply_snapshot(&records, truncated);
-                return Vec::new();
+                let mut app = state.lock().unwrap();
+                app.apply_snapshot(&records, truncated);
+                return app.take_actions();
             }
             AgentEvent::Timeline(e_tui::agent::TimelineEvent::Append(record)) => {
-                state.lock().unwrap().apply_host_event(&record);
-                return Vec::new();
+                let mut app = state.lock().unwrap();
+                app.apply_host_event(&record);
+                return app.take_actions();
             }
             AgentEvent::Timeline(e_tui::agent::TimelineEvent::History { records, has_more }) => {
                 let mut state = state.lock().unwrap();
                 state.prepend_host_events(&records);
-                state.history_loading = false;
-                state.history_exhausted = !has_more;
-                return Vec::new();
+                state.session.history_loading = false;
+                state.session.history_exhausted = !has_more;
+                return state.take_actions();
+            }
+            AgentEvent::Preview(e_tui::agent::PreviewEvent::Resolved {
+                request_id,
+                key,
+                revision,
+                result,
+            }) => {
+                let visible = state
+                    .lock()
+                    .unwrap()
+                    .preview
+                    .complete(request_id, key, revision, result);
+                return visible
+                    .then(|| UiAction::RequestDraw(DrawPriority::Content))
+                    .into_iter()
+                    .collect();
+            }
+            AgentEvent::EffectCompleted(result) => {
+                let dirty = Self::apply_effect_result(result, state);
+                return dirty
+                    .then(|| UiAction::RequestDraw(DrawPriority::Content))
+                    .into_iter()
+                    .collect();
             }
             event => {
                 let Ok(msg) = crate::bridge::adapter::legacy_server_message(event) else {
@@ -400,7 +492,7 @@ impl RuntimeController {
                 }
                 let switched = {
                     let mut state = state.lock().unwrap();
-                    let switched = state.session_id.as_deref() != Some(session_id.as_str());
+                    let switched = state.session.session_id.as_deref() != Some(session_id.as_str());
                     state.apply(
                         "welcome",
                         &serde_json::json!({
@@ -417,7 +509,6 @@ impl RuntimeController {
                 };
                 if switched {
                     *ui.scroll = ScrollState::default();
-                    *ui.copy_mode = None;
                     if ui
                         .input_page
                         .as_ref()
@@ -425,8 +516,13 @@ impl RuntimeController {
                     {
                         *ui.input_page = None;
                     }
-                    ui.input.replace_integrated_commands(Vec::new());
-                    ui.input.replace_skills(Vec::new());
+                    let catalogs = {
+                        let mut app = state.lock().unwrap();
+                        app.catalogs.integrated_commands.clear();
+                        app.catalogs.skills.clear();
+                        app.catalogs.clone()
+                    };
+                    ui.input.catalog_changed(&catalogs);
                 }
                 vec![UiAction::PersistSessionId(session_id.clone())]
             }
@@ -453,8 +549,8 @@ impl RuntimeController {
                     .collect::<Vec<_>>();
                 let mut state = state.lock().unwrap();
                 state.prepend_host_events(&records);
-                state.history_loading = false;
-                state.history_exhausted = !*has_more;
+                state.session.history_loading = false;
+                state.session.history_exhausted = !*has_more;
                 Vec::new()
             }
             ServerMessage::Status { status } => {
@@ -468,74 +564,77 @@ impl RuntimeController {
                 sessions,
                 titles_pending,
             } => {
-                let sessions = sessions.clone();
-                state.lock().unwrap().sessions = sessions.clone();
+                let sessions = sessions
+                    .iter()
+                    .map(|session| e_tui::agent::SessionSummary {
+                        id: session.id.clone(),
+                        title: session.title.clone(),
+                        live: session.live,
+                        created_at: session.created_at,
+                    })
+                    .collect::<Vec<_>>();
+                state.lock().unwrap().catalogs.sessions = sessions.clone();
                 if let Some(page) = ui.input_page.as_mut() {
-                    page.apply_sessions(
-                        sessions
-                            .iter()
-                            .map(|session| e_tui::agent::SessionSummary {
-                                id: session.id.clone(),
-                                title: session.title.clone(),
-                                live: session.live,
-                                created_at: session.created_at,
-                            })
-                            .collect(),
-                        *titles_pending,
-                    );
+                    page.apply_sessions(sessions, *titles_pending);
                 }
                 Vec::new()
             }
             ServerMessage::Presets { presets } => {
-                ui.input.new_modes.clear();
-                ui.input.new_modes.extend(
-                    presets
-                        .iter()
-                        .filter(|preset| preset.broken.is_none())
-                        .map(|preset| NewMode {
-                            id: preset.id.clone(),
-                            name: preset.name.clone(),
-                            description: preset.description.clone(),
-                        }),
-                );
+                let modes = presets
+                    .iter()
+                    .filter(|preset| preset.broken.is_none())
+                    .map(|preset| NewMode {
+                        id: preset.id.clone(),
+                        name: preset.name.clone(),
+                        description: preset.description.clone(),
+                    })
+                    .collect::<Vec<_>>();
+                let catalogs = {
+                    let mut app = state.lock().unwrap();
+                    app.catalogs.new_modes = modes.clone();
+                    app.catalogs.clone()
+                };
+                ui.input.catalog_changed(&catalogs);
                 if let Some(page) = ui.input_page.as_mut() {
-                    page.apply_modes(
-                        ui.input
-                            .new_modes
-                            .iter()
-                            .map(|mode| mode.id.clone())
-                            .collect(),
-                    );
+                    page.apply_modes(modes.iter().map(|mode| mode.id.clone()).collect());
                 }
                 Vec::new()
             }
             ServerMessage::Skills { skills } => {
-                ui.input.replace_skills(
-                    skills
-                        .iter()
-                        .map(|skill| e_tui::agent::Skill {
-                            name: skill.name.clone(),
-                            description: skill.description.clone(),
-                        })
-                        .collect(),
-                );
+                let skills = skills
+                    .iter()
+                    .map(|skill| e_tui::agent::Skill {
+                        name: skill.name.clone(),
+                        description: skill.description.clone(),
+                    })
+                    .collect();
+                let catalogs = {
+                    let mut app = state.lock().unwrap();
+                    app.catalogs.skills = skills;
+                    app.catalogs.clone()
+                };
+                ui.input.catalog_changed(&catalogs);
                 Vec::new()
             }
             ServerMessage::Title { title } => {
-                state.lock().unwrap().session_title = Some(title.clone());
+                state.lock().unwrap().session.session_title = Some(title.clone());
                 Vec::new()
             }
             ServerMessage::Commands { commands } => {
-                ui.input.replace_integrated_commands(
-                    commands
-                        .iter()
-                        .map(|command| e_tui::agent::CommandDescriptor {
-                            name: command.name.clone(),
-                            description: command.description.clone(),
-                            input_hint: command.input.as_ref().map(|input| input.hint.clone()),
-                        })
-                        .collect(),
-                );
+                let commands = commands
+                    .iter()
+                    .map(|command| e_tui::agent::CommandDescriptor {
+                        name: command.name.clone(),
+                        description: command.description.clone(),
+                        input_hint: command.input.as_ref().map(|input| input.hint.clone()),
+                    })
+                    .collect();
+                let catalogs = {
+                    let mut app = state.lock().unwrap();
+                    app.catalogs.integrated_commands = commands;
+                    app.catalogs.clone()
+                };
+                ui.input.catalog_changed(&catalogs);
                 Vec::new()
             }
             ServerMessage::CommandResult {
@@ -553,63 +652,76 @@ impl RuntimeController {
                 proxies,
                 error,
             } => {
+                let providers = providers
+                    .iter()
+                    .map(|provider| e_tui::agent::CredentialProvider {
+                        id: provider.id.clone(),
+                        name: provider.name.clone(),
+                        api_key_configured: provider.api_key_configured,
+                        api_key_writable: provider.api_key_writable,
+                        api_key_source: provider.api_key_source.clone(),
+                        api_key_hint: provider.api_key_hint.clone(),
+                    })
+                    .collect::<Vec<_>>();
+                let proxies = proxies
+                    .iter()
+                    .map(|proxy| e_tui::agent::ProxyRoute {
+                        id: proxy.id.clone(),
+                        name: proxy.name.clone(),
+                        base_url: proxy.base_url.clone(),
+                        protocol: proxy.protocol.clone(),
+                        model: proxy.model.clone(),
+                    })
+                    .collect::<Vec<_>>();
+                {
+                    let mut app = state.lock().unwrap();
+                    app.catalogs.credential_providers = providers.clone();
+                    app.catalogs.proxies = proxies.clone();
+                }
                 if let Some(page) = ui.input_page.as_mut() {
                     page.apply_login(LoginView {
-                        providers: providers
-                            .iter()
-                            .map(|provider| e_tui::agent::CredentialProvider {
-                                id: provider.id.clone(),
-                                name: provider.name.clone(),
-                                api_key_configured: provider.api_key_configured,
-                                api_key_writable: provider.api_key_writable,
-                                api_key_source: provider.api_key_source.clone(),
-                                api_key_hint: provider.api_key_hint.clone(),
-                            })
-                            .collect(),
-                        proxies: proxies
-                            .iter()
-                            .map(|proxy| e_tui::agent::ProxyRoute {
-                                id: proxy.id.clone(),
-                                name: proxy.name.clone(),
-                                base_url: proxy.base_url.clone(),
-                                protocol: proxy.protocol.clone(),
-                                model: proxy.model.clone(),
-                            })
-                            .collect(),
+                        providers,
+                        proxies,
                         error: error.clone(),
                     });
                 }
                 Vec::new()
             }
             ServerMessage::Model { providers, current } => {
+                let providers = providers
+                    .iter()
+                    .map(|provider| e_tui::agent::ModelProvider {
+                        id: provider.id.clone(),
+                        name: provider.name.clone(),
+                        models: provider
+                            .models
+                            .iter()
+                            .map(|model| e_tui::agent::ModelDescriptor {
+                                id: model.id.clone(),
+                                name: model.name.clone(),
+                                description: model.description.clone(),
+                            })
+                            .collect(),
+                    })
+                    .collect::<Vec<_>>();
                 let selected = current
                     .clone()
                     .map(|current| (current.provider.clone(), current.model.clone()));
                 if let Some(page) = ui.input_page.as_mut() {
-                    page.apply_model(
-                        providers
-                            .iter()
-                            .map(|provider| e_tui::agent::ModelProvider {
-                                id: provider.id.clone(),
-                                name: provider.name.clone(),
-                                models: provider
-                                    .models
-                                    .iter()
-                                    .map(|model| e_tui::agent::ModelDescriptor {
-                                        id: model.id.clone(),
-                                        name: model.name.clone(),
-                                        description: model.description.clone(),
-                                    })
-                                    .collect(),
-                            })
-                            .collect(),
-                        selected,
-                    );
+                    page.apply_model(providers.clone(), selected);
                 }
-                let mut state = state.lock().unwrap();
+                let mut app = state.lock().unwrap();
+                app.catalogs.model_providers = providers;
+                app.catalogs.current_model =
+                    current
+                        .as_ref()
+                        .map(|current| e_tui::agent::ModelSelection {
+                            provider: current.provider.clone(),
+                            model: current.model.clone(),
+                        });
                 if let Some(current) = current {
-                    state.provider = Some(current.provider.clone());
-                    state.model = Some(current.model.clone());
+                    app.session.provider = Some(current.provider.clone());
+                    app.session.model = Some(current.model.clone());
                 }
                 Vec::new()
             }
@@ -619,7 +731,7 @@ impl RuntimeController {
                 reason,
                 ..
             } => {
-                state.lock().unwrap().approval = Some(ApprovalCard {
+                state.lock().unwrap().interaction.approval = Some(ApprovalCard {
                     id: id.clone(),
                     tool_name: tool_name.clone(),
                     reason: reason.clone(),
@@ -653,7 +765,7 @@ impl RuntimeController {
                         })
                         .collect(),
                 );
-                state.lock().unwrap().question = Some(rpc_id.clone());
+                state.lock().unwrap().interaction.question = Some(rpc_id.clone());
                 *ui.input_page = Some(InputPageSession::question(batch));
                 Vec::new()
             }
@@ -661,8 +773,8 @@ impl RuntimeController {
                 question_rpc_id, ..
             } => {
                 let mut state = state.lock().unwrap();
-                if state.question.as_deref() == Some(question_rpc_id.as_str()) {
-                    state.question = None;
+                if state.interaction.question.as_deref() == Some(question_rpc_id.as_str()) {
+                    state.interaction.question = None;
                 }
                 drop(state);
                 if ui
@@ -777,11 +889,15 @@ impl RuntimeController {
             }
             InputAction::Command(line) => outcome.command = Some(line),
             InputAction::Interrupt => {
-                state.lock().unwrap().queue.clear();
+                state.lock().unwrap().interaction.queue.clear();
                 outcome.effects.push(agent_action(ClientMessage::Interrupt));
             }
             InputAction::Quit => outcome.effects.push(UiAction::Quit),
-            InputAction::CopyMode => outcome.activate_copy_mode = true,
+            InputAction::PreviewToggle => {
+                let mut app = state.lock().unwrap();
+                app.preview.fullscreen = !app.preview.fullscreen;
+            }
+            InputAction::ReadingToggle => outcome.activate_reading = true,
         }
         outcome
     }
@@ -790,7 +906,7 @@ impl RuntimeController {
         let allow = matches!(key.code, KeyCode::Char('y' | 'Y'));
         let request = {
             let mut state = state.lock().unwrap();
-            let Some(card) = state.approval.take() else {
+            let Some(card) = state.interaction.approval.take() else {
                 return Vec::new();
             };
             card.answer(allow)
@@ -824,7 +940,7 @@ impl RuntimeController {
                     .and_then(InputPageSession::question_rpc_id)
                     .map(str::to_owned)
             };
-            state.lock().unwrap().question = question;
+            state.lock().unwrap().interaction.question = question;
         }
         let mut effects = Vec::new();
         for effect in outcome.effects {
@@ -835,8 +951,8 @@ impl RuntimeController {
                     {
                         let mut state = state.lock().unwrap();
                         state.config = ui.config.clone();
-                        state.markdown_layout.invalidate_all();
-                        state.transcript_cache.invalidate();
+                        state.render.markdown_layout.invalidate_all();
+                        state.render.transcript_cache.invalidate();
                     }
                     *ui.theme = ui.config.theme();
                     ui.input.paste_placeholder_chars = ui.config.paste_placeholder_chars;
@@ -864,28 +980,44 @@ impl RuntimeController {
         ui.input.history_limit = ui.config.history_limit;
         let mut state = state.lock().unwrap();
         state.config = ui.config.clone();
-        state.markdown_layout.invalidate_all();
-        state.transcript_cache.invalidate();
+        state.render.markdown_layout.invalidate_all();
+        state.render.transcript_cache.invalidate();
         state.push_system_message("已重载配置、主题与技能");
     }
 
-    pub fn apply_effect_result(result: EffectResult, state: &Mutex<AppState>) {
+    pub fn apply_effect_result(result: EffectResult, state: &Mutex<AppState>) -> bool {
         match result {
             EffectResult::ConfigPersisted(Ok(()))
             | EffectResult::ConfigReloaded { .. }
-            | EffectResult::ClipboardWritten { .. } => {}
+            | EffectResult::ClipboardWritten { .. } => false,
             EffectResult::ConfigPersisted(Err(error)) | EffectResult::ConfigReloadFailed(error) => {
                 state
                     .lock()
                     .unwrap()
                     .push_error_message(format!("设置保存失败: {error}"));
+                true
             }
             EffectResult::ClipboardFailed(error) => {
-                state
-                    .lock()
-                    .unwrap()
-                    .push_error_message(format!("剪贴板写入失败: {error}"));
+                let mut app = state.lock().unwrap();
+                app.push_error_message(format!("剪贴板写入失败: {error}"));
+                if app.reading.is_some() {
+                    let placeholder = InputState::new(&app.config);
+                    let mut input = std::mem::replace(&mut app.interaction.input, placeholder);
+                    app.exit_reading(&mut input);
+                    app.interaction.input = input;
+                }
+                true
             }
+            EffectResult::PreviewResolved {
+                request_id,
+                key,
+                revision,
+                result,
+            } => state
+                .lock()
+                .unwrap()
+                .preview
+                .complete(request_id, key, revision, result),
         }
     }
 
@@ -903,17 +1035,15 @@ impl RuntimeController {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{config::Config, input::InputState};
+    use crate::config::Config;
 
     fn ui<'a>(
         scroll: &'a mut ScrollState,
-        copy_mode: &'a mut Option<copy::CopyMode>,
         input: &'a mut InputState,
         input_page: &'a mut Option<InputPageSession>,
     ) -> BridgeUiState<'a> {
         BridgeUiState {
             scroll,
-            copy_mode,
             input,
             input_page,
         }
@@ -938,9 +1068,11 @@ mod tests {
             follow: false,
             offset: 10,
         };
-        let mut copy_mode = Some(copy::CopyMode::default());
         let mut input = InputState::new(&Config::default());
-        input
+        state
+            .lock()
+            .unwrap()
+            .catalogs
             .integrated_commands
             .push(e_tui::agent::CommandDescriptor {
                 name: "plugin".into(),
@@ -961,11 +1093,15 @@ mod tests {
                 cwd: None,
             },
             &state,
-            &mut ui(&mut scroll, &mut copy_mode, &mut input, &mut page),
+            &mut ui(&mut scroll, &mut input, &mut page),
         );
         assert!(scroll.follow && scroll.offset == 0);
-        assert!(copy_mode.is_none());
-        assert!(input.integrated_commands.is_empty());
+        assert!(state
+            .lock()
+            .unwrap()
+            .catalogs
+            .integrated_commands
+            .is_empty());
         assert!(matches!(
             effects.as_slice(),
             [UiAction::PersistSessionId(id)] if id == "s1"
@@ -976,7 +1112,6 @@ mod tests {
     fn question_frame_opens_input_page_without_consuming_input_buffer() {
         let state = Arc::new(Mutex::new(AppState::default()));
         let mut scroll = ScrollState::default();
-        let mut copy_mode = None;
         let mut input = InputState::new(&Config::default());
         input.buf = "draft prompt".into();
         input.cursor = input.buf.chars().count();
@@ -997,11 +1132,11 @@ mod tests {
                 }],
             },
             &state,
-            &mut ui(&mut scroll, &mut copy_mode, &mut input, &mut page),
+            &mut ui(&mut scroll, &mut input, &mut page),
         );
         assert!(matches!(
             page.as_ref().map(|page| &page.page),
-            Some(crate::input_page::InputPage::Question(_))
+            Some(e_tui::input_page::InputPage::Question(_))
         ));
         assert_eq!(input.buf, "draft prompt");
 
@@ -1020,7 +1155,7 @@ mod tests {
             },
         );
         assert!(page.is_none());
-        assert!(state.lock().unwrap().question.is_none());
+        assert!(state.lock().unwrap().interaction.question.is_none());
         assert_eq!(input.buf, "draft prompt");
         assert!(matches!(
             effects.as_slice(),
@@ -1032,14 +1167,9 @@ mod tests {
     fn bridge_effects(message: ServerMessage) -> Vec<UiAction> {
         let state = Arc::new(Mutex::new(AppState::default()));
         let mut scroll = ScrollState::default();
-        let mut copy_mode = None;
         let mut input = InputState::new(&Config::default());
         let mut page = None;
-        apply_bridge(
-            message,
-            &state,
-            &mut ui(&mut scroll, &mut copy_mode, &mut input, &mut page),
-        )
+        apply_bridge(message, &state, &mut ui(&mut scroll, &mut input, &mut page))
     }
 
     fn bridge_error(code: &str, message: &str) -> Vec<UiAction> {
@@ -1113,7 +1243,7 @@ mod tests {
             help_visible: false,
             input_page_open: true,
             approval_open: true,
-            copy_mode_open: true,
+            reading_view_open: true,
         };
         assert!(matches!(
             route_terminal_event(key(KeyCode::PageUp), all_open),
@@ -1134,21 +1264,33 @@ mod tests {
         ));
         assert!(matches!(
             route_terminal_event(key(KeyCode::Char('x')), blocking),
-            TerminalRoute::Copy(_)
+            TerminalRoute::Approval(_)
         ));
 
-        let approval = TerminalFocus {
-            copy_mode_open: false,
+        let reading = TerminalFocus {
+            approval_open: false,
             ..blocking
         };
         assert!(matches!(
-            route_terminal_event(key(KeyCode::Char('n')), approval),
-            TerminalRoute::Approval(_)
+            route_terminal_event(key(KeyCode::Char('x')), reading),
+            TerminalRoute::Reading(_)
         ));
+    }
+
+    #[test]
+    fn reading_route_preserves_draft_and_blocks_paste() {
+        let reading = TerminalFocus {
+            reading_view_open: true,
+            ..TerminalFocus::default()
+        };
         assert!(matches!(
-            route_terminal_event(key(KeyCode::Char('x')), approval),
-            TerminalRoute::Ordinary(_)
+            route_terminal_event(key(KeyCode::Char('j')), reading),
+            TerminalRoute::Reading(_)
         ));
+        assert_eq!(
+            route_terminal_event(Event::Paste("draft".into()), reading),
+            TerminalRoute::Ignore
+        );
     }
 
     #[test]
@@ -1176,8 +1318,6 @@ mod tests {
         input.cursor = input.buf.chars().count();
         let mut input_page = None;
         let mut help_visible = false;
-        let mut copy_mode = None;
-        let mut rows_cache = copy::CopyRowsCache::default();
         let mut copy_toast = None;
         let mut config = Config::default();
         let mut themes = Vec::new();
@@ -1193,8 +1333,6 @@ mod tests {
                 input: &mut input,
                 input_page: &mut input_page,
                 help_visible: &mut help_visible,
-                copy_mode: &mut copy_mode,
-                copy_rows_cache: &mut rows_cache,
                 copy_toast: &mut copy_toast,
                 config: &mut config,
                 themes: &mut themes,
@@ -1217,8 +1355,6 @@ mod tests {
                 input: &mut input,
                 input_page: &mut input_page,
                 help_visible: &mut help_visible,
-                copy_mode: &mut copy_mode,
-                copy_rows_cache: &mut rows_cache,
                 copy_toast: &mut copy_toast,
                 config: &mut config,
                 themes: &mut themes,
@@ -1231,7 +1367,7 @@ mod tests {
         ));
 
         let before = state.lock().unwrap().transcript.len();
-        let mut bridge_ui = ui(&mut scroll, &mut copy_mode, &mut input, &mut input_page);
+        let mut bridge_ui = ui(&mut scroll, &mut input, &mut input_page);
         apply_bridge(
             ServerMessage::Error {
                 code: "command-cancelled".into(),
@@ -1260,7 +1396,7 @@ mod tests {
     #[test]
     fn clipboard_failure_becomes_visible_after_effect_completion() {
         let state = Mutex::new(AppState::default());
-        state.lock().unwrap().transcript_cache.valid = true;
+        state.lock().unwrap().render.transcript_cache.valid = true;
         RuntimeController::apply_effect_result(
             EffectResult::ClipboardFailed("denied".into()),
             &state,
@@ -1272,68 +1408,11 @@ mod tests {
         ));
         assert!(matches!(
             &state.transcript.nodes().last().unwrap().item,
-            crate::display::DisplayItem::Block(block)
-                if block.tone == crate::display::DisplayTone::Error
+            e_tui::display::DisplayItem::Block(block)
+                if block.tone == e_tui::display::DisplayTone::Error
                     && block.content.contains("denied")
         ));
-        assert!(!state.transcript_cache.valid);
-    }
-
-    #[test]
-    fn copy_movement_route_releases_state_lock() {
-        let mut app = AppState::default();
-        app.msgs.push(Msg::Assistant {
-            text: "a\nb".into(),
-            lines: vec![
-                crate::render::RenderLine {
-                    line: ratatui::text::Line::from("a"),
-                    unit: 1,
-                    raw_line: Some(0),
-                    atomic: false,
-                    fill: false,
-                },
-                crate::render::RenderLine {
-                    line: ratatui::text::Line::from("b"),
-                    unit: 1,
-                    raw_line: Some(1),
-                    atomic: false,
-                    fill: false,
-                },
-            ],
-            unit_start: 1,
-        });
-        app.transcript_cache.width = 80;
-        let state = Arc::new(Mutex::new(app));
-        let mut scroll = ScrollState::default();
-        let mut input = InputState::new(&Config::default());
-        let mut input_page = None;
-        let mut help_visible = false;
-        let mut copy_mode = Some(copy::CopyMode::default());
-        let mut rows_cache = copy::CopyRowsCache::default();
-        let mut copy_toast = None;
-        let mut config = Config::default();
-        let mut themes = Vec::new();
-        let mut theme = config.theme();
-        RuntimeController::apply_terminal_route(
-            TerminalRoute::Copy(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
-            40,
-            Instant::now(),
-            &state,
-            &mut TerminalUiState {
-                scroll: &mut scroll,
-                input: &mut input,
-                input_page: &mut input_page,
-                help_visible: &mut help_visible,
-                copy_mode: &mut copy_mode,
-                copy_rows_cache: &mut rows_cache,
-                copy_toast: &mut copy_toast,
-                config: &mut config,
-                themes: &mut themes,
-                theme: &mut theme,
-            },
-        );
-        assert_eq!(copy_mode.unwrap().cursor, 1);
-        assert!(state.try_lock().is_ok());
+        assert!(!state.render.transcript_cache.valid);
     }
 
     #[test]
@@ -1347,13 +1426,11 @@ mod tests {
         )
         .unwrap();
         let state = Mutex::new(AppState::default());
-        state.lock().unwrap().transcript_cache.valid = true;
+        state.lock().unwrap().render.transcript_cache.valid = true;
         let mut scroll = ScrollState::default();
         let mut input = InputState::new(&Config::default());
         let mut input_page = None;
         let mut help_visible = false;
-        let mut copy_mode = None;
-        let mut rows_cache = copy::CopyRowsCache::default();
         let mut copy_toast = None;
         let mut config = Config::default();
         let mut themes = Vec::new();
@@ -1367,8 +1444,6 @@ mod tests {
                 input: &mut input,
                 input_page: &mut input_page,
                 help_visible: &mut help_visible,
-                copy_mode: &mut copy_mode,
-                copy_rows_cache: &mut rows_cache,
                 copy_toast: &mut copy_toast,
                 config: &mut config,
                 themes: &mut themes,
@@ -1381,7 +1456,7 @@ mod tests {
         assert_eq!(input.history_limit, 77);
         let state = state.lock().unwrap();
         assert_eq!(state.config.theme, "ferra");
-        assert!(!state.transcript_cache.valid);
+        assert!(!state.render.transcript_cache.valid);
     }
 
     #[test]
@@ -1396,9 +1471,10 @@ mod tests {
                 if mode == "code" && text == "first prompt"
         ));
         let state = state.lock().unwrap();
-        assert!(state.queue.is_empty());
+        assert!(state.interaction.queue.is_empty());
         assert_eq!(
             state
+                .session
                 .new_conversation
                 .as_ref()
                 .and_then(|draft| draft.pending_input.as_deref()),
@@ -1412,7 +1488,6 @@ mod tests {
         state.lock().unwrap().begin_new_conversation("standard");
         let _ = RuntimeController::apply_input_action(InputAction::Send("retry me".into()), &state);
         let mut scroll = ScrollState::default();
-        let mut copy_mode = None;
         let mut input = InputState::new(&Config::default());
         let mut input_page = None;
         let effects = apply_bridge(
@@ -1423,7 +1498,6 @@ mod tests {
             &state,
             &mut BridgeUiState {
                 scroll: &mut scroll,
-                copy_mode: &mut copy_mode,
                 input: &mut input,
                 input_page: &mut input_page,
             },
@@ -1434,6 +1508,7 @@ mod tests {
         let app = state.lock().unwrap();
         assert!(app.is_new_conversation());
         assert!(app
+            .session
             .new_conversation
             .as_ref()
             .and_then(|draft| draft.notice.as_deref())
@@ -1443,9 +1518,9 @@ mod tests {
     #[test]
     fn queued_dispatch_returns_send_after_atomic_state_change() {
         let state = Mutex::new(AppState::default());
-        state.lock().unwrap().queue.push("next".into());
+        state.lock().unwrap().interaction.queue.push("next".into());
         let effects = RuntimeController::dispatch_next_queued(&state);
-        assert!(state.lock().unwrap().queue.is_empty());
+        assert!(state.lock().unwrap().interaction.queue.is_empty());
         assert!(matches!(
             effects.as_slice(),
             [UiAction::Agent(AgentRequest::Input { text })] if text == "next"

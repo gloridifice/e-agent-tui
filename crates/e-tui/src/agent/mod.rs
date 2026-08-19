@@ -184,10 +184,10 @@ pub enum InteractionEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PreviewEvent {
     Resolved {
-        request_id: u64,
-        key: String,
-        revision: u64,
-        result: Result<String, String>,
+        request_id: crate::preview::PreviewRequestId,
+        key: crate::preview::PreviewKey,
+        revision: crate::preview::PreviewRevision,
+        result: Result<crate::preview::PreviewContent, String>,
     },
 }
 

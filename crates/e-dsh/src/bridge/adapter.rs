@@ -658,7 +658,7 @@ fn normalize_tool_call(call_id: String, name: String, arguments: String) -> Tool
         .clone()
         .unwrap_or_else(|| normalized_tool_summary(&name, parsed.as_ref(), &arguments));
     let label = capability_label(&capability, &name).to_owned();
-    let reference = path.clone().map(|path| ToolReference::Path { path });
+    let reference = normalize_tool_reference(&capability, parsed.as_ref(), path);
     let items = reference
         .clone()
         .map(|reference| {
@@ -677,6 +677,60 @@ fn normalize_tool_call(call_id: String, name: String, arguments: String) -> Tool
         state: ActivityState::Running,
         reference,
         items,
+    }
+}
+
+fn normalize_tool_reference(
+    capability: &ToolCapability,
+    arguments: Option<&Value>,
+    path: Option<String>,
+) -> Option<ToolReference> {
+    let string = |keys: &[&str]| {
+        keys.iter().find_map(|key| {
+            arguments
+                .and_then(|value| value.get(*key))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+    };
+    match capability {
+        ToolCapability::Edit | ToolCapability::Replace | ToolCapability::Insert => {
+            let old = string(&["old_str", "old", "before"]);
+            let new = string(&["new_str", "new", "after", "insert_line"]);
+            match (old, new) {
+                (Some(old), Some(new)) => Some(ToolReference::Diff {
+                    path,
+                    diff: format!("- {old}\n+ {new}"),
+                }),
+                _ => path.map(|path| ToolReference::Path { path }),
+            }
+        }
+        ToolCapability::Read | ToolCapability::View => path.map(|path| ToolReference::Lines {
+            path,
+            start: arguments
+                .and_then(|value| value.get("line_start").or_else(|| value.get("start")))
+                .and_then(Value::as_u64)
+                .unwrap_or(1) as usize,
+            lines: Vec::new(),
+        }),
+        ToolCapability::Search => Some(ToolReference::SearchResult {
+            query: string(&["pattern", "query"]).unwrap_or_default(),
+            matches: Vec::new(),
+        }),
+        ToolCapability::Command => {
+            string(&["command", "cmd"]).map(|command| ToolReference::Command { command })
+        }
+        _ => {
+            if let Some(url) = string(&["url", "href"]) {
+                Some(ToolReference::Link { label: None, url })
+            } else if let Some(source) = string(&["markdown"]) {
+                Some(ToolReference::Markdown { source })
+            } else if let Some(text) = string(&["text", "content"]) {
+                Some(ToolReference::PlainText { text })
+            } else {
+                path.map(|path| ToolReference::Path { path })
+            }
+        }
     }
 }
 
@@ -1004,7 +1058,24 @@ fn legacy_tool_arguments(reference: Option<ToolReference>, summary: String) -> S
     match reference {
         Some(ToolReference::Path { path }) => serde_json::json!({ "path": path }).to_string(),
         Some(ToolReference::Link { url, .. }) => serde_json::json!({ "url": url }).to_string(),
-        Some(ToolReference::Text { text }) => serde_json::json!({ "text": text }).to_string(),
+        Some(ToolReference::Text { text } | ToolReference::PlainText { text }) => {
+            serde_json::json!({ "text": text }).to_string()
+        }
+        Some(ToolReference::Diff { path, diff }) => {
+            serde_json::json!({ "path": path, "diff": diff }).to_string()
+        }
+        Some(ToolReference::Lines { path, start, lines }) => {
+            serde_json::json!({ "path": path, "start": start, "lines": lines }).to_string()
+        }
+        Some(ToolReference::SearchResult { query, matches }) => {
+            serde_json::json!({ "query": query, "matches": matches }).to_string()
+        }
+        Some(ToolReference::Command { command }) => {
+            serde_json::json!({ "command": command }).to_string()
+        }
+        Some(ToolReference::Markdown { source }) => {
+            serde_json::json!({ "markdown": source }).to_string()
+        }
         Some(ToolReference::Custom { value, .. }) => value,
         None => summary,
     }
@@ -1178,9 +1249,9 @@ mod tests {
         assert!(matches!(
             activity.items.as_slice(),
             [ToolItem {
-                reference: ToolReference::Path { path },
+                reference: ToolReference::Lines { path, start: 1, lines },
                 ..
-            }] if path == "src/main.rs"
+            }] if path == "src/main.rs" && lines.is_empty()
         ));
     }
 

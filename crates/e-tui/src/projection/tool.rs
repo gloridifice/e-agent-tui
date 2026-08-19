@@ -286,7 +286,10 @@ fn classify_file_call(
         _ => return None,
     };
     let path = match activity.reference.as_ref()? {
-        ToolReference::Path { path } => path,
+        ToolReference::Path { path } | ToolReference::Lines { path, .. } => path,
+        ToolReference::Diff {
+            path: Some(path), ..
+        } => path,
         _ => return None,
     };
     Some((action, workspace_relative_path(path, workspace)))

@@ -196,6 +196,8 @@ Build the minimum semantic Block index needed to select the newest transcript Bl
 
 Keep the composer and both status rows active in the main pane. The Preview pane uses the remaining width and full height.
 
+The extraction characterization suite establishes 40 columns as the minimum usable effective main-pane width; Preview retains its specified 32-column minimum. The keybinding audit reserves the otherwise unclaimed `Ctrl+P` for the narrow full-screen Preview toggle. These values are frontend constants and must remain covered by responsive Screen tests.
+
 Add inline Preview support first. Deferred resolution can wait until the selection and rendering path is stable.
 
 Required regression coverage:
@@ -332,6 +334,14 @@ After behavior is stable:
 - archive this plan or mark completed sections explicitly.
 
 Direct state ownership is an optional cleanup. It must not delay the crate split or Reading View.
+
+### Completion record
+
+The main loop retains `Arc<Mutex<AppState>>`: scoped runtime and lock-release tests show that removing it would require broad orchestration churn without improving the established guard-before-effect discipline. `AppState` is now a normalized DSH reduction adapter around the sole `TuiApp` lifecycle owners; migrated executable-side UI re-export facades were removed. Resolver and action executors accept owned values and never receive a UI guard.
+
+The Preview/Reading implementation changed only the internal normalized Rust contract. No bridge message shape or `bridge/protocol-contract.json` field changed, so no wire-protocol bump is required. Generated artifacts were synchronized and the 70-test bridge suite plus protocol check passed. The terminal gate selected `Ctrl+Y`, and old row Copy Mode was removed after semantic copy and paste-routing tests passed.
+
+The final release continuous-frame gate (1,002 messages, 120 frames per size, including normal Preview followed by Reading navigation) reported P95 complete-frame latency of 1.94 ms at 80×40, 2.22 ms at 160×50, and 2.53 ms at 240×70. Transcript rebuilds remained zero; Preview/Reading work was reported independently. A warm canonical snapshot run completed model fold in 3.44 ms and first frame in 0.36 ms.
 
 ## Current-to-target module map
 

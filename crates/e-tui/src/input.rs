@@ -6,13 +6,17 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::agent::{CommandDescriptor, Skill};
+#[cfg(test)]
+use crate::agent::CommandDescriptor;
+use crate::agent::Skill;
+use crate::catalog::CatalogModel;
 pub use crate::command_catalog::NewMode;
 use crate::command_catalog::{
     completion_context, match_command_catalog, CommandSource, CompletionKind,
 };
 use crate::config::Config;
 
+#[derive(Clone)]
 pub struct InputState {
     pub buf: String,
     /// Cursor as a char index into `buf`.
@@ -31,18 +35,19 @@ pub struct InputState {
     pub pasted: bool,
     /// History cap (D28).
     pub history_limit: usize,
-    /// `/new <mode>` candidates from the bridge's `presets` roster message;
-    /// empty until the roster arrives.
+    // Characterization fixtures retain local catalogs only in test builds;
+    // production obtains them from the sole `CatalogModel` owner.
+    #[cfg(test)]
     pub new_modes: Vec<NewMode>,
-    /// Effective DSH/plugin commands discovered by the bridge. They are
-    /// merged with the centralized built-in registry for every completion.
+    #[cfg(test)]
     pub integrated_commands: Vec<CommandDescriptor>,
-    /// User-invocable skills visible in the attached session's cwd/scope.
+    #[cfg(test)]
     pub skills: Vec<Skill>,
     /// Slash-command suggestion popup, when open.
     pub suggest: Option<Suggestion>,
 }
 
+#[derive(Clone)]
 pub struct SearchState {
     pub query: String,
     pub sel: usize,
@@ -51,6 +56,7 @@ pub struct SearchState {
 /// Suggestion popup state: the ranked rows for the typed query, the
 /// highlighted selection, and the raw query (kept for Esc restore while
 /// the user navigates and the buffer shows the filled command).
+#[derive(Clone)]
 pub struct Suggestion {
     pub query: String,
     pub sel: usize,
@@ -86,27 +92,34 @@ impl InputState {
             paste_placeholder_chars: config.paste_placeholder_chars,
             pasted: false,
             history_limit: config.history_limit,
+            #[cfg(test)]
             new_modes: Vec::new(),
+            #[cfg(test)]
             integrated_commands: Vec::new(),
+            #[cfg(test)]
             skills: Vec::new(),
             suggest: None,
         }
     }
 
-    /// Replace the effective DSH/plugin command directory. Registry change
-    /// events can arrive while the popup is open, so recompute immediately.
-    pub fn replace_integrated_commands(&mut self, commands: Vec<CommandDescriptor>) {
-        self.integrated_commands = commands;
+    /// Rebuild any open popup after the sole catalog owner changes.
+    pub fn catalog_changed(&mut self, catalogs: &CatalogModel) {
         self.suggest = None;
-        self.refresh_suggest();
+        self.refresh_suggest(catalogs);
     }
 
-    /// Replace the effective user-invocable skill roster. `skills/change` can
-    /// arrive with `/skill` open, so rebuild the popup immediately.
+    #[cfg(test)]
+    pub fn replace_integrated_commands(&mut self, commands: Vec<CommandDescriptor>) {
+        self.integrated_commands = commands;
+        let catalogs = self.test_catalogs();
+        self.catalog_changed(&catalogs);
+    }
+
+    #[cfg(test)]
     pub fn replace_skills(&mut self, skills: Vec<Skill>) {
         self.skills = skills;
-        self.suggest = None;
-        self.refresh_suggest();
+        let catalogs = self.test_catalogs();
+        self.catalog_changed(&catalogs);
     }
 
     /// Insert pasted text at the cursor. Content over the threshold becomes
@@ -136,8 +149,10 @@ pub enum InputAction {
     Interrupt,
     /// Quit the TUI (Ctrl+C while idle).
     Quit,
-    /// Enter copy mode (D12).
-    CopyMode,
+    /// Toggle full-screen Preview on narrow terminals.
+    PreviewToggle,
+    /// Enter semantic Reading View (Ctrl+Y selected binding).
+    ReadingToggle,
     /// Toggle multiline mode.
     ToggleMultiline,
 }
@@ -217,7 +232,22 @@ pub fn match_skills<'a>(query: &str, skills: &'a [Skill]) -> Vec<&'a Skill> {
 }
 
 impl InputState {
+    /// Compatibility helper for catalog-free callers and focused input tests.
+    /// Production routes through `handle_key_with_catalog`.
     pub fn handle_key(&mut self, key: &KeyEvent, idle: bool) -> InputAction {
+        #[cfg(test)]
+        let catalogs = self.test_catalogs();
+        #[cfg(not(test))]
+        let catalogs = CatalogModel::default();
+        self.handle_key_with_catalog(key, idle, &catalogs)
+    }
+
+    pub fn handle_key_with_catalog(
+        &mut self,
+        key: &KeyEvent,
+        idle: bool,
+        catalogs: &CatalogModel,
+    ) -> InputAction {
         // Ctrl+C: clear the input bar; only an empty bar while idle quits.
         // (Esc is the interrupt key now.)
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
@@ -233,11 +263,11 @@ impl InputState {
             }
             return InputAction::None;
         }
-        // Ctrl+B enters copy mode, but only with an empty buffer (D12).
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('b') {
-            if self.buf.is_empty() && self.search.is_none() {
-                return InputAction::CopyMode;
-            }
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('p') {
+            return InputAction::PreviewToggle;
+        }
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('y') {
+            return InputAction::ReadingToggle;
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('l') {
             return InputAction::None;
@@ -340,7 +370,7 @@ impl InputState {
                         }
                         // Recompute the popup for the recalled prompt, the
                         // same way plain Up/Down refreshes after each key.
-                        self.refresh_suggest();
+                        self.refresh_suggest(catalogs);
                         return InputAction::None;
                     }
                     let cmd = {
@@ -351,7 +381,7 @@ impl InputState {
                     self.buf = cmd.clone();
                     self.cursor = cmd.chars().count();
                     if cmd == "/skill" {
-                        self.refresh_suggest();
+                        self.refresh_suggest(catalogs);
                     }
                     return InputAction::None;
                 }
@@ -369,7 +399,7 @@ impl InputState {
                     self.buf = cmd.clone();
                     self.cursor = cmd.chars().count();
                     if cmd == "/skill" {
-                        self.refresh_suggest();
+                        self.refresh_suggest(catalogs);
                     }
                     return InputAction::None;
                 }
@@ -425,13 +455,13 @@ impl InputState {
                 let argument_ctx = completion_context(&self.buf)
                     .is_some_and(|(_, query)| !query.contains([' ', '\n']));
                 if command_ctx || argument_ctx {
-                    self.refresh_suggest();
+                    self.refresh_suggest(catalogs);
                     if let Some(s) = self.suggest.as_mut() {
                         let cmd = s.matches[s.sel].clone();
                         self.buf = cmd.clone();
                         self.cursor = cmd.chars().count();
                         if cmd == "/skill" {
-                            self.refresh_suggest();
+                            self.refresh_suggest(catalogs);
                         }
                     }
                 }
@@ -519,8 +549,18 @@ impl InputState {
             }
             _ => InputAction::None,
         };
-        self.refresh_suggest();
+        self.refresh_suggest(catalogs);
         action
+    }
+
+    #[cfg(test)]
+    fn test_catalogs(&self) -> CatalogModel {
+        CatalogModel {
+            new_modes: self.new_modes.clone(),
+            integrated_commands: self.integrated_commands.clone(),
+            skills: self.skills.clone(),
+            ..CatalogModel::default()
+        }
     }
 
     pub fn matching_history(&self, query: &str) -> Vec<String> {
@@ -542,7 +582,7 @@ impl InputState {
     /// While the user navigates (the buffer equals one of the listed rows)
     /// the list and its query stay pinned, so the highlight follows the
     /// filled value and Esc can still restore the typed query.
-    fn refresh_suggest(&mut self) {
+    fn refresh_suggest(&mut self, catalogs: &CatalogModel) {
         if let Some(s) = &mut self.suggest {
             let buf_matches = s.matches.iter().position(|m| *m == self.buf);
             let entering_skill_roster = s.kind == SuggestionKind::Commands && self.buf == "/skill";
@@ -560,7 +600,7 @@ impl InputState {
             if !query.contains([' ', '\n']) {
                 match command.completion {
                     CompletionKind::NewMode => {
-                        let ranked = match_new_modes(query, &self.new_modes);
+                        let ranked = match_new_modes(query, &catalogs.new_modes);
                         if ranked.is_empty() {
                             self.suggest = None;
                             return;
@@ -584,7 +624,7 @@ impl InputState {
                         return;
                     }
                     CompletionKind::Skill => {
-                        let ranked = match_skills(query, &self.skills);
+                        let ranked = match_skills(query, &catalogs.skills);
                         if ranked.is_empty() {
                             self.suggest = None;
                             return;
@@ -614,7 +654,7 @@ impl InputState {
         // Command-name popup: "/" or "/set…" without a space.
         let slash = self.buf.starts_with('/') && !self.buf.contains([' ', '\n']);
         if slash {
-            let matched = match_command_catalog(&self.buf[1..], &self.integrated_commands);
+            let matched = match_command_catalog(&self.buf[1..], &catalogs.integrated_commands);
             if matched.is_empty() {
                 self.suggest = None;
                 return;
@@ -835,6 +875,13 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_p_is_reserved_for_preview_toggle() {
+        let mut s = state();
+        assert_eq!(s.handle_key(&ctrl('p'), true), InputAction::PreviewToggle);
+        assert_eq!(s.handle_key(&ctrl('y'), true), InputAction::ReadingToggle);
+    }
+
+    #[test]
     fn esc_interrupts_while_running() {
         let mut s = state();
         assert_eq!(
@@ -884,7 +931,7 @@ mod tests {
             m.iter().all(|c| c.starts_with("/c")),
             "prefix group only: {m:?}"
         );
-        assert_eq!(m.len(), 2);
+        assert_eq!(m.len(), 1);
     }
 
     #[test]
@@ -987,28 +1034,28 @@ mod tests {
         assert_eq!(s.suggest.as_ref().unwrap().matches[sel], "/resume");
         // With several candidates the second Tab advances to the next row.
         let mut s2 = state();
-        for c in "/c".chars() {
+        for c in "/r".chars() {
             s2.handle_key(&key(KeyCode::Char(c)), true);
         }
         s2.handle_key(&key(KeyCode::Tab), true);
-        assert_eq!(s2.buf, "/compact", "first Tab completes");
+        assert_eq!(s2.buf, "/read", "first Tab completes");
         s2.handle_key(&key(KeyCode::Tab), true);
-        assert_eq!(s2.buf, "/copy", "second Tab advances to the next row");
+        assert_eq!(s2.buf, "/reload", "second Tab advances to the next row");
         assert_eq!(s2.suggest.as_ref().unwrap().sel, 1);
     }
 
     #[test]
     fn esc_restores_typed_query() {
         let mut s = state();
-        // "/c" matches two rows so Down stays inside the popup.
-        for c in "/c".chars() {
+        // "/r" matches several rows so Down stays inside the popup.
+        for c in "/r".chars() {
             s.handle_key(&key(KeyCode::Char(c)), true);
         }
         assert!(s.suggest.is_some());
         s.handle_key(&key(KeyCode::Down), true);
-        assert_eq!(s.buf, "/copy");
+        assert_eq!(s.buf, "/reload");
         s.handle_key(&key(KeyCode::Esc), true);
-        assert_eq!(s.buf, "/c", "Esc restores what was typed");
+        assert_eq!(s.buf, "/r", "Esc restores what was typed");
         assert!(s.suggest.is_none());
     }
 

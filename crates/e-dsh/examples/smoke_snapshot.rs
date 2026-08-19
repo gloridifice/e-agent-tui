@@ -2,11 +2,11 @@
 //! report the resulting public display-surface mix. Usage:
 //!   cargo run --example smoke_snapshot -- <path-to-snapshot.json>
 
-use e::{
+use e::model::AppState;
+use e_tui::{
     display::{ActivityState, CardRole, DisplayItem, TranscriptFormat},
-    model::AppState,
     presentation::materialize_transcript,
-    ui::copy_layout_rows,
+    ui::provenance_layout_rows,
 };
 
 fn count_activity(
@@ -36,7 +36,7 @@ fn main() -> anyhow::Result<()> {
         state.apply_event(event);
     }
     materialize_transcript(&mut state);
-    state.transcript_cache.width = 120;
+    state.render.transcript_cache.width = 120;
 
     let mut users = 0;
     let mut assistants = 0;
@@ -76,10 +76,10 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    let copy_rows = copy_layout_rows(&state);
-    let render_lines = copy_rows.len();
-    let atomic_rows = copy_rows.iter().filter(|row| row.atomic).count();
-    let units = copy_rows
+    let provenance_rows = provenance_layout_rows(&state);
+    let render_lines = provenance_rows.len();
+    let atomic_rows = provenance_rows.iter().filter(|row| row.atomic).count();
+    let units = provenance_rows
         .iter()
         .map(|row| row.unit)
         .collect::<std::collections::HashSet<_>>();

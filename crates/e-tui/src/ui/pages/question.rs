@@ -3,7 +3,7 @@ use super::*;
 pub(super) fn render_question_page(
     frame: &mut Frame,
     area: ratatui::layout::Rect,
-    batch: &crate::model::QuestionBatch,
+    batch: &crate::question::QuestionBatch,
     focus: &crate::input_page::FocusState,
     viewport: &mut crate::input_page::ViewportState,
     theme: &Theme,

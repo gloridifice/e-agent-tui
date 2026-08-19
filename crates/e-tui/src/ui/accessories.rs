@@ -195,7 +195,7 @@ pub(super) fn render_suggest(
 pub(super) fn render_approval(
     frame: &mut Frame,
     area: ratatui::layout::Rect,
-    approval: &crate::model::ApprovalCard,
+    approval: &crate::interaction::ApprovalCard,
     theme: &Theme,
 ) {
     let title = Line::from(vec![

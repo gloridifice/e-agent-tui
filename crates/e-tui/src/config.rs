@@ -69,6 +69,9 @@ pub struct Config {
     /// Horizontal gutter (in columns) of user message blocks and the input
     /// box — live-editable via /settings.
     pub user_input_padding: usize,
+    /// Preferred total main-pane width in wide two-pane mode. The Screen
+    /// still enforces measured minimums for both panes.
+    pub main_pane_width: usize,
     /// Maximum page width in columns (0 = unlimited, use the terminal width
     /// minus the side margins). The content area is capped at this width;
     /// longer text wraps.
@@ -174,6 +177,7 @@ mod tests {
         assert_eq!(config.theme, "deepseek-e");
         assert_eq!(config.default_mode, "standard");
         assert_eq!(config.paste_placeholder_chars, 64);
+        assert_eq!(config.main_pane_width, 120);
         assert_eq!(config.page_max_width, 0);
         assert_eq!(config.page_align, "center");
         assert_eq!(config.thinking_display, "compact");

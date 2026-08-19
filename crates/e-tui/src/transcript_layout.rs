@@ -109,7 +109,7 @@ impl MarkdownLayoutRegistry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CopyLayoutRow {
+pub struct ProvenanceLayoutRow {
     pub unit: u64,
     pub raw_line: Option<usize>,
     pub atomic: bool,

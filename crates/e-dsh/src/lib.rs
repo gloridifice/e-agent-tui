@@ -1,32 +1,17 @@
-//! e library: config/theme, transcript model, input handling,
-//! protocol types, and ratatui rendering.
+//! DSH adapter, runtime composition, setup, and executable infrastructure.
 
 pub mod bridge;
 pub mod bridge_io;
-pub mod cache;
-pub mod command_catalog;
 pub mod config;
-pub mod copy;
-pub mod display;
 pub mod dsh_env;
-pub mod input;
-pub mod input_page;
 pub mod launcher;
-pub mod login;
-pub mod mermaid;
 pub mod model;
-pub mod page_core;
-pub mod presentation;
+pub mod preview_resolver;
 pub mod profile;
-pub mod projection;
 pub mod protocol;
-pub mod render;
 pub mod runtime;
 pub mod runtime_command;
 pub mod runtime_ports;
-pub mod settings;
 pub mod setup;
 pub mod terminal_runtime;
 pub mod theme;
-pub mod transcript_layout;
-pub mod ui;

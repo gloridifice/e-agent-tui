@@ -79,6 +79,18 @@ pub static ITEMS: &[ItemDef] = &[
     },
     ItemDef {
         category: 0,
+        label: "主窗格宽度",
+        desc: "宽屏双栏时主窗格的首选总宽度（列）",
+        kind: ItemKind::Input,
+        get: |c| c.main_pane_width.to_string(),
+        apply: |c, v| {
+            if let Ok(n) = v.parse::<usize>() {
+                c.main_pane_width = n.clamp(40, 500);
+            }
+        },
+    },
+    ItemDef {
+        category: 0,
         label: "页面最大宽度",
         desc: "正文列最大宽度（列），0 表示不限，配合页面对齐定位",
         kind: ItemKind::Input,

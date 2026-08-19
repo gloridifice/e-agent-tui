@@ -9,21 +9,21 @@
 
 use std::sync::{Arc, Mutex};
 
-pub use crate::command_catalog::{
-    builtin_command, completion_context, match_command_catalog, BuiltinCommand, CommandCandidate,
-    CommandSource, CompletionKind, BUILTIN_COMMANDS,
-};
 #[cfg(test)]
 use crate::model::Msg;
 use crate::{
-    command_catalog::{CommandAction, NewMode},
     config::{Config, Theme},
-    copy::CopyMode,
-    input_page::InputPageSession,
     model::AppState,
     protocol::ClientMessage,
-    settings,
-    theme::ThemeFile,
+};
+pub use e_tui::command_catalog::{
+    builtin_command, completion_context, match_command_catalog, BuiltinCommand, CommandCandidate,
+    CommandSource, CompletionKind, BUILTIN_COMMANDS,
+};
+use e_tui::{
+    command_catalog::{CommandAction, NewMode},
+    input_page::InputPageSession,
+    settings, ThemeFile,
 };
 
 #[derive(Default)]
@@ -34,13 +34,13 @@ pub struct CommandOutcome {
     pub starts_interruptible_command: bool,
     pub reload_config: bool,
     pub new_conversation: bool,
+    pub activate_reading: bool,
     pub quit: bool,
 }
 
 pub struct LocalCommandContext<'a> {
     pub input_page: &'a mut Option<InputPageSession>,
     pub help_visible: &'a mut bool,
-    pub copy_mode: &'a mut Option<CopyMode>,
     pub config: &'a mut Config,
     pub themes: &'a mut Vec<ThemeFile>,
     pub new_modes: &'a [NewMode],
@@ -177,9 +177,9 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
                 *context.help_visible = true;
             }
         }
-        CommandAction::Copy => {
+        CommandAction::Reading => {
             if !reject_arguments(&context, name, raw_input) {
-                *context.copy_mode = Some(CopyMode::default());
+                outcome.activate_reading = true;
             }
         }
         CommandAction::Quit => {
@@ -205,8 +205,9 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
             let (blocked, materializing) = {
                 let state = context.state.lock().unwrap();
                 (
-                    state.question.is_some() || state.approval.is_some(),
+                    state.interaction.question.is_some() || state.interaction.approval.is_some(),
                     state
+                        .session
                         .new_conversation
                         .as_ref()
                         .is_some_and(|draft| draft.pending_input.is_some()),
@@ -303,7 +304,6 @@ mod tests {
         let state = Arc::new(Mutex::new(AppState::default()));
         let mut input_page = None;
         let mut help_visible = false;
-        let mut copy_mode = None;
         let mut config = Config::default();
         let mut themes = Vec::new();
         let new_modes = Vec::new();
@@ -315,7 +315,6 @@ mod tests {
             LocalCommandContext {
                 input_page: &mut input_page,
                 help_visible: &mut help_visible,
-                copy_mode: &mut copy_mode,
                 config: &mut config,
                 themes: &mut themes,
                 new_modes: &new_modes,
@@ -334,6 +333,7 @@ mod tests {
             state
                 .lock()
                 .unwrap()
+                .session
                 .new_conversation
                 .as_ref()
                 .map(|draft| draft.mode.as_str()),
@@ -347,7 +347,6 @@ mod tests {
         state.lock().unwrap().begin_new_conversation("standard");
         let mut input_page = None;
         let mut help_visible = false;
-        let mut copy_mode = None;
         let mut config = Config::default();
         let mut themes = Vec::new();
         let new_modes = Vec::new();
@@ -359,7 +358,6 @@ mod tests {
             LocalCommandContext {
                 input_page: &mut input_page,
                 help_visible: &mut help_visible,
-                copy_mode: &mut copy_mode,
                 config: &mut config,
                 themes: &mut themes,
                 new_modes: &new_modes,
@@ -373,6 +371,7 @@ mod tests {
         assert!(state
             .lock()
             .unwrap()
+            .session
             .new_conversation
             .as_ref()
             .and_then(|draft| draft.notice.as_deref())
@@ -382,7 +381,7 @@ mod tests {
     #[test]
     fn push_error_appends_and_invalidates_the_cache() {
         let state = Arc::new(Mutex::new(AppState::default()));
-        state.lock().unwrap().transcript_cache.valid = true;
+        state.lock().unwrap().render.transcript_cache.valid = true;
         push_error(&state, "用法: /settings");
         let state = state.lock().unwrap();
         assert!(matches!(
@@ -390,7 +389,7 @@ mod tests {
             Some(Msg::Error { text }) if text == "用法: /settings"
         ));
         assert!(
-            !state.transcript_cache.valid,
+            !state.render.transcript_cache.valid,
             "error must invalidate the cache"
         );
     }

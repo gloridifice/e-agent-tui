@@ -2,9 +2,9 @@
 
 Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-dsh` and owns the `dshe.exe` artifact (with transitional library import name `e`); `crates/e-tui` is the kernel-neutral frontend library. During the staged extraction, modules not yet moved remain under `e-dsh`, and current ownership is always determined by the code rather than the target plan.
 
-- **Current package boundary**: DSH `ServerMessage`/`ClientMessage` and raw host-event parsing remain in `e-dsh::protocol`. `e-dsh::bridge::adapter` converts inbound values to `e-tui::AgentEvent` and outbound `e-tui::AgentRequest` values back to wire messages. `e-tui::TimelineModel` is the sole owner of the transcript store and normalized projection-family state. The transitional `e-dsh::AppState` forwards timeline field access to that owner while retaining the UI lifecycles not yet extracted. `RuntimeController` consumes normalized events and returns owned `e-tui::UiAction` values; the runner executes actions only after releasing state guards. `e-tui` contains no DSH message/event names, WebSocket, filesystem-path, persistence, clipboard, or process dependencies, enforced by `crates/e-dsh/tests/architecture.rs`.
+- **Current package boundary**: DSH `ServerMessage`/`ClientMessage` and raw host-event parsing remain in `e-dsh::protocol`. `e-dsh::bridge::adapter` converts inbound values to `e-tui::AgentEvent` and outbound `e-tui::AgentRequest` values back to wire messages. `e-tui::TuiApp` owns `SessionModel`, `TimelineModel`, `CatalogModel`, `InteractionModel`, `RenderState`, shared Preview state/cache, Reading Document/Layout, and Reading View state. `e-dsh::AppState` remains the normalized DSH reduction adapter around that root; it does not mirror migrated lifecycle fields. `RuntimeController` returns owned `e-tui::UiAction` values, and the runner executes or awaits them only after releasing state guards. `e-tui` contains no DSH message/event names, WebSocket, filesystem persistence, clipboard implementation, process control, or terminal lifecycle, enforced by `crates/e-dsh/tests/architecture.rs`.
 - **Event display model** (`crates/e-tui/src/display.rs` + `crates/e-tui/src/projection/{store,assistant,tool,lifecycle,retry,command,workflow,surface}.rs` +
-  the not-yet-extracted `e-dsh::transcript_layout`): all visible events fall into four public surfaces: `ActivityRow` (with
+  `crates/e-tui/src/transcript_layout.rs`): all visible events fall into four public surfaces: `ActivityRow` (with
   Waiting/Running/Success/Failure/Cancelled state, optionally with parent/depth), `TranscriptBlock`
   (plain/markdown/reasoning/unknown fallback), `ContentCard` (uniform padding/background/copy source), and
   `InputAccessory` (above the input bar). Production `TimelineModel` holds the sole `TranscriptStore` and
@@ -50,13 +50,13 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
   completed/failed/cancelled must be kept as a typed outcome and mapped to Success/Failure/Cancelled.
   compaction's log-only summary is not drawn as its own card; the single summary card is created and owned by
   the replacement, so a later replace can delete it precisely.
-- **Render cache** (`cache.rs::TranscriptRenderCache` + `transcript_layout.rs` + `ui/transcript.rs`): only
+- **Render cache** (`e-tui::{cache,transcript_layout,ui::region::transcript}`): only
   structural events invalidate the cache and trigger a full rebuild; streaming chunks only set `tail_dirty`,
   and rendering **splices the tail** and recomputes only the tail display-row suffix/prefix — never clear the
   entire layout; spinner/settle only patch the active `DisplayId` range, and settle must submit one more
-  precise target-color patch after expiry before stopping the clock. Copy line numbers come from the same
-  `TranscriptLayout` the UI uses; the main loop uses `CopyRowsCache` keyed by width/generation to reuse
-  provenance — never fully `flatten` on each copy keypress and each subsequent frame. Wrap scanning computes
+  precise target-color patch after expiry before stopping the clock. Semantic Reading geometry and
+  `ProvenanceLayoutRow` values come from the same width/generation layout; Reading cursor movement and Preview
+  selection must not flatten or rebuild the transcript. Wrap scanning computes
   display width by Unicode grapheme cluster; combining marks / emoji ZWJ must not be split even across style
   spans.
 - **Performance red lines** (all have regression tests): terminal input wakes the main loop directly through
@@ -77,7 +77,7 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
   or you will self-deadlock. Compute plain values/actions in a separate scope before matching, or perform
   atomic state changes within a single guard; `main.rs` already denies `clippy::significant_drop_in_scrutinee`
   and has queue-dispatch/copy-mode lock-release regression tests.
-- **Frontend interaction ownership**: `e-tui::{command_catalog,input,page_core,input_page,login,settings,question,interaction}` owns composer state, catalog presentation/completion, Input Page focus/editing, login/settings page state, retained question batches, and approval answer construction. The `e-dsh` modules with those names are temporary re-export facades; protocol DTO conversion and external action execution remain in the runtime adapter.
+- **Frontend interaction ownership**: `e-tui::{catalog,command_catalog,input,page_core,input_page,login,settings,question,interaction}` owns composer state, catalog presentation/completion, Input Page focus/editing, login/settings page state, retained question batches, approval routing, scroll/follow, help, notices, and prompt queues. The old executable-side re-export facades have been removed; protocol DTO conversion and external action execution remain in `e-dsh`.
 - **Input interaction and character boundaries**: `InputState.cursor` is a **character index**;
   `String::insert/remove` and slicing need byte indices — use `char_to_byte()` (`input.rs`); CJK has regression
   tests; cursor x uses `unicode_width`. Plain input is fixed: `Enter` sends, `Shift+Enter` inserts a newline;
@@ -95,9 +95,7 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
   (there is a test `suggest_popup_is_opaque_over_transcript`). `/settings` `/login` `/model` `/theme` `/resume`
   are not overlays: they are uniformly handled by `InputPageSession` replacing the input area, no border, no
   `Clear`, with the shared shell fixed at 1 row top/bottom and 2 columns left/right padding.
-- **copy semantics**: copy always takes the original markdown (`units` table); tables/code/mermaid are atomic
-  blocks (`RenderLine.atomic`). Render unit ids are reused across re-renders (`unit_start`) — do not reassign
-  them.
+- **Reading View and copy semantics**: `Ctrl+Y` enters Reading View (the `Ctrl+V` candidate failed the supported-terminal paste gate); `Ctrl+P` toggles full-screen Preview on narrow terminals. Block mode uses `j`/`k`, `l`, `y`, and `Esc`; Item mode uses spatial `h`/`j`/`k`/`l`, with `Esc` returning to Block mode. `y` always copies the complete owning Block from `ReadingCopyPayload`, never clipped terminal cells. Tables/code/Mermaid remain atomic through stable render-unit provenance, and render unit ids are reused across re-renders (`unit_start`). Row-oriented Copy Mode and `Ctrl+B` no longer exist.
 - **Markdown headings and localized backgrounds**: headings directly use the fixed semantics
   `semantics.markdown.heading1..6`; in ferra, level 1 is Coral `#ffa07a` bold (no background), level 2 is Sage
   `#b1b695` bold, level 3 is Blush `#fecdb2` non-bold. inline code `bg` may only apply to the chip span;
@@ -113,13 +111,15 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
   file-group merge/settlement scans skip it.
 - **Tracy/timing** (`profile.rs`): instrument with `e::tracy_zone!("literal")` (a macro that safely no-ops when
   no client is present); use `PhaseTimers` for stage timing. Zone names must be string literals.
+- **Responsive Screen and Preview**: at wide widths the Screen uses `main_width = min(floor(0.6 * W), main_pane_width)` when that leaves the measured 40-column main minimum and 32-column Preview minimum. Otherwise it renders main-only, with `Ctrl+P` selecting full-screen Preview. Normal mode follows the latest semantic Block; Reading View follows Item then Block. Preview has independent scroll, visible-row materialization, one shared cache, and request-id/key/revision stale-result checks. Deferred file/line resolution runs through `e-dsh::preview_resolver` and returns an event completion without holding a UI lock.
+- **Rendering layers**: production rendering lives in `e-tui` and points downward as `Screen -> Pane -> Region -> Component`. The main pane retains the characterized transcript/composer/status style; Preview reuses theme semantics without changing main-pane tokens. Terminal setup, restoration, synchronized output, and frame scheduling stay in `e-dsh`.
 - **Bottom layout and two-line status bar**: the fixed bottom row order is input bar or Input Page / gap /
   status line 1 / **session title line** (the `ui.rs::render` chunks array; the `+3` in the accessory budget
   formula matches it). Neither line sets a background color: line 1 is, left to right, the working indicator,
-  `AppState.current_mode`, the current model, and `CH<cache-hit %>`, where the model and CH entries are omitted
+  `SessionModel.current_mode`, the current model, and `CH<cache-hit %>`, where the model and CH entries are omitted
   entirely when they have no value yet (no placeholder dash), and the right side is fixed `^h Help`; line 2's
-  left side is `AppState.session_title` (shows `新会话` when empty) and the right side is the absolute
-  `AppState.session_cwd` path, with the title truncated with `…` when too long so the path is preserved.
+  left side is `SessionModel.session_title` (shows `新会话` when empty) and the right side is the absolute
+  `SessionModel.session_cwd` path, with the title truncated with `…` when too long so the path is preserved.
   mode's initial value comes from `welcome.mode` (most recent selection, else the creation header), then is
   updated by `agent-preset/selected` replay, keeping the latest value by event seq (history prepend must not
   regress it); CH accumulates from assistant usage input/cache read/cache write, where history prepend may add
@@ -166,7 +166,7 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
   `from_user_toml` first recursively `overlay_known`s user values onto the embedded TOML as the schema, then
   strictly deserializes exactly once: old files inherit missing fields, deprecated unknown keys are ignored,
   malformed/known-type errors fall back safely; `Config::default()` must not re-derive from Rust field literals.
-  `Config.theme` stores the theme name; rendering does zero disk reads. Themes are two-layer TOML: an open
+  `Config.theme` stores the theme name; `main_pane_width` defaults to 120 columns and is constrained by the measured pane minimums; rendering does zero disk reads. Themes are two-layer TOML: an open
   `[colors]` allows arbitrary color names, and fixed `[semantics.*]` (surface/markdown/input/working_status/log/
   activity/card/overlay) link semantic styles to color names; each style requires only `fg`, with `bg`/`bold`/
   `italic`/`underline` optional; unknown references, missing fixed fields, or illegal hex reject the whole file.
@@ -191,5 +191,4 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
   with a generic disconnect; the client must also reject a differing protocol version in `welcome`, and protocol
   mismatch guidance must mention updating/rebuilding the client, running `dshe setup`, and restarting DSH.
   `/reload` re-reads config + rescans themes.
-- After adding interaction keys, sync: `ui.rs`'s `help_overlay`, the README quick-reference table, and input
-  tests.
+- After adding interaction keys, sync `e-tui/src/ui/overlay.rs`, the README quick reference, the terminal binding gate, and input/router tests.

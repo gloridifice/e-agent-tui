@@ -25,7 +25,7 @@
 | # | Decision | Conclusion |
 |---|------|------|
 | D1 | Run shape | standalone client process (`dshe`, project name **e** / e tui), connected to a running DSH via a bridge, coexist with the Web GUI |
-| D2 | Layout | single-column conversation flow (Claude Code style) |
+| D2 | Layout | responsive main conversation pane plus full-height Preview at wide widths; main-only/full-screen Preview fallback when narrow |
 | D3 | Client language | Rust (ratatui + crossterm + tokio-tungstenite + serde) |
 | D4 | Project composition | TS bridge plugin (DSH side) + Rust client |
 | D5 | Themes | two built-in themes deepseek-e (default) and ferra; every valid toml under `%APPDATA%\dshe\themes\` is selectable |
@@ -33,9 +33,9 @@
 | D7 | User message prefix | `❯` symbol |
 | D8 | Markdown rendering | full rendering in the first phase: headings/bold-italic/inline code/code blocks/lists/quotes/**tables**/**mermaid** |
 | D9 | Mermaid rendering | use grok-mermaid (WASM, from xAI Grok CLI / Simon Willison extracted build) |
-| D10 | Copy mode | vim style: line selection / block selection, copy AI output, rendered content maps back to original markdown |
+| D10 | Reading View | semantic Block/Item navigation over the canonical transcript, with cursor-driven Preview and complete-source copy |
 | D11 | Block copy semantics | tables, mermaid, code blocks are copied as a whole (copy original markdown source) |
-| D12 | Copy mode keys | `Ctrl+B` to enter; cross-block selection auto-upgrades to the whole block |
+| D12 | Reading keys | `Ctrl+Y` enters (selected after the `Ctrl+V` paste gate failed); `j/k/l/y/Esc` in Block mode and spatial `hjkl` in Item mode |
 | D13 | Overlong atomic block | over threshold (default 40 lines) may fold; mermaid diagrams handled separately |
 | D14 | Syntax highlighting | syntect in phase two; first-phase code blocks plain color + language label |
 | D15 | Bridge auth | lightweight token: the bridge plugin generates a random token written to the DSH data directory; the client reads it automatically |
@@ -100,15 +100,14 @@ RenderUnit { kind, source: { blockType, raw: String }, cells: RenderedCells }
 screen buffer: each rendered line records its owning RenderUnit (line → block map)
   │
   ▼
-copy mode: cursor line → look up map → hit table/mermaid/code block ⇒ select whole block
-          plain text ⇒ select by line/character, copy the corresponding raw line/range
+Reading View: semantic Block/Item id → shared layout/provenance geometry → complete Block copy payload
+              Preview target follows latest Block or Reading cursor without duplicating transcript text
 ```
 
 - Copy always takes the **original markdown source**: tables copy out the `| a | b |` pipe source, headings copy
   out `## heading`, mermaid copies out the ` ```mermaid ... ` fenced source.
-- The line map is maintained incrementally with rendering; copy mode does not re-parse, it only looks up the table.
-- Tables/mermaid/code blocks are **atomic blocks**: the cursor anywhere inside a block highlights the whole block;
-  no partial selection within a block is provided.
+- The provenance map is maintained incrementally with rendering; Reading navigation does not re-parse markdown.
+- Tables/mermaid/code blocks are **atomic blocks**: `y` copies the complete source regardless of wrapping or the selected Item.
 
 ### 2.2 Dependency direction, runtime, and projection boundary
 
@@ -171,7 +170,7 @@ semantics.
 ├──────────────────────────────────────────────────┤
 │▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│ ← input bar: borderless background block
 │▓ ❯ type a message…                  [Ctrl+H help]▓│    top/bottom margin rows + text area (≤3-line scroll)
-│▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│    copy mode switches to a -- COPY -- indicator bar
+│▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│    Reading View preserves this complete draft state
 └──────────────────────────────────────────────────┘
 ```
 
@@ -191,7 +190,7 @@ semantics.
 | Link/emphasis | Blush `#fecdb2` / Rose `#f6b6c9` | markdown inline |
 | Paste placeholder | Rose `#f6b6c9` `[N text pasted]` | long paste folded in single-line mode |
 | Input bar | Ash `#383539` background block, no border; prefix `❯` Coral | top/bottom margin rows + text area |
-| Copy mode selection | reverse-video selection (Night↔Mist inverted); atomic block whole-selection uses Umber base | high-contrast visible |
+| Reading selection | current Block uses Night plus a Bark gutter rail; current Item uses a local selection background | explicit inline backgrounds remain authoritative |
 
 ### 3.3 Message rendering spec
 
@@ -320,8 +319,7 @@ The ferra palette comes from the casperstorm/ferra README:
   it. The right side is fixed `^h Help`.
 - The second line shows the current session title on the left (shows `新会话` when untitled) and the session
   workspace absolute path on the right; over-long titles truncate with `…`, prioritizing the path.
-- Copy mode: the input area switches to the `-- COPY --` indicator bar (§3.1), showing selected line/byte count and
-  available keys.
+- Reading View leaves the composer draft untouched and routes navigation through the central input owner; exiting restores the same buffer, cursor, multiline mode, and completion state.
 
 ### 3.6 Resume Input Page (/resume / Ctrl+N)
 
@@ -333,8 +331,7 @@ The ferra palette comes from the casperstorm/ferra README:
 
 ### 3.7 Help overlay (? / Ctrl+H)
 
-- Half-screen overlay: all shortcuts for the current mode; q/Esc closes. After entering copy mode the help overlay
-  shows copy-mode keys.
+- Half-screen overlay: all shortcuts for the current mode; q/Esc closes. It lists Reading Block/Item navigation and the narrow Preview toggle.
 
 ## 4. Interaction design
 
@@ -422,32 +419,27 @@ aborts both those command signals and any active agent turn.
 | Ctrl+N | resume Input Page | input filter, ↑↓ select |
 | /settings | settings panel (§4.7) | save immediately |
 | ? / Ctrl+H | help overlay | |
-| **Ctrl+B** | **enter copy mode** | D12 |
+| **Ctrl+Y** | **enter Reading View** | D12; `Ctrl+V` failed the universal paste-delivery gate |
+| **Ctrl+P** | **toggle full-screen Preview on narrow terminals** | wide terminals keep Preview visible |
 
-### 4.3 Copy mode (D10/D11, vim minimal subset)
+### 4.3 Reading View and semantic copy (D10/D11/D12)
 
-On entry: the input area becomes the `-- COPY --` indicator bar; the message stream enters navigable state; the
-cursor starts at the top of the most recent assistant message. **Copy always takes the original markdown source**
-(via the §2.1 line map).
+Reading View indexes the canonical transcript and shared width-aware provenance; it does not replay events into a
+second message store. Entry selects the eligible semantic Block nearest the viewport center while preserving the
+complete composer draft. Night marks the current Block and a Bark rail occupies the existing outer gutter without
+changing wrapping. Item highlights are local and never overwrite explicit span backgrounds.
 
 | Key | Function |
 |----|------|
-| h j k l | move cursor (left/down/up/right) |
-| w / b / 0 / $ | word jump / line start / line end |
-| g / G | stream start / stream end |
-| Ctrl+u / Ctrl+d | half screen up / down |
-| **V** | line selection (from current line) |
-| **Ctrl+V** | rectangular block selection (within plain text regions) |
-| **y** | copy selection to system clipboard, exit copy mode, input area shows `已复制 N 行` |
-| Esc / q | exit copy mode |
-| Enter | expand/collapse when the cursor is on a folded block (tables/mermaid/code are unaffected by folding) |
+| j / Down, k / Up | next / previous Block; in Item mode move spatially and cross Block boundaries |
+| l / Right | enter Item mode or move to the next spatial Item |
+| h / Left | move left; at the boundary return to Block mode |
+| y | copy the complete owning Block source, even when an Item is selected |
+| Esc | Item mode → Block mode; Block mode → normal composer |
 
-**Atomic block semantics (D11)**: the cursor on any rendered line of a table/mermaid/code block ⇒ the whole block
-is auto-selected (Umber base highlight); `y` copies the block's complete markdown source in the original message
-(including fence/pipe syntax). Plain text supports V line selection and Ctrl+V block selection; cross-block
-selection expands in block units (see O13 details). Copy mode keys only compute a `CopyAction` while holding the
-state lock; follow-up actions such as moving the viewport, expanding a unit, or reporting clipboard errors must run
-after the lock is released, to avoid same-thread state-lock reentrancy freezing the input loop.
+Tables, Mermaid, and code retain atomic complete-source payloads, including original fence/pipe syntax. Resize,
+streaming, settlement, history prepend, and theme rematerialization preserve semantic ids; only geometry is rebuilt.
+Clipboard and deferred Preview effects execute after the UI guard is released.
 
 ### 4.4 Approval and user questions
 
@@ -714,10 +706,10 @@ full delay/failure/maxRetries and start time after saved rows are restored and t
 `session/title`, provider/model, request context, and policy state only update page/session state; `request/header`,
 `session/end-seed`, approval audit, and title/search requests are ignored by default.
 
-Markdown/source map is still done client-side locally; the render cache is wrapped as `TranscriptRenderCache`, and
-copy mode reuses the provenance produced by the UI's same width/generation display-row layout via `CopyRowsCache`,
-no longer deriving padding/wrap/spacing fully on each keypress-handling and subsequent draw frame. Wheel, paging,
-follow, history prepend anchor, and copy overlay all use post-wrap display-row coordinates; row count is built by a
+Markdown/source mapping is still done client-side locally; `TranscriptRenderCache`, `ReadingDocument`,
+`ReadingLayout`, and `ProvenanceLayoutRow` share the same width/generation display-row layout rather than deriving
+padding/wrap/spacing on each keypress. Wheel, paging, follow, history prepend anchors, Reading overlays, and Item
+fragments all use post-wrap display-row coordinates; row count is built by a
 linear Unicode grapheme-width scan prefix, combining marks and emoji ZWJ keep the same grapheme across style spans,
 and only visible rows are materialized per frame. Streaming text deltas only set `tail_dirty`; after splicing the
 tail only the tail row-count suffix is replaced and the prefix is written incrementally; pure breathing/settle
@@ -804,7 +796,7 @@ items are **implementation verification items**, not design questions:
 1. M1 bridge plugin + protocol integration (TS side + minimal Rust client echo)
 2. M2 message stream rendering + input + streaming + interrupt
 3. M3 markdown + table rendering (including line-map source map skeleton)
-4. M4 copy mode (vim keys + atomic whole-block copy)
+4. M4 semantic Reading View, responsive Preview, and atomic whole-Block copy
 5. M5 mermaid (WASM) + approval card + session selector + help overlay
 6. M6 completion/history/multi-line + settings panel (config.toml + /settings overlay) + ferra theme polish +
    packaging/distribution

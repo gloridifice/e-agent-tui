@@ -29,6 +29,8 @@ thinking_lines = 2
 show_timestamps = false
 mermaid_enabled = true
 user_input_padding = 2
+# Preferred total main-pane width in wide two-pane mode.
+main_pane_width = 120
 # 0 = unlimited (terminal width minus side margins).
 page_max_width = 0
 # Horizontal alignment of the capped content page: center | left | right.

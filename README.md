@@ -20,7 +20,14 @@ Before installing, make sure [Git](https://git-scm.com/), [Node.js](https://node
 
 Then just run `dshe`, e will open dsh and e-tui.
 
-On first launch, `dshe` starts its dedicated DSH service automatically. Use `/login` to configure an API key or proxy, and `/model` to select a provider and model.
+On first launch, `dshe` starts its dedicated DSH service automatically. Use `/login` to configure an API key or proxy, and `/model` to select a provider and model. Wide terminals show a themed Preview pane; narrow terminals keep the main conversation usable.
+
+Key interactions:
+
+- `Ctrl+Y`: enter Reading View; `j`/`k` select Blocks, `l` enters Item navigation, `y` copies the complete Block source, and `Esc` returns/exits.
+- `Ctrl+P`: toggle full-screen Preview on narrow terminals.
+- `Shift+Enter`: insert a newline; `Enter`: send.
+- `Ctrl+H`: help; `Ctrl+N`: resume session; `PageUp`/`PageDown` or wheel: transcript scrolling.
 
 If PowerShell cannot find `dshe`, add `%USERPROFILE%\.cargo\bin` to `PATH`.
 

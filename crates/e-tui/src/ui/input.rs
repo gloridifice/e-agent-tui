@@ -5,7 +5,6 @@ pub(super) fn render_input(
     area: ratatui::layout::Rect,
     input: &InputState,
     theme: &Theme,
-    copy_active: bool,
     toast: Option<&str>,
     padding: u16,
 ) -> Option<Position> {
@@ -15,26 +14,6 @@ pub(super) fn render_input(
         .padding(Padding::new(padding, padding, 1, 1));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-
-    if copy_active {
-        // -- COPY -- status strip replaces the editor (design §3.1).
-        let hint = Line::from(vec![
-            Span::styled(
-                "-- COPY -- ",
-                theme
-                    .input
-                    .status_accent
-                    .style()
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "[hjkl]移动 [V]行选 [Ctrl+V]块选 [y]复制 [Enter]展开 [Esc]退出",
-                theme.input.status_hint.style(),
-            ),
-        ]);
-        frame.render_widget(Paragraph::new(Text::from(vec![hint])), inner);
-        return None;
-    }
 
     if let Some(search) = &input.search {
         // Ctrl+R history search strip.

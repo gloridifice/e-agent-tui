@@ -16,7 +16,7 @@ Terminal client for DeepSeek Harness (DSH) (project name **e**, executable **`ds
 - `bridge/` — Node.js (ESM) DSH **host-composition plugin** (one WS upgrade route `/dsh-tui`). Conventions:
   [docs/bridge.md](docs/bridge.md).
 - `crates/e-dsh/` — Rust DSH adapter and executable package (`e-dsh`, artifact `dshe.exe`; transitional library import name `e`).
-- `crates/e-tui/` — kernel-neutral frontend library package (`e-tui`); UI ownership moves here phase by phase. Rust conventions: [docs/client.md](docs/client.md).
+- `crates/e-tui/` — kernel-neutral frontend library package (`e-tui`), owning lifecycle state, projection, rendering, responsive Preview, Reading View, themes, and config values. Rust conventions: [docs/client.md](docs/client.md).
 
 The two processes communicate over JSON WebSocket; the machine-readable contract is
 `bridge/protocol-contract.json` (see [docs/protocol.md](docs/protocol.md)). Token auth lives at
@@ -82,8 +82,8 @@ Implementation conventions are documented per part and are the source of truth w
 - **client (Rust)** — [docs/client.md](docs/client.md): event display model (four public surfaces), reasoning
   folding, file/tool activity formatting (including reserved trailing metrics), surface semantics, render cache,
   performance red lines, runtime/lock discipline, input & character boundaries, overlays/Input Page (including
-  ask_user_question pages that suppress tool activity and preserve the input draft), copy semantics, markdown/table
-  styling, history paging,
+  ask_user_question pages that suppress tool activity and preserve the input draft), semantic Reading/copy,
+  responsive Preview and deferred resolution, layered rendering, markdown/table styling, history paging,
   status bar, command paradigm, deferred `/new`,
   config/theme/launcher.
 - **bridge (Node.js)** — [docs/bridge.md](docs/bridge.md): module layout, DSH command integration, dynamic

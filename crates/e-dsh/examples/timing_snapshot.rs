@@ -8,10 +8,9 @@
 
 use std::time::Instant;
 
-use e::config::Config;
-use e::input::InputState;
 use e::model::AppState;
-use e::ui::{render, ScrollState};
+use e_tui::input::InputState;
+use e_tui::ui::{render, ScrollState};
 
 fn main() -> anyhow::Result<()> {
     let path = std::env::args()
@@ -46,7 +45,7 @@ fn main() -> anyhow::Result<()> {
         "  model fold:  {:.2} ms ({} display nodes, {} render units)",
         t3.duration_since(t2).as_secs_f64() * 1000.0,
         state.transcript.len(),
-        state.units.len()
+        state.render.units.len()
     );
 
     // Phase 3: first frame (render cache build + ratatui draw), like the
@@ -63,10 +62,9 @@ fn main() -> anyhow::Result<()> {
             &input,
             &mut scroll,
             &theme,
-            e::ui::RenderOverlays {
+            e_tui::ui::RenderOverlays {
                 input_page: None,
                 help_visible: false,
-                overlay: None,
                 toast: None,
                 settings: None,
                 login: None,
@@ -77,7 +75,7 @@ fn main() -> anyhow::Result<()> {
     println!(
         "  first frame: {:.2} ms ({} cached lines)",
         t4.duration_since(t3).as_secs_f64() * 1000.0,
-        state.transcript_cache.lines.len()
+        state.render.transcript_cache.lines.len()
     );
 
     println!(

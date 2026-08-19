@@ -266,12 +266,13 @@ fn single_track_transcript_has_no_legacy_production_path() {
         .expect("workspace crates directory")
         .join("e-tui/src");
     let model = fs::read_to_string(root.join("model.rs")).expect("read model.rs");
+    let app = fs::read_to_string(tui_root.join("app.rs")).expect("read app module");
     let projection =
         fs::read_to_string(tui_root.join("projection/mod.rs")).expect("read projection module");
     let surface =
         fs::read_to_string(tui_root.join("projection/surface.rs")).expect("read surface.rs");
     let transcript =
-        fs::read_to_string(root.join("ui/transcript.rs")).expect("read transcript renderer");
+        fs::read_to_string(tui_root.join("ui/transcript.rs")).expect("read transcript renderer");
 
     for (source, forbidden) in [
         (&model, "enum Msg"),
@@ -297,18 +298,15 @@ fn single_track_transcript_has_no_legacy_production_path() {
         "e-tui TimelineModel must remain the sole transcript/projector owner"
     );
 
-    let legacy_test_renderer = transcript
-        .find("pub(super) fn legacy_test_lines")
-        .expect("test-only legacy renderer marker");
-    let production_renderer = &transcript[..legacy_test_renderer];
     assert!(
-        !production_renderer.contains("Msg::"),
+        !production_source(&transcript).contains("Msg::"),
         "production UI must render DisplayItem directly"
     );
     assert!(
-        model.contains("pub timeline: TimelineModel")
+        model.contains("pub tui: TuiApp")
+            && app.contains("pub timeline: TimelineModel")
             && !model.contains("pub transcript: TranscriptStore"),
-        "AppState must forward to the sole e-tui TimelineModel owner"
+        "AppState must forward through TuiApp to the sole TimelineModel owner"
     );
     let lines = model.lines().collect::<Vec<_>>();
     for (index, line) in lines.iter().enumerate() {
@@ -319,6 +317,60 @@ fn single_track_transcript_has_no_legacy_production_path() {
                 "legacy characterization storage must never enter production"
             );
         }
+    }
+}
+
+#[test]
+fn lifecycle_models_are_sole_production_owners() {
+    let dsh_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let tui_root = dsh_root
+        .parent()
+        .expect("workspace crates directory")
+        .join("e-tui/src");
+    let model = fs::read_to_string(dsh_root.join("src/model.rs")).expect("read model facade");
+    let main = fs::read_to_string(dsh_root.join("src/main.rs")).expect("read composition root");
+    let app = fs::read_to_string(tui_root.join("app.rs")).expect("read app root");
+
+    for owner in [
+        "pub session: SessionModel",
+        "pub timeline: TimelineModel",
+        "pub catalogs: CatalogModel",
+        "pub interaction: InteractionModel",
+        "pub render: RenderState",
+    ] {
+        assert!(
+            app.contains(owner),
+            "TuiApp missing lifecycle owner: {owner}"
+        );
+    }
+
+    for forbidden in [
+        "pub session_id:",
+        "pub new_conversation:",
+        "pub todos:",
+        "pub approval:",
+        "pub question:",
+        "pub queue:",
+        "pub transcript_cache:",
+        "pub units:",
+        "pub expanded:",
+    ] {
+        assert!(
+            !production_source(&model).contains(forbidden),
+            "AppState facade retained migrated mirror field: {forbidden}"
+        );
+    }
+    for forbidden in [
+        "let mut input = InputState::new",
+        "let mut scroll = ScrollState::default",
+        "let mut input_page:",
+        "let mut help_visible =",
+        "let mut copy_mode:",
+    ] {
+        assert!(
+            !production_source(&main).contains(forbidden),
+            "composition root retained migrated interaction mirror: {forbidden}"
+        );
     }
 }
 
@@ -393,6 +445,92 @@ fn e_tui_has_no_dsh_or_infrastructure_imports() {
 }
 
 #[test]
+fn row_copy_mode_is_absent_while_semantic_provenance_remains() {
+    let dsh_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let tui_root = dsh_root
+        .parent()
+        .expect("workspace crates directory")
+        .join("e-tui/src");
+    for root in [dsh_root.join("src"), tui_root.clone()] {
+        for path in rust_files_recursive(&root) {
+            let source = fs::read_to_string(&path).expect("read Rust source");
+            let production = production_source(&source);
+            for forbidden in [
+                "CopyMode",
+                "CopyRowsCache",
+                "CopyOverlay",
+                "CopyAction",
+                "copy_mode_open",
+                "InputAction::CopyMode",
+            ] {
+                assert!(
+                    !production.contains(forbidden),
+                    "{} retains old row Copy Mode symbol {forbidden}",
+                    path.display()
+                );
+            }
+        }
+    }
+    let layout =
+        fs::read_to_string(tui_root.join("transcript_layout.rs")).expect("read provenance layout");
+    let reading = fs::read_to_string(tui_root.join("reading.rs")).expect("read Reading model");
+    assert!(layout.contains("ProvenanceLayoutRow"));
+    assert!(reading.contains("ReadingCopyPayload"));
+}
+
+#[test]
+fn preview_resolution_returns_events_without_ui_lock_access() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let resolver = fs::read_to_string(root.join("preview_resolver.rs")).expect("read resolver");
+    let ports = fs::read_to_string(root.join("runtime_ports.rs")).expect("read ports");
+    let main = fs::read_to_string(root.join("main.rs")).expect("read executor");
+    for forbidden in ["TuiApp", "AppState", "Mutex", ".lock()"] {
+        assert!(
+            !production_source(&resolver).contains(forbidden),
+            "Preview resolver reaches UI state through {forbidden}"
+        );
+    }
+    assert!(ports.contains("fn resolve_preview("));
+    assert!(main.contains("EffectResult::PreviewResolved"));
+    assert!(main.contains("ports.resolve_preview(request.clone()).await"));
+}
+
+#[test]
+fn rendering_dependencies_point_screen_to_pane_to_region_to_component() {
+    let dsh_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let ui_root = dsh_root
+        .parent()
+        .expect("workspace crates directory")
+        .join("e-tui/src/ui");
+
+    for (layer, forbidden) in [
+        ("component", vec!["ui::region", "ui::pane", "ui::screen"]),
+        ("region", vec!["ui::pane", "ui::screen"]),
+        ("pane", vec!["ui::screen"]),
+    ] {
+        for path in rust_files_recursive(&ui_root.join(layer)) {
+            let source = fs::read_to_string(&path).expect("read render layer");
+            let source = production_source(&source);
+            for upward in &forbidden {
+                assert!(
+                    !source.contains(upward),
+                    "{} has upward rendering import {upward}",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    let screen = fs::read_to_string(ui_root.join("screen.rs")).expect("read Screen");
+    let main_pane = fs::read_to_string(ui_root.join("pane/main.rs")).expect("read main Pane");
+    let transcript =
+        fs::read_to_string(ui_root.join("region/transcript.rs")).expect("read transcript Region");
+    assert!(screen.contains("pane::main::render_with_cursor"));
+    assert!(main_pane.contains("render_main_pane_with_cursor"));
+    assert!(transcript.contains("render_transcript"));
+}
+
+#[test]
 fn production_crate_graphs_are_acyclic_and_keep_leaf_boundaries() {
     let dsh_root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let tui_root = dsh_root
@@ -413,12 +551,10 @@ fn production_crate_graphs_are_acyclic_and_keep_leaf_boundaries() {
         );
     }
 
-    for (from, forbidden) in [("copy", "ui"), ("ui", "runtime_command")] {
-        assert!(
-            !dsh_graph[from].contains(forbidden),
-            "forbidden reverse edge {from} -> {forbidden}"
-        );
-    }
+    assert!(
+        !tui_graph["copy"].contains("ui"),
+        "semantic copy selection must remain independent of rendering"
+    );
     for (from, forbidden) in [
         ("input", "input_page"),
         ("command_catalog", "input"),
@@ -431,13 +567,12 @@ fn production_crate_graphs_are_acyclic_and_keep_leaf_boundaries() {
         );
     }
     assert!(
-        dsh_graph["transcript_layout"]
+        tui_graph["transcript_layout"]
             .iter()
             .all(|module| matches!(module.as_str(), "config" | "display" | "render")),
         "transcript_layout may only depend on presentation leaf services: {:?}",
-        dsh_graph["transcript_layout"]
+        tui_graph["transcript_layout"]
     );
-    assert!(dsh_graph["command_catalog"].is_empty());
     assert!(
         tui_graph["command_catalog"].is_empty(),
         "command catalog must remain a leaf among top-level frontend modules"

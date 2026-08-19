@@ -17,6 +17,7 @@ use crate::{
     terminal_runtime::TerminalOwner,
     theme::{self, ThemeFile},
 };
+use e_tui::{PreviewContent, PreviewRequest};
 
 pub trait BridgeTransportPort {
     fn send_message(
@@ -86,6 +87,10 @@ pub trait UiActionPorts {
     fn persist_config(&mut self, config: &Config) -> Result<(), String>;
     fn persist_session_id(&mut self, session_id: String);
     fn write_clipboard(&mut self, text: String) -> Result<(), String>;
+    fn resolve_preview(
+        &mut self,
+        request: PreviewRequest,
+    ) -> impl Future<Output = Result<PreviewContent, String>> + Send;
     fn now(&self) -> Instant;
 }
 
@@ -114,6 +119,13 @@ impl UiActionPorts for ProductionRuntimePorts {
         arboard::Clipboard::new()
             .and_then(|mut clipboard| clipboard.set_text(text))
             .map_err(|error| error.to_string())
+    }
+
+    fn resolve_preview(
+        &mut self,
+        request: PreviewRequest,
+    ) -> impl Future<Output = Result<PreviewContent, String>> + Send {
+        crate::preview_resolver::resolve(request)
     }
 
     fn now(&self) -> Instant {
@@ -192,6 +204,8 @@ pub struct ScriptedRuntimePorts {
     pub clipboard_writes: Vec<String>,
     pub config_result: Result<(), String>,
     pub clipboard_result: Result<(), String>,
+    pub preview_results: std::collections::VecDeque<Result<PreviewContent, String>>,
+    pub preview_requests: Vec<PreviewRequest>,
     pub now: Instant,
 }
 
@@ -205,6 +219,8 @@ impl ScriptedRuntimePorts {
             clipboard_writes: Vec::new(),
             config_result: Ok(()),
             clipboard_result: Ok(()),
+            preview_results: std::collections::VecDeque::new(),
+            preview_requests: Vec::new(),
             now,
         }
     }
@@ -230,6 +246,18 @@ impl UiActionPorts for ScriptedRuntimePorts {
     fn write_clipboard(&mut self, text: String) -> Result<(), String> {
         self.clipboard_writes.push(text);
         self.clipboard_result.clone()
+    }
+
+    fn resolve_preview(
+        &mut self,
+        request: PreviewRequest,
+    ) -> impl Future<Output = Result<PreviewContent, String>> + Send {
+        self.preview_requests.push(request);
+        std::future::ready(
+            self.preview_results
+                .pop_front()
+                .unwrap_or_else(|| Err("scripted Preview resolver failed".into())),
+        )
     }
 
     fn now(&self) -> Instant {
@@ -262,6 +290,21 @@ mod tests {
             transport.sent.lock().unwrap().as_slice(),
             [ClientMessage::Interrupt]
         ));
+
+        let mut ports = ScriptedRuntimePorts::successful(Instant::now());
+        ports
+            .preview_results
+            .push_back(Ok(PreviewContent::PlainText("resolved".into())));
+        let request = e_tui::PreviewRequest {
+            request_id: e_tui::PreviewRequestId(1),
+            key: e_tui::PreviewKey("file:test".into()),
+            revision: e_tui::PreviewRevision(2),
+        };
+        assert!(matches!(
+            ports.resolve_preview(request.clone()).await,
+            Ok(PreviewContent::PlainText(text)) if text == "resolved"
+        ));
+        assert_eq!(ports.preview_requests, vec![request]);
     }
 
     #[test]

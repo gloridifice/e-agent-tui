@@ -2,7 +2,7 @@
 //! the box-drawing output can be eyeballed.
 
 use e::config::Theme;
-use e::render::render_markdown;
+use e_tui::render::render_markdown;
 
 fn main() {
     let md = "\
@@ -51,7 +51,7 @@ graph TD
     let theme = Theme::ferra();
     let mut next = 0;
     let mut units = std::collections::HashMap::new();
-    let options = e::render::RenderOptions::default();
+    let options = e_tui::render::RenderOptions::default();
     let lines = render_markdown(md, &theme, &mut next, &options, &mut units);
     for (i, r) in lines.iter().enumerate() {
         let plain: String = r.line.spans.iter().map(|s| s.content.as_ref()).collect();

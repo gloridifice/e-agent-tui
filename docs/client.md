@@ -1,0 +1,194 @@
+# client (Rust)
+
+Architecture conventions for the Rust TUI client (crate `e`, artifact `dshe.exe`).
+
+- **Event display model** (`display.rs` + `projection/{store,assistant,tool,lifecycle,retry,command,workflow,surface}.rs` +
+  `transcript_layout.rs`): all visible events fall into four public surfaces: `ActivityRow` (with
+  Waiting/Running/Success/Failure/Cancelled state, optionally with parent/depth), `TranscriptBlock`
+  (plain/markdown/reasoning/unknown fallback), `ContentCard` (uniform padding/background/copy source), and
+  `InputAccessory` (above the input bar). Production `AppState` holds **only** `TranscriptStore`;
+  `EventProjector` first produces display/surface mutation/page state/accessory/ignore effects, which the
+  state layer then applies; adding event-specific top-level rendering in `ui` that bypasses the public
+  surfaces is forbidden. `LegacyTestMsg`/`Msg` alias may only appear in `#[cfg(test)]` characterization
+  fixtures and must not re-enter production transcript, renderer, cache, or copy paths.
+- **Reasoning output folding**: `TranscriptFormat::Reasoning` blocks are not rendered to screen in compact
+  mode and do not enter copy provenance (production `ui/transcript.rs::is_hidden_item` makes layout/cache/copy
+  skip them, without producing an inter-row gap); activity-row adjacency must look up the next **non-hidden**
+  DisplayItem — hidden reasoning must not split apart activity rows that should be glued together.
+  lines/full mode renders reasoning content directly: the lines cap is the **post-wrap display row count**
+  (width-aware wrap happens before `thinking_lines` truncation); and whenever reasoning is visible, the
+  immediately preceding `Thinking...` activity row is taken over and hidden by `thinking_row_superseded`
+  (not rendered, no gap). The hidden determination must be uniform across rendering/copy/adjacency/hiding
+  itself (`is_hidden_node`); animation patches skip hidden nodes and must **not** fall into the full-rebuild
+  fallback. Thinking is represented by a `• Thinking... xN` breathing indicator; `assistant/chunk` carrying
+  only reasoning does not settle until the real answer text arrives, which settles to green. Therefore
+  Thinking settlement must search backwards in `TranscriptStore` for a Running Thinking activity — never
+  assume the last node is visible.
+- **Context injection card**: the visible content of `CardRole::Context` shows at most 5 lines under
+  width-aware wrap; if it overflows, the 5th line is replaced with `...`. The card's `copy_source`/copy unit
+  must preserve the complete original text and must not be truncated by the display clip.
+- **File activity folding**: `FileGroup` keeps the `read/view/edit/replace/insert` labels via a unified
+  `FileItem + FileAction`; consecutive `str_replace_editor` view/str_replace/insert and read/edit calls enter
+  the same folded activity row; the editor's absolute path is converted to a workspace-relative path using
+  `session_cwd`. create does not enter FileGroup and is shown separately as
+  `<indicator> create <relative-path>`, and does not append output line count/elapsed time after completion.
+  All activity rows stay on a single display row; when too wide, `transcript_layout`/`ui::transcript`
+  truncate and append `…` using the resolved page content width (including `page_max_width`) — never
+  pre-truncate to terminal width and then wrap inside a narrower page. Generic tool rows show output line count
+  and elapsed time as soon as they start; animation patches update elapsed time, and truncation reserves these
+  trailing metrics by shortening the command/summary first. Known tool schemas should use readable summaries;
+  grep renders as `grep "<pattern>" at "<path>"` rather than raw JSON arguments.
+- **Surface semantics**: `HostEvent` parses the event top-level `time`, `surfaceOp`, `sourceEventSeqs`;
+  replace must first remove the shadowed surface owner, then insert the replacement node at the original
+  surface position. Unknown events that carry `surfaceOp` must also enter the snapshot/history compatibility
+  path. On history prepend, save the shadowed seq so later older pages cannot revive compacted content; when a
+  tool/command/Code Mode/workflow terminal half is split from its start by a page boundary, stage it and
+  rebuild the final state directly when the older page's start arrives; when a retry schedule and a newer
+  retry-started span a page boundary, backfill delay/failure/maxRetries after restoring saved rows — do not
+  drop details just for dedup; move the viewport only by the truly newly added rendered rows. workflow
+  completed/failed/cancelled must be kept as a typed outcome and mapped to Success/Failure/Cancelled.
+  compaction's log-only summary is not drawn as its own card; the single summary card is created and owned by
+  the replacement, so a later replace can delete it precisely.
+- **Render cache** (`cache.rs::TranscriptRenderCache` + `transcript_layout.rs` + `ui/transcript.rs`): only
+  structural events invalidate the cache and trigger a full rebuild; streaming chunks only set `tail_dirty`,
+  and rendering **splices the tail** and recomputes only the tail display-row suffix/prefix — never clear the
+  entire layout; spinner/settle only patch the active `DisplayId` range, and settle must submit one more
+  precise target-color patch after expiry before stopping the clock. Copy line numbers come from the same
+  `TranscriptLayout` the UI uses; the main loop uses `CopyRowsCache` keyed by width/generation to reuse
+  provenance — never fully `flatten` on each copy keypress and each subsequent frame. Wrap scanning computes
+  display width by Unicode grapheme cluster; combining marks / emoji ZWJ must not be split even across style
+  spans.
+- **Performance red lines** (all have regression tests): terminal input wakes the main loop directly through
+  `EventStream` — do not restore fixed ticker polling; interaction/content/animation deadlines are separated,
+  and the bridge backlog is bounded per turn by a count+time budget. The terminal is initialized/restored at a
+  single point via `terminal_runtime.rs::TerminalOwner`; frames are committed atomically with a 64KiB
+  `BufWriter` + DEC 2026 synchronized output (`DSHE_DISABLE_SYNC_OUTPUT=1` only as a compatibility diagnostic).
+  Never full-render per event; redraw P95 ≤30ms and only when dirty/deadline expires; animation only patches
+  the active message range, streaming only splices the tail; display-row layout is cached by width/generation,
+  and each frame only materializes/clones the visible window. Do not break the shared layout semantics of
+  `valid/tail_dirty/dirty_messages`, history display-row anchor, and copy provenance.
+- **Runtime controller / lock discipline**: `runtime.rs::RuntimeController` receives typed `RuntimeInput`,
+  consumes `ControllerAction` inside a single scoped guard, and hands only complete-payload `RuntimeEffect`s
+  to the `main.rs` executor; `runtime_ports.rs` provides transport, terminal, config/state, clipboard, and
+  clock production/scripted ports. The executor must not borrow UI state or silently ignore effects; do not
+  restore a fixed ticker. In Rust 2021, `if let`/`match` scrutinee temporaries live until the end of the whole
+  expression; never write `state_r.lock()` directly into a scrutinee and then re-lock or `.await` in a branch,
+  or you will self-deadlock. Compute plain values/actions in a separate scope before matching, or perform
+  atomic state changes within a single guard; `main.rs` already denies `clippy::significant_drop_in_scrutinee`
+  and has queue-dispatch/copy-mode lock-release regression tests.
+- **Input interaction and character boundaries**: `InputState.cursor` is a **character index**;
+  `String::insert/remove` and slicing need byte indices — use `char_to_byte()` (`input.rs`); CJK has regression
+  tests; cursor x uses `unicode_width`. Plain input is fixed: `Enter` sends, `Shift+Enter` inserts a newline;
+  `↑/↓` move between input lines by character column first, and only switch to the previous/next history prompt
+  at the first/last line boundary; `PageUp`/`PageDown` page by the currently visible transcript height, and the
+  mouse wheel moves 3 lines per notch (always operating on the transcript even when an Input Page is open).
+  `Ctrl+H` is a global help key handled before the Input Page, and `hjkl` with Control/Alt/Super must not enter
+  the focus graph. `Config.enter_sends` exists only for legacy config deserialization compatibility and must
+  no longer change key semantics. The terminal hardware cursor must always be hidden inside the TUI; the screen
+  only draws a software reverse-video cursor; `ui.rs::render_with_cursor` only returns the IME anchor, and the
+  main loop moves the hidden cursor after the frame completes. Do not call `Frame::set_cursor_position` again —
+  it makes ratatui show and drag the cursor during diff drawing, causing the status light/input bar to flicker.
+- **Overlays and Input Page rendering**: a command prompt that truly draws over the transcript must first call
+  `frame.render_widget(Clear, rect)` before drawing the background, otherwise underlying text bleeds through
+  (there is a test `suggest_popup_is_opaque_over_transcript`). `/settings` `/login` `/model` `/theme` `/resume`
+  are not overlays: they are uniformly handled by `InputPageSession` replacing the input area, no border, no
+  `Clear`, with the shared shell fixed at 1 row top/bottom and 2 columns left/right padding.
+- **copy semantics**: copy always takes the original markdown (`units` table); tables/code/mermaid are atomic
+  blocks (`RenderLine.atomic`). Render unit ids are reused across re-renders (`unit_start`) — do not reassign
+  them.
+- **Markdown headings and localized backgrounds**: headings directly use the fixed semantics
+  `semantics.markdown.heading1..6`; in ferra, level 1 is Coral `#ffa07a` bold (no background), level 2 is Sage
+  `#b1b695` bold, level 3 is Blush `#fecdb2` non-bold. inline code `bg` may only apply to the chip span;
+  `render_transcript` only lets `Line.style.bg` trigger full-line fill — never infer a full-line background from
+  an arbitrary span's background, or you will pollute source separator spaces and trailing whitespace. Changing
+  these styles must sync the built-in theme TOML, `render.rs`, and TestBackend regression tests.
+- **Table cells**: must go through `cell_spans()` (`render.rs`) for inline rendering + display column-width
+  truncation/padding — never stuff bare strings in.
+- **History paging**: `min_seq`/`history_loading`/`history_exhausted`; prepend goes through `prepend_events`
+  (sets `prepend_line_anchor`, and the renderer shifts `scroll.offset` by the truly newly added display rows to
+  keep the viewport). The top "history" hint row is **display-only** and does not enter the cache; Thinking is a
+  public `ActivityRow`, but is not generated during snapshot replay/history prepend (`state.replaying`), and
+  file-group merge/settlement scans skip it.
+- **Tracy/timing** (`profile.rs`): instrument with `e::tracy_zone!("literal")` (a macro that safely no-ops when
+  no client is present); use `PhaseTimers` for stage timing. Zone names must be string literals.
+- **Bottom layout and two-line status bar**: the fixed bottom row order is input bar or Input Page / gap /
+  status line 1 / **session title line** (the `ui.rs::render` chunks array; the `+3` in the accessory budget
+  formula matches it). Neither line sets a background color: line 1 is, left to right, the working indicator,
+  `AppState.current_mode`, the current model, and `CH<cache-hit %>`, where the model and CH entries are omitted
+  entirely when they have no value yet (no placeholder dash), and the right side is fixed `^h Help`; line 2's
+  left side is `AppState.session_title` (shows `新会话` when empty) and the right side is the absolute
+  `AppState.session_cwd` path, with the title truncated with `…` when too long so the path is preserved.
+  mode's initial value comes from `welcome.mode` (most recent selection, else the creation header), then is
+  updated by `agent-preset/selected` replay, keeping the latest value by event seq (history prepend must not
+  regress it); CH accumulates from assistant usage input/cache read/cache write, where history prepend may add
+  older totals but must not replace the latest request's usage anchor; these page-state updates must **not**
+  touch `TranscriptRenderCache`. When changing the bottom row count, sync the hardcoded line numbers in the UI
+  layer tests.
+- **Command paradigm** (`runtime_command.rs` + `input.rs`): commands are split into built-in optimized commands
+  and DSH integrated commands. All built-ins are declared exactly once in `BUILTIN_COMMANDS` (name/description/
+  input hint/completion strategy/action in one entry) — never maintain a parallel name table in `input.rs`;
+  `match_command_catalog` merges the `CommandInfo` sent by the bridge, with built-ins winning on name
+  collision. Integrated commands come from each agent's effective `ctx.commands.list` view, and at minimum
+  support fuzzy name completion and show DSH's free-form input hint; DSH currently has no typed argument
+  completion schema, so only built-ins can do argument completion like `/new `; `/skill` is another built-in
+  argument completion — typing the full `/skill` shows the current user-invocable roster and fills candidates as
+  `/skill:<name>`. On receiving a new `commands`/`skills` frame, refresh any open prompt immediately; on session
+  switch, clear the old agent-scoped catalog first. Generic execution must not pre-`start_thinking`; the result
+  is projected directly to System/Error by `command-result`.
+- **Startup and deferred `/new`**: a new process sends hello without `resumeSessionId`, and the bridge still
+  creates a session in place (`hello.cwd` workspace + `hello.mode` default mode, falling back to standard on
+  failure); only a CLI session id and "remember last session" (default off) resume. `/resume` opens the resume
+  Input Page, `/resume <id>` attaches directly. A bare `/new` while interactive only creates a client-side
+  `NewConversationDraft` (display name `新对话`) — it does not send to the bridge or replace the real session
+  id/TranscriptStore; only the first plain input sends the atomic `new-input{mode,text}` to create and deliver.
+  During the draft, old-session frames keep reducing but are not displayed; on create failure restore the input;
+  `/model`, `/skill`, and integrated commands must not be misrouted to the old session.
+- **Input Page controller** (`input_page.rs` + `settings.rs` + `login.rs`): the main loop holds a single
+  `Option<InputPageSession>` with the closed variant set Settings/Login/Model/Theme/Resume/Question; page keys only
+  return `PageOutcome`/`PageEffect`, and the caller saves or `.await`s sending only after releasing the page borrow
+  and state lock. Browse-state arrow keys and `hjkl` share a stable focus graph, Enter executes; text-edit-state
+  `hjkl` must be ordinary characters. `ask_user_question` opens Question directly in this shell and its tool call/result
+  are suppressed from transcript activity: `h`/`l` or `←`/`→` changes the question, `j`/`k` or `↓`/`↑` moves option
+  focus, Space selects without advancing (and toggles options for multi-select questions), Enter advances/submits,
+  and closing the page restores the untouched ordinary input buffer. Dynamic
+  login/model/session rosters reconcile focus by
+  provider/model/proxy/session id, and an empty list must not fabricate a fake focus; Resume always uses plain
+  characters (including hjkl) for title/id filtering, with only ↑↓ selecting a session.
+- **/login page**: a one-level two-choice menu (API key / Proxy) → sub-pages (Menu / Providers / ApiKey /
+  ProxyList / ProxyForm / ProxyDelete). State comes from bridge `login` frames; the API key is never sent back
+  and is drawn as ● when editing; non-writable providers must not receive action focus; an existing proxy must
+  enter the delete confirmation page on Enter, and `login-proxy-delete` is only sent after explicitly choosing
+  delete.
+- **Config/theme/launcher (client)**: config defaults live only in `client/assets/default_config.toml`,
+  embedded and parsed by `config.rs` via `include_str!`; the persisted `Config` is deserialized directly with
+  `Deserialize` + `#[serde(deny_unknown_fields)]`, and `resolved_theme` is a `#[serde(skip)]` runtime cache.
+  `from_user_toml` first recursively `overlay_known`s user values onto the embedded TOML as the schema, then
+  strictly deserializes exactly once: old files inherit missing fields, deprecated unknown keys are ignored,
+  malformed/known-type errors fall back safely; `Config::default()` must not re-derive from Rust field literals.
+  `Config.theme` stores the theme name; rendering does zero disk reads. Themes are two-layer TOML: an open
+  `[colors]` allows arbitrary color names, and fixed `[semantics.*]` (surface/markdown/input/working_status/log/
+  activity/card/overlay) link semantic styles to color names; each style requires only `fg`, with `bg`/`bold`/
+  `italic`/`underline` optional; unknown references, missing fixed fields, or illegal hex reject the whole file.
+  Built-in `deepseek-e`/`ferra` sources are in `client/assets/themes/`, embedded via `include_str!` and parsed by
+  the same parser as user files, and copied without overwrite to `%APPDATA%\dshe\themes\`; a valid same-named user
+  file wins, and an illegal old file must not shadow the embedded fallback. `launcher.rs`: `probe(url)` TCP probe
+  → if no dsh, spawn `dsh --profile dshe` (`dsh` or `npx @deepseek-ai/dsh`) → `%DSH_HOME%\dsh-tui.lock` counts
+  "close dsh when the last tui closes"; on Windows the child handle points at the `cmd /C` shim, and both normal
+  shutdown and startup-timeout cleanup must `taskkill /T` the whole process tree — never only `Child::kill`,
+  which leaves orphan Node processes; child reaping must be bounded, and on terminate failure keep an
+  `instances: 0` lock for the next attach to retry; reading any lock must re-`probe(url)` — even `instances > 0`
+  is not proof of a live service (a force-killed TUI leaves a stale positive-count lock), and if the service is
+  gone, clear the lock and rebuild. A spawn error, child exit before readiness, or startup timeout must fail the
+  launcher immediately with the attempted command and actionable setup guidance (run `dshe setup` and restart DSH)
+  — never continue to token
+  read/WebSocket connect and expose a raw connection-refused error. The WebSocket upgrade retries only transient I/O
+  races briefly. `release` returns `true` only when it actually shut down a managed service, and after the main
+  program exits the alternate screen it prints `dsh 服务器已关闭。`. The launcher must use the dedicated `dshe`
+  profile and must not reuse DSH's own / user's existing `tui` profile (whose terminal UI grabs stdio and does not
+  provide the `webServer` the bridge depends on). Hello-terminal bridge errors (`protocol-newer`, `bad-token`,
+  `hello-failed`) must become actionable fatal client errors before the following WebSocket close can overwrite them
+  with a generic disconnect; the client must also reject a differing protocol version in `welcome`, and protocol
+  mismatch guidance must mention updating/rebuilding the client, running `dshe setup`, and restarting DSH.
+  `/reload` re-reads config + rescans themes.
+- After adding interaction keys, sync: `ui.rs`'s `help_overlay`, the README quick-reference table, and input
+  tests.

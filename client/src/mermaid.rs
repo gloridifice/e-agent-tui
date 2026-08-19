@@ -69,8 +69,7 @@ pub fn render(source: &str, max_width: u32) -> Result<Vec<MermaidLine>, String> 
     let mut store = Store::new(&cell.engine, ());
     let linker = Linker::new(&cell.engine);
     let instance = linker
-        .instantiate(&mut store, &cell.module)
-        .and_then(|i| i.start(&mut store))
+        .instantiate_and_start(&mut store, &cell.module)
         .map_err(|e| format!("mermaid: instantiate failed: {e}"))?;
 
     let alloc = instance

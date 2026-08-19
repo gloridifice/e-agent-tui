@@ -174,7 +174,8 @@ export function createClientDispatcher({
   }
 
   function answerQuestions(msg, cancelled) {
-    if (!conn || !apiProxy || typeof msg.rpcId !== 'string') return
+    const currentApiProxy = typeof apiProxy === 'function' ? apiProxy() : apiProxy
+    if (!conn || !currentApiProxy || typeof msg.rpcId !== 'string') return
     const sessionId = questionSessions.get(msg.rpcId)
     if (sessionId === undefined) {
       if (!cancelled) send(ws, { type: 'error', code: 'answer-failed', message: 'question no longer pending' })
@@ -183,7 +184,7 @@ export function createClientDispatcher({
     const result = cancelled
       ? { ok: false, error: { code: 'cancelled', message: 'the user cancelled ask_user_question', details: {} } }
       : { ok: true, value: { sessionId, answer: { answers: msg.answers } } }
-    apiProxy.respond({ type: 'client-response', rpcId: msg.rpcId, result }, conn.abort.signal).then(
+    currentApiProxy.respond({ type: 'client-response', rpcId: msg.rpcId, result }, conn.abort.signal).then(
       (receipt) => {
         if (!cancelled && !receipt.accepted) {
           send(ws, { type: 'error', code: 'answer-failed', message: receipt.reason ?? 'rejected' })

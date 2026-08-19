@@ -1,6 +1,6 @@
 //! Tool and folded-file projection into public activity rows.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
@@ -70,11 +70,15 @@ struct FileGroupState {
 pub enum ToolMutation {
     Upsert(ActivityRow),
     MissingResult,
+    /// Interaction-only tools have their own Input Page and never enter the
+    /// transcript activity surface.
+    Ignore,
 }
 
 #[derive(Debug, Default)]
 pub struct ToolProjectionState {
     calls: HashMap<String, ToolCallState>,
+    ignored_calls: HashSet<String>,
     groups: HashMap<DisplayId, FileGroupState>,
     open_group: Option<DisplayId>,
     next_group: u64,
@@ -100,6 +104,11 @@ impl ToolProjectionState {
         else {
             return None;
         };
+        if name == "ask_user_question" {
+            self.close_group();
+            self.ignored_calls.insert(call_id.clone());
+            return Some(ToolMutation::Ignore);
+        }
         let file = classify_file_call(name, arguments, session_cwd);
         if let Some((action, path)) = file
             .as_ref()
@@ -161,6 +170,10 @@ impl ToolProjectionState {
         let mut row = ActivityRow::root(id, label);
         row.summary = summary;
         row.start_ms = Some(now_ms);
+        if !create {
+            row.output_lines = Some(0);
+            row.live_duration_since = Some(std::time::Instant::now());
+        }
         Some(ToolMutation::Upsert(row))
     }
 
@@ -174,6 +187,9 @@ impl ToolProjectionState {
         else {
             return None;
         };
+        if self.ignored_calls.remove(call_id) {
+            return Some(ToolMutation::Ignore);
+        }
         let Some(call) = self.calls.get(call_id).cloned() else {
             return Some(ToolMutation::MissingResult);
         };
@@ -195,16 +211,8 @@ impl ToolProjectionState {
         row.start_ms = Some(call.start_ms);
         if !call.create {
             row.duration_ms = Some(now_ms.saturating_sub(call.start_ms));
-            let lines = output.lines().count();
-            row.continuations.push(ActivityContinuation {
-                separator: " · ".into(),
-                label: String::new(),
-                summary: if *output_truncated {
-                    format!("{lines}+ lines")
-                } else {
-                    format!("{lines} lines")
-                },
-            });
+            row.output_lines = Some(output.lines().count());
+            row.output_lines_truncated = *output_truncated;
         }
         Some(ToolMutation::Upsert(row))
     }
@@ -273,6 +281,16 @@ fn exit_marker(output: &str) -> i64 {
 
 fn tool_summary(name: &str, arguments: &str) -> String {
     let parsed: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
+    if name == "grep" {
+        if let (Some(pattern), Some(path)) = (
+            parsed.get("pattern").and_then(Value::as_str),
+            parsed.get("path").and_then(Value::as_str),
+        ) {
+            let pattern = serde_json::to_string(pattern).unwrap_or_else(|_| "\"\"".into());
+            let path = serde_json::to_string(path).unwrap_or_else(|_| "\"\"".into());
+            return format!("{pattern} at {path}");
+        }
+    }
     if matches!(name, "bash" | "shell" | "powershell" | "pwsh") {
         for key in ["command", "cmd", "script"] {
             if let Some(value) = parsed.get(key).and_then(Value::as_str) {
@@ -429,6 +447,89 @@ mod tests {
             panic!("row")
         };
         assert!(row.duration_ms.is_none());
+        assert!(row.output_lines.is_none());
         assert!(row.continuations.is_empty());
+    }
+
+    #[test]
+    fn grep_summary_reads_as_pattern_at_path() {
+        assert_eq!(
+            tool_summary("grep", r#"{"path":"README.md","pattern":"say \"hello\""}"#,),
+            r#""say \"hello\"" at "README.md""#
+        );
+    }
+
+    #[test]
+    fn ask_user_question_is_owned_only_by_the_input_page() {
+        let mut state = ToolProjectionState::default();
+        let call = event(
+            "tool/call",
+            1,
+            serde_json::json!({
+                "callId":"question-call", "name":"ask_user_question",
+                "arguments": r#"{"questions":[]}"#
+            }),
+        );
+        assert_eq!(
+            state.project_call(&call, Some("C:/work"), true, 10),
+            Some(ToolMutation::Ignore)
+        );
+        assert!(state.row_for_call("question-call").is_none());
+
+        let result = event(
+            "tool/result",
+            2,
+            serde_json::json!({
+                "message": {"content": [{
+                    "type": "tool-result",
+                    "toolCallId": "question-call",
+                    "content": "answered"
+                }]}
+            }),
+        );
+        assert_eq!(
+            state.project_result(&result, 20),
+            Some(ToolMutation::Ignore)
+        );
+    }
+
+    #[test]
+    fn generic_tool_metrics_exist_while_running_and_settle_on_result() {
+        let mut state = ToolProjectionState::default();
+        let call = event(
+            "tool/call",
+            1,
+            serde_json::json!({
+                "callId":"p", "name":"pwsh",
+                "arguments": r#"{"command":"cargo test"}"#
+            }),
+        );
+        let ToolMutation::Upsert(running) = state
+            .project_call(&call, Some("C:/work"), true, 10)
+            .unwrap()
+        else {
+            panic!("row")
+        };
+        assert_eq!(running.output_lines, Some(0));
+        assert!(running.live_duration_since.is_some());
+        assert!(running.duration_ms.is_none());
+
+        let result = event(
+            "tool/result",
+            2,
+            serde_json::json!({
+                "message": {"content": [{
+                    "type": "tool-result",
+                    "toolCallId": "p",
+                    "content": [{"type": "text", "text": "one\ntwo"}]
+                }]}
+            }),
+        );
+        let ToolMutation::Upsert(done) = state.project_result(&result, 120).unwrap() else {
+            panic!("row")
+        };
+        assert_eq!(done.output_lines, Some(2));
+        assert_eq!(done.duration_ms, Some(110));
+        assert!(done.live_duration_since.is_none());
     }
 }

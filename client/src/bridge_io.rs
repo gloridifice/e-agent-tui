@@ -42,11 +42,10 @@ impl BridgeIo {
         hello: ClientMessage,
         max_frame_bytes: usize,
     ) -> anyhow::Result<Self> {
-        let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
-            max_message_size: Some(max_frame_bytes.max(MAX_WIRE_FRAME_BYTES)),
-            max_frame_size: Some(max_frame_bytes.max(MAX_WIRE_FRAME_BYTES)),
-            ..Default::default()
-        };
+        let wire_limit = max_frame_bytes.max(MAX_WIRE_FRAME_BYTES);
+        let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+            .max_message_size(Some(wire_limit))
+            .max_frame_size(Some(wire_limit));
         // A process can disappear in the small gap between the launcher's TCP
         // readiness probe and the WebSocket upgrade. Retry only transient I/O
         // failures; handshake/auth/protocol failures must surface immediately.
@@ -72,7 +71,7 @@ impl BridgeIo {
                 let Ok(wire) = message.to_wire() else {
                     continue;
                 };
-                if sink.send(Message::Text(wire)).await.is_err() {
+                if sink.send(Message::Text(wire.into())).await.is_err() {
                     break;
                 }
             }

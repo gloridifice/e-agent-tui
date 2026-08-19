@@ -44,7 +44,7 @@
 | D18 | Mermaid over-width | v1 truncate + fold hint (copy still gets full source); v2 full-screen graph mode with hjkl four-direction scroll |
 | D19 | Copy hint | after a successful copy, the input area briefly shows `已复制 N 行`, disappearing after ~2 seconds |
 | D20 | User message display | shown verbatim character-for-character, no markdown rendering; prefix `❯` Coral |
-| D21 | Command execution tool card | dot spinner (default half-moon rotation `◐◓◑◒` ~120ms/frame, Honey); only shows command + live output line count; exit 0→`✓`Sage, non-0→`✗`Ember; command truncates over width, output expanded on view |
+| D21 | Command execution tool card | breathing bullet + command + live output line count and elapsed time; success/failure color the bullet Sage/Ember; over-width commands truncate before the trailing metrics so those metrics remain visible |
 | D22 | read merge and fold | adjacent reads within the same turn merge into a compact status list; when all finish, fold into Bark gray `<a>, <b>, <c>` (filenames only, over-width truncates `+N`); Enter expands back, Esc collapses |
 | D23 | Input bar shape | borderless background block: Ash base, 1-row top margin + text area + 1-row bottom margin; prefix `❯` Coral; `Enter` fixed send, `Shift+Enter` newline; `↑/↓` move between lines and switch prompts at first/last line boundary |
 | D24 | Overlong paste placeholder | paste over the config threshold shows Rose `[N text pasted]`; sends the full content verbatim; plain text inserts newlines with `Shift+Enter` |
@@ -207,16 +207,18 @@ semantics.
 **Command execution class (shell/bash/pwsh etc.)** — D21
 
 ```
-◐ npm run build · 128 lines        ← running: spinner turning (Honey) + command + live output line count
-✓ npm run build · 128 lines        ← exit 0: Sage green
-✗ npm run build · 64 lines         ← exit non-0: Ember red x
+• npm run build · 0 lines · 0.0s       ← running: breathing Honey bullet; metrics exist immediately
+• npm run build · 128 lines · 11.2s    ← exit 0: Sage bullet
+• npm run build · 64 lines · 3.4s      ← exit non-0: Ember bullet
 ```
 
-- Output body is not shown while running; the line count grows live with output; command text over one line is
-  truncated (trailing `…`), with the truncation column computed from the centered page's actual content width
-  (including the "page max width" setting), never computed against the outer terminal width and then wrapped in a
-  narrower page.
-- Done: `✓`/`✗` color carries the exit-code semantics; the **user-requested "red x"** is the non-zero exit `✗`.
+- Output body is not shown while running. The line count starts at zero and updates when output is projected; the
+  elapsed time updates on animation ticks. Command text stays on one row and truncates with `…` at the centered
+  page's actual content width (including the "page max width" setting). Truncation reserves the complete trailing
+  `· N lines · N.Ns` metrics instead of clipping them with the command.
+- Tool summaries use compact readable forms where a schema is known; for example grep is
+  `grep "<pattern>" at "<path>"` rather than raw JSON arguments.
+- Success/failure is carried by the Sage/Ember bullet color.
 - Expand (Enter): view the full command and output/stderr (with the fold rules below).
 
 **File read class (read etc.)** — D22
@@ -452,14 +454,16 @@ after the lock is released, to avoid same-thread state-lock reentrancy freezing 
 - The approval card is fixed above the input area and does not block the message stream (background keeps
   rendering).
 - Approval: `Y/n/i` or `←→` + Enter; when the Web GUI answers first the card disappears automatically with a hint.
-- User questions (ask_user_question, single/multi-select batches): the question panel is fixed above the input area
-  (title + question + current option description), and the **input bar becomes a selection bar** — `←→` switches
-  between options, Enter selects the current item and advances to the next question; Enter on the last question
-  confirms the whole submission; Esc cancels the whole batch. Questions without preset options degrade to text
-  input (type directly, Enter submits as custom). When the Web GUI answers/aborts first (question/resolved) the
-  selection bar disappears automatically. The bridge forwards via apiproxy mux frames (question/requested,
-  question/resolved), and answers return via apiProxy.respond's client-response — Web and TUI can both answer, the
-  host takes the first to arrive.
+- User questions (ask_user_question, single/multi-select batches) open in the shared Input Page shell; their tool
+  call/result events do not enter transcript activity. `h`/`l` or `←`/`→` switches between questions while retaining
+  each answer; `j`/`k` or `↓`/`↑` moves the option focus. Space selects the focused option without advancing; on a
+  multi-select question it toggles that option independently. Enter advances to the next question, and Enter on the
+  last question submits the whole batch; Esc cancels it. Questions without preset options degrade to text editing where
+  `hjkl` remain ordinary text (`←`/`→` still switch questions). Opening and closing
+  the page never mutates the ordinary input buffer, so any draft prompt reappears unchanged after the batch finishes.
+  When the Web GUI answers/aborts first (`question/resolved`) the page disappears automatically. The bridge forwards
+  the API proxy mux's RPC-enveloped `question/requested`/`question/resolved` frames, and answers return via
+  `apiProxy.respond`'s `client-response` — Web and TUI can both answer, and the host takes the first to arrive.
 
 ### 4.5 Interrupt semantics
 
@@ -688,13 +692,15 @@ Events display uniformly as four public surfaces:
 | `ActivityRow` | Waiting/Running/Success/Failure/Cancelled activity, optionally with parent/depth | Thinking, tool, retry, command, Code Mode, workflow, compaction |
 | `TranscriptBlock` | plain/Markdown/fallback content without work state; in compact mode reasoning blocks fold into the `• Thinking...` breathing light — not rendered, not in copy provenance, and transparent to activity-row adjacency; lines/full mode renders the content directly (lines truncates by post-wrap display row count), and the adjacent Thinking indicator row is then taken over and hidden | assistant, turn notice/error |
 | `ContentCard` | content card with uniform padding, background, and copy source; context injection cards show at most 5 lines by post-wrap display row count, showing `...` on the last line when overflowing, but copy source keeps the full original text | user message, context, attachment placeholder, compaction summary |
-| `InputAccessory` | above the input bar, unified height budget/priority/focus | queue, approval, question, todo, goal, plan |
+| `InputAccessory` | above the input bar, unified height budget/priority/focus | queue, approval, todo, goal, plan |
 
 File activity keeps operation labels via `FileAction`: consecutive `read`, `view`, `edit`, `replace`, `insert` can
 fold into the same activity row, where the latter three come from `str_replace_editor`'s view/str_replace/insert
 commands; its absolute path is preferentially shown as a workspace-relative path by the session's `session_cwd`.
 create does not participate in folding and is shown separately as `<indicator> create <relative-path>`, without
-appending tool output line count or elapsed time after completion.
+appending tool output line count or elapsed time after completion. Generic tool rows expose their output line count
+and elapsed time from the running state onward; single-row truncation shortens the command/summary first and keeps
+those trailing metrics visible.
 
 DSH surface replace runs before display: the shadowed surface node and its owned tool activities are deleted from
 the effective transcript, and the replacement is inserted back at the original surface position; compaction's

@@ -13,6 +13,7 @@ pub use crate::page_core::{
 use crate::{
     config::Config,
     login::{LoginAction, LoginState, LoginView, Page as LoginPage, PROXY_SAVE_ROW},
+    model::QuestionBatch,
     protocol::{ClientMessage, ModelProviderInfo, SessionInfo},
     settings::{items_in, ItemKind, SettingsAction, SettingsState, CATEGORIES},
     theme::ThemeFile,
@@ -304,6 +305,7 @@ pub enum InputPage {
     Model(ModelPage),
     Theme(ThemePage),
     Resume(ResumePage),
+    Question(QuestionBatch),
 }
 
 pub struct InputPageSession {
@@ -333,6 +335,19 @@ impl InputPageSession {
         Self::new(InputPage::Resume(ResumePage::loading()))
     }
 
+    pub fn question(batch: QuestionBatch) -> Self {
+        let mut page = Self::new(InputPage::Question(batch));
+        page.rebuild_focus();
+        page
+    }
+
+    pub fn question_rpc_id(&self) -> Option<&str> {
+        match &self.page {
+            InputPage::Question(batch) => Some(batch.rpc_id.as_str()),
+            _ => None,
+        }
+    }
+
     pub fn theme(files: &[ThemeFile], current: &str) -> Self {
         let mut page = Self::new(InputPage::Theme(ThemePage::from_files(files, current)));
         page.rebuild_focus();
@@ -352,6 +367,7 @@ impl InputPageSession {
             InputPage::Settings(settings) => settings.editing.is_some(),
             InputPage::Login(login) => login.editing.is_some(),
             InputPage::Resume(_) => true,
+            InputPage::Question(question) => question.is_free_text(),
             InputPage::Model(_) | InputPage::Theme(_) => false,
         };
         if !editing {
@@ -417,8 +433,67 @@ impl InputPageSession {
                 }
             }
             InputPage::Resume(resume) => resume.handle_key(key),
+            InputPage::Question(question) => match key.code {
+                KeyCode::Esc => PageOutcome::send(
+                    ClientMessage::CancelQuestions {
+                        rpc_id: question.rpc_id.clone(),
+                    },
+                    true,
+                ),
+                KeyCode::Left | KeyCode::Char('h') if !question.is_free_text() => {
+                    question.step_question(-1);
+                    PageOutcome::default()
+                }
+                KeyCode::Right | KeyCode::Char('l') if !question.is_free_text() => {
+                    question.step_question(1);
+                    PageOutcome::default()
+                }
+                KeyCode::Left => {
+                    question.step_question(-1);
+                    PageOutcome::default()
+                }
+                KeyCode::Right => {
+                    question.step_question(1);
+                    PageOutcome::default()
+                }
+                KeyCode::Char(' ') if !question.is_free_text() => {
+                    question.toggle_selection();
+                    PageOutcome::default()
+                }
+                KeyCode::Enter => question
+                    .enter()
+                    .map(|answers| {
+                        PageOutcome::send(
+                            ClientMessage::AnswerQuestions {
+                                rpc_id: question.rpc_id.clone(),
+                                answers,
+                            },
+                            true,
+                        )
+                    })
+                    .unwrap_or_default(),
+                KeyCode::Backspace if question.is_free_text() => {
+                    question.backspace();
+                    PageOutcome::default()
+                }
+                KeyCode::Char(character)
+                    if question.is_free_text()
+                        && !character.is_ascii_control()
+                        && !key.modifiers.intersects(
+                            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                        ) =>
+                {
+                    question.push_char(character);
+                    PageOutcome::default()
+                }
+                _ => PageOutcome::default(),
+            },
         };
-        if matches!(self.page, InputPage::Settings(_) | InputPage::Login(_)) {
+        if matches!(
+            self.page,
+            InputPage::Settings(_) | InputPage::Login(_) | InputPage::Question(_)
+        ) && !outcome.close
+        {
             self.rebuild_focus();
         }
         outcome
@@ -476,6 +551,10 @@ impl InputPageSession {
                 resume.sel = 0;
                 true
             }
+            InputPage::Question(question) if question.is_free_text() => {
+                question.draft.push_str(text);
+                true
+            }
             _ => false,
         }
     }
@@ -498,6 +577,7 @@ impl InputPageSession {
                 linear_focus_nodes(&ids, false)
             }
             InputPage::Resume(_) => Vec::new(),
+            InputPage::Question(question) => question_focus_nodes(question),
         };
         self.focus.replace(nodes);
         if let Some(desired) = desired {
@@ -519,6 +599,9 @@ impl InputPageSession {
                 .clone()
                 .or_else(|| Some(FocusId::new(format!("theme:{}", theme.current)))),
             InputPage::Resume(_) => None,
+            InputPage::Question(question) => {
+                (!question.is_free_text()).then(|| question_option_focus(question, question.sel))
+            }
         }
     }
 
@@ -551,9 +634,49 @@ impl InputPageSession {
                     login.pos = pos;
                 }
             }
+            InputPage::Question(question) => {
+                if let Some(index) =
+                    question
+                        .current_options()
+                        .iter()
+                        .enumerate()
+                        .find_map(|(index, _)| {
+                            (question_option_focus(question, index) == *id).then_some(index)
+                        })
+                {
+                    question.sel = index;
+                }
+            }
             InputPage::Model(_) | InputPage::Theme(_) | InputPage::Resume(_) => {}
         }
     }
+}
+
+fn question_option_focus(question: &QuestionBatch, index: usize) -> FocusId {
+    let question_id = question
+        .questions
+        .get(question.current)
+        .map(|item| item.id.as_str())
+        .unwrap_or("missing");
+    FocusId::new(format!("question:{question_id}:option:{index}"))
+}
+
+fn question_focus_nodes(question: &QuestionBatch) -> Vec<FocusNode> {
+    let ids = question
+        .current_options()
+        .iter()
+        .enumerate()
+        .map(|(index, _)| question_option_focus(question, index))
+        .collect::<Vec<_>>();
+    ids.iter()
+        .enumerate()
+        .map(|(index, id)| {
+            let mut node = FocusNode::new(id.clone());
+            node.up = index.checked_sub(1).and_then(|i| ids.get(i)).cloned();
+            node.down = ids.get(index + 1).cloned();
+            node
+        })
+        .collect()
 }
 
 fn linear_focus_nodes(ids: &[FocusId], horizontal: bool) -> Vec<FocusNode> {
@@ -962,6 +1085,125 @@ mod tests {
             [PageEffect::Send(ClientMessage::ModelSet { provider, model })]
                 if provider == "p" && model == "m"
         ));
+    }
+
+    #[test]
+    fn question_page_uses_h_l_for_questions_and_j_k_for_options() {
+        let question = |id: &str, labels: &[&str]| crate::protocol::QuestionItem {
+            id: id.into(),
+            question: format!("{id}?"),
+            header: None,
+            options: Some(
+                labels
+                    .iter()
+                    .map(|label| crate::protocol::QuestionOption {
+                        label: (*label).into(),
+                        description: None,
+                    })
+                    .collect(),
+            ),
+            multi_select: false,
+        };
+        let mut page = InputPageSession::question(QuestionBatch::new(
+            "rpc".into(),
+            "session".into(),
+            vec![
+                question("first", &["A", "B"]),
+                question("second", &["C", "D"]),
+            ],
+        ));
+        let mut config = Config::default();
+
+        page.handle_key(&key(KeyCode::Char('j')), &mut config);
+        assert!(
+            matches!(&page.page, InputPage::Question(batch) if batch.current == 0 && batch.sel == 1)
+        );
+        page.handle_key(&key(KeyCode::Char('l')), &mut config);
+        assert!(
+            matches!(&page.page, InputPage::Question(batch) if batch.current == 1 && batch.sel == 0)
+        );
+        page.handle_key(&key(KeyCode::Char('j')), &mut config);
+        page.handle_key(&key(KeyCode::Char('h')), &mut config);
+        assert!(
+            matches!(&page.page, InputPage::Question(batch) if batch.current == 0 && batch.sel == 1)
+        );
+        page.handle_key(&key(KeyCode::Right), &mut config);
+        assert!(
+            matches!(&page.page, InputPage::Question(batch) if batch.current == 1 && batch.sel == 1)
+        );
+        page.handle_key(&key(KeyCode::Char('k')), &mut config);
+        assert!(matches!(&page.page, InputPage::Question(batch) if batch.sel == 0));
+        page.handle_key(&key(KeyCode::Down), &mut config);
+        let submitted = page.handle_key(&key(KeyCode::Enter), &mut config);
+        assert!(submitted.close);
+        assert!(matches!(
+            submitted.effects.as_slice(),
+            [PageEffect::Send(ClientMessage::AnswerQuestions { rpc_id, answers })]
+                if rpc_id == "rpc"
+                    && answers[0].selected == ["B"]
+                    && answers[1].selected == ["D"]
+        ));
+    }
+
+    #[test]
+    fn question_space_toggles_multi_select_without_leaving_the_question() {
+        let mut page = InputPageSession::question(QuestionBatch::new(
+            "rpc".into(),
+            "session".into(),
+            vec![crate::protocol::QuestionItem {
+                id: "many".into(),
+                question: "choose".into(),
+                header: None,
+                options: Some(
+                    ["A", "B", "C"]
+                        .into_iter()
+                        .map(|label| crate::protocol::QuestionOption {
+                            label: label.into(),
+                            description: None,
+                        })
+                        .collect(),
+                ),
+                multi_select: true,
+            }],
+        ));
+        let mut config = Config::default();
+
+        page.handle_key(&key(KeyCode::Char('j')), &mut config);
+        let selected = page.handle_key(&key(KeyCode::Char(' ')), &mut config);
+        assert!(!selected.close);
+        assert!(selected.effects.is_empty());
+        assert!(matches!(&page.page, InputPage::Question(batch)
+            if batch.current == 0 && batch.sel == 1 && batch.is_option_selected(1)));
+        page.handle_key(&key(KeyCode::Char('j')), &mut config);
+        page.handle_key(&key(KeyCode::Char(' ')), &mut config);
+        page.handle_key(&key(KeyCode::Char('k')), &mut config);
+        page.handle_key(&key(KeyCode::Char(' ')), &mut config);
+
+        let submitted = page.handle_key(&key(KeyCode::Enter), &mut config);
+        assert!(matches!(
+            submitted.effects.as_slice(),
+            [PageEffect::Send(ClientMessage::AnswerQuestions { answers, .. })]
+                if answers[0].selected == ["C"]
+        ));
+    }
+
+    #[test]
+    fn question_free_text_keeps_h_l_as_text() {
+        let mut page = InputPageSession::question(QuestionBatch::new(
+            "rpc".into(),
+            "session".into(),
+            vec![crate::protocol::QuestionItem {
+                id: "free".into(),
+                question: "why?".into(),
+                header: None,
+                options: None,
+                multi_select: false,
+            }],
+        ));
+        let mut config = Config::default();
+        page.handle_key(&key(KeyCode::Char('h')), &mut config);
+        page.handle_key(&key(KeyCode::Char('l')), &mut config);
+        assert!(matches!(&page.page, InputPage::Question(batch) if batch.draft == "hl"));
     }
 
     #[test]

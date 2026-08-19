@@ -42,8 +42,7 @@ mod transcript;
 use pages::{render_input_page, render_login, render_settings, trim_to_width, wrap_text};
 
 use accessories::{
-    render_approval, render_info_accessory, render_question, render_question_bar, render_queue,
-    render_suggest, render_todo,
+    render_approval, render_info_accessory, render_queue, render_suggest, render_todo,
 };
 use input::render_input;
 use overlay::help_overlay;
@@ -99,16 +98,6 @@ pub struct RenderOverlays<'a> {
 
 fn input_accessories(state: &AppState) -> Vec<InputAccessory> {
     let mut accessories = Vec::new();
-    if state.question.is_some() {
-        accessories.push(InputAccessory {
-            kind: InputAccessoryKind::Question,
-            priority: 100,
-            desired_rows: 3,
-            minimum_rows: 3,
-            blocking: true,
-            insertion_order: 0,
-        });
-    }
     if state.approval.is_some() {
         accessories.push(InputAccessory {
             kind: InputAccessoryKind::Approval,
@@ -116,7 +105,7 @@ fn input_accessories(state: &AppState) -> Vec<InputAccessory> {
             desired_rows: 3,
             minimum_rows: 3,
             blocking: true,
-            insertion_order: 1,
+            insertion_order: 0,
         });
     }
     if state.goal.is_some() {
@@ -126,7 +115,7 @@ fn input_accessories(state: &AppState) -> Vec<InputAccessory> {
             desired_rows: 1,
             minimum_rows: 1,
             blocking: false,
-            insertion_order: 2,
+            insertion_order: 1,
         });
     }
     if state.plan_mode.is_some() {
@@ -136,7 +125,7 @@ fn input_accessories(state: &AppState) -> Vec<InputAccessory> {
             desired_rows: 1,
             minimum_rows: 1,
             blocking: false,
-            insertion_order: 3,
+            insertion_order: 2,
         });
     }
     if !state.todos.is_empty() {
@@ -146,7 +135,7 @@ fn input_accessories(state: &AppState) -> Vec<InputAccessory> {
             desired_rows: (state.todos.len() + 1).min(6) as u16,
             minimum_rows: 1,
             blocking: false,
-            insertion_order: 4,
+            insertion_order: 3,
         });
     }
     if !state.queue.is_empty() {
@@ -156,7 +145,7 @@ fn input_accessories(state: &AppState) -> Vec<InputAccessory> {
             desired_rows: state.queue.len().min(u16::MAX as usize) as u16,
             minimum_rows: 1,
             blocking: false,
-            insertion_order: 5,
+            insertion_order: 4,
         });
     }
     accessories
@@ -269,7 +258,6 @@ pub fn render_with_cursor(
             .find(|item| item.kind == kind)
             .map_or(0, |item| item.rows)
     };
-    let question_rows = accessory_rows(InputAccessoryKind::Question);
     let approval_rows = accessory_rows(InputAccessoryKind::Approval);
     let goal_rows = accessory_rows(InputAccessoryKind::Goal);
     let plan_rows = accessory_rows(InputAccessoryKind::Plan);
@@ -278,7 +266,6 @@ pub fn render_with_cursor(
     if input_page_open {
         let chunks = Layout::vertical([
             Constraint::Min(1),
-            Constraint::Length(question_rows),
             Constraint::Length(approval_rows),
             Constraint::Length(goal_rows),
             Constraint::Length(plan_rows),
@@ -300,18 +287,13 @@ pub fn render_with_cursor(
             help_visible,
             overlay,
         );
-        if !drafting {
-            if let Some(question) = state.question.as_ref() {
-                render_question(frame, chunks[1], question, theme);
-            }
-        }
         if approval_rows > 0 {
-            render_approval(frame, chunks[2], state.approval.as_ref().unwrap(), theme);
+            render_approval(frame, chunks[1], state.approval.as_ref().unwrap(), theme);
         }
         if goal_rows > 0 {
             render_info_accessory(
                 frame,
-                chunks[3],
+                chunks[2],
                 "Goal",
                 state.goal.as_deref().unwrap_or(""),
                 theme,
@@ -320,40 +302,30 @@ pub fn render_with_cursor(
         if plan_rows > 0 {
             render_info_accessory(
                 frame,
-                chunks[4],
+                chunks[3],
                 "Plan",
                 state.plan_mode.as_deref().unwrap_or(""),
                 theme,
             );
         }
         if todo_rows > 0 {
-            render_todo(frame, chunks[5], &state.todos, theme);
+            render_todo(frame, chunks[4], &state.todos, theme);
         }
         if queue_visible > 0 {
-            render_queue(frame, chunks[6], &state.queue, queue_visible, theme);
+            render_queue(frame, chunks[5], &state.queue, queue_visible, theme);
         }
         let cursor_anchor = if let Some(page) = input_page.as_mut() {
-            render_input_page(frame, chunks[7], page, &state.config, theme);
-            None
+            render_input_page(frame, chunks[6], page, &state.config, theme)
         } else if let Some(settings) = settings.as_mut() {
-            render_settings(frame, chunks[7], settings, &state.config, theme);
+            render_settings(frame, chunks[6], settings, &state.config, theme);
             None
         } else if let Some(login) = login.as_mut() {
-            render_login(frame, chunks[7], login, theme);
+            render_login(frame, chunks[6], login, theme);
             None
-        } else if let Some(question) = state.question.as_ref().filter(|_| !drafting) {
-            // The input bar becomes the selection bar while a question pends.
-            render_question_bar(
-                frame,
-                chunks[7],
-                question,
-                theme,
-                state.config.user_input_padding as u16,
-            )
         } else {
             render_input(
                 frame,
-                chunks[7],
+                chunks[6],
                 input,
                 theme,
                 overlay.is_some(),
@@ -361,12 +333,12 @@ pub fn render_with_cursor(
                 state.config.user_input_padding as u16,
             )
         };
-        render_status(frame, chunks[9], state, scroll, theme);
-        render_title(frame, chunks[10], state, theme);
+        render_status(frame, chunks[8], state, scroll, theme);
+        render_title(frame, chunks[9], state, theme);
         // Slash-command suggestions float above the input bar (last draw wins).
-        if !input_page_open && (drafting || state.question.is_none()) {
+        if !input_page_open {
             if let Some(suggest) = input.suggest.as_ref() {
-                render_suggest(frame, suggest, chunks[7], theme);
+                render_suggest(frame, suggest, chunks[6], theme);
             }
         }
         return cursor_anchor;
@@ -375,8 +347,7 @@ pub fn render_with_cursor(
     // Ordinary mode: accessories, input bar, status and title are part of the
     // scrollable content. They are pinned at the screen bottom while following
     // the transcript, and move down/off-screen when the user scrolls back.
-    let bottom_stack = usize::from(question_rows)
-        + usize::from(approval_rows)
+    let bottom_stack = usize::from(approval_rows)
         + usize::from(goal_rows)
         + usize::from(plan_rows)
         + usize::from(todo_rows)
@@ -398,16 +369,6 @@ pub fn render_with_cursor(
     let mut y = page.y + transcript_bottom as u16;
     let end_y = page.y + page.height;
 
-    if question_rows > 0 && y < end_y {
-        let h = (end_y - y).min(question_rows);
-        render_question(
-            frame,
-            ratatui::layout::Rect::new(page.x, y, page.width, h),
-            state.question.as_ref().unwrap(),
-            theme,
-        );
-        y = y.saturating_add(question_rows);
-    }
     if approval_rows > 0 && y < end_y {
         let h = (end_y - y).min(approval_rows);
         render_approval(
@@ -465,25 +426,15 @@ pub fn render_with_cursor(
         let h = (end_y - y).min(bottom_rows);
         let rect = ratatui::layout::Rect::new(page.x, y, page.width, h);
         input_rect = Some(rect);
-        cursor_anchor = if let Some(question) = state.question.as_ref().filter(|_| !drafting) {
-            render_question_bar(
-                frame,
-                rect,
-                question,
-                theme,
-                state.config.user_input_padding as u16,
-            )
-        } else {
-            render_input(
-                frame,
-                rect,
-                input,
-                theme,
-                overlay.is_some(),
-                toast,
-                state.config.user_input_padding as u16,
-            )
-        };
+        cursor_anchor = render_input(
+            frame,
+            rect,
+            input,
+            theme,
+            overlay.is_some(),
+            toast,
+            state.config.user_input_padding as u16,
+        );
         y = y.saturating_add(bottom_rows);
     }
     if y < end_y {
@@ -507,11 +458,9 @@ pub fn render_with_cursor(
             theme,
         );
     }
-    if drafting || state.question.is_none() {
-        if let Some(suggest) = input.suggest.as_ref() {
-            if let Some(rect) = input_rect {
-                render_suggest(frame, suggest, rect, theme);
-            }
+    if let Some(suggest) = input.suggest.as_ref() {
+        if let Some(rect) = input_rect {
+            render_suggest(frame, suggest, rect, theme);
         }
     }
     cursor_anchor
@@ -555,7 +504,9 @@ mod tests {
     }
 
     impl Backend for CursorTrackingBackend {
-        fn draw<'a, I>(&mut self, content: I) -> std::io::Result<()>
+        type Error = <ratatui::backend::TestBackend as Backend>::Error;
+
+        fn draw<'a, I>(&mut self, content: I) -> Result<(), Self::Error>
         where
             I: Iterator<Item = (u16, u16, &'a ratatui::buffer::Cell)>,
         {
@@ -563,38 +514,48 @@ mod tests {
             self.inner.draw(content)
         }
 
-        fn hide_cursor(&mut self) -> std::io::Result<()> {
+        fn hide_cursor(&mut self) -> Result<(), Self::Error> {
             self.visible = false;
             self.inner.hide_cursor()
         }
 
-        fn show_cursor(&mut self) -> std::io::Result<()> {
+        fn show_cursor(&mut self) -> Result<(), Self::Error> {
             self.visible = true;
             self.show_calls += 1;
             self.inner.show_cursor()
         }
 
-        fn get_cursor_position(&mut self) -> std::io::Result<Position> {
+        fn get_cursor_position(&mut self) -> Result<Position, Self::Error> {
             self.inner.get_cursor_position()
         }
 
-        fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> std::io::Result<()> {
+        fn set_cursor_position<P: Into<Position>>(
+            &mut self,
+            position: P,
+        ) -> Result<(), Self::Error> {
             self.inner.set_cursor_position(position)
         }
 
-        fn clear(&mut self) -> std::io::Result<()> {
+        fn clear(&mut self) -> Result<(), Self::Error> {
             self.inner.clear()
         }
 
-        fn size(&self) -> std::io::Result<ratatui::layout::Size> {
+        fn clear_region(
+            &mut self,
+            clear_type: ratatui::backend::ClearType,
+        ) -> Result<(), Self::Error> {
+            self.inner.clear_region(clear_type)
+        }
+
+        fn size(&self) -> Result<ratatui::layout::Size, Self::Error> {
             self.inner.size()
         }
 
-        fn window_size(&mut self) -> std::io::Result<ratatui::backend::WindowSize> {
+        fn window_size(&mut self) -> Result<ratatui::backend::WindowSize, Self::Error> {
             self.inner.window_size()
         }
 
-        fn flush(&mut self) -> std::io::Result<()> {
+        fn flush(&mut self) -> Result<(), Self::Error> {
             self.inner.flush()
         }
     }
@@ -1767,21 +1728,18 @@ mod tests {
         );
     }
 
-    /// A pending question shrinks the transcript by a 3-row question panel,
-    /// replaces the input bar with the selection bar (highlighted option
-    /// reversed), and marks the status bar as waiting.
+    /// ask_user_question uses the shared Input Page shell. Closing it restores
+    /// the untouched ordinary input buffer.
     #[test]
-    fn question_bar_replaces_input_bar() {
+    fn question_input_page_is_visible_and_preserves_input_buffer() {
         use ratatui::backend::TestBackend;
 
         let mut config = crate::config::Config::default();
-        // ui tests assert the ferra palette — pin the resolved theme so the
-        // default (deepseek-e) doesn't shift the expected colors.
         config.resolved_theme = Theme::ferra();
         let mut s = AppState::default();
         s.config = config.clone();
         s.msgs.push(Msg::User { text: "hi".into() });
-        s.question = Some(crate::model::QuestionBatch::new(
+        let mut batch = crate::model::QuestionBatch::new(
             "r1".into(),
             "s1".into(),
             vec![crate::protocol::QuestionItem {
@@ -1800,11 +1758,16 @@ mod tests {
                 ]),
                 multi_select: false,
             }],
-        ));
-        let input = InputState::new(&config);
+        );
+        batch.toggle_selection();
+        s.question = Some(batch.rpc_id.clone());
+        let mut question_page = Some(InputPageSession::question(batch));
+        let mut input = InputState::new(&config);
+        input.buf = "保留内容".into();
+        input.cursor = input.buf.chars().count();
         let mut scroll = ScrollState::default();
         let theme = Theme::ferra();
-        let backend = TestBackend::new(80, 12);
+        let backend = TestBackend::new(80, 18);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
             .draw(|f| {
@@ -1815,7 +1778,7 @@ mod tests {
                     &mut scroll,
                     &theme,
                     RenderOverlays {
-                        input_page: None,
+                        input_page: question_page.as_mut(),
                         help_visible: false,
                         overlay: None,
                         toast: None,
@@ -1826,47 +1789,69 @@ mod tests {
             })
             .unwrap();
         let buf = terminal.backend().buffer();
-        let row = |y: u16| -> String {
-            (0u16..80)
-                .map(|x| buf[(x, y)].symbol().chars().next().unwrap_or(' '))
-                .collect()
-        };
-        // Layout: 12 = transcript(3: y0..3) + question panel(3: y3..6)
-        // + selection bar block(3: y6..9, text row y7) + spacer(y9) +
-        // status(y10) + title(y11). (CJK glyphs occupy two cells, so strip
-        // spaces before matching.)
-        let text = |y: u16| -> String { row(y).replace(' ', "") };
-        assert!(text(3).contains("选择"), "panel title: {}", row(3));
-        assert!(text(4).contains("选哪个?"), "question text: {}", row(4));
+        let screen = (0u16..18)
+            .map(|y| {
+                (0u16..80)
+                    .map(|x| buf[(x, y)].symbol().chars().next().unwrap_or(' '))
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let compact = screen.replace(' ', "");
+        assert!(compact.contains("选择(1/1)"), "page title: {screen}");
+        assert!(compact.contains("选哪个?"), "question text: {screen}");
         assert!(
-            text(5).contains("甲的说明"),
-            "option description: {}",
-            row(5)
+            compact.contains("●甲—甲的说明"),
+            "selected option: {screen}"
         );
-        let bar = row(7);
+        assert!(compact.contains("h/l←/→问题"), "footer: {screen}");
+        assert!(compact.contains("j/k↑/↓选项"), "footer: {screen}");
+        assert!(compact.contains("Space选择"), "footer: {screen}");
         assert!(
-            bar.contains("◄") && bar.contains("►"),
-            "selection bar: {bar}"
+            !compact.contains("保留内容"),
+            "input is covered by the page"
         );
-        assert!(
-            bar.contains('甲') && bar.contains('乙'),
-            "options visible: {bar}"
-        );
-        // The highlighted option renders reversed (Night on Mist).
-        let x = (0u16..80)
-            .find(|&x| buf[(x, 7)].symbol() == "甲")
-            .expect("甲 cell");
-        let cell = &buf[(x, 7)];
-        assert_eq!(cell.fg, Theme::ferra().bg, "selected option fg = Night");
-        assert_eq!(cell.bg, Theme::ferra().fg, "selected option bg = Mist");
-        // The right-side hint carries the confirm affordance.
-        assert!(
-            bar.replace(' ', "").contains("Enter确定"),
-            "confirm hint: {bar}"
-        );
-        // Missing optional status values do not leave placeholder dashes.
-        assert!(text(10).contains("•standard"), "status: {}", row(10));
-        assert!(!text(10).contains('—') && !text(10).contains("CH"));
+
+        let (x, y) = (0u16..18)
+            .find_map(|y| {
+                (0u16..80)
+                    .find(|&x| buf[(x, y)].symbol() == "甲")
+                    .map(|x| (x, y))
+            })
+            .expect("selected option");
+        assert_eq!(buf[(x, y)].fg, Theme::ferra().fg);
+        assert_eq!(buf[(x, y)].bg, Theme::ferra().bg);
+
+        question_page = None;
+        terminal
+            .draw(|f| {
+                render(
+                    f,
+                    &mut s,
+                    &input,
+                    &mut scroll,
+                    &theme,
+                    RenderOverlays {
+                        input_page: question_page.as_mut(),
+                        help_visible: false,
+                        overlay: None,
+                        toast: None,
+                        settings: None,
+                        login: None,
+                    },
+                )
+            })
+            .unwrap();
+        let restored = (0u16..18)
+            .map(|y| {
+                (0u16..80)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            .replace([' ', '/'], "");
+        assert!(restored.contains("留内容"), "input restored: {restored}");
     }
 
     /// The pending-prompt queue renders above the input bar: one row per
@@ -2930,6 +2915,64 @@ mod tests {
         assert_eq!(s.transcript_cache.display_len(), 2, "row plus message gap");
     }
 
+    /// Generic tool metadata owns the trailing columns, so a long command is
+    /// truncated before the output line count and elapsed time.
+    #[test]
+    fn tool_row_truncation_preserves_line_count_and_duration() {
+        use ratatui::backend::TestBackend;
+
+        let mut config = crate::config::Config::default();
+        config.resolved_theme = Theme::ferra();
+        config.page_max_width = 52;
+        let mut s = AppState::default();
+        s.config = config.clone();
+        let mut row = ActivityRow::root(DisplayId::correlated("tool-call", "wide"), "pwsh");
+        row.summary = "cargo test some_other_command_long_long_long".into();
+        row.state = ActivityState::Success;
+        row.output_lines = Some(43);
+        row.duration_ms = Some(11_200);
+        s.transcript.append(DisplayItem::Activity(row), Some(1));
+
+        let input = InputState::new(&config);
+        let mut scroll = ScrollState::default();
+        let theme = Theme::ferra();
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                render(
+                    f,
+                    &mut s,
+                    &input,
+                    &mut scroll,
+                    &theme,
+                    RenderOverlays {
+                        input_page: None,
+                        help_visible: false,
+                        overlay: None,
+                        toast: None,
+                        settings: None,
+                        login: None,
+                    },
+                )
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        let tool_row: String = (14..66)
+            .map(|x| buf[(x, 0)].symbol().chars().next().unwrap_or(' '))
+            .collect();
+        let next_row: String = (14..66)
+            .map(|x| buf[(x, 1)].symbol().chars().next().unwrap_or(' '))
+            .collect();
+        assert!(tool_row.contains('…'), "command is truncated: {tool_row:?}");
+        assert!(
+            tool_row.ends_with(" · 43 lines · 11.2s"),
+            "trailing metrics stay visible: {tool_row:?}"
+        );
+        assert!(next_row.trim().is_empty(), "activity remains one row");
+    }
+
     /// The Thinking row renders like a tool card: colored (breathing) bullet
     /// while running, green once the phase completes.
     #[test]
@@ -3556,13 +3599,13 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
-                render_input_page(
+                let _ = render_input_page(
                     frame,
                     ratatui::layout::Rect::new(0, 0, 20, 8),
                     &mut page,
                     &config,
                     &theme,
-                )
+                );
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
@@ -3595,19 +3638,33 @@ mod tests {
             crate::input_page::InputPageSession::model(),
             crate::input_page::InputPageSession::theme(&files, "ferra"),
             crate::input_page::InputPageSession::resume(),
+            crate::input_page::InputPageSession::question(crate::model::QuestionBatch::new(
+                "rpc".into(),
+                "session".into(),
+                vec![crate::protocol::QuestionItem {
+                    id: "q".into(),
+                    question: "question".into(),
+                    header: None,
+                    options: Some(vec![crate::protocol::QuestionOption {
+                        label: "answer".into(),
+                        description: None,
+                    }]),
+                    multi_select: false,
+                }],
+            )),
         ];
         for page in &mut pages {
             let backend = TestBackend::new(14, 5);
             let mut terminal = ratatui::Terminal::new(backend).unwrap();
             terminal
                 .draw(|frame| {
-                    render_input_page(
+                    let _ = render_input_page(
                         frame,
                         ratatui::layout::Rect::new(0, 0, 14, 5),
                         page,
                         &config,
                         &theme,
-                    )
+                    );
                 })
                 .unwrap();
             let buffer = terminal.backend().buffer();
@@ -3682,13 +3739,13 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
-                render_input_page(
+                let _ = render_input_page(
                     frame,
                     ratatui::layout::Rect::new(0, 0, 60, 12),
                     &mut page,
                     &config,
                     &theme,
-                )
+                );
             })
             .unwrap();
         let text: String = terminal
@@ -3742,13 +3799,13 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
-                render_input_page(
+                let _ = render_input_page(
                     frame,
                     ratatui::layout::Rect::new(0, 0, 60, 12),
                     &mut page,
                     &config,
                     &theme,
-                )
+                );
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
@@ -3824,13 +3881,13 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
-                render_input_page(
+                let _ = render_input_page(
                     frame,
                     ratatui::layout::Rect::new(0, 0, 50, 12),
                     &mut page,
                     &config,
                     &theme,
-                )
+                );
             })
             .unwrap();
         let buffer = terminal.backend().buffer();

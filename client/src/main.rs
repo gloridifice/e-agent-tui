@@ -499,7 +499,6 @@ async fn run(
                 e::runtime::TerminalFocus {
                     help_visible,
                     input_page_open: input_page.is_some(),
-                    question_open: !drafting && state.question.is_some(),
                     approval_open: !drafting && state.approval.is_some(),
                     copy_mode_open: copy_mode.is_some(),
                 }

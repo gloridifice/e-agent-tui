@@ -45,11 +45,11 @@ fn file_list(files: &[(String, usize)]) -> String {
         .join(", ")
 }
 
-fn activity_row_line(
+fn activity_row_parts(
     row: &ActivityRow,
     state: &AppState,
     color_override: Option<Color>,
-) -> Line<'static> {
+) -> (Line<'static>, Option<Span<'static>>) {
     let theme = state.theme();
     let target = match row.state {
         ActivityState::Waiting => theme.working_status.waiting.fg,
@@ -105,15 +105,67 @@ fn activity_row_line(
             theme.activity.metadata.style(),
         ));
     }
-    if state.config.show_tool_duration {
-        if let Some(duration_ms) = row.duration_ms {
-            spans.push(Span::styled(
-                format!(" · {:.1}s", duration_ms as f64 / 1000.0),
-                theme.activity.metadata.style(),
-            ));
+
+    let mut metadata = String::new();
+    if let Some(lines) = row.output_lines {
+        let noun = if lines == 1 { "line" } else { "lines" };
+        if row.output_lines_truncated {
+            metadata.push_str(&format!(" · {lines}+ {noun}"));
+        } else {
+            metadata.push_str(&format!(" · {lines} {noun}"));
         }
     }
-    Line::from(spans)
+    if state.config.show_tool_duration {
+        let duration_ms = row.duration_ms.or_else(|| {
+            row.live_duration_since
+                .map(|started| started.elapsed().as_millis() as u64)
+        });
+        if let Some(duration_ms) = duration_ms {
+            metadata.push_str(&format!(" · {:.1}s", duration_ms as f64 / 1000.0));
+        }
+    }
+    let metadata =
+        (!metadata.is_empty()).then(|| Span::styled(metadata, theme.activity.metadata.style()));
+    (Line::from(spans), metadata)
+}
+
+#[cfg(test)]
+fn activity_row_line(
+    row: &ActivityRow,
+    state: &AppState,
+    color_override: Option<Color>,
+) -> Line<'static> {
+    let (mut line, metadata) = activity_row_parts(row, state, color_override);
+    if let Some(metadata) = metadata {
+        line.push_span(metadata);
+    }
+    line
+}
+
+/// Fit a one-row activity by truncating its command/summary first. Tool line
+/// count and elapsed time are a stable trailing status and remain visible.
+fn fitted_activity_row_line(
+    row: &ActivityRow,
+    state: &AppState,
+    color_override: Option<Color>,
+    width: usize,
+) -> Line<'static> {
+    let (prefix, metadata) = activity_row_parts(row, state, color_override);
+    let Some(metadata) = metadata else {
+        return truncate_activity_line(prefix, width);
+    };
+    let metadata_width = metadata.content.width();
+    if prefix.width() + metadata_width <= width {
+        let mut line = prefix;
+        line.push_span(metadata);
+        return line;
+    }
+    if metadata_width >= width {
+        return truncate_activity_line(Line::from(metadata), width);
+    }
+    let mut line = truncate_activity_line(prefix, width - metadata_width);
+    line.push_span(metadata);
+    line
 }
 
 fn transcript_block_lines(block: &TranscriptBlock, state: &AppState) -> Vec<Line<'static>> {
@@ -295,10 +347,9 @@ fn display_item_lines(
     area_width: usize,
 ) -> Vec<Line<'static>> {
     match item {
-        DisplayItem::Activity(row) => vec![truncate_activity_line(
-            activity_row_line(row, state, None),
-            area_width,
-        )],
+        DisplayItem::Activity(row) => {
+            vec![fitted_activity_row_line(row, state, None, area_width)]
+        }
         DisplayItem::Block(block) if block.format == TranscriptFormat::Reasoning => {
             reasoning_block_lines(block, state, area_width)
         }
@@ -308,10 +359,7 @@ fn display_item_lines(
         DisplayItem::Block(block) => transcript_block_lines(block, state),
         DisplayItem::Card(card) => content_card_lines(card, state, area_width),
         DisplayItem::Composite { activity, detail } => {
-            let mut lines = vec![truncate_activity_line(
-                activity_row_line(activity, state, None),
-                area_width,
-            )];
+            let mut lines = vec![fitted_activity_row_line(activity, state, None, area_width)];
             lines.extend(content_card_lines(detail, state, area_width));
             lines
         }

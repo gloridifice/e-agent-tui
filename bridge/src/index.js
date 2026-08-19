@@ -39,6 +39,7 @@ import {
 import { ConnectionRegistry } from './connection.js'
 import { createHostPort } from './host.js'
 import { createHistoryStore } from './history.js'
+import { installQuestionRelay } from './question.js'
 import { createSessionService } from './session.js'
 import { createModelSelectionAdapter } from './model-selection.js'
 import { createSessionLister, titleFromObservation } from './session-list.js'
@@ -92,7 +93,6 @@ function apply(ctx, config = {}) {
   // (the same broadcast the browser consumes) and relays question frames to
   // the TUI attached to that session; answers go back through apiProxy.respond.
   // Both UIs can answer — the host settles the first claimant.
-  const apiProxy = host.apiProxy()
   /** rpcId -> sessionId, for answer routing even if the conn re-attaches. */
   const questionSessions = new Map()
 
@@ -343,7 +343,7 @@ function apply(ctx, config = {}) {
       injectSkill,
       historyEvents,
       listSessions,
-      apiProxy,
+      apiProxy: host.apiProxy,
       questionSessions,
       sendModel,
       modelSelections,
@@ -382,41 +382,7 @@ function apply(ctx, config = {}) {
     })
   })
 
-  // Relay the apiproxy mux's question frames to the attached TUI. One
-  // subscription per bridge instance; frames are broadcast for every
-  // session, so filter by the sessions a TUI is currently attached to.
-  let questionSub = null
-  if (apiProxy?.events?.mux) {
-    const muxAbort = new AbortController()
-    questionSub = { abort: () => muxAbort.abort() }
-    ;(async () => {
-      for await (const frame of apiProxy.events.mux({}, muxAbort.signal)) {
-        const payload = frame?.payload
-        if (!payload || typeof payload !== 'object') continue
-        if (payload.type === 'question/requested') {
-          if (questionSessions.size > 64) questionSessions.clear()
-          const conn = conns.findAgent(payload.sessionId)
-          if (!conn) continue
-          questionSessions.set(frame.rpcId, payload.sessionId)
-          send(conn.ws, {
-            type: 'question',
-            rpcId: frame.rpcId,
-            sessionId: payload.sessionId,
-            questions: payload.questions,
-          })
-        } else if (payload.type === 'question/resolved') {
-          questionSessions.delete(payload.questionRpcId)
-          const conn = conns.findAgent(payload.sessionId)
-          if (!conn) continue
-          send(conn.ws, {
-            type: 'question-resolved',
-            questionRpcId: payload.questionRpcId,
-            outcome: payload.outcome,
-          })
-        }
-      }
-    })().catch(() => {})
-  }
+  installQuestionRelay(ctx, { conns, send, questionSessions })
 
   // Registrations can change at runtime (plugin reload or agent-scoped
   // composition). DSH emits one unfiltered notification; recompute each
@@ -438,7 +404,6 @@ function apply(ctx, config = {}) {
       },
     })
     return () => {
-      questionSub?.abort()
       disposeRoute()
       for (const conn of [...conns]) detach(conn)
       wss.close()

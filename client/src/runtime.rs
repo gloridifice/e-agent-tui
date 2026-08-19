@@ -39,7 +39,6 @@ pub enum RuntimeInput {
 pub struct TerminalFocus {
     pub help_visible: bool,
     pub input_page_open: bool,
-    pub question_open: bool,
     pub approval_open: bool,
     pub copy_mode_open: bool,
 }
@@ -54,15 +53,12 @@ pub enum TerminalRoute {
     InputPage(KeyEvent),
     Approval(KeyEvent),
     Copy(KeyEvent),
-    QuestionThenOrdinary(KeyEvent),
     Ordinary(KeyEvent),
     Ignore,
 }
 
 /// Encode terminal ownership and precedence independently of terminal I/O.
-/// Handlers may return to the ordinary-input path only where the legacy
-/// behavior intentionally allowed fall-through (approval non-y/n and an
-/// unhandled question key).
+/// Input Pages own all keys while open; approval keeps its compact y/n route.
 pub fn route_terminal_event(event: Event, focus: TerminalFocus) -> TerminalRoute {
     match event {
         Event::Mouse(mouse) => match mouse.kind {
@@ -90,14 +86,11 @@ pub fn route_terminal_event(event: Event, focus: TerminalFocus) -> TerminalRoute
         }
         Event::Key(key) if focus.input_page_open => TerminalRoute::InputPage(key),
         Event::Key(key)
-            if focus.approval_open
-                && !focus.question_open
-                && matches!(key.code, KeyCode::Char('y' | 'Y' | 'n' | 'N')) =>
+            if focus.approval_open && matches!(key.code, KeyCode::Char('y' | 'Y' | 'n' | 'N')) =>
         {
             TerminalRoute::Approval(key)
         }
         Event::Key(key) if focus.copy_mode_open => TerminalRoute::Copy(key),
-        Event::Key(key) if focus.question_open => TerminalRoute::QuestionThenOrdinary(key),
         Event::Key(key) => TerminalRoute::Ordinary(key),
         _ => TerminalRoute::Ignore,
     }
@@ -240,24 +233,7 @@ impl RuntimeController {
                 if ui.input_page.as_mut().is_some_and(|page| page.paste(&text)) {
                     return effects;
                 }
-                let pasted_to_question = {
-                    let mut app = state.lock().unwrap();
-                    if let Some(question) = app.question.as_mut() {
-                        if question.is_free_text() {
-                            for character in text.chars() {
-                                question.push_char(character);
-                            }
-                            true
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    }
-                };
-                if !pasted_to_question {
-                    ui.input.paste(&text);
-                }
+                ui.input.paste(&text);
             }
             TerminalRoute::Help { dismiss } => {
                 if dismiss {
@@ -317,13 +293,6 @@ impl RuntimeController {
                         > Duration::from_secs(ui.config.copy_toast_secs)
                 }) {
                     *ui.copy_toast = None;
-                }
-            }
-            TerminalRoute::QuestionThenOrdinary(key) => {
-                let (handled, question_effects) = Self::apply_question_key(&key, state);
-                effects.extend(question_effects);
-                if !handled {
-                    effects.extend(Self::apply_ordinary_key(key, state, ui));
                 }
             }
             TerminalRoute::Ordinary(key) => {
@@ -439,6 +408,13 @@ impl RuntimeController {
                 if switched {
                     *ui.scroll = ScrollState::default();
                     *ui.copy_mode = None;
+                    if ui
+                        .input_page
+                        .as_ref()
+                        .is_some_and(|page| page.question_rpc_id().is_some())
+                    {
+                        *ui.input_page = None;
+                    }
                     ui.input.replace_integrated_commands(Vec::new());
                     ui.input.replace_skills(Vec::new());
                 }
@@ -570,24 +546,27 @@ impl RuntimeController {
                 session_id,
                 questions,
             } => {
-                state.lock().unwrap().question = Some(QuestionBatch::new(
-                    rpc_id.clone(),
-                    session_id.clone(),
-                    questions.clone(),
-                ));
+                let batch =
+                    QuestionBatch::new(rpc_id.clone(), session_id.clone(), questions.clone());
+                state.lock().unwrap().question = Some(rpc_id.clone());
+                *ui.input_page = Some(InputPageSession::question(batch));
                 Vec::new()
             }
             ServerMessage::QuestionResolved {
                 question_rpc_id, ..
             } => {
                 let mut state = state.lock().unwrap();
-                if state
-                    .question
+                if state.question.as_deref() == Some(question_rpc_id.as_str()) {
+                    state.question = None;
+                }
+                drop(state);
+                if ui
+                    .input_page
                     .as_ref()
-                    .map(|question| question.rpc_id.as_str())
+                    .and_then(InputPageSession::question_rpc_id)
                     == Some(question_rpc_id.as_str())
                 {
-                    state.question = None;
+                    *ui.input_page = None;
                 }
                 Vec::new()
             }
@@ -723,22 +702,6 @@ impl RuntimeController {
         })]
     }
 
-    pub fn apply_question_key(
-        key: &KeyEvent,
-        state: &Mutex<AppState>,
-    ) -> (bool, Vec<RuntimeEffect>) {
-        let action = {
-            let mut state = state.lock().unwrap();
-            crate::input::handle_question_key(&mut state, key)
-        };
-        let effects = action
-            .outbound
-            .into_iter()
-            .map(RuntimeEffect::Send)
-            .collect();
-        (action.handled, effects)
-    }
-
     /// Apply one Input Page key synchronously, consume page-state actions, and
     /// return only lock-external work. Config persistence owns a cloned
     /// snapshot, so the runner never has to borrow controller state.
@@ -747,11 +710,26 @@ impl RuntimeController {
         state: &Mutex<AppState>,
         ui: &mut InputPageUiState<'_>,
     ) -> Vec<RuntimeEffect> {
+        let was_question = ui
+            .input_page
+            .as_ref()
+            .is_some_and(|page| page.question_rpc_id().is_some());
         let outcome = ui
             .input_page
             .as_mut()
             .expect("input-page handler requires an open page")
             .handle_key(key, ui.config);
+        if was_question {
+            let question = if outcome.close {
+                None
+            } else {
+                ui.input_page
+                    .as_ref()
+                    .and_then(InputPageSession::question_rpc_id)
+                    .map(str::to_owned)
+            };
+            state.lock().unwrap().question = question;
+        }
         let mut effects = Vec::new();
         for effect in outcome.effects {
             match effect {
@@ -886,6 +864,63 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn question_frame_opens_input_page_without_consuming_input_buffer() {
+        let state = Arc::new(Mutex::new(AppState::default()));
+        let mut scroll = ScrollState::default();
+        let mut copy_mode = None;
+        let mut input = InputState::new(&Config::default());
+        input.buf = "draft prompt".into();
+        input.cursor = input.buf.chars().count();
+        let mut page = None;
+        RuntimeController::apply_bridge(
+            ServerMessage::Question {
+                rpc_id: "rpc".into(),
+                session_id: "session".into(),
+                questions: vec![crate::protocol::QuestionItem {
+                    id: "choice".into(),
+                    question: "Choose".into(),
+                    header: None,
+                    options: Some(vec![crate::protocol::QuestionOption {
+                        label: "A".into(),
+                        description: None,
+                    }]),
+                    multi_select: false,
+                }],
+            },
+            &state,
+            &mut ui(&mut scroll, &mut copy_mode, &mut input, &mut page),
+        );
+        assert!(matches!(
+            page.as_ref().map(|page| &page.page),
+            Some(crate::input_page::InputPage::Question(_))
+        ));
+        assert_eq!(input.buf, "draft prompt");
+
+        let mut config = Config::default();
+        let themes = Vec::new();
+        let mut theme = config.theme();
+        let effects = RuntimeController::apply_input_page_key(
+            &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &state,
+            &mut InputPageUiState {
+                input_page: &mut page,
+                input: &mut input,
+                config: &mut config,
+                themes: &themes,
+                theme: &mut theme,
+            },
+        );
+        assert!(page.is_none());
+        assert!(state.lock().unwrap().question.is_none());
+        assert_eq!(input.buf, "draft prompt");
+        assert!(matches!(
+            effects.as_slice(),
+            [RuntimeEffect::Send(ClientMessage::AnswerQuestions { rpc_id, .. })]
+                if rpc_id == "rpc"
+        ));
+    }
+
     fn bridge_effects(message: ServerMessage) -> Vec<RuntimeEffect> {
         let state = Arc::new(Mutex::new(AppState::default()));
         let mut scroll = ScrollState::default();
@@ -969,7 +1004,6 @@ mod tests {
         let all_open = TerminalFocus {
             help_visible: false,
             input_page_open: true,
-            question_open: true,
             approval_open: true,
             copy_mode_open: true,
         };
@@ -988,7 +1022,7 @@ mod tests {
         };
         assert!(matches!(
             route_terminal_event(key(KeyCode::Char('y')), blocking),
-            TerminalRoute::Copy(_)
+            TerminalRoute::Approval(_)
         ));
         assert!(matches!(
             route_terminal_event(key(KeyCode::Char('x')), blocking),
@@ -996,7 +1030,6 @@ mod tests {
         ));
 
         let approval = TerminalFocus {
-            question_open: false,
             copy_mode_open: false,
             ..blocking
         };

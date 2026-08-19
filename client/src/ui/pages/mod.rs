@@ -2,6 +2,7 @@
 
 mod login;
 mod model;
+mod question;
 mod resume;
 mod settings;
 mod theme;
@@ -9,6 +10,7 @@ mod theme;
 pub(super) use login::render_login;
 use login::render_login_scrolled;
 use model::render_model_page;
+use question::render_question_page;
 use resume::render_resume_page;
 pub(super) use settings::render_settings;
 use theme::render_theme_page;
@@ -45,31 +47,50 @@ pub(super) fn render_input_page(
     session: &mut InputPageSession,
     config: &crate::config::Config,
     theme: &Theme,
-) {
+) -> Option<Position> {
     match &mut session.page {
-        InputPage::Settings(settings) => render_settings(frame, area, settings, config, theme),
+        InputPage::Settings(settings) => {
+            render_settings(frame, area, settings, config, theme);
+            None
+        }
         InputPage::Login(login) => {
-            render_login_scrolled(frame, area, login, &mut session.viewport, theme)
+            render_login_scrolled(frame, area, login, &mut session.viewport, theme);
+            None
         }
-        InputPage::Model(model) => render_model_page(
-            frame,
-            area,
-            model,
-            &session.focus,
-            &mut session.viewport,
-            theme,
-        ),
-        InputPage::Theme(page) => render_theme_page(
-            frame,
-            area,
-            page,
-            &session.focus,
-            &mut session.viewport,
-            theme,
-        ),
+        InputPage::Model(model) => {
+            render_model_page(
+                frame,
+                area,
+                model,
+                &session.focus,
+                &mut session.viewport,
+                theme,
+            );
+            None
+        }
+        InputPage::Theme(page) => {
+            render_theme_page(
+                frame,
+                area,
+                page,
+                &session.focus,
+                &mut session.viewport,
+                theme,
+            );
+            None
+        }
         InputPage::Resume(page) => {
-            render_resume_page(frame, area, page, &mut session.viewport, theme)
+            render_resume_page(frame, area, page, &mut session.viewport, theme);
+            None
         }
+        InputPage::Question(batch) => render_question_page(
+            frame,
+            area,
+            batch,
+            &session.focus,
+            &mut session.viewport,
+            theme,
+        ),
     }
 }
 

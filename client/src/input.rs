@@ -11,8 +11,7 @@ use crate::command_catalog::{
     completion_context, match_command_catalog, CommandSource, CompletionKind,
 };
 use crate::config::Config;
-use crate::model::AppState;
-use crate::protocol::{ClientMessage, CommandInfo, SkillInfo};
+use crate::protocol::{CommandInfo, SkillInfo};
 
 pub struct InputState {
     pub buf: String,
@@ -124,66 +123,6 @@ impl InputState {
             self.cursor = self.buf.chars().count();
         }
     }
-}
-
-/// What the UI should do after a key press.
-#[derive(Debug)]
-pub struct QuestionKeyResult {
-    pub handled: bool,
-    pub outbound: Option<ClientMessage>,
-}
-
-/// Apply one key to the pending question batch without holding the state lock
-/// across network I/O. The main loop sends `outbound` only after this returns.
-pub fn handle_question_key(state: &mut AppState, key: &KeyEvent) -> QuestionKeyResult {
-    let mut result = QuestionKeyResult {
-        handled: false,
-        outbound: None,
-    };
-    let Some(question) = state.question.as_mut() else {
-        return result;
-    };
-    match key.code {
-        KeyCode::Left => {
-            question.step(-1);
-            result.handled = true;
-        }
-        KeyCode::Right => {
-            question.step(1);
-            result.handled = true;
-        }
-        KeyCode::Enter => {
-            if let Some(answers) = question.enter() {
-                result.outbound = Some(ClientMessage::AnswerQuestions {
-                    rpc_id: question.rpc_id.clone(),
-                    answers,
-                });
-                state.question = None;
-            }
-            result.handled = true;
-        }
-        KeyCode::Esc => {
-            result.outbound = Some(ClientMessage::CancelQuestions {
-                rpc_id: question.rpc_id.clone(),
-            });
-            state.question = None;
-            result.handled = true;
-        }
-        KeyCode::Backspace => {
-            question.backspace();
-            result.handled = true;
-        }
-        KeyCode::Char(character)
-            if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
-        {
-            if character == ' ' || !character.is_ascii_control() {
-                question.push_char(character);
-            }
-            result.handled = true;
-        }
-        _ => {}
-    }
-    result
 }
 
 #[derive(Debug, PartialEq)]
@@ -367,17 +306,65 @@ impl InputState {
                     self.cursor = query.chars().count();
                     return InputAction::None;
                 }
-                KeyCode::Up | KeyCode::Down | KeyCode::Tab => {
-                    let cmd = {
+                KeyCode::Up | KeyCode::Down => {
+                    // At the popup boundary the arrow escapes the list and
+                    // recalls the previous/next history prompt exactly like
+                    // plain input; only inside the list does it move the
+                    // selection (no wrap-around that would trap the user in
+                    // the popup).
+                    let at_edge = {
                         let s = self.suggest.as_mut().unwrap();
-                        let n = s.matches.len();
                         if key.code == KeyCode::Up {
-                            s.sel = (s.sel + n - 1) % n;
+                            if s.sel == 0 {
+                                true
+                            } else {
+                                s.sel -= 1;
+                                false
+                            }
                         } else {
-                            s.sel = (s.sel + 1) % n;
+                            let n = s.matches.len();
+                            if s.sel + 1 >= n {
+                                true
+                            } else {
+                                s.sel += 1;
+                                false
+                            }
                         }
+                    };
+                    if at_edge {
+                        self.suggest = None;
+                        if key.code == KeyCode::Up {
+                            self.history_prev();
+                        } else {
+                            self.history_next();
+                        }
+                        // Recompute the popup for the recalled prompt, the
+                        // same way plain Up/Down refreshes after each key.
+                        self.refresh_suggest();
+                        return InputAction::None;
+                    }
+                    let cmd = {
+                        let s = self.suggest.as_ref().unwrap();
                         s.matches[s.sel].to_string()
                     };
+                    // Auto-fill the selected command into the input bar.
+                    self.buf = cmd.clone();
+                    self.cursor = cmd.chars().count();
+                    if cmd == "/skill" {
+                        self.refresh_suggest();
+                    }
+                    return InputAction::None;
+                }
+                KeyCode::Tab => {
+                    // A partial buffer completes the highlighted row first;
+                    // only a fully-typed row advances to the next candidate.
+                    let s = self.suggest.as_mut().unwrap();
+                    let n = s.matches.len();
+                    let sel = s.sel;
+                    if self.buf == s.matches[sel] {
+                        s.sel = (sel + 1) % n;
+                    }
+                    let cmd = s.matches[s.sel].to_string();
                     // Auto-fill the selected command into the input bar.
                     self.buf = cmd.clone();
                     self.cursor = cmd.chars().count();
@@ -951,22 +938,79 @@ mod tests {
         );
         s.handle_key(&key(KeyCode::Up), true);
         assert_eq!(s.buf, list[0]);
-        s.handle_key(&key(KeyCode::Up), true); // wraps around
-        assert_eq!(s.buf, list[list.len() - 1]);
         assert_eq!(s.cursor, s.buf.chars().count());
+    }
+
+    #[test]
+    fn up_at_popup_top_recalls_previous_prompt() {
+        let mut s = state();
+        s.history = vec!["a previous prompt".into()];
+        for c in "/set".chars() {
+            s.handle_key(&key(KeyCode::Char(c)), true);
+        }
+        assert!(s.suggest.is_some());
+        // At the top row, Up must escape the popup and recall the previous
+        // prompt instead of wrapping around to the bottom row.
+        s.handle_key(&key(KeyCode::Up), true);
+        assert_eq!(s.buf, "a previous prompt");
+        assert!(s.suggest.is_none(), "popup closes at the boundary");
+    }
+
+    #[test]
+    fn down_at_popup_bottom_restores_draft_instead_of_wrapping() {
+        let mut s = state();
+        s.history = vec!["/compact".into()];
+        s.handle_key(&key(KeyCode::Char('/')), true);
+        // Up at the top row recalls the history entry; the recalled
+        // "/compact" reopens a one-row popup whose only row is also the
+        // bottom of the list.
+        s.handle_key(&key(KeyCode::Up), true);
+        assert_eq!(s.buf, "/compact");
+        assert_eq!(s.suggest.as_ref().unwrap().matches.len(), 1);
+        // Down on that bottom row must restore the draft ("/") — never
+        // wrap around to the first row.
+        s.handle_key(&key(KeyCode::Down), true);
+        assert_eq!(s.buf, "/");
+        assert!(s.hist_idx.is_none());
+    }
+
+    #[test]
+    fn tab_completes_partial_row_before_advancing() {
+        // User report: typing "/res" with the "/resume" candidate — the
+        // first Tab must complete the highlighted row, not jump to the
+        // next candidate in the list.
+        let mut s = state();
+        for c in "/res".chars() {
+            s.handle_key(&key(KeyCode::Char(c)), true);
+        }
+        s.handle_key(&key(KeyCode::Tab), true);
+        assert_eq!(s.buf, "/resume", "first Tab completes the row");
+        let sel = s.suggest.as_ref().unwrap().sel;
+        assert_eq!(s.suggest.as_ref().unwrap().matches[sel], "/resume");
+        // With several candidates the second Tab advances to the next row.
+        let mut s2 = state();
+        for c in "/c".chars() {
+            s2.handle_key(&key(KeyCode::Char(c)), true);
+        }
+        s2.handle_key(&key(KeyCode::Tab), true);
+        assert_eq!(s2.buf, "/compact", "first Tab completes");
+        s2.handle_key(&key(KeyCode::Tab), true);
+        assert_eq!(s2.buf, "/copy", "second Tab advances to the next row");
+        assert_eq!(s2.suggest.as_ref().unwrap().sel, 1);
     }
 
     #[test]
     fn esc_restores_typed_query() {
         let mut s = state();
-        for c in "/set".chars() {
+        // "/c" matches two rows so Down stays inside the popup.
+        for c in "/c".chars() {
             s.handle_key(&key(KeyCode::Char(c)), true);
         }
         assert!(s.suggest.is_some());
         s.handle_key(&key(KeyCode::Down), true);
-        assert_eq!(s.buf, "/settings");
+        assert_eq!(s.buf, "/copy");
         s.handle_key(&key(KeyCode::Esc), true);
-        assert_eq!(s.buf, "/set", "Esc restores what was typed");
+        assert_eq!(s.buf, "/c", "Esc restores what was typed");
         assert!(s.suggest.is_none());
     }
 
@@ -1181,8 +1225,9 @@ mod tests {
             s.handle_key(&key(KeyCode::Char(c)), true);
         }
         assert!(s.suggest.is_some());
-        // Tab in the open popup advances to the next match (command-popup
-        // semantics); with one match it re-fills the same row.
+        // Tab on a partial buffer completes the highlighted row (with a
+        // single match that fills "/new minimal"); a second Tab would
+        // cycle the one-row list in place.
         s.handle_key(&key(KeyCode::Tab), true);
         assert_eq!(s.buf, "/new minimal");
         s.handle_key(&key(KeyCode::Esc), true);

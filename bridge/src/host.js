@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto'
+
 // Explicit anti-corruption boundary around DSH's string-keyed service locator.
 // Index/session code depends on this port rather than scattering undocumented
 // ctx.get() knowledge through every handler.
@@ -7,6 +9,12 @@ export const OPTIONAL_SERVICES = Object.freeze([
   'sessionProjectionCache', 'commands', 'skills', 'llm', 'apiProxy',
   'agentDefaultModel', 'credentials', 'settings',
 ])
+
+/** Open the host mux with the RpcRequest envelope required by ApiProxy. */
+export function openApiProxyMux(apiProxy, signal, rpcId = randomUUID()) {
+  if (typeof apiProxy?.events?.mux !== 'function') return null
+  return apiProxy.events.mux({ rpcId, payload: {} }, signal)
+}
 
 export function createHostPort(ctx) {
   if (!ctx || typeof ctx.get !== 'function') throw new TypeError('DSH context must provide get(name)')

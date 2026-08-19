@@ -311,10 +311,10 @@ pub struct ApprovalCard {
     pub reason: String,
 }
 
-/// One pending user-question batch (ask_user_question), answered one
-/// question at a time in the selection bar (design §4.4). `current` is the
-/// question being answered; `sel` the highlighted option; `draft` the typed
-/// text for a question that offered no options.
+/// One pending user-question batch (ask_user_question), answered in an Input
+/// Page (design §4.4). `current` is the visible question; `sel` and `draft`
+/// mirror that question's retained option/text state while h/l navigates the
+/// batch.
 #[derive(Debug, Clone)]
 pub struct QuestionBatch {
     pub rpc_id: String,
@@ -323,7 +323,9 @@ pub struct QuestionBatch {
     pub current: usize,
     pub sel: usize,
     pub draft: String,
-    pub answered: Vec<crate::protocol::QuestionAnswer>,
+    selections: Vec<usize>,
+    chosen: Vec<Vec<usize>>,
+    drafts: Vec<String>,
 }
 
 impl QuestionBatch {
@@ -332,6 +334,7 @@ impl QuestionBatch {
         session_id: String,
         questions: Vec<crate::protocol::QuestionItem>,
     ) -> Self {
+        let count = questions.len();
         Self {
             rpc_id,
             session_id,
@@ -339,7 +342,9 @@ impl QuestionBatch {
             current: 0,
             sel: 0,
             draft: String::new(),
-            answered: Vec::new(),
+            selections: vec![0; count],
+            chosen: vec![Vec::new(); count],
+            drafts: vec![String::new(); count],
         }
     }
 
@@ -355,7 +360,7 @@ impl QuestionBatch {
         self.current_options().is_empty()
     }
 
-    /// ←/→: move the highlighted option (no-op for free-text questions).
+    /// j/k or ↓/↑: move the highlighted option (no-op for free text).
     pub fn step(&mut self, delta: isize) {
         let n = self.current_options().len();
         if n == 0 {
@@ -367,6 +372,69 @@ impl QuestionBatch {
             (self.sel + delta as usize).min(n - 1)
         };
         self.sel = next;
+        if let Some(selection) = self.selections.get_mut(self.current) {
+            *selection = next;
+        }
+    }
+
+    /// Space selects the focused option without changing questions. In a
+    /// multi-select question it toggles that option; in a single-select
+    /// question it replaces the previous explicit choice.
+    pub fn toggle_selection(&mut self) {
+        let Some(question) = self.questions.get(self.current) else {
+            return;
+        };
+        let option_count = question
+            .options
+            .as_deref()
+            .map_or(0, |options| options.len());
+        if option_count == 0 || self.sel >= option_count {
+            return;
+        }
+        let Some(chosen) = self.chosen.get_mut(self.current) else {
+            return;
+        };
+        if question.multi_select {
+            if let Some(index) = chosen.iter().position(|selected| *selected == self.sel) {
+                chosen.remove(index);
+            } else {
+                chosen.push(self.sel);
+                chosen.sort_unstable();
+            }
+        } else {
+            chosen.clear();
+            chosen.push(self.sel);
+        }
+    }
+
+    pub fn is_option_selected(&self, option: usize) -> bool {
+        self.chosen
+            .get(self.current)
+            .is_some_and(|chosen| chosen.contains(&option))
+    }
+
+    /// h/l or ←/→: move between questions while retaining each answer.
+    pub fn step_question(&mut self, delta: isize) {
+        if self.questions.is_empty() {
+            return;
+        }
+        self.save_current();
+        self.current = if delta < 0 {
+            self.current.saturating_sub(delta.unsigned_abs())
+        } else {
+            (self.current + delta as usize).min(self.questions.len() - 1)
+        };
+        self.sel = self.selections.get(self.current).copied().unwrap_or(0);
+        self.draft = self.drafts.get(self.current).cloned().unwrap_or_default();
+    }
+
+    fn save_current(&mut self) {
+        if let Some(selection) = self.selections.get_mut(self.current) {
+            *selection = self.sel;
+        }
+        if let Some(draft) = self.drafts.get_mut(self.current) {
+            draft.clone_from(&self.draft);
+        }
     }
 
     /// Printable key for the current free-text question.
@@ -383,35 +451,56 @@ impl QuestionBatch {
         }
     }
 
-    /// Enter: record the current answer (highlighted option, or the typed
-    /// draft for free-text questions) and advance to the next question.
-    /// Returns the complete answer list when the last question was just
-    /// answered — the caller sends it and drops the batch.
+    /// Enter advances to the next question, or submits all retained answers
+    /// from the last question.
     pub fn enter(&mut self) -> Option<Vec<crate::protocol::QuestionAnswer>> {
-        let question = &self.questions[self.current];
-        let (selected, custom) = if self.is_free_text() {
-            let trimmed = self.draft.trim().to_string();
-            let custom = if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed)
-            };
-            (Vec::new(), custom)
+        if self.questions.get(self.current).is_none() {
+            return Some(Vec::new());
+        }
+        self.save_current();
+        if self.current + 1 < self.questions.len() {
+            self.step_question(1);
+            return None;
+        }
+        Some(
+            self.questions
+                .iter()
+                .enumerate()
+                .map(|(index, question)| self.answer_for(index, question))
+                .collect(),
+        )
+    }
+
+    /// Build the retained answer for one question from its saved state.
+    fn answer_for(
+        &self,
+        index: usize,
+        question: &crate::protocol::QuestionItem,
+    ) -> crate::protocol::QuestionAnswer {
+        let options = question.options.as_deref().unwrap_or(&[]);
+        let (selected, custom) = if options.is_empty() {
+            let trimmed = self.drafts[index].trim().to_string();
+            (Vec::new(), (!trimmed.is_empty()).then_some(trimmed))
+        } else if question.multi_select {
+            let selected = self.chosen[index]
+                .iter()
+                .filter_map(|selected| options.get(*selected))
+                .map(|option| option.label.clone())
+                .collect();
+            (selected, None)
         } else {
-            (vec![self.current_options()[self.sel].label.clone()], None)
+            let selection = self.chosen[index]
+                .first()
+                .copied()
+                .unwrap_or(self.selections[index])
+                .min(options.len() - 1);
+            (vec![options[selection].label.clone()], None)
         };
-        self.answered.push(crate::protocol::QuestionAnswer {
+        crate::protocol::QuestionAnswer {
             id: question.id.clone(),
             selected,
             custom,
-        });
-        if self.current + 1 >= self.questions.len() {
-            return Some(std::mem::take(&mut self.answered));
         }
-        self.current += 1;
-        self.sel = 0;
-        self.draft.clear();
-        None
     }
 }
 
@@ -492,8 +581,10 @@ pub struct AppState {
     pub expanded: std::collections::HashSet<u64>,
     /// Pending approval awaiting a Y/n answer.
     pub approval: Option<ApprovalCard>,
-    /// Pending user-question batch (selection bar replaces the input bar).
-    pub question: Option<QuestionBatch>,
+    /// rpcId of the pending user-question batch (ask_user_question), kept for
+    /// session ownership and command blocking while the Question Input Page
+    /// holds the interactive batch state.
+    pub question: Option<String>,
     /// Prompts typed while the agent runs: queued here and auto-dispatched
     /// one at a time whenever the agent returns to idle.
     pub queue: Vec<String>,
@@ -1819,6 +1910,7 @@ impl AppState {
         let now_ms = host_event_time(event);
         let mut row = match mutation {
             ToolMutation::Upsert(row) => row,
+            ToolMutation::Ignore => return,
             ToolMutation::MissingResult => {
                 if let HostEventKind::ToolResult {
                     call_id,
@@ -1871,17 +1963,9 @@ impl AppState {
             };
             if row.label != "create" {
                 row.duration_ms = Some(pending.time_ms.saturating_sub(row.start_ms.unwrap_or(0)));
-                let lines = pending.output.lines().count();
-                row.continuations
-                    .push(crate::display::ActivityContinuation {
-                        separator: " · ".into(),
-                        label: String::new(),
-                        summary: if pending.output_truncated {
-                            format!("{lines}+ lines")
-                        } else {
-                            format!("{lines} lines")
-                        },
-                    });
+                row.output_lines = Some(pending.output.lines().count());
+                row.output_lines_truncated = pending.output_truncated;
+                row.live_duration_since = None;
             }
         }
         let surface_seq = event.seq.filter(|_| is_surface_node(&event.kind));
@@ -4312,22 +4396,55 @@ mod tests {
         assert_eq!(q.current, 0);
         q.step(1);
         assert_eq!(q.sel, 1);
-        // Enter selects "二" and moves to the second question.
+        q.step_question(1);
+        assert_eq!(q.current, 1);
+        q.step(1);
+        assert_eq!(q.sel, 1);
+        q.step_question(-1);
+        assert_eq!(q.current, 0);
+        assert_eq!(q.sel, 1, "question navigation restores its selection");
+        // Enter advances and restores the answer already chosen on question 2.
         assert!(q.enter().is_none());
         assert_eq!(q.current, 1);
-        assert_eq!(q.sel, 0, "selection resets for the next question");
-        // Step past the end clamps onto the last option.
-        q.step(5);
         assert_eq!(q.sel, 1);
-        q.step(-1);
-        assert_eq!(q.sel, 0);
         // Enter on the last question confirms with the full answer list.
         let answers = q.enter().expect("last Enter returns the answers");
         assert_eq!(answers.len(), 2);
         assert_eq!(answers[0].id, "a");
         assert_eq!(answers[0].selected, vec!["二".to_string()]);
         assert_eq!(answers[1].id, "b");
-        assert_eq!(answers[1].selected, vec!["甲".to_string()]);
+        assert_eq!(answers[1].selected, vec!["乙".to_string()]);
+    }
+
+    #[test]
+    fn question_batch_space_selects_single_and_toggles_multi_without_advancing() {
+        let mut single = QuestionBatch::new(
+            "single".into(),
+            "s1".into(),
+            vec![qitem("choice", &["A", "B"])],
+        );
+        single.step(1);
+        single.toggle_selection();
+        assert_eq!(single.current, 0);
+        assert!(single.is_option_selected(1));
+        single.step(-1);
+        let answers = single.enter().expect("single question submits");
+        assert_eq!(answers[0].selected, ["B"]);
+
+        let mut item = qitem("many", &["A", "B", "C"]);
+        item.multi_select = true;
+        let mut multiple = QuestionBatch::new("multi".into(), "s1".into(), vec![item]);
+        multiple.step(1);
+        multiple.toggle_selection();
+        multiple.step(1);
+        multiple.toggle_selection();
+        multiple.step(-1);
+        multiple.toggle_selection();
+        assert_eq!(multiple.current, 0);
+        assert!(!multiple.is_option_selected(1));
+        assert!(multiple.is_option_selected(2));
+        let answers = multiple.enter().expect("multi question submits");
+        assert_eq!(answers[0].selected, ["C"]);
     }
 
     #[test]

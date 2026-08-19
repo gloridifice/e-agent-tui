@@ -49,6 +49,13 @@ pub struct ActivityRow {
     pub state: ActivityState,
     pub start_ms: Option<u64>,
     pub duration_ms: Option<u64>,
+    /// Output line count shown as trailing tool metadata from the moment a
+    /// generic tool starts. `None` keeps non-tool activities concise.
+    pub output_lines: Option<usize>,
+    pub output_lines_truncated: bool,
+    /// Monotonic start used only while a tool is running so elapsed metadata
+    /// can update on animation patches without mutating the transcript model.
+    pub live_duration_since: Option<std::time::Instant>,
     pub parent_id: Option<DisplayId>,
     pub depth: u16,
     pub count: usize,
@@ -64,6 +71,9 @@ impl ActivityRow {
             state: ActivityState::Running,
             start_ms: None,
             duration_ms: None,
+            output_lines: None,
+            output_lines_truncated: false,
+            live_duration_since: None,
             parent_id: None,
             depth: 0,
             count: 1,
@@ -147,7 +157,6 @@ impl DisplayItem {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InputAccessoryKind {
-    Question,
     Approval,
     Queue,
     Todo,
@@ -175,19 +184,6 @@ pub struct AccessoryAllocation {
 /// Allocate the bounded strip above the editor. Blocking accessories retain
 /// their minimum before informational rows; focus belongs to the highest
 /// priority blocking accessory only.
-pub fn focused_blocking_accessory(
-    has_question: bool,
-    has_approval: bool,
-) -> Option<InputAccessoryKind> {
-    if has_question {
-        Some(InputAccessoryKind::Question)
-    } else if has_approval {
-        Some(InputAccessoryKind::Approval)
-    } else {
-        None
-    }
-}
-
 pub fn allocate_accessories(
     accessories: &[InputAccessory],
     row_budget: u16,
@@ -222,12 +218,11 @@ pub fn allocate_accessories(
     }
     // Visual order is stable and independent of allocation priority.
     allocated.sort_by_key(|item| match item.kind {
-        InputAccessoryKind::Question => 0,
-        InputAccessoryKind::Approval => 1,
-        InputAccessoryKind::Goal => 2,
-        InputAccessoryKind::Plan => 3,
-        InputAccessoryKind::Todo => 4,
-        InputAccessoryKind::Queue => 5,
+        InputAccessoryKind::Approval => 0,
+        InputAccessoryKind::Goal => 1,
+        InputAccessoryKind::Plan => 2,
+        InputAccessoryKind::Todo => 3,
+        InputAccessoryKind::Queue => 4,
     });
     allocated
 }
@@ -268,26 +263,18 @@ mod tests {
                 blocking: true,
                 insertion_order: 1,
             },
-            InputAccessory {
-                kind: InputAccessoryKind::Question,
-                priority: 100,
-                desired_rows: 3,
-                minimum_rows: 3,
-                blocking: true,
-                insertion_order: 0,
-            },
         ];
-        let plan = allocate_accessories(&items, 7);
+        let plan = allocate_accessories(&items, 4);
         assert_eq!(plan.iter().filter(|item| item.focused).count(), 1);
         assert!(plan
             .iter()
-            .any(|item| item.kind == InputAccessoryKind::Question && item.focused));
+            .any(|item| item.kind == InputAccessoryKind::Approval && item.focused));
         assert!(plan
             .iter()
             .any(|item| item.kind == InputAccessoryKind::Queue && item.rows == 1));
         let small = allocate_accessories(&items, 3);
         assert_eq!(small.len(), 1);
-        assert_eq!(small[0].kind, InputAccessoryKind::Question);
+        assert_eq!(small[0].kind, InputAccessoryKind::Approval);
         assert!(small[0].focused);
     }
 

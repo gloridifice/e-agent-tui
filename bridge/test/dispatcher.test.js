@@ -39,8 +39,8 @@ function harness(options = {}) {
     injectSkill: () => {},
     historyEvents: () => ({ events: [], hasMore: false }),
     listSessions: options.listSessions ?? (async () => []),
-    apiProxy: undefined,
-    questionSessions: new Map(),
+    apiProxy: options.apiProxy,
+    questionSessions: options.questionSessions ?? new Map(),
     sendModel: options.sendModel ?? (async () => {}),
     modelSelections,
     createUserMessage: (message) => message,
@@ -57,6 +57,49 @@ test('dispatcher authenticates, attaches, and routes typed input', async () => {
   h.dispatcher.handle(Buffer.from(JSON.stringify({ type: 'input', text: 'hello' })))
   assert.equal(h.dispatcher.connection(), h.conn)
   assert.equal(h.followups[0].content[0].text, 'hello')
+})
+
+test('dispatcher resolves apiProxy lazily when answering a question', async () => {
+  const responses = []
+  let accessorCalls = 0
+  const questionSessions = new Map([['rpc-1', 'a1']])
+  const h = harness({
+    questionSessions,
+    apiProxy: () => {
+      accessorCalls += 1
+      return {
+        respond: async (message, signal) => {
+          responses.push({ message, signal })
+          return { accepted: true }
+        },
+      }
+    },
+  })
+  h.dispatcher.handle(Buffer.from(JSON.stringify({
+    type: 'hello', token: 'secret', protocolVersion: 5,
+  })))
+  await new Promise((resolve) => setImmediate(resolve))
+  h.dispatcher.handle(Buffer.from(JSON.stringify({
+    type: 'answer-questions',
+    rpcId: 'rpc-1',
+    answers: [{ id: 'choice', selected: ['A'] }],
+  })))
+  await new Promise((resolve) => setImmediate(resolve))
+
+  assert.equal(accessorCalls, 1)
+  assert.equal(responses.length, 1)
+  assert.equal(responses[0].signal, h.conn.abort.signal)
+  assert.deepEqual(responses[0].message, {
+    type: 'client-response',
+    rpcId: 'rpc-1',
+    result: {
+      ok: true,
+      value: {
+        sessionId: 'a1',
+        answer: { answers: [{ id: 'choice', selected: ['A'] }] },
+      },
+    },
+  })
 })
 
 test('dispatcher atomically creates a new session before delivering new-input', async () => {

@@ -290,6 +290,10 @@ optional secondary_content      ← tool-specific semantic colors
 - Inline code: the background is strictly limited to the inline-code chip itself (including chip padding); the
   following separator spaces in the source and unused trailing cells keep the normal line background. Full-line
   background fill only recognizes line-level `Line.style.bg`, never inferred from a local span.
+- Lists: markers are `◦` / `N.` / `[✓]`, 2 columns of indent per nesting level. Over-wide items are wrapped
+  while Markdown is rendered, against the resolved page width, so continuation rows **hang in the item's text
+  column** instead of falling back to the page edge; the marker's own display width sets that indent (2 for a
+  bullet, 3 for `N. `, 4 for `[✓] `).
 - Code blocks: left vertical border + top language label; v1 wraps over-width, horizontal scroll v2.
 - mermaid: grok-mermaid WASM renders to a Unicode diagram; on render failure degrade to the source fence block
   (copyable).

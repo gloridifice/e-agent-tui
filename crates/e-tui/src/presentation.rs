@@ -11,7 +11,7 @@ fn options(state: &TuiApp) -> RenderOptions {
         expanded: state.render.expanded.clone(),
         collapse_rows: state.config.atomic_collapse_rows,
         mermaid_enabled: state.config.mermaid_enabled,
-        table_width: Some(state.render.transcript_cache.width),
+        content_width: Some(state.render.transcript_cache.width),
     }
 }
 

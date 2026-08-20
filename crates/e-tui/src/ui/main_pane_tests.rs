@@ -1022,3 +1022,81 @@ fn reasoning_preview_renders_markdown_with_forced_bark_foreground() {
         "inline code chip background preserved"
     );
 }
+
+#[test]
+fn wrapped_markdown_list_rows_align_under_the_item_text() {
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    let source = "- alpha bravo charlie delta echo foxtrot golf hotel india";
+    state.transcript.append(
+        DisplayItem::Block(crate::display::TranscriptBlock {
+            id: DisplayId::correlated("assistant", "wrapped-list"),
+            unit: None,
+            content: source.into(),
+            format: crate::display::TranscriptFormat::Markdown,
+            tone: DisplayTone::Normal,
+            copy_source: source.into(),
+            streaming: false,
+        }),
+        None,
+    );
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+
+    // The cached rows are what both the painter and copy provenance consume:
+    // the item wraps at render time and no row overflows the page width.
+    let width = state.render.transcript_cache.width;
+    let rows = state
+        .render
+        .transcript_cache
+        .lines
+        .iter()
+        .map(Line::to_string)
+        .filter(|row| !row.trim().is_empty())
+        .collect::<Vec<_>>();
+    assert!(rows.len() > 1, "the long item must wrap: {rows:?}");
+    assert!(rows[0].starts_with("◦ alpha"), "marker row: {:?}", rows[0]);
+    for row in &rows[1..] {
+        assert!(
+            row.starts_with("  ") && !row.starts_with("   "),
+            "continuation row hangs in the text column: {row:?}"
+        );
+    }
+    for row in &rows {
+        assert!(
+            unicode_width::UnicodeWidthStr::width(row.as_str()) <= width,
+            "row exceeds the {width}-column page: {row:?}"
+        );
+    }
+
+    // Painted geometry: continuation rows start exactly where the item text
+    // starts, not at the page edge under the marker. Columns are counted in
+    // cells (one char per cell in `row_text`), never raw byte offsets — the
+    // `◦` marker is three bytes wide.
+    let buffer = terminal.backend().buffer();
+    let row_text = |y: u16| {
+        (0..40u16)
+            .map(|x| buffer[(x, y)].symbol().chars().next().unwrap_or(' '))
+            .collect::<String>()
+    };
+    let column_of = |row: &str, needle: &str| {
+        row.find(needle)
+            .map(|byte| row[..byte].chars().count())
+            .expect("painted needle")
+    };
+    let marker_row = (0..12u16)
+        .find(|y| row_text(*y).contains('◦'))
+        .expect("marker row painted");
+    let text_x = column_of(&row_text(marker_row), "alpha");
+    let continuation = row_text(marker_row + 1);
+    assert_eq!(
+        continuation.chars().position(|c| c != ' '),
+        Some(text_x),
+        "continuation row starts in the text column: {continuation:?}"
+    );
+}

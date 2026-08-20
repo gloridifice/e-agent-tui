@@ -70,10 +70,12 @@ pub struct RenderOptions {
     pub collapse_rows: usize,
     /// Whether mermaid fences render via WASM (D9); off = raw fence.
     pub mermaid_enabled: bool,
-    /// Optional maximum display width for markdown tables. When set, table
-    /// columns are sized to fit the limit and cell text wraps inside the
-    /// table instead of being emitted as one over-wide line.
-    pub table_width: Option<usize>,
+    /// Optional display width of the surface these lines are painted into.
+    /// When set, tables size their columns to fit it and wrap cell text
+    /// inside the box, and list items pre-wrap with a hanging indent so
+    /// continuation rows stay in the text column. `None` renders unbounded
+    /// logical rows and leaves wrapping to the paint-time wrapper.
+    pub content_width: Option<usize>,
 }
 
 impl Default for RenderOptions {
@@ -82,7 +84,7 @@ impl Default for RenderOptions {
             expanded: HashSet::new(),
             collapse_rows: 40,
             mermaid_enabled: true,
-            table_width: None,
+            content_width: None,
         }
     }
 }
@@ -415,7 +417,7 @@ fn render_block(
             render_table(raw, unit, theme, options, out);
         }
         BlockKind::List => {
-            render_list(raw, unit, theme, out);
+            render_list(raw, unit, theme, options, out);
         }
         BlockKind::Rule => {
             out.push(RenderLine {
@@ -855,12 +857,12 @@ fn render_table(
         }
         layouts.push(row_layouts);
     }
-    if options.table_width.is_none() {
+    if options.content_width.is_none() {
         for width in &mut widths {
             *width = (*width).min(MAX_CELL_WIDTH);
         }
     }
-    let widths = match options.table_width {
+    let widths = match options.content_width {
         Some(limit) => fit_table_widths(&widths, &min_widths, limit),
         None => widths,
     };
@@ -872,7 +874,7 @@ fn render_table(
     let collapsed =
         !options.expanded.contains(&unit) && body_rows.len() > options.collapse_rows / 2;
     let push_row = |out: &mut Vec<RenderLine>, row_idx: usize, header: bool| {
-        if options.table_width.is_some() {
+        if options.content_width.is_some() {
             push_table_cell_rows(out, unit, dim_style, &widths, &layouts[row_idx]);
         } else {
             push_table_cells(out, unit, dim_style, &widths, &rows[row_idx], header, theme);
@@ -1160,21 +1162,43 @@ struct ItemBuf {
     children: Vec<ItemBuf>,
 }
 
-fn render_list(raw: &str, unit: u64, theme: &Theme, out: &mut Vec<RenderLine>) {
-    let options =
+/// Per-list emit state: the ordered-marker counters per depth, the running
+/// raw-line cursor, and the resolved content width that gives every item its
+/// hanging indent.
+struct ListRenderer<'a> {
+    theme: &'a Theme,
+    unit: u64,
+    /// Resolved content width; `None` emits unwrapped logical rows.
+    width: Option<usize>,
+    counters: Vec<u64>,
+    raw_line_no: usize,
+}
+
+fn render_list(
+    raw: &str,
+    unit: u64,
+    theme: &Theme,
+    options: &RenderOptions,
+    out: &mut Vec<RenderLine>,
+) {
+    let md_options =
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
-    let parser = Parser::new_ext(raw, options);
+    let parser = Parser::new_ext(raw, md_options);
     let mut ordered: Option<u64> = None;
-    // Number counters per nesting depth.
-    let mut counters: Vec<u64> = Vec::new();
     let mut item_stack: Vec<ItemBuf> = Vec::new();
-    let mut raw_line_no = 0;
+    let mut list = ListRenderer {
+        theme,
+        unit,
+        width: options.content_width,
+        counters: Vec::new(),
+        raw_line_no: 0,
+    };
 
     for event in parser {
         match event {
             Event::Start(Tag::List(start)) => {
                 ordered = start;
-                counters.clear();
+                list.counters.clear();
             }
             Event::Start(Tag::Item) => item_stack.push(ItemBuf {
                 text: String::new(),
@@ -1194,16 +1218,7 @@ fn render_list(raw: &str, unit: u64, theme: &Theme, out: &mut Vec<RenderLine>) {
                     // Nested item: attach to its parent, emit with the tree.
                     parent.children.push(item);
                 } else {
-                    emit_item_tree(
-                        item,
-                        0,
-                        ordered,
-                        &mut counters,
-                        &mut raw_line_no,
-                        theme,
-                        unit,
-                        out,
-                    );
+                    list.emit_tree(item, 0, ordered, out);
                 }
             }
             Event::Text(t) => {
@@ -1228,132 +1243,117 @@ fn render_list(raw: &str, unit: u64, theme: &Theme, out: &mut Vec<RenderLine>) {
     // Unclosed items (streaming safety).
     while let Some(item) = item_stack.pop() {
         let depth = item_stack.len();
-        emit_item_tree(
-            item,
-            depth,
-            ordered,
-            &mut counters,
-            &mut raw_line_no,
-            theme,
-            unit,
-            out,
-        );
+        list.emit_tree(item, depth, ordered, out);
     }
 }
 
-/// Emit an item (marker + inline-styled text), then its children one level
-/// deeper — source order, glamour 2-column indent per level.
-fn emit_item_tree(
-    item: ItemBuf,
-    depth: usize,
-    ordered: Option<u64>,
-    counters: &mut Vec<u64>,
-    raw_line_no: &mut usize,
-    theme: &Theme,
-    unit: u64,
-    out: &mut Vec<RenderLine>,
-) {
-    emit_list_item(
-        item.text,
-        item.task,
-        depth,
-        ordered,
-        counters,
-        raw_line_no,
-        theme,
-        unit,
-        out,
-    );
-    for child in item.children {
-        emit_item_tree(
-            child,
-            depth + 1,
-            ordered,
-            counters,
-            raw_line_no,
-            theme,
-            unit,
-            out,
-        );
+impl ListRenderer<'_> {
+    /// Emit an item (marker + inline-styled text), then its children one level
+    /// deeper — source order, glamour 2-column indent per level.
+    fn emit_tree(
+        &mut self,
+        item: ItemBuf,
+        depth: usize,
+        ordered: Option<u64>,
+        out: &mut Vec<RenderLine>,
+    ) {
+        self.emit_item(item.text, item.task, depth, ordered, out);
+        for child in item.children {
+            self.emit_tree(child, depth + 1, ordered, out);
+        }
     }
-}
 
-/// Top-level list markers (unordered bullets and ordered numbers) render in
-/// the theme's `coral` tone; nested markers keep the regular muted
-/// `list_marker` tone.
-fn top_level_marker_style(theme: &Theme, depth: usize) -> Style {
-    if depth == 0 {
-        Style::default().fg(theme.coral)
-    } else {
-        theme.markdown.list_marker.style()
-    }
-}
-
-/// Render one list item: task checkbox or `◦`/numbered marker, inline
-/// markdown inside.
-fn emit_list_item(
-    text: String,
-    task: Option<bool>,
-    depth: usize,
-    ordered: Option<u64>,
-    counters: &mut Vec<u64>,
-    raw_line_no: &mut usize,
-    theme: &Theme,
-    unit: u64,
-    out: &mut Vec<RenderLine>,
-) {
-    let text = text.trim().to_string();
-    if text.is_empty() {
-        return;
-    }
-    let indent = "  ".repeat(depth);
-    let (marker, marker_style) = match task {
-        // glamour task: "[✓]" / "[ ]" followed by the item text.
-        Some(true) => ("[✓] ".to_string(), theme.markdown.task_checked.style()),
-        Some(false) => ("[ ] ".to_string(), theme.markdown.task_unchecked.style()),
-        None => {
-            if ordered.is_some() {
-                while counters.len() <= depth {
-                    counters.push(0);
+    /// Render one list item: task checkbox or `◦`/numbered marker, inline
+    /// markdown inside, and a hanging indent. Over-wide text is wrapped here,
+    /// against the resolved content width, so every continuation row starts in
+    /// the item's text column instead of falling back to the page edge.
+    fn emit_item(
+        &mut self,
+        text: String,
+        task: Option<bool>,
+        depth: usize,
+        ordered: Option<u64>,
+        out: &mut Vec<RenderLine>,
+    ) {
+        let text = text.trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        let theme = self.theme;
+        let indent = "  ".repeat(depth);
+        let (marker, marker_style) = self.marker(task, depth, ordered);
+        self.counters.truncate(depth + 1);
+        // Columns owned by the indent and marker: the continuation prefix and
+        // the text budget are both derived from it, so the first row and every
+        // wrapped row share one text column.
+        let hang = indent.len() + UnicodeWidthStr::width(marker.as_str());
+        let body_width = self
+            .width
+            .map(|width| width.saturating_sub(hang))
+            .filter(|width| *width > 0);
+        let inlines = collect_inlines(theme, &text, theme.markdown.text.style());
+        for (li, line) in inlines.into_iter().enumerate() {
+            let rows = match body_width {
+                Some(width) => wrap_styled_line(line, width),
+                None => vec![line],
+            };
+            for (ri, row) in rows.into_iter().enumerate() {
+                let mut spans = Vec::new();
+                if li == 0 && ri == 0 {
+                    spans.push(Span::styled(
+                        indent.clone(),
+                        theme.markdown.list_marker.style(),
+                    ));
+                    spans.push(Span::styled(marker.clone(), marker_style));
+                } else {
+                    // Continuation rows align under the text column.
+                    spans.push(Span::styled(
+                        " ".repeat(hang),
+                        theme.markdown.list_marker.style(),
+                    ));
                 }
-                counters[depth] += 1;
-                (
-                    format!("{}. ", counters[depth]),
-                    top_level_marker_style(theme, depth),
-                )
-            } else {
-                ("◦ ".to_string(), top_level_marker_style(theme, depth))
+                spans.extend(row.spans);
+                out.push(RenderLine {
+                    line: Line::from(spans),
+                    unit: self.unit,
+                    // Wrapped rows stay on their logical row's source line.
+                    raw_line: Some(self.raw_line_no),
+                    atomic: false,
+                    fill: false,
+                });
             }
+            self.raw_line_no += 1;
         }
-    };
-    counters.truncate(depth + 1);
-    // Inline markdown inside items (code, strong, links …).
-    let inlines = collect_inlines(theme, &text, theme.markdown.text.style());
-    for (li, line) in inlines.into_iter().enumerate() {
-        let mut spans = Vec::new();
-        if li == 0 {
-            spans.push(Span::styled(
-                indent.clone(),
-                theme.markdown.list_marker.style(),
-            ));
-            spans.push(Span::styled(marker.clone(), marker_style));
-            spans.extend(line.spans);
+    }
+
+    /// Task checkbox, ordered number, or bullet marker. Top-level markers
+    /// (unordered bullets and ordered numbers) render in the theme's `coral`
+    /// tone; nested markers keep the regular muted `list_marker` tone.
+    fn marker(
+        &mut self,
+        task: Option<bool>,
+        depth: usize,
+        ordered: Option<u64>,
+    ) -> (String, Style) {
+        let theme = self.theme;
+        let top_level_style = if depth == 0 {
+            Style::default().fg(theme.coral)
         } else {
-            // Continuation rows align under the text column.
-            spans.push(Span::styled(
-                format!("{indent}  "),
-                theme.markdown.list_marker.style(),
-            ));
-            spans.extend(line.spans);
+            theme.markdown.list_marker.style()
+        };
+        match task {
+            // glamour task: "[✓]" / "[ ]" followed by the item text.
+            Some(true) => ("[✓] ".to_string(), theme.markdown.task_checked.style()),
+            Some(false) => ("[ ] ".to_string(), theme.markdown.task_unchecked.style()),
+            None if ordered.is_some() => {
+                while self.counters.len() <= depth {
+                    self.counters.push(0);
+                }
+                self.counters[depth] += 1;
+                (format!("{}. ", self.counters[depth]), top_level_style)
+            }
+            None => ("◦ ".to_string(), top_level_style),
         }
-        out.push(RenderLine {
-            line: Line::from(spans),
-            unit,
-            raw_line: Some(*raw_line_no),
-            atomic: false,
-            fill: false,
-        });
-        *raw_line_no += 1;
     }
 }
 
@@ -1388,6 +1388,18 @@ mod tests {
                     .collect::<String>()
             })
             .collect()
+    }
+
+    fn render_at(text: &str, width: usize) -> Vec<RenderLine> {
+        let theme = Theme::ferra();
+        let mut next = 0;
+        let mut units = HashMap::new();
+        let options = RenderOptions {
+            collapse_rows: 40,
+            content_width: Some(width),
+            ..Default::default()
+        };
+        render_markdown(text, &theme, &mut next, &options, &mut units)
     }
 
     #[test]
@@ -1467,7 +1479,7 @@ mod tests {
         let mut units = HashMap::new();
         let options = RenderOptions {
             collapse_rows: 40,
-            table_width: Some(24),
+            content_width: Some(24),
             ..Default::default()
         };
         let long = "x".repeat(30);
@@ -1512,7 +1524,7 @@ mod tests {
         let mut units = HashMap::new();
         let options = RenderOptions {
             collapse_rows: 40,
-            table_width: Some(64),
+            content_width: Some(64),
             ..Default::default()
         };
         let long = "x".repeat(60);
@@ -1648,6 +1660,51 @@ mod tests {
         assert_eq!(text[0], "◦ 一级");
         assert_eq!(text[1], "  ◦ 二级");
         assert_eq!(text[2], "    ◦ 三级");
+    }
+
+    #[test]
+    fn over_wide_list_items_hang_under_their_text_column() {
+        // Bullet marker = 2 columns, so a 12-column page wraps the text at 10
+        // and every continuation row starts in the text column.
+        let lines = render_at("- aaa bbb ccc ddd eee fff", 12);
+        assert_eq!(plain(&lines), vec!["◦ aaa bbb", "  ccc ddd", "  eee fff"]);
+        assert!(
+            lines.iter().all(|line| line.line.width() <= 12),
+            "no row exceeds the resolved content width"
+        );
+        assert!(
+            lines.iter().all(|line| line.raw_line == Some(0)),
+            "wrapped rows stay on their logical row's source line"
+        );
+
+        // The hanging indent follows the real marker width: `1. ` is 3 columns
+        // and `[✓] ` is 4, not the fixed 2-column bullet indent.
+        assert_eq!(
+            plain(&render_at("1. aaa bbb ccc", 10)),
+            vec!["1. aaa bbb", "   ccc"]
+        );
+        assert_eq!(
+            plain(&render_at("- [x] aaa bbb ccc", 10)),
+            vec!["[✓] aaa", "    bbb", "    ccc"]
+        );
+        // Nested items add their own 2-column level to the hanging indent.
+        assert_eq!(
+            plain(&render_at("- top\n  - nested aaa bbb", 10)),
+            vec!["◦ top", "  ◦ nested", "    aaa", "    bbb"]
+        );
+        // Double-width text wraps on display cells, not character count.
+        assert_eq!(
+            plain(&render_at("- 一二三四五六", 10)),
+            vec!["◦ 一二三四", "  五六"]
+        );
+    }
+
+    #[test]
+    fn list_items_keep_logical_rows_when_no_width_is_resolved() {
+        // Without a resolved width the renderer emits unwrapped logical rows
+        // and the paint-time wrapper stays authoritative.
+        let lines = render("- aaa bbb ccc ddd eee fff");
+        assert_eq!(plain(&lines), vec!["◦ aaa bbb ccc ddd eee fff"]);
     }
 
     #[test]

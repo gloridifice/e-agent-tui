@@ -142,7 +142,7 @@ fn muted_markdown_lines(source: &str, theme: &Theme, width: usize) -> Vec<Line<'
     let options = RenderOptions {
         collapse_rows: usize::MAX,
         mermaid_enabled: false,
-        table_width: Some(width),
+        content_width: Some(width),
         ..Default::default()
     };
     let bark = theme.surface.muted_text.fg;

@@ -1584,7 +1584,7 @@ impl AppState {
             expanded: self.render.expanded.clone(),
             collapse_rows: self.config.atomic_collapse_rows,
             mermaid_enabled: self.config.mermaid_enabled,
-            table_width: Some(self.render.transcript_cache.width),
+            content_width: Some(self.render.transcript_cache.width),
         };
         let lines = {
             let render = &mut self.render;

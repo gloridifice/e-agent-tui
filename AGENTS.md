@@ -37,6 +37,8 @@ cargo install --path crates/e-dsh --locked
 # Embeds and installs the bridge into the dedicated dshe profile.
 # When DSH_HOME is unset/empty, setup falls back to $HOME\.dsh.
 dshe setup
+# Force-stop only the project-managed DSH service and remove its stale `%DSH_HOME%\e.lock`.
+dshe clean
 
 # Rust workspace (default member e-dsh, artifact dshe.exe; e-dsh -> e-tui)
 cargo run                                # build from root and launch dshe

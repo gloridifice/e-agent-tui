@@ -20,7 +20,7 @@ use e::runtime_ports::{
     TerminalLifecyclePort, UiActionPorts,
 };
 use e::terminal_runtime::TerminalOwner;
-use e_tui::ui::render_with_cursor;
+use e_tui::ui::{render_with_cursor, TerminalSize};
 
 const DSH_SERVER_CLOSED_MESSAGE: &str = "dsh 服务器已关闭。";
 const INTERACTIVE_FRAME_INTERVAL: Duration = Duration::from_millis(16);
@@ -155,6 +155,7 @@ fn read_token() -> anyhow::Result<String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CliAction {
     Setup,
+    Clean,
     Run {
         url: String,
         resume_session_id: Option<String>,
@@ -179,6 +180,12 @@ fn parse_cli_from(mut args: impl Iterator<Item = String>) -> anyhow::Result<CliA
             }
             Ok(CliAction::Setup)
         }
+        "clean" => {
+            if args.next().is_some() {
+                bail!("`dshe clean` takes no arguments. Run `dshe clean` alone.");
+            }
+            Ok(CliAction::Clean)
+        }
         "install" => bail!("Unknown command `install`. Run `dshe setup` instead."),
         url => Ok(CliAction::Run {
             url: url.to_string(),
@@ -191,6 +198,7 @@ fn parse_cli_from(mut args: impl Iterator<Item = String>) -> anyhow::Result<CliA
 async fn main() -> anyhow::Result<()> {
     match parse_cli()? {
         CliAction::Setup => run_setup(),
+        CliAction::Clean => run_clean(),
         CliAction::Run {
             url,
             resume_session_id,
@@ -201,6 +209,26 @@ async fn main() -> anyhow::Result<()> {
 fn run_setup() -> anyhow::Result<()> {
     let home = e::launcher::dsh_home();
     e::setup::run_setup(&home).map_err(|error| anyhow::anyhow!("{error}"))
+}
+
+fn run_clean() -> anyhow::Result<()> {
+    let home = e::launcher::dsh_home();
+    let path = e::launcher::lock_path(&home);
+    match e::launcher::clean(&home)? {
+        e::launcher::CleanOutcome::NothingToClean => println!("Nothing to clean."),
+        e::launcher::CleanOutcome::RemovedStaleLock { pid } => match pid {
+            Some(pid) => println!(
+                "Removed stale lock for managed DSH process {pid}: {}",
+                path.display()
+            ),
+            None => println!("Removed stale lock: {}", path.display()),
+        },
+        e::launcher::CleanOutcome::StoppedManagedService { pid } => println!(
+            "Stopped managed DSH process {pid} and removed lock: {}",
+            path.display()
+        ),
+    }
+    Ok(())
 }
 
 async fn run_tui(url: String, resume_session_id: Option<String>) -> anyhow::Result<()> {
@@ -539,14 +567,19 @@ async fn run(
                 }
             };
             let route = e::runtime::route_terminal_event(event, focus);
-            let terminal_height = terminal.size().map(|size| size.height).unwrap_or(40);
+            let terminal_size = terminal.size();
+            let terminal_height = terminal_size.as_ref().map(|s| s.height).unwrap_or(40);
+            let terminal_width = terminal_size.as_ref().map(|s| s.width).unwrap_or(120);
             let mut interaction = {
                 let mut app = state_r.lock().unwrap();
                 std::mem::take(&mut app.interaction)
             };
             let effects = RuntimeController::apply_terminal_route(
                 route,
-                terminal_height,
+                TerminalSize {
+                    width: terminal_width,
+                    height: terminal_height,
+                },
                 runtime_ports.now(),
                 &state_r,
                 &mut e::runtime::TerminalUiState {
@@ -706,7 +739,7 @@ mod tests {
     }
 
     #[test]
-    fn cli_routes_setup_and_run_without_launcher_for_setup() {
+    fn cli_routes_maintenance_commands_and_run() {
         assert_eq!(
             parse_cli_from(args(&[])).unwrap(),
             CliAction::Run {
@@ -715,6 +748,7 @@ mod tests {
             }
         );
         assert_eq!(parse_cli_from(args(&["setup"])).unwrap(), CliAction::Setup);
+        assert_eq!(parse_cli_from(args(&["clean"])).unwrap(), CliAction::Clean);
         assert_eq!(
             parse_cli_from(args(&["ws://host/dsh-tui", "sess-1"])).unwrap(),
             CliAction::Run {
@@ -725,7 +759,7 @@ mod tests {
     }
 
     #[test]
-    fn cli_rejects_install_and_setup_arguments() {
+    fn cli_rejects_install_and_maintenance_command_arguments() {
         let install = parse_cli_from(args(&["install"])).unwrap_err().to_string();
         assert!(install.contains("`dshe setup`"), "{install}");
         assert!(install.contains("install"));
@@ -734,6 +768,12 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(extra.contains("`dshe setup`"));
+        assert!(extra.contains("no arguments"));
+
+        let extra = parse_cli_from(args(&["clean", "extra"]))
+            .unwrap_err()
+            .to_string();
+        assert!(extra.contains("`dshe clean`"));
         assert!(extra.contains("no arguments"));
     }
 

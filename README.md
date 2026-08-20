@@ -31,6 +31,8 @@ Key interactions:
 
 If PowerShell cannot find `dshe`, add `%USERPROFILE%\.cargo\bin` to `PATH`.
 
+If the project-managed DSH service or its lock gets stuck, run `dshe clean` to force-stop that service and remove `%DSH_HOME%\e.lock`. It does not stop a DSH service started outside `dshe`.
+
 To update, pull the latest changes, run `cargo install --path crates/e-dsh --locked`, then run `dshe setup` to refresh the embedded bridge. Restart DSH if it is already running.
 
 ### Build Yourself

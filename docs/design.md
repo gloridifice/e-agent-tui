@@ -13,8 +13,10 @@
 > closes, to avoid orphan Node processes; reaping wait is bounded, and on close failure a zero-instance lock is
 > kept for the next attach to retry; all instance locks must re-probe the bridge endpoint — even a positive
 > instance count does not prove the service is alive, and when the service is gone the stale lock is cleared and
-> rebuilt. After a confirmed shutdown it leaves the alternate screen and prints `dsh 服务器已关闭。`. It does not
-> print this when the DSH was started externally by the bridge or when other TUIs remain.
+> rebuilt. `dshe clean` force-stops the project-managed PID in `%DSH_HOME%\e.lock` and removes that lock, but does
+> not stop an externally started DSH service that has no project lock. After a confirmed shutdown it leaves the
+> alternate screen and prints `dsh 服务器已关闭。`. It does not print this when the DSH was started externally by the
+> bridge or when other TUIs remain.
 > v0.6 architecture convergence: the production client module graph is auto-checked as SCC-free by
 > `crates/e-dsh/tests/architecture.rs`; the transcript only stores public Display surfaces; wire shape/fixture/doc are
 > synced from the same JSON contract; config uses a single strict schema; DSH model selection is installed via the

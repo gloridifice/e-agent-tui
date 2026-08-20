@@ -173,13 +173,16 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
   Built-in `deepseek-e`/`ferra` sources are in `crates/e-tui/assets/themes/`, embedded via `include_str!` and parsed by
   the same parser as user files, and copied without overwrite to `%APPDATA%\dshe\themes\`; a valid same-named user
   file wins, and an illegal old file must not shadow the embedded fallback. `launcher.rs`: `probe(url)` TCP probe
-  → if no dsh, spawn `dsh --profile dshe` (`dsh` or `npx @deepseek-ai/dsh`) → `%DSH_HOME%\dsh-tui.lock` counts
+  → if no dsh, spawn `dsh --profile dshe` (`dsh` or `npx @deepseek-ai/dsh`) → `%DSH_HOME%\e.lock` counts
   "close dsh when the last tui closes"; on Windows the child handle points at the `cmd /C` shim, and both normal
   shutdown and startup-timeout cleanup must `taskkill /T` the whole process tree — never only `Child::kill`,
   which leaves orphan Node processes; child reaping must be bounded, and on terminate failure keep an
   `instances: 0` lock for the next attach to retry; reading any lock must re-`probe(url)` — even `instances > 0`
   is not proof of a live service (a force-killed TUI leaves a stale positive-count lock), and if the service is
-  gone, clear the lock and rebuild. A spawn error, child exit before readiness, or startup timeout must fail the
+  gone, clear the lock and rebuild. `dshe clean` bypasses setup/TUI startup, force-stops only the DSH process
+  recorded in this lock, and then removes the lock; missing, malformed, zero-pid, and dead-process locks are
+  removed as stale, while a lock is retained if its live process cannot be terminated. An externally started DSH
+  has no project lock and is not stopped. A spawn error, child exit before readiness, or startup timeout must fail the
   launcher immediately with the attempted command and actionable setup guidance (run `dshe setup` and restart DSH)
   — never continue to token
   read/WebSocket connect and expose a raw connection-refused error. The WebSocket upgrade retries only transient I/O

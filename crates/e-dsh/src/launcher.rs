@@ -10,7 +10,7 @@
 //!   3. dsh already running (any profile) → `dshe` bridges and never touches
 //!      the existing service.
 //!
-//! The "last TUI" bookkeeping uses a small lock file (`%DSH_HOME%\dsh-tui.lock`)
+//! The "last TUI" bookkeeping uses a small lock file (`%DSH_HOME%\e.lock`)
 //! recording the spawned dsh pid and the number of attached TUI processes, so
 //! concurrent `dshe` instances share one spawned service.
 
@@ -218,7 +218,7 @@ pub struct InstanceLock {
 }
 
 pub fn lock_path(dsh_home: &Path) -> PathBuf {
-    dsh_home.join("dsh-tui.lock")
+    dsh_home.join("e.lock")
 }
 
 pub fn read_lock(path: &Path) -> Option<InstanceLock> {
@@ -237,6 +237,98 @@ pub fn write_lock(path: &Path, lock: &InstanceLock) {
 
 pub fn remove_lock(path: &Path) {
     let _ = std::fs::remove_file(path);
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CleanOutcome {
+    NothingToClean,
+    RemovedStaleLock { pid: Option<u32> },
+    StoppedManagedService { pid: u32 },
+}
+
+fn remove_lock_checked(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(windows)]
+fn process_exists(pid: u32) -> Option<bool> {
+    let filter = format!("PID eq {pid}");
+    let output = Command::new("tasklist")
+        .args(["/FI", &filter, "/FO", "CSV", "/NH"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let expected = pid.to_string();
+    Some(String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+        line.split(',')
+            .nth(1)
+            .is_some_and(|field| field.trim().trim_matches('"') == expected)
+    }))
+}
+
+#[cfg(not(windows))]
+fn process_exists(pid: u32) -> Option<bool> {
+    let output = Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "pid="])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(
+        String::from_utf8_lossy(&output.stdout)
+            .split_whitespace()
+            .any(|field| field == pid.to_string()),
+    )
+}
+
+/// Force-stop the DSH service recorded by this project's lock and remove the
+/// lock. Missing, malformed, zero-pid, and dead-process locks are stale and can
+/// be removed without trying to terminate anything. A lock is retained when a
+/// live process cannot be terminated, so a later launcher does not orphan it.
+pub fn clean(dsh_home: &Path) -> std::io::Result<CleanOutcome> {
+    let path = lock_path(dsh_home);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(CleanOutcome::NothingToClean);
+        }
+        Err(error) => return Err(error),
+    };
+    let lock = match serde_json::from_str::<InstanceLock>(&text) {
+        Ok(lock) => lock,
+        Err(_) => {
+            remove_lock_checked(&path)?;
+            return Ok(CleanOutcome::RemovedStaleLock { pid: None });
+        }
+    };
+    if lock.dsh_pid == 0 || process_exists(lock.dsh_pid) == Some(false) {
+        remove_lock_checked(&path)?;
+        return Ok(CleanOutcome::RemovedStaleLock {
+            pid: (lock.dsh_pid != 0).then_some(lock.dsh_pid),
+        });
+    }
+    if kill_process(lock.dsh_pid) {
+        remove_lock_checked(&path)?;
+        return Ok(CleanOutcome::StoppedManagedService { pid: lock.dsh_pid });
+    }
+    if process_exists(lock.dsh_pid) == Some(false) {
+        remove_lock_checked(&path)?;
+        return Ok(CleanOutcome::RemovedStaleLock {
+            pid: Some(lock.dsh_pid),
+        });
+    }
+    Err(std::io::Error::other(format!(
+        "could not terminate managed DSH process {} — lock retained at {}",
+        lock.dsh_pid,
+        path.display()
+    )))
 }
 
 /// An instance count records ownership, not service liveness. Even a positive
@@ -527,6 +619,40 @@ mod tests {
         },
     };
 
+    /// Reaps a spawned child on drop so an assertion failure (or an early
+    /// `panic!`) cannot leak a live process past the test harness.
+    struct ChildGuard(Option<Child>);
+
+    impl ChildGuard {
+        fn child_mut(&mut self) -> &mut Child {
+            self.0.as_mut().expect("child present")
+        }
+    }
+
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            if let Some(mut child) = self.0.take() {
+                let _ = child.kill();
+                let _ = reap_child_with_timeout(
+                    &mut child,
+                    Duration::from_millis(CHILD_REAP_TIMEOUT_MS),
+                );
+            }
+        }
+    }
+
+    /// Force-stops a process tree by pid on drop; covers panic/early-return
+    /// paths in tests that spawn a real Windows `cmd` wrapper.
+    #[cfg(windows)]
+    struct PidGuard(u32);
+
+    #[cfg(windows)]
+    impl Drop for PidGuard {
+        fn drop(&mut self) {
+            kill_process(self.0);
+        }
+    }
+
     struct FakeProcess {
         id: u32,
         exited: bool,
@@ -809,6 +935,10 @@ mod tests {
     fn instance_lock_roundtrips() {
         let dir = std::env::temp_dir().join(format!("dshe-launcher-test-{}", std::process::id()));
         let path = lock_path(&dir);
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("e.lock")
+        );
         let lock = InstanceLock {
             dsh_pid: 42,
             instances: 2,
@@ -817,6 +947,37 @@ mod tests {
         assert_eq!(read_lock(&path), Some(lock));
         remove_lock(&path);
         assert_eq!(read_lock(&path), None);
+    }
+
+    #[test]
+    fn clean_removes_missing_malformed_and_zero_pid_locks() {
+        let dir = std::env::temp_dir().join(format!("dshe-clean-test-{}", std::process::id()));
+        let path = lock_path(&dir);
+        remove_lock(&path);
+
+        assert_eq!(clean(&dir).unwrap(), CleanOutcome::NothingToClean);
+
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, "not json").unwrap();
+        assert_eq!(
+            clean(&dir).unwrap(),
+            CleanOutcome::RemovedStaleLock { pid: None }
+        );
+        assert!(!path.exists());
+
+        write_lock(
+            &path,
+            &InstanceLock {
+                dsh_pid: 0,
+                instances: 1,
+            },
+        );
+        assert_eq!(
+            clean(&dir).unwrap(),
+            CleanOutcome::RemovedStaleLock { pid: None }
+        );
+        assert!(!path.exists());
+        let _ = std::fs::remove_dir(&dir);
     }
 
     #[test]
@@ -844,22 +1005,24 @@ mod tests {
     #[test]
     fn reap_child_timeout_is_bounded() {
         let test_exe = std::env::current_exe().unwrap();
-        let mut child = Command::new(test_exe)
-            .args([
-                "--exact",
-                "launcher::tests::reap_timeout_child",
-                "--nocapture",
-            ])
-            .env("DSHE_LAUNCHER_REAP_TEST_CHILD", "1")
-            .spawn()
-            .expect("spawn reap timeout child");
+        let mut guard = ChildGuard(Some(
+            Command::new(test_exe)
+                .args([
+                    "--exact",
+                    "launcher::tests::reap_timeout_child",
+                    "--nocapture",
+                ])
+                .env("DSHE_LAUNCHER_REAP_TEST_CHILD", "1")
+                .spawn()
+                .expect("spawn reap timeout child"),
+        ));
         std::thread::sleep(Duration::from_millis(50));
 
         let started = std::time::Instant::now();
-        let exited = reap_child_with_timeout(&mut child, Duration::from_millis(40));
+        let exited = reap_child_with_timeout(guard.child_mut(), Duration::from_millis(40));
         let elapsed = started.elapsed();
-        let _ = child.kill();
-        let cleaned = reap_child_with_timeout(&mut child, Duration::from_secs(2));
+        let _ = guard.child_mut().kill();
+        let cleaned = reap_child_with_timeout(guard.child_mut(), Duration::from_secs(2));
 
         assert!(!exited, "running child must hit the reap deadline");
         assert!(
@@ -886,6 +1049,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    #[ignore = "spawns a real Windows cmd process tree; run with `cargo test -- --ignored`"]
     fn release_kills_windows_cmd_process_tree() {
         let port = {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -906,10 +1070,10 @@ mod tests {
             .spawn()
             .expect("spawn cmd-wrapped child server");
         let wrapper_pid = child.id();
+        let _cleanup = PidGuard(wrapper_pid);
         let url = format!("ws://127.0.0.1:{port}");
         if !wait_for_dsh(&url, Duration::from_secs(5)) {
-            kill_process(wrapper_pid);
-            panic!("cmd-wrapped child server did not start");
+            panic!("cmd-wrapped child server (pid {wrapper_pid}) did not start");
         }
 
         let dir = std::env::temp_dir().join(format!(

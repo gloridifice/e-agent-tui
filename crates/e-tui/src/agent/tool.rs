@@ -1,5 +1,35 @@
 //! Kernel-neutral tool presentation facts.
 
+/// Workspace-relative display form of a file path: paths inside the workspace
+/// lose the workspace prefix, paths outside keep their absolute form. Both
+/// sides are normalized to forward slashes and compared case-insensitively,
+/// so Windows and POSIX drives both relativize. Pure string work — the client
+/// never reads the file.
+pub fn workspace_relative_path(path: &str, workspace: Option<&str>) -> String {
+    let normalize = |value: &str| value.trim_end_matches(['/', '\\']).replace('\\', "/");
+    let normalized_path = normalize(path);
+    let Some(workspace) = workspace else {
+        return normalized_path;
+    };
+    let normalized_workspace = normalize(workspace);
+    let path_parts = normalized_path.split('/').collect::<Vec<_>>();
+    let workspace_parts = normalized_workspace.split('/').collect::<Vec<_>>();
+    let inside = path_parts.len() >= workspace_parts.len()
+        && path_parts
+            .iter()
+            .zip(&workspace_parts)
+            .all(|(left, right)| left.eq_ignore_ascii_case(right));
+    if !inside {
+        return normalized_path;
+    }
+    let relative = &path_parts[workspace_parts.len()..];
+    if relative.is_empty() {
+        ".".into()
+    } else {
+        relative.join("/")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ToolCapability {
     Read,
@@ -65,20 +95,42 @@ pub enum ToolReference {
 }
 
 impl ToolReference {
+    /// Path-bearing references rewritten to their workspace-relative display
+    /// form (`workspace_relative_path`); every other reference is returned
+    /// unchanged.
+    pub fn relativized(&self, workspace: Option<&str>) -> ToolReference {
+        match self {
+            Self::Path { path } => Self::Path {
+                path: workspace_relative_path(path, workspace),
+            },
+            Self::Lines { path, start, lines } => Self::Lines {
+                path: workspace_relative_path(path, workspace),
+                start: *start,
+                lines: lines.clone(),
+            },
+            _ => self.clone(),
+        }
+    }
+
     pub fn preview_reference(
         &self,
         key_prefix: &str,
         revision: crate::preview::PreviewRevision,
     ) -> Option<crate::preview::PreviewRef> {
-        use crate::preview::{PreviewKey, PreviewRef};
+        use crate::preview::{PreviewContent, PreviewKey, PreviewRef};
         match self {
-            Self::Path { path } => Some(PreviewRef::Deferred {
-                key: PreviewKey(format!("file:{path}")),
+            // File references preview the path itself (already relativized by
+            // the caller against the workspace) rather than the file contents:
+            // the client never reads the file for a Preview.
+            Self::Path { path } => Some(PreviewRef::Inline {
+                key: PreviewKey(key_prefix.into()),
                 revision,
+                content: PreviewContent::Path(path.clone()),
             }),
-            Self::Lines { path, start, lines } if lines.is_empty() => Some(PreviewRef::Deferred {
-                key: PreviewKey(format!("lines:{path}:{start}")),
+            Self::Lines { path, lines, .. } if lines.is_empty() => Some(PreviewRef::Inline {
+                key: PreviewKey(key_prefix.into()),
                 revision,
+                content: PreviewContent::Path(path.clone()),
             }),
             _ => self.preview_content().map(|content| PreviewRef::Inline {
                 key: PreviewKey(key_prefix.into()),
@@ -132,4 +184,65 @@ pub struct ToolActivity {
     pub state: ActivityState,
     pub reference: Option<ToolReference>,
     pub items: Vec<ToolItem>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::preview::{PreviewContent, PreviewRef, PreviewRevision};
+
+    #[test]
+    fn file_references_preview_the_path_inline_without_deferring() {
+        let revision = PreviewRevision(1);
+        for reference in [
+            ToolReference::Path {
+                path: "src/main.rs".into(),
+            },
+            ToolReference::Lines {
+                path: "src/main.rs".into(),
+                start: 3,
+                lines: Vec::new(),
+            },
+        ] {
+            let preview = reference.preview_reference("tool:1", revision).unwrap();
+            assert!(
+                matches!(
+                    &preview,
+                    PreviewRef::Inline {
+                        content: PreviewContent::Path(path),
+                        ..
+                    } if path == "src/main.rs"
+                ),
+                "file references must preview the path, never defer content: {preview:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn relativized_rewrites_inside_paths_and_keeps_outside_absolute() {
+        let workspace = Some(r"G:\workspace");
+        let inside = ToolReference::Lines {
+            path: r"G:\workspace\src\main.rs".into(),
+            start: 1,
+            lines: Vec::new(),
+        };
+        assert!(matches!(
+            inside.relativized(workspace),
+            ToolReference::Lines { path, .. } if path == "src/main.rs"
+        ));
+        let already_relative = ToolReference::Path {
+            path: "src/main.rs".into(),
+        };
+        assert!(matches!(
+            already_relative.relativized(workspace),
+            ToolReference::Path { path } if path == "src/main.rs"
+        ));
+        let outside = ToolReference::Path {
+            path: r"C:\other\lib.rs".into(),
+        };
+        assert!(matches!(
+            outside.relativized(workspace),
+            ToolReference::Path { path } if path == "C:/other/lib.rs"
+        ));
+    }
 }

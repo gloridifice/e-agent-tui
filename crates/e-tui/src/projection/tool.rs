@@ -292,30 +292,8 @@ fn classify_file_call(
         } => path,
         _ => return None,
     };
-    Some((action, workspace_relative_path(path, workspace)))
-}
-
-fn workspace_relative_path(path: &str, workspace: Option<&str>) -> String {
-    let normalize = |value: &str| value.trim_end_matches(['/', '\\']).replace('\\', "/");
-    let normalized_path = normalize(path);
-    let Some(workspace) = workspace else {
-        return normalized_path;
-    };
-    let normalized_workspace = normalize(workspace);
-    let path_parts = normalized_path.split('/').collect::<Vec<_>>();
-    let workspace_parts = normalized_workspace.split('/').collect::<Vec<_>>();
-    let inside = path_parts.len() >= workspace_parts.len()
-        && path_parts
-            .iter()
-            .zip(&workspace_parts)
-            .all(|(left, right)| left.eq_ignore_ascii_case(right));
-    if !inside {
-        return normalized_path;
-    }
-    let relative = &path_parts[workspace_parts.len()..];
-    if relative.is_empty() {
-        ".".into()
-    } else {
-        relative.join("/")
-    }
+    Some((
+        action,
+        crate::agent::tool::workspace_relative_path(path, workspace),
+    ))
 }

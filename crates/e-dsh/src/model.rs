@@ -1672,9 +1672,24 @@ impl AppState {
                 self.projector
                     .tool_calls
                     .insert(activity.id.clone(), row_id.clone());
-                self.tool_items
-                    .insert(row_id.clone(), activity.items.clone());
-                if let Some(reference) = activity.reference.as_ref().and_then(|reference| {
+                // File paths are displayed relative to the workspace
+                // (absolute when outside); normalize once here so the stored
+                // tool items, Reading items, and previews all agree.
+                let workspace = self.session.session_cwd.clone();
+                let items = activity
+                    .items
+                    .iter()
+                    .map(|item| e_tui::agent::tool::ToolItem {
+                        reference: item.reference.relativized(workspace.as_deref()),
+                        ..item.clone()
+                    })
+                    .collect::<Vec<_>>();
+                self.tool_items.insert(row_id.clone(), items);
+                let reference = activity
+                    .reference
+                    .as_ref()
+                    .map(|reference| reference.relativized(workspace.as_deref()));
+                if let Some(reference) = reference.as_ref().and_then(|reference| {
                     reference.preview_reference(
                         &format!("tool:{}", activity.id),
                         PreviewRevision(event.sequence.unwrap_or_default()),
@@ -2495,21 +2510,63 @@ mod tests {
     }
 
     #[test]
-    fn deferred_file_preview_emits_owned_resolver_action() {
+    fn read_tool_previews_workspace_relative_path_without_resolving() {
         let mut state = AppState::default();
+        state.session.session_cwd = Some(r"G:\workspace".into());
         state.apply_event(&event_seq(
             "tool/call",
             1,
             serde_json::json!({
                 "callId": "view-1",
                 "name": "str_replace_editor",
-                "arguments": "{\"command\":\"view\",\"path\":\"src/main.rs\"}"
+                "arguments": "{\"command\":\"view\",\"path\":\"G:\\\\workspace\\\\src\\\\main.rs\"}"
             }),
         ));
+        assert!(
+            state.take_actions().is_empty(),
+            "read previews are inline paths and must not request file resolution"
+        );
+        let reference = state
+            .preview_refs
+            .get(state.transcript.nodes()[0].id())
+            .expect("read row owns a preview reference");
         assert!(matches!(
-            state.take_actions().as_slice(),
-            [e_tui::UiAction::ResolvePreview(request)]
-                if request.key.0.starts_with("lines:src/main.rs:")
+            reference,
+            e_tui::preview::PreviewRef::Inline {
+                content: e_tui::preview::PreviewContent::Path(path),
+                ..
+            } if path == "src/main.rs"
+        ));
+        let stored = &state.tool_items[state.transcript.nodes()[0].id()][0].reference;
+        assert!(
+            matches!(stored, e_tui::agent::tool::ToolReference::Lines { path, .. } if path == "src/main.rs"),
+            "stored tool items are relativized too, so Reading items agree"
+        );
+    }
+
+    #[test]
+    fn read_tool_preview_keeps_absolute_path_outside_the_workspace() {
+        let mut state = AppState::default();
+        state.session.session_cwd = Some(r"G:\workspace".into());
+        state.apply_event(&event_seq(
+            "tool/call",
+            1,
+            serde_json::json!({
+                "callId": "view-1",
+                "name": "str_replace_editor",
+                "arguments": "{\"command\":\"view\",\"path\":\"C:\\\\other\\\\lib.rs\"}"
+            }),
+        ));
+        let reference = state
+            .preview_refs
+            .get(state.transcript.nodes()[0].id())
+            .expect("read row owns a preview reference");
+        assert!(matches!(
+            reference,
+            e_tui::preview::PreviewRef::Inline {
+                content: e_tui::preview::PreviewContent::Path(path),
+                ..
+            } if path == "C:/other/lib.rs"
         ));
     }
 

@@ -31,6 +31,13 @@ fn is_transient_connect_error(error: &tokio_tungstenite::tungstenite::Error) -> 
     )
 }
 
+/// Build the actionable message for a failed bridge connection.
+fn connection_error(url: &str, error: impl std::fmt::Display) -> anyhow::Error {
+    anyhow!(
+        "cannot connect to the DSH bridge at {url}: {error}. The DSH service stopped or the `dsh-tui` route is unavailable. Run `dsh --profile dshe` to inspect startup output; if DSH runs, remount with `tools\\mount-bridge.ps1 -Profile dshe`, run `dsh plugin --profile dshe install`, and restart DSH"
+    )
+}
+
 impl BridgeIo {
     pub fn shutdown(&self) {
         self.writer.abort();
@@ -56,11 +63,7 @@ impl BridgeIo {
                 Err(error) if is_transient_connect_error(&error) && Instant::now() < deadline => {
                     tokio::time::sleep(Duration::from_millis(150)).await;
                 }
-                Err(error) => {
-                    return Err(anyhow!(
-                        "cannot connect to the DSH bridge at {url}: {error}. The DSH service stopped or the `dsh-tui` route is unavailable. Run `dsh --profile dshe` to inspect startup output; if DSH runs, remount with `tools\\mount-bridge.ps1 -Profile dshe`, run `dsh plugin --profile dshe install`, and restart DSH"
-                    ));
-                }
+                Err(error) => return Err(connection_error(url, error)),
             }
         };
         let (sink, mut stream) = ws.split();
@@ -125,30 +128,16 @@ impl Drop for BridgeIo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::WIRE_PROTOCOL_VERSION;
-    use std::net::TcpListener;
 
-    #[tokio::test]
-    async fn refused_connection_has_actionable_dsh_guidance() {
-        let port = {
-            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-            let port = listener.local_addr().unwrap().port();
-            drop(listener);
-            port
-        };
-        let url = format!("ws://127.0.0.1:{port}/dsh-tui");
-        let hello = ClientMessage::Hello {
-            token: "test".into(),
-            resume_session_id: None,
-            cwd: None,
-            mode: None,
-            protocol_version: WIRE_PROTOCOL_VERSION,
-        };
-
-        let error = match BridgeIo::connect(&url, hello, MAX_WIRE_FRAME_BYTES).await {
-            Err(error) => error,
-            Ok(_) => panic!("closed port must refuse the connection"),
-        };
+    #[test]
+    fn refused_connection_has_actionable_dsh_guidance() {
+        let error = connection_error(
+            "ws://127.0.0.1:1/dsh-tui",
+            tokio_tungstenite::tungstenite::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::ConnectionRefused,
+                "connection refused",
+            )),
+        );
         let message = error.to_string();
         assert!(message.contains("cannot connect to the DSH bridge"));
         assert!(message.contains("dsh --profile dshe"));

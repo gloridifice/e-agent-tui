@@ -294,6 +294,8 @@ optional secondary_content      ← tool-specific semantic colors
   while Markdown is rendered, against the resolved page width, so continuation rows **hang in the item's text
   column** instead of falling back to the page edge; the marker's own display width sets that indent (2 for a
   bullet, 3 for `N. `, 4 for `[✓] `).
+- Quotes: one `│ ` bar per nesting level, kept per raw line. Over-wide lines wrap the same way and **re-emit the
+  bars on every wrapped row**, so the gutter reads as one continuous vertical line.
 - Code blocks: left vertical border + top language label; v1 wraps over-width, horizontal scroll v2.
 - mermaid: grok-mermaid WASM renders to a Unicode diagram; on render failure degrade to the source fence block
   (copyable).

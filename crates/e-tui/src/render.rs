@@ -383,28 +383,7 @@ fn render_block(
             }
         }
         BlockKind::Quote => {
-            // Render per raw line: pulldown merges nested block quotes into
-            // one paragraph, which would flatten the `>` levels. Each line
-            // keeps its own depth of `│` bars (glamour indent_token).
-            for (i, raw_line) in raw.lines().enumerate() {
-                let (depth, content) = quote_depth(raw_line);
-                let inlines = collect_inlines(theme, content, theme.markdown.text.style());
-                for line in inlines {
-                    // One `│ ` pair per level (glamour indent_token).
-                    let mut spans = vec![Span::styled(
-                        "│ ".repeat(depth),
-                        theme.markdown.quote_marker.style(),
-                    )];
-                    spans.extend(line.spans);
-                    out.push(RenderLine {
-                        line: Line::from(spans),
-                        unit,
-                        raw_line: Some(i),
-                        atomic: false,
-                        fill: false,
-                    });
-                }
-            }
+            render_quote(raw, unit, theme, options, out);
         }
         BlockKind::CodeBlock { lang } => {
             if lang.as_deref() == Some("mermaid") && options.mermaid_enabled {
@@ -447,6 +426,52 @@ fn render_block(
 
 fn heading_level(raw: &str) -> usize {
     raw.chars().take_while(|c| *c == '#').count().max(1)
+}
+
+/// Render a quote block per raw line: pulldown merges nested block quotes into
+/// one paragraph, which would flatten the `>` levels, so each line keeps its
+/// own depth of `│` bars (glamour indent_token). Over-wide lines wrap against
+/// the resolved content width and re-emit the same bars, so the quote gutter
+/// stays contiguous instead of breaking where a row wrapped.
+fn render_quote(
+    raw: &str,
+    unit: u64,
+    theme: &Theme,
+    options: &RenderOptions,
+    out: &mut Vec<RenderLine>,
+) {
+    for (index, raw_line) in raw.lines().enumerate() {
+        let (depth, content) = quote_depth(raw_line);
+        // One `│ ` pair per level (glamour indent_token).
+        let bars = "│ ".repeat(depth);
+        let gutter = UnicodeWidthStr::width(bars.as_str());
+        let body_width = options
+            .content_width
+            .map(|width| width.saturating_sub(gutter))
+            .filter(|width| *width > 0);
+        let inlines = collect_inlines(theme, content, theme.markdown.text.style());
+        for line in inlines {
+            let rows = match body_width {
+                Some(width) => wrap_styled_line(line, width),
+                None => vec![line],
+            };
+            for row in rows {
+                let mut spans = vec![Span::styled(
+                    bars.clone(),
+                    theme.markdown.quote_marker.style(),
+                )];
+                spans.extend(row.spans);
+                out.push(RenderLine {
+                    line: Line::from(spans),
+                    unit,
+                    // Wrapped rows stay on their quote line's source line.
+                    raw_line: Some(index),
+                    atomic: false,
+                    fill: false,
+                });
+            }
+        }
+    }
 }
 
 /// Nesting depth of a quote line ("a > b > c" = depth 3) and the content
@@ -1750,6 +1775,29 @@ mod tests {
         let text = plain(&lines);
         assert_eq!(text[0], "│ 外层");
         assert_eq!(text[1], "│ │ 内层");
+    }
+
+    #[test]
+    fn over_wide_quote_lines_repeat_their_bars_on_every_row() {
+        let theme = Theme::ferra();
+        // `│ ` is 2 columns, so a 12-column page wraps the text at 10 and the
+        // gutter continues down every wrapped row.
+        let lines = render_at("> aaa bbb ccc ddd", 12);
+        assert_eq!(plain(&lines), vec!["│ aaa bbb", "│ ccc ddd"]);
+        assert_eq!(
+            lines[1].line.spans[0].style.fg,
+            Some(theme.markdown.quote_marker.fg),
+            "the wrapped row's bar keeps the quote marker tone"
+        );
+        assert!(
+            lines.iter().all(|line| line.raw_line == Some(0)),
+            "wrapped rows stay on their quote line's source line"
+        );
+        // Nested levels keep their own stack of bars on wrapped rows.
+        assert_eq!(
+            plain(&render_at("> > aaa bbb ccc", 10)),
+            vec!["│ │ aaa", "│ │ bbb", "│ │ ccc"]
+        );
     }
 
     #[test]

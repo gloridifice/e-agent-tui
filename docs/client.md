@@ -110,12 +110,13 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
 - **Table cells**: must go through `cell_spans()` (`render.rs`) for inline rendering + display column-width
   truncation/padding — never stuff bare strings in.
 - **Width-aware Markdown layout**: `RenderOptions.content_width` is the resolved display width of the surface
-  being painted (transcript cache width, or the padded Preview content width). Tables fit their columns to it,
-  and list items wrap against it inside `render.rs::ListRenderer` so continuation rows carry a hanging indent of
-  `2 * depth + marker width` and stay in the item's text column; every wrapped row keeps its logical row's
-  `raw_line`. `None` means "unresolved": logical rows are emitted whole and the paint-time wrapper
+  being painted (transcript cache width, or the padded Preview content width). Tables fit their columns to it;
+  list items wrap against it inside `render.rs::ListRenderer` so continuation rows carry a hanging indent of
+  `2 * depth + marker width` and stay in the item's text column; `render_quote` wraps quote lines the same way
+  but re-emits `│ ` per level on every wrapped row so the gutter stays contiguous. Every wrapped row keeps its
+  logical row's `raw_line`. `None` means "unresolved": logical rows are emitted whole and the paint-time wrapper
   (`wrap::wrap_line`) stays authoritative. `MarkdownLayoutRegistry` re-materializes a block when the source or
-  `content_width` changes, so a resize re-wraps lists and tables before the transcript cache is rebuilt.
+  `content_width` changes, so a resize re-wraps lists, quotes, and tables before the transcript cache is rebuilt.
 - **History paging**: `min_seq`/`history_loading`/`history_exhausted`; prepend goes through `prepend_events`
   (sets `prepend_line_anchor`, and the renderer shifts `scroll.offset` by the truly newly added display rows to
   keep the viewport). The top "history" hint row is **display-only** and does not enter the cache; Thinking is a

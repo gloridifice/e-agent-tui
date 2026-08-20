@@ -1100,3 +1100,71 @@ fn wrapped_markdown_list_rows_align_under_the_item_text() {
         "continuation row starts in the text column: {continuation:?}"
     );
 }
+
+#[test]
+fn wrapped_markdown_quote_rows_keep_the_painted_gutter() {
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    let source = "> alpha bravo charlie delta echo foxtrot golf hotel india";
+    state.transcript.append(
+        DisplayItem::Block(crate::display::TranscriptBlock {
+            id: DisplayId::correlated("assistant", "wrapped-quote"),
+            unit: None,
+            content: source.into(),
+            format: crate::display::TranscriptFormat::Markdown,
+            tone: DisplayTone::Normal,
+            copy_source: source.into(),
+            streaming: false,
+        }),
+        None,
+    );
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+
+    let width = state.render.transcript_cache.width;
+    let rows = state
+        .render
+        .transcript_cache
+        .lines
+        .iter()
+        .map(Line::to_string)
+        .filter(|row| !row.trim().is_empty())
+        .collect::<Vec<_>>();
+    assert!(rows.len() > 1, "the long quote line must wrap: {rows:?}");
+    for row in &rows {
+        assert!(row.starts_with("│ "), "every row keeps its bar: {row:?}");
+        assert!(
+            unicode_width::UnicodeWidthStr::width(row.as_str()) <= width,
+            "row exceeds the {width}-column page: {row:?}"
+        );
+    }
+
+    // Painted geometry: the bar column is identical on the wrapped row and
+    // keeps the quote marker tone, so the gutter reads as one vertical line.
+    let buffer = terminal.backend().buffer();
+    let bar_column = |y: u16| (0..40u16).find(|x| buffer[(*x, y)].symbol() == "│");
+    let first = (0..12u16)
+        .find(|y| bar_column(*y).is_some())
+        .expect("quote row painted");
+    let bar_x = bar_column(first).expect("bar painted");
+    assert_eq!(
+        bar_column(first + 1),
+        Some(bar_x),
+        "the wrapped row repeats the bar in the same column"
+    );
+    assert_eq!(
+        buffer[(bar_x, first + 1)].fg,
+        theme.markdown.quote_marker.fg,
+        "wrapped bar keeps the quote marker tone"
+    );
+    assert_eq!(
+        buffer[(bar_x + 2, first + 1)].symbol(),
+        "f",
+        "wrapped text (`foxtrot …`) starts right after the bar"
+    );
+}

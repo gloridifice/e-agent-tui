@@ -127,7 +127,10 @@ fn wide_screen_renders_preview_without_changing_main_provenance() {
         .unwrap();
 
     let buffer = terminal.backend().buffer();
-    assert_eq!(buffer[(72, 0)].symbol(), "┌");
+    // Border, title, and pane background are removed; content is vertically
+    // centered in the 30-row pane starting at the first padded column.
+    assert_ne!(buffer[(72, 0)].symbol(), "┌");
+    assert_eq!(buffer[(73, 13)].symbol(), "#");
     let preview_text = (0..30)
         .flat_map(|y| (72..120).map(move |x| buffer[(x, y)].symbol()))
         .collect::<String>();
@@ -177,7 +180,7 @@ fn narrow_fullscreen_preview_renders_loading_and_error_states() {
         .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
         .unwrap();
     let buffer = terminal.backend().buffer();
-    assert_eq!(buffer[(2, 1)].fg, theme.log.error.fg);
+    assert_eq!(buffer[(1, 5)].fg, theme.log.error.fg);
 }
 
 #[test]

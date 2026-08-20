@@ -1,6 +1,5 @@
 use ratatui::{
     layout::Rect,
-    style::Style,
     text::{Line, Span},
     widgets::{Block, Padding, Paragraph},
     Frame,
@@ -26,17 +25,16 @@ pub fn render(frame: &mut Frame, area: Rect, preview: &mut PreviewPaneState, the
         PreviewState::Ready(content) => content_lines(content, theme),
     };
     let start = preview.scroll.min(lines.len().saturating_sub(1));
-    let visible = usize::from(area.height.saturating_sub(2));
+    let visible = usize::from(area.height);
     lines = lines.into_iter().skip(start).take(visible).collect();
     preview.record_materialized_rows(lines.len());
-    let block = Block::bordered()
-        .title(Line::styled(" Preview ", theme.overlay.accent.style()))
-        .border_style(theme.overlay.border.style())
-        .padding(Padding::horizontal(1));
+    // Vertically center the materialized content within the pane.
+    let top_padding = usize::from(area.height).saturating_sub(lines.len()) / 2;
+    let mut centered = Vec::with_capacity(usize::from(area.height));
+    centered.extend(std::iter::repeat_n(Line::raw(""), top_padding));
+    centered.extend(lines);
     frame.render_widget(
-        Paragraph::new(lines)
-            .block(block)
-            .style(Style::default().bg(theme.surface.base.bg.unwrap_or(theme.bg))),
+        Paragraph::new(centered).block(Block::default().padding(Padding::horizontal(1))),
         area,
     );
 }

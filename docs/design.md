@@ -51,7 +51,7 @@
 | D23 | Input bar shape | borderless background block: Ash base, 1-row top margin + text area + 1-row bottom margin; prefix `❯` Coral; `Enter` fixed send, `Shift+Enter` newline; `↑/↓` move between lines and switch prompts at first/last line boundary |
 | D24 | Overlong paste placeholder | paste over the config threshold shows Rose `[N text pasted]`; sends the full content verbatim; plain text inserts newlines with `Shift+Enter` |
 | D25 | Spinner configurable | default A half-moon rotation `◐◓◑◒` (~120ms/frame); frame sequence made a configurable enum (`config.toml` can switch B/C/D/E); missing glyphs degrade to ASCII `\|/-\` |
-| D26 | Input Page | `/settings` `/login` `/model` `/theme` `/resume` uniformly replace the input area (not a floating window); 1-row top/bottom, 2-column left/right padding; single focus moves with arrows/`hjkl`, `Enter` executes, `Esc` returns |
+| D26 | Input Page | `/settings` `/login` `/model` `/theme` `/resume` uniformly replace the input area (not a floating window); 1-row top/bottom, 2-column left/right padding; single focus moves with arrows/`hjkl`, `Enter` executes, `Esc` returns; in settings, `←`/`→` and `h`/`l` switch category pages and the category strip is display-only |
 | D27 | Config storage | the sole source of defaults is `crates/e-tui/assets/default_config.toml` (embedded via `include_str!` and parsed); `%APPDATA%\dshe\config.toml` is an overlay allowed to omit fields; priority embedded defaults < user file < runtime; **save immediately, take effect immediately** |
 | D28 | In-TUI editable items | see §4.7 list: appearance/behavior/display are all editable, advanced is read-only |
 | D29 | Not editable in TUI | connection parameters (startup flag), font size (terminal side), clipboard backend (platform), key rebinding (v2), syntax highlighting theme (phase two) |
@@ -453,7 +453,7 @@ aborts both those command signals and any active agent turn.
 | PgUp / PgDn | page by currently visible transcript height | scrolling up pauses auto-follow |
 | Wheel | scroll the message stream 3 lines per notch | still only scrolls the stream when an Input Page is open |
 | Esc | interrupt an active turn/direct command; otherwise Input Page back/close or close popup | owning surface takes precedence |
-| Arrows / hjkl (Input Page) | move the single focus | in text-edit state hjkl is text |
+| Arrows / hjkl (Input Page) | move the single focus; in settings, `←`/`→` and `h`/`l` switch category pages | in text-edit state hjkl is text; settings category strip is not focusable |
 | Enter (folded card) | expand/collapse tool result | focus navigation v2 |
 | Ctrl+N | resume Input Page | input filter, ↑↓ select |
 | /settings | settings panel (§4.7) | save immediately |
@@ -566,31 +566,36 @@ Clipboard and deferred Preview effects execute after the UI guard is released.
   `Option<InputPageSession>` mutually exclusive. They are not overlays: no floating window, no border, no `Clear`,
   but **replace the input bar and take 2/3 of the page height**, with the message stream kept above.
 - **Common shape**: Ash background; all content has fixed 1-row top/bottom and 2-column left/right blank padding; a
-  common header/body/footer provides title, body, loading/error, and key hints. Only the currently executable
-  element uses the Night focus background, and the currently selected value is marked with a green `●`.
+  common header/body/footer provides title, body, loading/error, and key hints. Settings adds Night surfaces for
+  its display-only category strip and value pane; value edit focus on Night uses a contrasting Ash cell. Focused
+  names on the Ash side still use Night, and the currently selected value is marked with a green `●`.
 - **Common keys**: arrows and `hjkl` move between executable elements in a stable focus graph, `Enter` executes,
-  `Esc` cancels editing/returns/closes; read-only, loading, info, and disabled elements do not gain focus.
+  `Esc` cancels editing/returns/closes; read-only, loading, info, and disabled elements do not gain focus. Settings
+  reserves `←`/`→` and `h`/`l` for direct category-page switching instead of horizontal focus movement.
   Text-edit state consumes characters first, so `hjkl` types normally rather than navigating. Dynamic
   provider/model/proxy/session rosters keep focus by stable id; `/resume`'s filter box is always in text-input
   state and only uses ↑↓ to move the session selection.
-- **settings**: category tabs themselves are focusable, Enter activates a category; Down enters the category's
-  editable items, Enter opens numeric or choice editing. Item positions within a category are remembered per page
-  and auto-scroll when exceeding the visible height.
+- **settings**: the category strip is display-only and never enters the focus graph; `←`/`→` and `h`/`l` switch
+  the active category immediately, while `↑`/`↓` and `j`/`k` move only among the category's editable items.
+  Enter opens numeric or choice editing. The complete category strip uses a Night background, with the active
+  category identified by its accent foreground. Item positions are remembered per page and auto-scroll when
+  exceeding the visible height.
   ```
                 Appearance  Behavior  Display  Advanced
     Theme                ● ferra   ○ custom
     ferra preset or custom palette (custom palette edited by hand in TOML)
     Plain-color mode      ○ on   ● off
     degrade to plain-color output (NO_COLOR semantics)
-  hjkl/arrows move  Enter execute  Esc exit · save immediately
+  h/l or Left/Right switch page  j/k or Up/Down move  Enter execute  Esc exit · save immediately
   ```
-- **Two columns**: left is a smaller name column (30%): name fg, description **Bark** foreground (wraps when too
-  long); right is the value.
+- **Two columns**: left is a smaller Ash name column (30%): name fg, description **Bark** foreground (wraps when
+  too long); the complete right value pane uses a Night background, including empty rows.
 - **Selection highlight**: only the **name** is highlighted (Night base), the description is not; when editing,
   focus moves to the value and the name is un-highlighted.
 - **Value presentation**: unselected option = `○ text` (default fg); selected = `● text` (green). Booleans are
-  on/off two options; input-type (numeric) shows text directly, green + cursor block when editing (Night base);
-  choice-type editing moves the cursor with `←/→`, with the option under the cursor on a Night base.
+  on/off two options; input-type (numeric) shows text directly, green + cursor block when editing (Ash focus on
+  the Night pane); choice-type editing moves the cursor with `←/→`, with the option under the cursor on an Ash
+  focus base.
 - **Edit semantics**: `Enter` confirms, `Esc` cancels back; keys do not leak during editing. After leaving the
   panel the message stream/input bar state restores as-is.
 - Default config: `crates/e-tui/assets/default_config.toml` is compiled into the single exe via `include_str!` and

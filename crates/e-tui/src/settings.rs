@@ -1,5 +1,6 @@
-//! /settings Input Page: category tabs and editable rows share one visible
-//! focus. The page replaces the ordinary input area without a floating border.
+//! /settings Input Page: category tabs are display-only while editable rows
+//! share one visible focus. The page replaces the ordinary input area without
+//! a floating border.
 
 use crossterm::event::{KeyCode, KeyEvent};
 
@@ -319,13 +320,9 @@ pub enum Edit {
 }
 
 pub struct SettingsState {
-    /// Current category page.
+    /// Current category page. Left/Right and h/l switch it directly; the
+    /// category strip itself never enters the focus graph.
     pub category: usize,
-    /// The category tab currently under the single page focus.
-    pub tab_cursor: usize,
-    /// True while the focus is on the category row; otherwise it is on an
-    /// actionable item in the active category.
-    pub focus_tabs: bool,
     /// Hovered item index, remembered per category page.
     pub pos: [usize; 4],
     /// Active edit (only when the hovered item is being edited).
@@ -345,8 +342,6 @@ impl Default for SettingsState {
     fn default() -> Self {
         Self {
             category: 0,
-            tab_cursor: 0,
-            focus_tabs: false,
             pos: [0; 4],
             editing: None,
             scroll: 0,
@@ -428,62 +423,39 @@ impl SettingsState {
             return SettingsAction::None;
         }
 
-        // ---- browsing: one focus covers the tabs and actionable rows.
-        let items = items_in(self.category);
+        // ---- browsing: category tabs stay outside the focus graph.
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => SettingsAction::Exit,
-            KeyCode::Left | KeyCode::Char('h') if self.focus_tabs => {
-                self.tab_cursor = (self.tab_cursor + CATEGORIES.len() - 1) % CATEGORIES.len();
+            KeyCode::Left | KeyCode::Char('h') => {
+                self.category = (self.category + CATEGORIES.len() - 1) % CATEGORIES.len();
+                self.clamp_item();
+                self.scroll = 0;
                 SettingsAction::None
             }
-            KeyCode::Right | KeyCode::Char('l') if self.focus_tabs => {
-                self.tab_cursor = (self.tab_cursor + 1) % CATEGORIES.len();
-                SettingsAction::None
-            }
-            KeyCode::Left | KeyCode::Char('h') | KeyCode::Right | KeyCode::Char('l') => {
-                self.focus_tabs = true;
-                self.tab_cursor = self.category;
-                SettingsAction::None
-            }
-            KeyCode::Up | KeyCode::Char('k') if self.focus_tabs => SettingsAction::None,
-            KeyCode::Down | KeyCode::Char('j') if self.focus_tabs => {
-                if items.iter().any(|item| item.kind != ItemKind::ReadOnly) {
-                    self.focus_tabs = false;
-                    self.clamp_item();
-                }
+            KeyCode::Right | KeyCode::Char('l') => {
+                self.category = (self.category + 1) % CATEGORIES.len();
+                self.clamp_item();
+                self.scroll = 0;
                 SettingsAction::None
             }
             KeyCode::Up | KeyCode::Char('k') => {
+                let items = items_in(self.category);
                 let current = self.pos[self.category];
                 if let Some(previous) = (0..current)
                     .rev()
                     .find(|index| items[*index].kind != ItemKind::ReadOnly)
                 {
                     self.pos[self.category] = previous;
-                } else {
-                    self.focus_tabs = true;
-                    self.tab_cursor = self.category;
                 }
                 SettingsAction::None
             }
             KeyCode::Down | KeyCode::Char('j') => {
+                let items = items_in(self.category);
                 let current = self.pos[self.category];
                 if let Some(next) = (current + 1..items.len())
                     .find(|index| items[*index].kind != ItemKind::ReadOnly)
                 {
                     self.pos[self.category] = next;
-                }
-                SettingsAction::None
-            }
-            KeyCode::Enter if self.focus_tabs => {
-                self.category = self.tab_cursor;
-                self.clamp_item();
-                self.scroll = 0;
-                if items_in(self.category)
-                    .iter()
-                    .any(|item| item.kind != ItemKind::ReadOnly)
-                {
-                    self.focus_tabs = false;
                 }
                 SettingsAction::None
             }
@@ -537,16 +509,20 @@ mod tests {
     }
 
     #[test]
-    fn tabs_are_focusable_and_enter_activates_one() {
+    fn left_right_and_hl_switch_categories_directly() {
         let mut s = SettingsState::default();
         let mut config = Config::default();
+        s.scroll = 4;
+
         s.handle_key(&key(KeyCode::Left), &mut config);
-        assert!(s.focus_tabs);
+        assert_eq!(s.category, 3, "Left wraps to the last page");
+        assert_eq!(s.scroll, 0);
         s.handle_key(&key(KeyCode::Right), &mut config);
-        assert_eq!(s.tab_cursor, 1);
-        s.handle_key(&key(KeyCode::Enter), &mut config);
+        assert_eq!(s.category, 0);
+        s.handle_key(&key(KeyCode::Char('l')), &mut config);
         assert_eq!(s.category, 1);
-        assert!(!s.focus_tabs, "actionable category enters its item list");
+        s.handle_key(&key(KeyCode::Char('h')), &mut config);
+        assert_eq!(s.category, 0);
     }
 
     #[test]
@@ -571,23 +547,19 @@ mod tests {
     }
 
     #[test]
-    fn category_activation_clamps_hover_and_skips_read_only_page() {
+    fn category_switch_retains_or_clamps_remembered_item() {
         let mut s = SettingsState::default();
         let mut config = Config::default();
         s.pos[1] = 3;
-        s.focus_tabs = true;
-        s.tab_cursor = 1;
-        s.handle_key(&key(KeyCode::Enter), &mut config);
+        s.handle_key(&key(KeyCode::Right), &mut config);
         assert_eq!(s.category, 1);
         assert_eq!(s.pos[1], 3, "remembered position is retained");
 
-        s.focus_tabs = true;
-        s.tab_cursor = 3;
+        s.category = 2;
         s.pos[3] = 5;
-        s.handle_key(&key(KeyCode::Enter), &mut config);
+        s.handle_key(&key(KeyCode::Right), &mut config);
         assert_eq!(s.category, 3);
-        assert_eq!(s.pos[3], 0);
-        assert!(s.focus_tabs, "read-only rows never receive focus");
+        assert_eq!(s.pos[3], 0, "read-only page still clamps its row index");
     }
 
     #[test]

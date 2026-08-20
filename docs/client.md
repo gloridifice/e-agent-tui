@@ -97,7 +97,9 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
   `frame.render_widget(Clear, rect)` before drawing the background, otherwise underlying text bleeds through
   (there is a test `suggest_popup_is_opaque_over_transcript`). `/settings` `/login` `/model` `/theme` `/resume`
   are not overlays: they are uniformly handled by `InputPageSession` replacing the input area, no border, no
-  `Clear`, with the shared shell fixed at 1 row top/bottom and 2 columns left/right padding.
+  `Clear`, with the shared shell fixed at 1 row top/bottom and 2 columns left/right padding. Within the Ash shell,
+  settings paints the full category strip and right-side value pane with the base (Night) surface; the strip is
+  display-only, while value edit focus on the Night pane uses the panel (Ash) surface for contrast.
 - **Reading View and copy semantics**: `Ctrl+Y` enters Reading View (the `Ctrl+V` candidate failed the supported-terminal paste gate); `Ctrl+P` toggles full-screen Preview on narrow terminals. Block mode uses `j`/`k`, `l`, `y`, and `Esc`; Item mode uses spatial `h`/`j`/`k`/`l`, with `Esc` returning to Block mode. `y` always copies the complete owning Block from `ReadingCopyPayload`, never clipped terminal cells. Tables/code/Mermaid remain atomic through stable render-unit provenance, and render unit ids are reused across re-renders (`unit_start`). Row-oriented Copy Mode and `Ctrl+B` no longer exist.
 - **Markdown headings and localized backgrounds**: headings directly use the fixed semantics
   `semantics.markdown.heading1..6`; in ferra, level 1 is Coral `#ffa07a` bold (no background), level 2 is Sage
@@ -154,8 +156,10 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
 - **Input Page controller** (`input_page.rs` + `settings.rs` + `login.rs`): the main loop holds a single
   `Option<InputPageSession>` with the closed variant set Settings/Login/Model/Theme/Resume/Question; page keys only
   return `PageOutcome`/`PageEffect`, and the caller saves or `.await`s sending only after releasing the page borrow
-  and state lock. Browse-state arrow keys and `hjkl` share a stable focus graph, Enter executes; text-edit-state
-  `hjkl` must be ordinary characters. `ask_user_question` opens Question directly in this shell and its tool call/result
+  and state lock. Browse-state arrow keys and `hjkl` share a stable focus graph, Enter executes; settings is the
+  deliberate horizontal exception: `←`/`→` and `h`/`l` switch category pages directly, and its category strip
+  never enters the focus graph. Text-edit-state `hjkl` must be ordinary characters. `ask_user_question` opens
+  Question directly in this shell and its tool call/result
   are suppressed from transcript activity: `h`/`l` or `←`/`→` changes the question, `j`/`k` or `↓`/`↑` moves option
   focus, Space selects without advancing (and toggles options for multi-select questions), Enter advances/submits,
   and closing the page restores the untouched ordinary input buffer. Dynamic

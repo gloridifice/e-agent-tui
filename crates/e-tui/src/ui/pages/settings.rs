@@ -9,8 +9,13 @@ pub(crate) fn render_settings(
 ) {
     let regions = input_page_shell(frame, area, theme);
 
-    // ---- category tabs: actionable members of the single focus graph ----
+    // ---- display-only category navigation ----
+    // The active page is marked by color; the strip never enters focus.
     {
+        frame.render_widget(
+            Block::default().style(Style::default().bg(theme.bg)),
+            regions.header,
+        );
         let mut spans: Vec<Span<'static>> = Vec::new();
         for (i, cat) in crate::settings::CATEGORIES.iter().enumerate() {
             let fg = if i == settings.category {
@@ -18,18 +23,13 @@ pub(crate) fn render_settings(
             } else {
                 theme.fg
             };
-            let bg = if settings.focus_tabs && i == settings.tab_cursor {
-                theme.bg
-            } else {
-                theme.bg_soft
-            };
             spans.push(Span::styled(
                 format!(" {cat} "),
-                Style::default().fg(fg).bg(bg),
+                Style::default().fg(fg).bg(theme.bg),
             ));
             spans.push(Span::styled(
                 "  ",
-                Style::default().fg(theme.fg).bg(theme.bg_soft),
+                Style::default().fg(theme.fg).bg(theme.bg),
             ));
         }
         let line = Line::from(spans);
@@ -49,8 +49,17 @@ pub(crate) fn render_settings(
     .split(regions.body);
     let left_width = cols[0].width as usize;
     let value_width = cols[2].width;
+    // Values form a distinct Night pane, including blank rows and unused
+    // space below the last visible item.
+    frame.render_widget(
+        Block::default().style(Style::default().bg(theme.bg)),
+        cols[2],
+    );
     let items = crate::settings::items_in(settings.category);
-    let focus_idx = (!settings.focus_tabs).then_some(settings.pos[settings.category]);
+    let focus_idx = items
+        .get(settings.pos[settings.category])
+        .filter(|item| item.kind != crate::settings::ItemKind::ReadOnly)
+        .map(|_| settings.pos[settings.category]);
     let mut left_rows: Vec<Line<'static>> = Vec::new();
     let mut right_rows: Vec<Line<'static>> = Vec::new();
     // (item index, first row, row count) for scroll anchoring.
@@ -128,7 +137,7 @@ pub(crate) fn render_settings(
     let hint = if settings.editing.is_some() {
         "Enter 确认   Esc 取消修改"
     } else {
-        "hjkl/方向键移动   Enter 执行   Esc 退出 · 即改即存"
+        "h/l/←/→ 切页   j/k/↑/↓ 移动   Enter 执行   Esc 退出 · 即改即存"
     };
     let buffer = frame.buffer_mut();
     buffer.set_line(
@@ -144,8 +153,8 @@ pub(crate) fn render_settings(
 
 /// The value cell of one settings row. Choice values show every option as
 /// `○ label` (unselected, default fg) / `● label` (selected, green). The
-/// cell sits on Ash; while editing, the focused element (cursor option or
-/// input buffer) turns Night.
+/// cell sits on Night; while editing, the focused element (cursor option or
+/// input buffer) turns Ash so it remains visible on the dark pane.
 fn settings_value_line(
     item: &crate::settings::ItemDef,
     config: &crate::config::Config,
@@ -161,9 +170,9 @@ fn settings_value_line(
         _ => None,
     };
     let cell_bg = if editing_input {
-        theme.bg
-    } else {
         theme.bg_soft
+    } else {
+        theme.bg
     };
     let line: Line<'static> = match item.kind {
         crate::settings::ItemKind::Choice { options } => {
@@ -186,7 +195,7 @@ fn settings_value_line(
                     ("○", theme.fg)
                 };
                 let bg = if Some(i) == editing_choice {
-                    theme.bg
+                    theme.bg_soft
                 } else {
                     cell_bg
                 };
@@ -217,7 +226,7 @@ fn settings_value_line(
                     ("○", theme.fg)
                 };
                 let bg = if Some(i) == editing_choice {
-                    theme.bg
+                    theme.bg_soft
                 } else {
                     cell_bg
                 };
@@ -241,12 +250,12 @@ fn settings_value_line(
             let mut input_line =
                 Line::from(Span::styled(text, Style::default().fg(fg).bg(cell_bg)));
             if editing_input {
-                // Fill the row so the focused input cell reads as a Night block.
+                // Fill the row so the focused input cell reads as an Ash block.
                 let used = input_line.width();
                 if used < width as usize {
                     input_line.push_span(Span::styled(
                         " ".repeat(width as usize - used),
-                        Style::default().fg(theme.fg).bg(theme.bg),
+                        Style::default().fg(theme.fg).bg(theme.bg_soft),
                     ));
                 }
             }
@@ -258,4 +267,64 @@ fn settings_value_line(
         )),
     };
     line
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn settings_header_and_value_pane_use_night_background() {
+        let width = 80;
+        let height = 24;
+        let theme = Theme::ferra();
+        let config = crate::config::Config::default();
+        let mut settings = SettingsState::default();
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+
+        terminal
+            .draw(|frame| {
+                render_settings(
+                    frame,
+                    ratatui::layout::Rect::new(0, 0, width, height),
+                    &mut settings,
+                    &config,
+                    &theme,
+                );
+            })
+            .unwrap();
+
+        let inner = ratatui::layout::Rect::new(2, 1, width - 4, height - 2);
+        let rows = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+        let columns = Layout::horizontal([
+            Constraint::Percentage(30),
+            Constraint::Length(2),
+            Constraint::Min(1),
+        ])
+        .split(rows[2]);
+        let buffer = terminal.backend().buffer();
+
+        let is_wide_continuation = |x: u16, y: u16, left: u16| {
+            x > left && UnicodeWidthStr::width(buffer[(x - 1, y)].symbol()) > 1
+        };
+        for x in rows[0].x..rows[0].right() {
+            if !is_wide_continuation(x, rows[0].y, rows[0].x) {
+                assert_eq!(buffer[(x, rows[0].y)].bg, theme.bg, "header x={x}");
+            }
+        }
+        for y in columns[2].y..columns[2].bottom() {
+            for x in columns[2].x..columns[2].right() {
+                if !is_wide_continuation(x, y, columns[2].x) {
+                    assert_eq!(buffer[(x, y)].bg, theme.bg, "value pane ({x}, {y})");
+                }
+            }
+        }
+    }
 }

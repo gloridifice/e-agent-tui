@@ -16,7 +16,7 @@ use crate::{
     config::Config,
     login::{LoginAction, LoginState, LoginView, Page as LoginPage, PROXY_SAVE_ROW},
     question::QuestionBatch,
-    settings::{items_in, ItemKind, SettingsAction, SettingsState, CATEGORIES},
+    settings::{items_in, ItemKind, SettingsAction, SettingsState},
     theme::ThemeFile,
 };
 
@@ -612,16 +612,8 @@ impl InputPageSession {
         };
         match &mut self.page {
             InputPage::Settings(settings) => {
-                for index in 0..CATEGORIES.len() {
-                    if *id == settings_tab_focus(index) {
-                        settings.focus_tabs = true;
-                        settings.tab_cursor = index;
-                        return;
-                    }
-                }
                 for (index, item) in items_in(settings.category).iter().enumerate() {
                     if *id == settings_item_focus(settings.category, item.label) {
-                        settings.focus_tabs = false;
                         settings.pos[settings.category] = index;
                         return;
                     }
@@ -698,18 +690,11 @@ fn linear_focus_nodes(ids: &[FocusId], horizontal: bool) -> Vec<FocusNode> {
         .collect()
 }
 
-fn settings_tab_focus(index: usize) -> FocusId {
-    FocusId::new(format!("settings:tab:{index}"))
-}
-
 fn settings_item_focus(category: usize, label: &str) -> FocusId {
     FocusId::new(format!("settings:item:{category}:{label}"))
 }
 
 fn settings_focus_id(settings: &SettingsState) -> Option<FocusId> {
-    if settings.focus_tabs {
-        return Some(settings_tab_focus(settings.tab_cursor));
-    }
     settings
         .current_item()
         .filter(|item| item.kind != ItemKind::ReadOnly)
@@ -717,36 +702,24 @@ fn settings_focus_id(settings: &SettingsState) -> Option<FocusId> {
 }
 
 fn settings_focus_nodes(settings: &SettingsState) -> Vec<FocusNode> {
-    let mut nodes = Vec::new();
     let active_items: Vec<FocusId> = items_in(settings.category)
         .into_iter()
         .filter(|item| item.kind != ItemKind::ReadOnly)
         .map(|item| settings_item_focus(settings.category, item.label))
         .collect();
-    for index in 0..CATEGORIES.len() {
-        let mut node = FocusNode::new(settings_tab_focus(index));
-        node.left = Some(settings_tab_focus(
-            (index + CATEGORIES.len() - 1) % CATEGORIES.len(),
-        ));
-        node.right = Some(settings_tab_focus((index + 1) % CATEGORIES.len()));
-        if index == settings.category {
-            node.down = active_items.first().cloned();
-        }
-        nodes.push(node);
-    }
-    for (index, id) in active_items.iter().enumerate() {
-        let mut node = FocusNode::new(id.clone());
-        node.left = Some(settings_tab_focus(settings.category));
-        node.right = Some(settings_tab_focus(settings.category));
-        node.up = index
-            .checked_sub(1)
-            .and_then(|i| active_items.get(i))
-            .cloned()
-            .or_else(|| Some(settings_tab_focus(settings.category)));
-        node.down = active_items.get(index + 1).cloned();
-        nodes.push(node);
-    }
-    nodes
+    active_items
+        .iter()
+        .enumerate()
+        .map(|(index, id)| {
+            let mut node = FocusNode::new(id.clone());
+            node.up = index
+                .checked_sub(1)
+                .and_then(|i| active_items.get(i))
+                .cloned();
+            node.down = active_items.get(index + 1).cloned();
+            node
+        })
+        .collect()
 }
 
 fn login_focus_targets(login: &LoginState) -> Vec<(FocusId, usize)> {
@@ -907,19 +880,23 @@ mod tests {
         let mut config = Config::default();
         let mut settings = InputPageSession::settings(SettingsState::default());
         let initial_focus = settings.focus.current.clone();
+        assert!(initial_focus
+            .as_ref()
+            .is_some_and(|id| id.0.starts_with("settings:item:0:")));
         settings.handle_key(
             &KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
             &mut config,
         );
         assert_eq!(settings.focus.current, initial_focus);
+
         settings.handle_key(&key(KeyCode::Left), &mut config);
-        assert!(settings
-            .focus
-            .current
-            .as_ref()
-            .is_some_and(|id| id.0 == "settings:tab:0"));
+        assert!(matches!(settings.page, InputPage::Settings(ref state) if state.category == 3));
+        assert_eq!(
+            settings.focus.current, None,
+            "the display-only tabs and read-only rows never enter focus"
+        );
         settings.handle_key(&key(KeyCode::Right), &mut config);
-        settings.handle_key(&key(KeyCode::Enter), &mut config);
+        settings.handle_key(&key(KeyCode::Right), &mut config);
         assert!(matches!(settings.page, InputPage::Settings(ref state) if state.category == 1));
         assert!(settings
             .focus

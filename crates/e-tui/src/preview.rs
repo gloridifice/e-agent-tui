@@ -219,6 +219,13 @@ impl PreviewPaneState {
         })
     }
 
+    /// Discard the current target and show the empty pane. Used when the
+    /// transcript the preview referenced is dropped or hidden — a `/new`
+    /// draft page must never inherit the previous session's preview.
+    pub fn clear(&mut self) {
+        self.select(None);
+    }
+
     /// Cache every bounded completion, but update visible state only when all
     /// race tokens still match the current loading target.
     pub fn complete(
@@ -347,6 +354,21 @@ mod tests {
         assert!(app.render.transcript_cache.valid);
         assert_eq!(work.rebuilds, 0);
         assert_eq!(work.patches, 0);
+    }
+
+    #[test]
+    fn clear_discards_target_and_shows_empty_pane() {
+        let mut pane = PreviewPaneState::default();
+        pane.select(Some(deferred("a", "a", 1)));
+        pane.scroll = 3;
+        assert!(pane.target.is_some());
+        pane.clear();
+        assert!(pane.target.is_none());
+        assert_eq!(pane.state, PreviewState::Empty);
+        assert_eq!(
+            pane.scroll, 0,
+            "clear resets scroll like an identity change"
+        );
     }
 
     #[test]

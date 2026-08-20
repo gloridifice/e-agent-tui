@@ -143,7 +143,9 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
   Input Page, `/resume <id>` attaches directly. A bare `/new` while interactive only creates a client-side
   `NewConversationDraft` (display name `新对话`) — it does not send to the bridge or replace the real session
   id/TranscriptStore; only the first plain input sends the atomic `new-input{mode,text}` to create and deliver.
-  During the draft, old-session frames keep reducing but are not displayed; on create failure restore the input;
+  During the draft, old-session frames keep reducing but are not displayed, and the Preview pane is cleared and
+  held empty (the draft page must not inherit the previous session's preview, and late old-session frames must
+  not repopulate it); on create failure restore the input;
   `/model`, `/skill`, and integrated commands must not be misrouted to the old session.
 - **Input Page controller** (`input_page.rs` + `settings.rs` + `login.rs`): the main loop holds a single
   `Option<InputPageSession>` with the closed variant set Settings/Login/Model/Theme/Resume/Question; page keys only

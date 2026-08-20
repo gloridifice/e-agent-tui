@@ -228,6 +228,9 @@ impl TuiApp {
     /// even when the main transcript collapses it
     /// (`thinking_display = compact`).
     pub fn reconcile_latest_preview(&mut self) {
+        if self.hold_draft_preview_empty() {
+            return;
+        }
         if self.preview.policy != PreviewPolicy::FollowLatestBlock {
             return;
         }
@@ -293,6 +296,18 @@ impl TuiApp {
         if let Some(request) = self.preview.select(target) {
             self.pending_actions.push(UiAction::ResolvePreview(request));
         }
+    }
+
+    /// A `/new` draft page has no transcript of its own: any preview target
+    /// would reference the previous session's content, so every preview
+    /// reconcile path must hold the pane empty while a draft is pending.
+    /// Returns `true` when the draft page forced the pane empty.
+    fn hold_draft_preview_empty(&mut self) -> bool {
+        if self.session.new_conversation.is_some() {
+            self.select_preview(None);
+            return true;
+        }
+        false
     }
 
     pub fn take_actions(&mut self) -> Vec<UiAction> {
@@ -408,6 +423,9 @@ impl TuiApp {
     }
 
     fn sync_reading_preview(&mut self) {
+        if self.hold_draft_preview_empty() {
+            return;
+        }
         let target = self.reading.as_ref().and_then(|reading| {
             reading
                 .current_item(&self.reading_document)

@@ -711,6 +711,9 @@ impl AppState {
             pending_input: None,
             notice: None,
         });
+        // The `/new` page starts empty: the previous session's preview must
+        // not carry over into the draft page.
+        self.preview.clear();
     }
 
     /// Retain the first prompt and return the atomic materialization payload.
@@ -3335,6 +3338,48 @@ mod tests {
         assert!(
             s.transcript.is_empty(),
             "normal switch reset commits the draft"
+        );
+    }
+
+    #[test]
+    fn new_conversation_draft_clears_and_holds_the_preview_empty() {
+        let mut s = AppState::default();
+        s.apply(
+            "welcome",
+            &serde_json::json!({"sessionId":"old","status":"idle","mode":"standard"}),
+        );
+        // A deferred file preview leaves the pane with a live target.
+        s.apply_event(&event_seq(
+            "tool/call",
+            1,
+            serde_json::json!({
+                "callId": "view-1",
+                "name": "str_replace_editor",
+                "arguments": "{\"command\":\"view\",\"path\":\"src/main.rs\"}"
+            }),
+        ));
+        assert!(s.preview.target.is_some());
+        s.begin_new_conversation("code");
+        assert!(s.is_new_conversation());
+        assert_eq!(
+            s.preview.state,
+            e_tui::preview::PreviewState::Empty,
+            "the /new page must not inherit the old session's preview"
+        );
+        assert!(s.preview.target.is_none());
+        // Old-session frames keep reducing behind the draft but must not
+        // repopulate the preview.
+        s.apply_event(&event_seq(
+            "assistant/chunk",
+            2,
+            serde_json::json!({
+                "chunk": {"type": "text-delta", "index": 0, "text": "still old"}
+            }),
+        ));
+        assert!(
+            s.preview.target.is_none()
+                && matches!(s.preview.state, e_tui::preview::PreviewState::Empty),
+            "frames behind the draft must not repopulate the preview"
         );
     }
 

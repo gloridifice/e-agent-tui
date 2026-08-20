@@ -19,8 +19,8 @@ pub use e_tui::app::{
 #[cfg(test)]
 use e_tui::display::ContentCard;
 use e_tui::display::{
-    ActivityRow, ActivityState, CardRole, DisplayId, DisplayItem, DisplayTone, TranscriptBlock,
-    TranscriptFormat,
+    ActivityRow, ActivityState, CardRole, DisplayId, DisplayItem, DisplayTone, ThinkingNode,
+    TranscriptBlock, TranscriptFormat,
 };
 use e_tui::projection::{
     assistant::{self, AssistantMutation},
@@ -257,6 +257,29 @@ pub struct ThinkingCard {
     /// breathing color to green instead of snapping.
     pub done_since: Option<std::time::Instant>,
     pub done_from: Option<Color>,
+    /// Accumulated reasoning content (merged Thinking+Reasoning node).
+    pub content: String,
+    /// Copy unit of the accumulated reasoning content.
+    pub unit: Option<u64>,
+}
+
+#[cfg(test)]
+impl ThinkingCard {
+    /// Test mirror of the merged `ThinkingNode` display surface.
+    pub fn from_node(node: &e_tui::display::ThinkingNode) -> Self {
+        Self {
+            state: if node.row.state == ActivityState::Running {
+                ThinkState::Running
+            } else {
+                ThinkState::Done
+            },
+            count: node.row.count,
+            done_since: None,
+            done_from: None,
+            content: node.content.clone(),
+            unit: node.unit,
+        }
+    }
 }
 
 pub use e_tui::{
@@ -332,15 +355,16 @@ impl AppState {
             return;
         }
         let adjacent_id = self.transcript.nodes().last().and_then(|node| {
-            matches!(&node.item, DisplayItem::Activity(row) if row.id.0.starts_with("thinking:"))
-                .then(|| node.id().clone())
+            matches!(&node.item, DisplayItem::Thinking(node)
+                if node.row.id.0.starts_with("thinking:"))
+            .then(|| node.id().clone())
         });
         if let Some(id) = adjacent_id {
             if let Some(node) = self.transcript.get_mut(&id) {
-                if let DisplayItem::Activity(row) = &mut node.item {
-                    if row.state != ActivityState::Running {
-                        row.state = ActivityState::Running;
-                        row.count += 1;
+                if let DisplayItem::Thinking(thinking) = &mut node.item {
+                    if thinking.row.state != ActivityState::Running {
+                        thinking.row.state = ActivityState::Running;
+                        thinking.row.count += 1;
                     }
                 }
             }
@@ -350,7 +374,18 @@ impl AppState {
             self.next_thinking_id = self.next_thinking_id.wrapping_add(1);
             let mut row = ActivityRow::root(id, "Thinking...");
             row.count = 1;
-            self.insert_transcript_item(DisplayItem::Activity(row), None, None);
+            self.insert_transcript_item(
+                DisplayItem::Thinking(ThinkingNode {
+                    row,
+                    unit: None,
+                    content: String::new(),
+                    copy_source: String::new(),
+                    streaming: false,
+                    turn: None,
+                }),
+                None,
+                None,
+            );
         }
 
         #[cfg(test)]
@@ -369,6 +404,8 @@ impl AppState {
                     count: 1,
                     done_since: None,
                     done_from: None,
+                    content: String::new(),
+                    unit: None,
                 }));
                 self.render.transcript_cache.valid = false;
             }
@@ -397,15 +434,16 @@ impl AppState {
             return;
         }
         let running_id = self.transcript.nodes().iter().rev().find_map(|node| {
-            matches!(&node.item, DisplayItem::Activity(row)
-                if row.id.0.starts_with("thinking:") && row.state == ActivityState::Running)
+            matches!(&node.item, DisplayItem::Thinking(node)
+                if node.row.id.0.starts_with("thinking:")
+                    && node.row.state == ActivityState::Running)
             .then(|| node.id().clone())
         });
         if let Some(id) = running_id {
             self.capture_activity_transition(&id);
             if let Some(node) = self.transcript.get_mut(&id) {
-                if let DisplayItem::Activity(row) = &mut node.item {
-                    row.state = ActivityState::Success;
+                if let DisplayItem::Thinking(thinking) = &mut node.item {
+                    thinking.row.state = ActivityState::Success;
                 }
             }
             self.transcript.touch(&id);
@@ -526,6 +564,9 @@ impl AppState {
             .filter_map(|node| match &node.item {
                 DisplayItem::Activity(row) if row.state.is_active() => Some(row.id.clone()),
                 DisplayItem::Block(block) if block.streaming => Some(block.id.clone()),
+                DisplayItem::Thinking(node) if node.row.state.is_active() || node.streaming => {
+                    Some(node.row.id.clone())
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -549,6 +590,10 @@ impl AppState {
                             ActivityState::Failure
                         };
                         row.duration_ms = row.start_ms.map(|start| now_ms.saturating_sub(start));
+                    }
+                    DisplayItem::Thinking(thinking) => {
+                        thinking.row.state = ActivityState::Success;
+                        thinking.streaming = false;
                     }
                     DisplayItem::Block(block) => block.streaming = false,
                     _ => {}
@@ -910,6 +955,19 @@ impl AppState {
                             self.msgs.push(Msg::Card(card));
                         }
                         e_tui::display::DisplayItem::Activity(row) => self.upsert_activity(row),
+                        e_tui::display::DisplayItem::Thinking(mut node) => {
+                            if node.unit.is_none() && !node.copy_source.is_empty() {
+                                node.unit = Some(self.allocate_copy_unit(&node.copy_source));
+                            }
+                            self.insert_transcript_item(
+                                DisplayItem::Thinking(node.clone()),
+                                event.sequence.filter(|_| is_surface_node(&event.fact)),
+                                None,
+                            );
+                            #[cfg(test)]
+                            self.msgs
+                                .push(Msg::Thinking(ThinkingCard::from_node(&node)));
+                        }
                         e_tui::display::DisplayItem::Composite {
                             activity,
                             mut detail,
@@ -1179,70 +1237,59 @@ impl AppState {
     }
 
     #[cfg(test)]
-    fn upsert_reasoning(
-        &mut self,
-        turn: Option<u64>,
-        step: Option<u64>,
-        text: &str,
-        streaming: bool,
-    ) {
+    fn upsert_reasoning(&mut self, text: &str, streaming: bool) {
         if text.is_empty() {
             return;
         }
-        let id = DisplayId::correlated(
-            "assistant-reasoning",
-            &format!("{}:{}", turn.unwrap_or(0), step.unwrap_or(0)),
-        );
         let reasoning_visible = self.config.thinking_display_mode().shows_reasoning();
-        if let Some(index) = self
+        let updated = self
             .msgs
-            .iter()
-            .position(|msg| matches!(msg, Msg::Block(block) if block.id == id))
-        {
-            let (source, unit) = {
-                let Some(Msg::Block(block)) = self.msgs.get_mut(index) else {
-                    return;
+            .iter_mut()
+            .rev()
+            .find(|msg| matches!(msg, Msg::Thinking(_)))
+            .and_then(|msg| {
+                let Msg::Thinking(card) = msg else {
+                    return None;
                 };
                 if streaming {
-                    block.content.push_str(text);
-                    block.copy_source.push_str(text);
+                    card.content.push_str(text);
                 } else {
-                    block.content = text.to_owned();
-                    block.copy_source = text.to_owned();
-                    block.streaming = false;
+                    card.content = text.to_owned();
                 }
-                (block.copy_source.clone(), block.unit)
-            };
+                Some((card.unit, card.content.clone()))
+            });
+        if let Some((unit, content)) = updated {
             if let Some(unit) = unit {
-                self.render.units.insert(unit, source);
+                self.render.units.insert(unit, content);
+            } else {
+                let unit = self.allocate_copy_unit(&content);
+                if let Some(Msg::Thinking(card)) = self
+                    .msgs
+                    .iter_mut()
+                    .rev()
+                    .find(|msg| matches!(msg, Msg::Thinking(_)))
+                {
+                    card.unit = Some(unit);
+                }
+                self.render.units.insert(unit, content);
             }
             if reasoning_visible && !self.replaying {
-                let is_tail = self
-                    .msgs
-                    .last()
-                    .is_some_and(|msg| matches!(msg, Msg::Block(block) if block.id == id));
-                if is_tail {
-                    self.render.transcript_cache.mark_tail_dirty();
-                } else {
-                    self.render.transcript_cache.invalidate();
-                }
+                self.render.transcript_cache.mark_tail_dirty();
             }
             return;
         }
         let unit = self.allocate_copy_unit(text);
-        self.msgs.push(Msg::Block(TranscriptBlock {
-            id,
-            unit: Some(unit),
+        self.msgs.push(Msg::Thinking(ThinkingCard {
+            state: ThinkState::Running,
+            count: 1,
+            done_since: None,
+            done_from: None,
             content: text.to_owned(),
-            format: TranscriptFormat::Reasoning,
-            tone: DisplayTone::Dim,
-            copy_source: text.to_owned(),
-            streaming,
+            unit: Some(unit),
         }));
         if reasoning_visible && !self.replaying {
-            // The new block is a structural append: the previous tail was the
-            // Thinking row (or an earlier message), so tail splicing would
-            // drop it. Rebuild the cache instead.
+            // Structural append: the previous tail was not a Thinking card,
+            // so tail splicing would drop it. Rebuild the cache instead.
             self.render.transcript_cache.invalidate();
         }
     }
@@ -1297,22 +1344,17 @@ impl AppState {
                     self.render.transcript_cache.invalidate();
                 }
                 AssistantMutation::UpsertReasoning(block) => {
-                    self.upsert_reasoning_store(block.clone());
+                    // Turn identity keeps per-turn reasoning in its own
+                    // merged Thinking node; `None` (e.g. replay of events
+                    // without a turn) falls back to the trailing node.
+                    let turn = match &event.fact {
+                        TimelineFact::AssistantChunk { turn, .. }
+                        | TimelineFact::AssistantMessage { turn, .. } => *turn,
+                        _ => None,
+                    };
+                    self.upsert_reasoning_store(block.clone(), turn);
                     #[cfg(test)]
-                    self.upsert_reasoning(
-                        match &event.fact {
-                            TimelineFact::AssistantChunk { turn, .. }
-                            | TimelineFact::AssistantMessage { turn, .. } => *turn,
-                            _ => None,
-                        },
-                        match &event.fact {
-                            TimelineFact::AssistantChunk { step, .. }
-                            | TimelineFact::AssistantMessage { step, .. } => *step,
-                            _ => None,
-                        },
-                        &block.content,
-                        block.streaming,
-                    );
+                    self.upsert_reasoning(&block.content, block.streaming);
                 }
                 AssistantMutation::UpsertAnswer(block) => {
                     self.upsert_answer_store(event, block);
@@ -1329,14 +1371,18 @@ impl AppState {
             DisplayItem::Card(card) if card.unit.is_none() => {
                 card.unit = Some(self.allocate_copy_unit(&card.copy_source));
             }
+            DisplayItem::Thinking(node) if node.unit.is_none() && !node.copy_source.is_empty() => {
+                node.unit = Some(self.allocate_copy_unit(&node.copy_source));
+            }
             _ => {}
         }
         let surface_seq = event.sequence.filter(|_| is_surface_node(&event.fact));
         let preferred = matches!(&item, DisplayItem::Card(card) if card.role == CardRole::User)
             .then(|| {
                 self.transcript.nodes().last().and_then(|node| {
-                    matches!(&node.item, DisplayItem::Activity(row)
-                        if row.id.0.starts_with("thinking:") && row.state.is_active())
+                    matches!(&node.item, DisplayItem::Thinking(node)
+                        if node.row.id.0.starts_with("thinking:")
+                            && node.row.state.is_active())
                     .then(|| self.transcript.len().saturating_sub(1))
                 })
             })
@@ -1363,6 +1409,9 @@ impl AppState {
             }
             DisplayItem::Block(block) => self.msgs.push(Msg::Block(block)),
             DisplayItem::Activity(row) => self.msgs.push(Msg::Activity(row)),
+            DisplayItem::Thinking(node) => self
+                .msgs
+                .push(Msg::Thinking(ThinkingCard::from_node(&node))),
             DisplayItem::Composite { activity, detail } => {
                 self.msgs.push(Msg::Activity(activity));
                 self.msgs.push(Msg::Card(detail));
@@ -1370,29 +1419,78 @@ impl AppState {
         }
     }
 
-    fn upsert_reasoning_store(&mut self, mut incoming: TranscriptBlock) {
-        let id = incoming.id.clone();
+    fn upsert_reasoning_store(&mut self, incoming: TranscriptBlock, turn: Option<u64>) {
+        // Reasoning chunks accumulate into the merged Thinking+Reasoning
+        // node. The target node is the trailing one whose turn matches (live
+        // nodes created by `start_thinking` carry `turn: None` and adopt the
+        // first chunk's turn). When no node exists for this turn — history
+        // replay suppresses the breathing indicator — a settled one is
+        // created so the content still travels with a node; per-turn keying
+        // keeps later turns from merging into an earlier turn's node.
+        let tail_id = self.transcript.nodes().iter().rev().find_map(|node| {
+            matches!(&node.item, DisplayItem::Thinking(node)
+                if node.turn == turn || node.turn.is_none())
+            .then(|| node.id().clone())
+        });
+        let Some(id) = tail_id else {
+            let mut row = ActivityRow::root(
+                DisplayId::correlated("thinking", &self.next_thinking_id.to_string()),
+                "Thinking...",
+            );
+            self.next_thinking_id = self.next_thinking_id.wrapping_add(1);
+            row.count = 1;
+            row.state = ActivityState::Success;
+            let node = ThinkingNode {
+                row,
+                unit: Some(self.allocate_copy_unit(&incoming.copy_source)),
+                content: incoming.content,
+                copy_source: incoming.copy_source,
+                streaming: false,
+                turn,
+            };
+            self.insert_transcript_item(DisplayItem::Thinking(node), None, None);
+            if self.config.thinking_display_mode().shows_reasoning() && !self.replaying {
+                self.render.transcript_cache.invalidate();
+            }
+            return;
+        };
         let existed = self.transcript.get(&id).is_some();
         let mut existing_unit = None;
         let mut updated_source = None;
-        if let Some(node) = self.transcript.get_mut(&id) {
-            if let DisplayItem::Block(block) = &mut node.item {
-                if incoming.streaming {
-                    block.content.push_str(&incoming.content);
-                    block.copy_source.push_str(&incoming.copy_source);
-                } else {
-                    block.content = incoming.content;
-                    block.copy_source = incoming.copy_source;
-                    block.streaming = false;
+        {
+            let mut node = self.transcript.get_mut(&id);
+            if let Some(node) = node.as_deref_mut() {
+                if let DisplayItem::Thinking(thinking) = &mut node.item {
+                    if incoming.streaming {
+                        thinking.content.push_str(&incoming.content);
+                        thinking.copy_source.push_str(&incoming.copy_source);
+                        thinking.streaming = true;
+                    } else {
+                        thinking.content = incoming.content;
+                        thinking.copy_source = incoming.copy_source;
+                        thinking.streaming = false;
+                    }
+                    if thinking.turn.is_none() {
+                        thinking.turn = turn;
+                    }
+                    existing_unit = thinking.unit;
+                    updated_source = Some(thinking.copy_source.clone());
                 }
-                existing_unit = block.unit;
-                updated_source = Some(block.copy_source.clone());
             }
-        } else {
-            if incoming.unit.is_none() {
-                incoming.unit = Some(self.allocate_copy_unit(&incoming.copy_source));
+        }
+        // A live node created by `start_thinking` has no copy unit yet;
+        // allocate one once reasoning exists so the accumulated content is
+        // selectable/copyable like any other surface.
+        if let Some(source) = &updated_source {
+            if existing_unit.is_none() && !source.is_empty() {
+                let unit = self.allocate_copy_unit(source);
+                existing_unit = Some(unit);
+                if let Some(node) = self.transcript.get_mut(&id) {
+                    if let DisplayItem::Thinking(thinking) = &mut node.item {
+                        thinking.unit = Some(unit);
+                    }
+                }
             }
-            self.insert_transcript_item(DisplayItem::Block(incoming), None, None);
         }
         if let (Some(unit), Some(source)) = (existing_unit, updated_source) {
             self.render.units.insert(unit, source);
@@ -2090,6 +2188,7 @@ pub fn animation_active(state: &AppState, _now: std::time::Instant) -> bool {
                 block.streaming && block.format != TranscriptFormat::Reasoning
             }
             DisplayItem::Composite { activity, .. } => activity.state.is_active(),
+            DisplayItem::Thinking(node) => node.row.state.is_active(),
             DisplayItem::Card(_) => false,
         })
         || !state.render.activity_transitions.is_empty()
@@ -2115,6 +2214,7 @@ pub fn tick_spinners(state: &mut AppState, now: std::time::Instant) -> bool {
                 block.streaming && block.format != TranscriptFormat::Reasoning
             }
             DisplayItem::Composite { activity, .. } => activity.state.is_active(),
+            DisplayItem::Thinking(node) => node.row.state.is_active(),
             DisplayItem::Card(_) => false,
         };
         if pending {
@@ -2926,8 +3026,13 @@ mod tests {
             "reasoning keeps the Thinking row running"
         );
         assert!(
-            s.msgs.iter().any(|m| matches!(m, Msg::Block(block) if block.format == TranscriptFormat::Reasoning && block.content == "thinking out loud")),
-            "reasoning block is stored (hidden) rather than dropped"
+            matches!(
+                s.msgs.iter().rev().find(|m| matches!(m, Msg::Thinking(_))),
+                Some(Msg::Thinking(card))
+                    if card.state == ThinkState::Running
+                        && card.content == "thinking out loud"
+            ),
+            "reasoning accumulates into the merged Thinking node rather than dropping"
         );
         // Real answer text settles the Thinking row green.
         s.apply_event(&event(
@@ -2967,8 +3072,62 @@ mod tests {
             ),
             "visible reasoning still has a running Thinking indicator"
         );
-        assert!(s.msgs.iter().any(|msg| matches!(msg, Msg::Block(block)
-            if block.format == TranscriptFormat::Reasoning && block.unit.is_some())));
+        assert!(
+            matches!(
+                s.msgs.iter().find(|m| matches!(m, Msg::Thinking(_))),
+                Some(Msg::Thinking(card))
+                    if card.state == ThinkState::Running
+                        && card.content == "one\ntwo\nthree"
+                        && card.unit.is_some()
+            ),
+            "visible reasoning lives inside the running Thinking node with a copy unit"
+        );
+    }
+
+    /// Live reasoning merges into the `start_thinking` node; the node must
+    /// acquire a copy unit on the first chunk so the accumulated content is
+    /// selectable/copyable instead of silently losing provenance.
+    #[test]
+    fn live_reasoning_node_acquires_copy_unit() {
+        let mut s = AppState::default();
+        s.apply_event(&event("turn/start", serde_json::json!({})));
+        s.apply_event(&event_seq(
+            "assistant/chunk",
+            2,
+            serde_json::json!({
+                "chunk": {"type": "reasoning-delta", "text": "step one "}
+            }),
+        ));
+        s.apply_event(&event_seq(
+            "assistant/chunk",
+            3,
+            serde_json::json!({
+                "chunk": {"type": "reasoning-delta", "text": "step two"}
+            }),
+        ));
+        let thinking = s
+            .transcript
+            .nodes()
+            .iter()
+            .filter_map(|node| match &node.item {
+                DisplayItem::Thinking(node) => Some(node),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            thinking.len(),
+            1,
+            "live reasoning merges into the breathing node"
+        );
+        assert_eq!(thinking[0].content, "step one step two");
+        let unit = thinking[0]
+            .unit
+            .expect("live reasoning node must acquire a copy unit");
+        assert_eq!(
+            s.render.units.get(&unit).map(String::as_str),
+            Some("step one step two"),
+            "the copy unit maps to the accumulated reasoning content"
+        );
     }
 
     /// Only ADJACENT thinking phases collapse into one row (xN). Any
@@ -3307,6 +3466,67 @@ mod tests {
         assert!(!s.session.working, "replayed turn ended");
     }
 
+    /// Replaying a multi-turn conversation must keep each turn's reasoning
+    /// in its own Thinking node: without turn identity the second turn's
+    /// (non-streaming) reasoning would replace — or merge into — the first
+    /// turn's node, losing per-turn content.
+    #[test]
+    fn snapshot_replay_keeps_per_turn_reasoning_nodes() {
+        let mut s = AppState::default();
+        s.apply(
+            "snapshot",
+            &serde_json::json!({
+                "events": [
+                    event_seq("assistant/message", 1, serde_json::json!({
+                        "turn": 1, "step": 1,
+                        "message": {"content": [
+                            {"type": "reasoning", "text": "turn one reasoning"},
+                            {"type": "text", "text": "turn one answer"}
+                        ]}
+                    })),
+                    event_seq("user/message", 2, serde_json::json!({
+                        "content": [{"type": "text", "text": "again"}],
+                        "source": {"kind": "user"}
+                    })),
+                    event_seq("assistant/message", 3, serde_json::json!({
+                        "turn": 2, "step": 1,
+                        "message": {"content": [
+                            {"type": "reasoning", "text": "turn two reasoning"},
+                            {"type": "text", "text": "turn two answer"}
+                        ]}
+                    })),
+                ],
+                "truncated": false
+            }),
+        );
+        let thinking = s
+            .transcript
+            .nodes()
+            .iter()
+            .filter_map(|node| match &node.item {
+                DisplayItem::Thinking(node) => Some(node),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            thinking.len(),
+            2,
+            "each replayed turn keeps its own Thinking node"
+        );
+        assert_eq!(thinking[0].content, "turn one reasoning");
+        assert_eq!(thinking[0].turn, Some(1));
+        assert!(
+            thinking[0].unit.is_some(),
+            "replayed reasoning carries a copy unit"
+        );
+        assert_eq!(thinking[1].content, "turn two reasoning");
+        assert_eq!(thinking[1].turn, Some(2));
+        assert!(
+            thinking[1].unit.is_some(),
+            "later-turn reasoning carries its own copy unit"
+        );
+    }
+
     #[test]
     fn snapshot_mid_turn_attaches_live_thinking() {
         let mut s = AppState::default();
@@ -3579,7 +3799,8 @@ mod tests {
                 {"type":"text","text":"answer"}
             ]}}
         }));
-        assert!(s.msgs.iter().any(|msg| matches!(msg, Msg::Block(block) if block.format == TranscriptFormat::Reasoning && block.content == "final reasoning" && !block.streaming)));
+        assert!(s.msgs.iter().any(|msg| matches!(msg, Msg::Thinking(card)
+            if card.content == "final reasoning")));
         assert!(s
             .msgs
             .iter()

@@ -153,6 +153,23 @@ impl ReadingDocument {
                         timeline,
                     ));
                 }
+                DisplayItem::Thinking(node) => {
+                    // The merged Thinking node always surfaces its reasoning
+                    // content (falling back to the `Thinking...` label while
+                    // nothing has streamed in yet).
+                    let source = if node.copy_source.trim().is_empty() {
+                        node.row.label.clone()
+                    } else {
+                        node.copy_source.clone()
+                    };
+                    blocks.push(plain_block(
+                        node.row.id.clone(),
+                        node.unit,
+                        ReadingBlockKind::Reasoning,
+                        source,
+                        timeline,
+                    ));
+                }
                 DisplayItem::Composite { activity, detail } => {
                     blocks.push(tool_block(
                         activity.id.clone(),
@@ -275,10 +292,17 @@ fn plain_block(
         .preview_refs
         .get(&owner)
         .cloned()
-        .unwrap_or_else(|| PreviewRef::Inline {
-            key: PreviewKey(format!("source:{}", id.0)),
-            revision: PreviewRevision(timeline.transcript.generation()),
-            content: PreviewContent::PlainText(source.clone()),
+        .unwrap_or_else(|| {
+            let content = if kind == ReadingBlockKind::Reasoning {
+                PreviewContent::Reasoning(source.clone())
+            } else {
+                PreviewContent::PlainText(source.clone())
+            };
+            PreviewRef::Inline {
+                key: PreviewKey(format!("source:{}", id.0)),
+                revision: PreviewRevision(timeline.transcript.generation()),
+                content,
+            }
         });
     ReadingBlock {
         id,

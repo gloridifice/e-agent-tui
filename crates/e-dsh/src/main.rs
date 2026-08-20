@@ -109,6 +109,23 @@ fn inbound_budget_remaining(count: usize, elapsed: Duration) -> bool {
     count < INBOUND_BATCH_LIMIT && elapsed < INBOUND_BATCH_BUDGET
 }
 
+/// A streamed assistant text/reasoning delta: render it as its own frame
+/// instead of batching it with the rest of the inbound queue.
+fn is_streaming_delta(event: &e_tui::AgentEvent) -> bool {
+    matches!(
+        event,
+        e_tui::AgentEvent::Timeline(e_tui::agent::TimelineEvent::Append(record))
+            if matches!(
+                &record.fact,
+                e_tui::agent::TimelineFact::AssistantChunk {
+                    text,
+                    reasoning,
+                    ..
+                } if !text.is_empty() || !reasoning.is_empty()
+            )
+    )
+}
+
 fn token_path() -> PathBuf {
     e::launcher::dsh_home().join("dsh-tui.token")
 }
@@ -434,6 +451,11 @@ async fn run(
                     &event,
                     e_tui::AgentEvent::Timeline(e_tui::agent::TimelineEvent::Snapshot { .. })
                 );
+                // Streaming text/reasoning deltas render frame-by-frame so the
+                // assistant output (and Thinking reasoning) appears
+                // incrementally instead of being swallowed by the inbound
+                // batch and jumping in whole chunks.
+                let streaming_delta = is_streaming_delta(&event);
                 if is_snapshot {
                     phases.mark("snapshot received");
                 }
@@ -462,6 +484,11 @@ async fn run(
                 pending_update_elapsed += update_started.elapsed();
                 if is_snapshot {
                     phases.mark("snapshot applied");
+                }
+                if streaming_delta {
+                    // Hand the render loop back after every delta so each
+                    // streamed increment becomes its own visible frame.
+                    break;
                 }
                 if !inbound_budget_remaining(count, batch_started.elapsed()) {
                     break;

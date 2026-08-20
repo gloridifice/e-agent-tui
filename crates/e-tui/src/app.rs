@@ -221,6 +221,12 @@ impl TuiApp {
     /// Keep normal-mode Preview on the newest eligible canonical display
     /// owner. Reading mode has a cursor-owned policy and is never stolen by
     /// live appends. History prepend preserves the newest identity.
+    /// Assistant markdown answers are already rendered in the main pane and
+    /// are never previewed. The merged Thinking node previews its reasoning
+    /// content while anything has streamed in (an empty, still-breathing
+    /// indicator carries nothing worth previewing); reasoning always previews
+    /// even when the main transcript collapses it
+    /// (`thinking_display = compact`).
     pub fn reconcile_latest_preview(&mut self) {
         if self.preview.policy != PreviewPolicy::FollowLatestBlock {
             return;
@@ -234,9 +240,10 @@ impl TuiApp {
             .find(|node| {
                 !matches!(
                     &node.item,
-                    DisplayItem::Block(block)
-                        if block.format == TranscriptFormat::Reasoning
-                            && !self.config.thinking_display_mode().shows_reasoning()
+                    DisplayItem::Block(block) if block.format == TranscriptFormat::Markdown
+                ) && !matches!(
+                    &node.item,
+                    DisplayItem::Thinking(node) if node.content.trim().is_empty()
                 )
             })
             .map(|node| (node.id().clone(), node.item.clone()));
@@ -252,13 +259,11 @@ impl TuiApp {
             .cloned()
             .unwrap_or_else(|| {
                 let content = match item {
-                    DisplayItem::Block(block) => {
-                        if block.format == TranscriptFormat::Markdown {
-                            PreviewContent::Markdown(block.copy_source)
-                        } else {
-                            PreviewContent::PlainText(block.copy_source)
-                        }
-                    }
+                    DisplayItem::Block(block) => match block.format {
+                        TranscriptFormat::Markdown => PreviewContent::Markdown(block.copy_source),
+                        TranscriptFormat::Reasoning => PreviewContent::Reasoning(block.copy_source),
+                        _ => PreviewContent::PlainText(block.copy_source),
+                    },
                     DisplayItem::Card(card) => PreviewContent::PlainText(card.copy_source),
                     DisplayItem::Activity(row) => PreviewContent::PlainText(
                         [row.label, row.summary]
@@ -267,6 +272,7 @@ impl TuiApp {
                             .collect::<Vec<_>>()
                             .join(" "),
                     ),
+                    DisplayItem::Thinking(node) => PreviewContent::Reasoning(node.copy_source),
                     DisplayItem::Composite { detail, .. } => {
                         PreviewContent::PlainText(detail.copy_source)
                     }

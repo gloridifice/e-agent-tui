@@ -7,12 +7,14 @@ use ratatui::{
 
 use crate::{
     preview::{PreviewContent, PreviewPaneState, PreviewState},
+    render::{render_markdown, RenderOptions},
     theme::Theme,
+    transcript_layout::wrap_line,
     ui::component::diff,
 };
 
 pub fn render(frame: &mut Frame, area: Rect, preview: &mut PreviewPaneState, theme: &Theme) {
-    let mut lines = match &preview.state {
+    let lines = match &preview.state {
         PreviewState::Empty => vec![Line::styled("No preview", theme.surface.muted_text.style())],
         PreviewState::Loading { .. } => vec![Line::styled(
             "• Loading preview…",
@@ -24,11 +26,28 @@ pub fn render(frame: &mut Frame, area: Rect, preview: &mut PreviewPaneState, the
         )],
         PreviewState::Ready(content) => content_lines(content, theme),
     };
-    let start = preview.scroll.min(lines.len().saturating_sub(1));
+    // Wrap every row to the padded content width first so long reasoning
+    // lines stay fully visible instead of truncating at the pane edge.
+    let inner_width = usize::from(area.width).saturating_sub(2).max(1);
+    let mut lines = lines
+        .into_iter()
+        .flat_map(|line| wrap_line(line, inner_width))
+        .collect::<Vec<_>>();
+    let total = lines.len();
     let visible = usize::from(area.height);
+    // scroll == 0 is the "follow the latest" anchor: when content overflows
+    // the pane, bottom-anchor it so streaming reasoning keeps its newest
+    // rows visible. A positive scroll (future scroll binding) switches to
+    // manual review and keeps the historical `scroll.min(total - 1)` start.
+    let start = if preview.scroll == 0 && total > visible {
+        total - visible
+    } else {
+        preview.scroll.min(total.saturating_sub(1))
+    };
     lines = lines.into_iter().skip(start).take(visible).collect();
     preview.record_materialized_rows(lines.len());
-    // Vertically center the materialized content within the pane.
+    // Vertically center content that fits the pane; overflowing content is
+    // already bottom-anchored and fills the pane, so no centering applies.
     let top_padding = usize::from(area.height).saturating_sub(lines.len()) / 2;
     let mut centered = Vec::with_capacity(usize::from(area.height));
     centered.extend(std::iter::repeat_n(Line::raw(""), top_padding));
@@ -96,6 +115,32 @@ fn content_lines(content: &PreviewContent, theme: &Theme) -> Vec<Line<'static>> 
             .lines()
             .map(|line| Line::styled(line.to_owned(), theme.markdown.text.style()))
             .collect(),
+        PreviewContent::Reasoning(source) => {
+            // Full markdown rendering (bold/italic/code/links/…), with every
+            // foreground forced to the muted (Bark) tone so the Thinking
+            // phase stays visually secondary; backgrounds and modifiers
+            // (bold, italic, underline, strikethrough) are preserved. The
+            // renderer's collapse windows are disabled for preview.
+            let mut next_unit = 0u64;
+            let mut units = std::collections::HashMap::new();
+            let options = RenderOptions {
+                collapse_rows: usize::MAX,
+                mermaid_enabled: false,
+                ..Default::default()
+            };
+            let bark = theme.surface.muted_text.fg;
+            render_markdown(source, theme, &mut next_unit, &options, &mut units)
+                .into_iter()
+                .map(|render_line| {
+                    let mut line = render_line.line;
+                    line.style = line.style.fg(bark);
+                    for span in line.spans.iter_mut() {
+                        span.style = span.style.fg(bark);
+                    }
+                    line
+                })
+                .collect()
+        }
         PreviewContent::PlainText(text) => text
             .lines()
             .map(|line| Line::styled(line.to_owned(), theme.surface.primary_text.style()))

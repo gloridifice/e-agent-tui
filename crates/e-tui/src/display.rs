@@ -129,6 +129,30 @@ pub struct ContentCard {
     pub copy_source: String,
 }
 
+/// One merged Thinking-phase node. The breathing indicator row (activity
+/// semantics: `Thinking...`, `xN` counting, settle transition) and the
+/// streamed reasoning content are a single transcript node, so every surface
+/// agrees on what "thinking" is: the main transcript renders the indicator
+/// in `compact` and the content in `lines`/`full`; Reading and Preview
+/// always surface the accumulated reasoning content.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThinkingNode {
+    /// Breathing indicator row (id `thinking:N`, label `Thinking...`).
+    pub row: ActivityRow,
+    /// Copy unit for the accumulated reasoning content.
+    pub unit: Option<u64>,
+    /// Streamed reasoning text.
+    pub content: String,
+    pub copy_source: String,
+    /// Whether reasoning chunks are still streaming into this node.
+    pub streaming: bool,
+    /// Turn this node's reasoning belongs to. Live nodes created by
+    /// `start_thinking` start with `None` and adopt the first reasoning
+    /// chunk's turn; replay-created nodes carry it from creation, so
+    /// reasoning from later turns never merges into an earlier turn's node.
+    pub turn: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DisplayItem {
     Activity(ActivityRow),
@@ -138,6 +162,7 @@ pub enum DisplayItem {
         activity: ActivityRow,
         detail: ContentCard,
     },
+    Thinking(ThinkingNode),
 }
 
 impl DisplayItem {
@@ -147,11 +172,15 @@ impl DisplayItem {
             Self::Block(block) => &block.id,
             Self::Card(card) => &card.id,
             Self::Composite { activity, .. } => &activity.id,
+            Self::Thinking(node) => &node.row.id,
         }
     }
 
     pub fn is_activity(&self) -> bool {
-        matches!(self, Self::Activity(_) | Self::Composite { .. })
+        matches!(
+            self,
+            Self::Activity(_) | Self::Composite { .. } | Self::Thinking(_)
+        )
     }
 }
 

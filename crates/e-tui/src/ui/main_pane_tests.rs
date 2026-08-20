@@ -110,7 +110,7 @@ fn wide_screen_renders_preview_without_changing_main_provenance() {
             id: DisplayId::correlated("assistant", "preview"),
             unit: Some(11),
             content: source.clone(),
-            format: crate::display::TranscriptFormat::Markdown,
+            format: crate::display::TranscriptFormat::Plain,
             tone: DisplayTone::Normal,
             copy_source: source.clone(),
             streaming: false,
@@ -146,6 +146,99 @@ fn wide_screen_renders_preview_without_changing_main_provenance() {
     assert!(provenance_layout_rows(&state)
         .iter()
         .any(|row| row.unit == unit));
+}
+
+#[test]
+fn preview_skips_markdown_answers_and_shows_reasoning_text() {
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    let preview_text = |terminal: &Terminal<TestBackend>| {
+        (0..30)
+            .flat_map(|y| (72..120).map(move |x| terminal.backend().buffer()[(x, y)].symbol()))
+            .collect::<String>()
+    };
+    // Assistant markdown answers are rendered in the main pane and must not
+    // drive the Preview pane.
+    let source = "answer body".to_string();
+    state.transcript.append(
+        DisplayItem::Block(crate::display::TranscriptBlock {
+            id: DisplayId::correlated("assistant", "markdown"),
+            unit: Some(1),
+            content: source.clone(),
+            format: crate::display::TranscriptFormat::Markdown,
+            tone: DisplayTone::Normal,
+            copy_source: source.clone(),
+            streaming: false,
+        }),
+        None,
+    );
+    state.reconcile_latest_preview();
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+    assert!(!preview_text(&terminal).contains("answer body"));
+    assert!(matches!(state.preview.state, PreviewState::Empty));
+
+    // The merged Thinking node with no streamed reasoning yet carries
+    // nothing worth previewing.
+    state.transcript.append(
+        DisplayItem::Thinking(crate::display::ThinkingNode {
+            row: crate::display::ActivityRow::root(
+                DisplayId::correlated("thinking", "1"),
+                "Thinking...",
+            ),
+            unit: None,
+            content: String::new(),
+            copy_source: String::new(),
+            streaming: true,
+            turn: None,
+        }),
+        None,
+    );
+    state.reconcile_latest_preview();
+    assert!(
+        matches!(state.preview.state, PreviewState::Empty),
+        "empty Thinking node must not preview"
+    );
+
+    // Default `thinking_display` is compact, so reasoning is folded in the
+    // main transcript; the Preview pane must still surface it live.
+    let reasoning = "first reasoning delta".to_string();
+    state.transcript.append(
+        DisplayItem::Thinking(crate::display::ThinkingNode {
+            row: crate::display::ActivityRow::root(
+                DisplayId::correlated("thinking", "1"),
+                "Thinking...",
+            ),
+            unit: Some(2),
+            content: reasoning.clone(),
+            copy_source: reasoning.clone(),
+            streaming: true,
+            turn: None,
+        }),
+        None,
+    );
+    state.reconcile_latest_preview();
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+    assert_eq!(
+        state.preview.state,
+        PreviewState::Ready(PreviewContent::Reasoning("first reasoning delta".into()))
+    );
+    assert!(preview_text(&terminal).contains("first reasoning delta"));
+    // Reasoning preview uses the muted (Bark) tone: the first content cell of
+    // the centered single row carries `surface.muted_text`'s foreground.
+    let buffer = terminal.backend().buffer();
+    assert_eq!(
+        buffer[(73, 14)].fg,
+        theme.surface.muted_text.fg,
+        "reasoning preview must use the Bark/muted tone"
+    );
 }
 
 #[test]
@@ -361,4 +454,109 @@ fn preview_content_kinds_materialize_visible_rows_only() {
         .collect::<String>();
     assert!(content.contains("line 20") || content.contains("line 21"));
     assert!(!content.contains("line 100"));
+}
+
+#[test]
+fn preview_follow_anchor_keeps_latest_content_visible_when_overflowing() {
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    state.preview.fullscreen = true;
+    state.preview.policy = crate::preview::PreviewPolicy::FollowLatestBlock;
+    // More rows than the pane can show; scroll == 0 means follow-the-latest,
+    // so streaming reasoning must stay bottom-anchored instead of showing the
+    // head and hiding the newest rows.
+    let source = (1..=60)
+        .map(|index| format!("line {index:02}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    state.preview.state = PreviewState::Ready(PreviewContent::PlainText(source));
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(70, 20)).unwrap();
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+    let content = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(
+        content.contains("line 60"),
+        "streaming reasoning tail must stay visible"
+    );
+    assert!(!content.contains("line 01"), "head must be scrolled out");
+}
+
+#[test]
+fn preview_wraps_long_lines_to_the_pane_width() {
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    state.preview.fullscreen = true;
+    // A single 200-char line far exceeds the 68-column padded content width;
+    // it must wrap into multiple rows instead of truncating at the pane edge.
+    state.preview.state = PreviewState::Ready(PreviewContent::PlainText("a".repeat(200)));
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(70, 20)).unwrap();
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+    let a_cells = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .filter(|cell| cell.symbol() == "a")
+        .count();
+    assert_eq!(a_cells, 200, "long preview text must wrap, not truncate");
+}
+
+#[test]
+fn reasoning_preview_renders_markdown_with_forced_bark_foreground() {
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    state.preview.fullscreen = true;
+    state.preview.state =
+        PreviewState::Ready(PreviewContent::Reasoning("**bold** *italic* `code`".into()));
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(70, 20)).unwrap();
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+    let content = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(!content.contains('*'), "bold markers must render, not leak");
+    assert!(!content.contains('`'), "code markers must render, not leak");
+    // Single centered row: top padding (20-1)/2 = 9, text starts at x=1.
+    let bold = &terminal.backend().buffer()[(1, 9)];
+    assert_eq!(
+        bold.fg, theme.surface.muted_text.fg,
+        "bold span foreground forced to Bark"
+    );
+    assert!(
+        bold.modifier.contains(ratatui::style::Modifier::BOLD),
+        "bold modifier preserved"
+    );
+    let code = &terminal.backend().buffer()[(13, 9)];
+    assert_eq!(
+        code.fg, theme.surface.muted_text.fg,
+        "inline code foreground forced to Bark"
+    );
+    assert_eq!(
+        code.bg,
+        theme.markdown.inline_code.bg.unwrap_or(Color::Reset),
+        "inline code chip background preserved"
+    );
 }

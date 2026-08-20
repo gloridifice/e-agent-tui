@@ -21,6 +21,7 @@ impl TranscriptNode {
             DisplayItem::Block(block) => block.unit,
             DisplayItem::Card(card) => card.unit,
             DisplayItem::Composite { detail, .. } => detail.unit,
+            DisplayItem::Thinking(node) => node.unit,
         }
     }
 }

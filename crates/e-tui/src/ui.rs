@@ -17,7 +17,7 @@ use crate::{
     config::{Theme, ThinkingDisplayMode},
     display::{
         allocate_accessories, ActivityRow, CardRole, ContentCard, DisplayItem, DisplayTone,
-        InputAccessory, InputAccessoryKind, TranscriptBlock, TranscriptFormat,
+        InputAccessory, InputAccessoryKind, ThinkingNode, TranscriptBlock, TranscriptFormat,
     },
     input::{InputState, Suggestion, SuggestionKind},
     input_page::{FocusId, InputPage, InputPageSession, ModelPage, ResumePage, ThemePage},

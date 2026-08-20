@@ -49,6 +49,9 @@ pub enum PreviewContent {
     Command(String),
     Path(String),
     Markdown(String),
+    /// Live model-reasoning text; rendered with the muted (Bark) tone so the
+    /// Thinking phase reads as secondary content in the Preview pane.
+    Reasoning(String),
     PlainText(String),
 }
 

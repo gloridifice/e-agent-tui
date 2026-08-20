@@ -126,14 +126,18 @@ fn transcript_block_lines(block: &TranscriptBlock, state: &TuiApp) -> Vec<Line<'
 
 /// Reasoning content is folded (zero rows) in `Compact`, bounded to the
 /// configured first-N DISPLAY rows (after width-aware wrapping) in `Lines`,
-/// and shown completely in `Full`. Whenever this content renders, the
-/// breathing `Thinking...` indicator row next to it is superseded and
-/// renders nothing (`thinking_row_superseded`).
+/// and shown completely in `Full`.
 fn reasoning_block_lines(
     block: &TranscriptBlock,
     state: &TuiApp,
     area_width: usize,
 ) -> Vec<Line<'static>> {
+    reasoning_content_lines(&block.content, state, area_width)
+}
+
+/// Render accumulated reasoning text according to the display mode, with the
+/// muted (Bark) tone used by the main transcript.
+fn reasoning_content_lines(content: &str, state: &TuiApp, area_width: usize) -> Vec<Line<'static>> {
     let limit = match state.config.thinking_display_mode() {
         ThinkingDisplayMode::Compact => return Vec::new(),
         ThinkingDisplayMode::Lines => state.config.thinking_lines.max(1),
@@ -141,7 +145,7 @@ fn reasoning_block_lines(
     };
     let style = Style::default().fg(state.theme().surface.muted_text.fg);
     let mut out = Vec::new();
-    for source_line in block.content.lines() {
+    for source_line in content.lines() {
         for wrapped in wrap_line(Line::from(source_line.to_owned()), area_width.max(1)) {
             out.push(wrapped.patch_style(style));
             if out.len() == limit {
@@ -150,6 +154,21 @@ fn reasoning_block_lines(
         }
     }
     out
+}
+
+/// Render the merged Thinking node: the breathing `• Thinking... xN`
+/// indicator row in `compact` (or while no reasoning has streamed in yet);
+/// the accumulated reasoning content in `lines`/`full`.
+fn thinking_node_lines(
+    node: &ThinkingNode,
+    state: &TuiApp,
+    area_width: usize,
+) -> Vec<Line<'static>> {
+    if state.config.thinking_display_mode().shows_reasoning() && !node.content.is_empty() {
+        reasoning_content_lines(&node.content, state, area_width)
+    } else {
+        vec![fitted_activity_row_line(&node.row, state, None, area_width)]
+    }
 }
 
 fn content_card_lines(card: &ContentCard, state: &TuiApp, area_width: usize) -> Vec<Line<'static>> {
@@ -274,6 +293,7 @@ fn display_item_lines(item: &DisplayItem, state: &TuiApp, area_width: usize) -> 
         }
         DisplayItem::Block(block) => transcript_block_lines(block, state),
         DisplayItem::Card(card) => content_card_lines(card, state, area_width),
+        DisplayItem::Thinking(node) => thinking_node_lines(node, state, area_width),
         DisplayItem::Composite { activity, detail } => {
             let mut lines = vec![fitted_activity_row_line(activity, state, None, area_width)];
             lines.extend(content_card_lines(detail, state, area_width));
@@ -295,32 +315,8 @@ fn is_hidden_item(item: &DisplayItem, state: &TuiApp) -> bool {
     )
 }
 
-/// In `Lines`/`Full` modes the visible reasoning content replaces the
-/// breathing `Thinking...` indicator: a thinking row whose next visible item
-/// is a reasoning block renders nothing (no indicator row, no gap). While
-/// reasoning has not arrived yet the indicator stays visible.
-fn thinking_row_superseded(nodes: &[TranscriptNode], index: usize, state: &TuiApp) -> bool {
-    let DisplayItem::Activity(row) = &nodes[index].item else {
-        return false;
-    };
-    if !(row.id.0.starts_with("thinking:") || row.label == "Thinking...") {
-        return false;
-    }
-    if !state.config.thinking_display_mode().shows_reasoning() {
-        return false;
-    }
-    nodes
-        .iter()
-        .skip(index + 1)
-        .find(|node| !is_hidden_item(&node.item, state))
-        .is_some_and(|node| {
-            matches!(&node.item, DisplayItem::Block(block)
-                if block.format == TranscriptFormat::Reasoning)
-        })
-}
-
 fn is_hidden_node(nodes: &[TranscriptNode], index: usize, state: &TuiApp) -> bool {
-    is_hidden_item(&nodes[index].item, state) || thinking_row_superseded(nodes, index, state)
+    is_hidden_item(&nodes[index].item, state)
 }
 
 fn next_visible_item_is_activity(state: &TuiApp, index: usize) -> bool {
@@ -333,15 +329,11 @@ fn next_visible_item_is_activity(state: &TuiApp, index: usize) -> bool {
         .is_some_and(|(_, node)| is_activity_item(&node.item))
 }
 
-/// Tool cards, Thinking rows, and read/edit file groups are "activity"
-/// rows: consecutive ones render glued together with no gap row between them.
-/// Thinking output (reasoning blocks) is collapsed into the breathing
-/// `• Thinking... xN` row: it contributes zero transcript rows and zero
-/// inter-message gap, so the cache builder and copy provenance must skip it.
-/// Legacy mirror of `thinking_row_superseded`: in `Lines`/`Full` a Thinking
-/// row whose next visible message is reasoning content renders nothing.
-/// Whether the next visible message is another activity row. Hidden messages
-/// are transparent to layout adjacency, just as they are to rendering/copy.
+/// Tool cards, Thinking nodes, and read/edit file groups are "activity"
+/// rows: consecutive ones render glued together with no gap row between
+/// them. Whether the next visible message is another activity row. Hidden
+/// messages are transparent to layout adjacency, just as they are to
+/// rendering/copy.
 /// One message rendered to transcript lines, including the full-width soft
 /// background of user blocks and of `fill`-flagged code/mermaid rows. Shared
 /// by the full cache rebuild and the incremental tail splice so both produce
@@ -394,6 +386,9 @@ pub fn provenance_layout_rows(state: &TuiApp) -> Vec<ProvenanceLayoutRow> {
             }
             DisplayItem::Card(card) => {
                 append_unit_rows(&mut rows, &mut global_row, card.unit, &layout_lines, width);
+            }
+            DisplayItem::Thinking(node) => {
+                append_unit_rows(&mut rows, &mut global_row, node.unit, &layout_lines, width);
             }
             DisplayItem::Composite { detail, .. } => {
                 if let Some((activity, detail_lines)) = layout_lines.split_first() {

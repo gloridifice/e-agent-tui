@@ -23,7 +23,7 @@ use std::{error::Error, fmt};
 use serde::{Deserialize, Serialize};
 
 const PROBE_TIMEOUT_MS: u64 = 400;
-const SPAWN_WAIT_TIMEOUT_SECS: u64 = 45;
+const SPAWN_WAIT_TIMEOUT_SECS: u64 = 90;
 const CHILD_REAP_TIMEOUT_MS: u64 = 2_000;
 const CHILD_REAP_POLL_MS: u64 = 20;
 

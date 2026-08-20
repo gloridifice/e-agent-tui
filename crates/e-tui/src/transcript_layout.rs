@@ -1,6 +1,6 @@
 //! Shared width-aware transcript layout primitives.
 //!
-//! UI rendering and copy navigation use these exact grapheme wrapping,
+//! UI rendering and copy navigation use these exact greedy word-wrapping,
 //! activity truncation, and provenance row contracts. This module is a leaf:
 //! it knows Ratatui lines but not application state, renderers, or copy mode.
 
@@ -10,8 +10,7 @@ use ratatui::{
     style::Style,
     text::{Line, Span},
 };
-use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthChar;
 
 use crate::{
     config::Theme,
@@ -118,120 +117,8 @@ pub struct ProvenanceLayoutRow {
     pub global_row: usize,
 }
 
-trait WrapSink {
-    fn segment(&mut self, text: &str, style: Style);
-    fn end_row(&mut self, base: Style);
-}
-
-#[derive(Default)]
-struct CountWrapSink {
-    rows: usize,
-}
-
-impl WrapSink for CountWrapSink {
-    fn segment(&mut self, _text: &str, _style: Style) {}
-
-    fn end_row(&mut self, _base: Style) {
-        self.rows += 1;
-    }
-}
-
-#[derive(Default)]
-struct LineWrapSink {
-    current: Vec<Span<'static>>,
-    rows: Vec<Line<'static>>,
-}
-
-impl WrapSink for LineWrapSink {
-    fn segment(&mut self, text: &str, style: Style) {
-        if !text.is_empty() {
-            self.current.push(Span::styled(text.to_owned(), style));
-        }
-    }
-
-    fn end_row(&mut self, base: Style) {
-        self.rows
-            .push(Line::from(std::mem::take(&mut self.current)).patch_style(base));
-    }
-}
-
-/// One linear grapheme/display-width scan shared by row counting and
-/// materializing. Flattening span text keeps combining marks and emoji ZWJ
-/// sequences together even when a style boundary bisects one.
-fn scan_wrapped<S: WrapSink>(line: &Line<'static>, width: usize, sink: &mut S) {
-    let base = line.style;
-    let mut text = String::new();
-    let mut styles = Vec::with_capacity(line.spans.len());
-    for span in &line.spans {
-        let start = text.len();
-        text.push_str(span.content.as_ref());
-        styles.push((start, text.len(), span.style));
-    }
-    let emit = |start: usize, end: usize, sink: &mut S| {
-        for (style_start, style_end, style) in &styles {
-            let from = start.max(*style_start);
-            let to = end.min(*style_end);
-            if from < to {
-                sink.segment(&text[from..to], *style);
-            }
-        }
-    };
-
-    let mut used = 0usize;
-    let mut have = false;
-    for (start, grapheme) in text.grapheme_indices(true) {
-        let end = start + grapheme.len();
-        let grapheme_width = UnicodeWidthStr::width(grapheme);
-        if grapheme_width > width {
-            if have {
-                sink.end_row(base);
-            }
-            emit(start, end, sink);
-            sink.end_row(base);
-            used = 0;
-            have = false;
-            continue;
-        }
-        if have && used + grapheme_width > width {
-            sink.end_row(base);
-            used = 0;
-        }
-        emit(start, end, sink);
-        used += grapheme_width;
-        have = true;
-        if used == width {
-            sink.end_row(base);
-            used = 0;
-            have = false;
-        }
-    }
-    if have {
-        sink.end_row(base);
-    }
-}
-
-/// Split one line into wrapped rows without Ratatui's exact-width phantom row.
-pub fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
-    if width == 0 || line.width() <= width {
-        return vec![line];
-    }
-    let mut sink = LineWrapSink::default();
-    scan_wrapped(&line, width, &mut sink);
-    if sink.rows.is_empty() {
-        vec![Line::default().patch_style(line.style)]
-    } else {
-        sink.rows
-    }
-}
-
-pub fn wrapped_rows(line: &Line<'static>, width: usize) -> usize {
-    if width == 0 || line.width() <= width {
-        return 1;
-    }
-    let mut sink = CountWrapSink::default();
-    scan_wrapped(line, width, &mut sink);
-    sink.rows.max(1)
-}
+/// Width-aware greedy word wrapping shared with preview and the input bar.
+pub use crate::wrap::{wrap_line, wrapped_rows};
 
 /// Keep an activity on one display row at the resolved page width.
 pub fn truncate_activity_line(line: Line<'static>, width: usize) -> Line<'static> {

@@ -58,9 +58,10 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
   entire layout; spinner/settle only patch the active `DisplayId` range, and settle must submit one more
   precise target-color patch after expiry before stopping the clock. Semantic Reading geometry and
   `ProvenanceLayoutRow` values come from the same width/generation layout; Reading cursor movement and Preview
-  selection must not flatten or rebuild the transcript. Wrap scanning computes
-  display width by Unicode grapheme cluster; combining marks / emoji ZWJ must not be split even across style
-  spans.
+  selection must not flatten or rebuild the transcript. Wrap scanning is greedy word wrapping: rows fill
+  with whole words until the next word no longer fits, the break consumes the separating whitespace, and a
+  word wider than the row falls back to grapheme splitting. Display width is computed by Unicode grapheme
+  cluster; combining marks / emoji ZWJ must not be split even across style spans.
 - **Performance red lines** (all have regression tests): terminal input wakes the main loop directly through
   `EventStream` — do not restore fixed ticker polling; interaction/content/animation deadlines are separated,
   and the bridge backlog is bounded per turn by a count+time budget. The terminal is initialized/restored at a

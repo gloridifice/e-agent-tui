@@ -1142,76 +1142,10 @@ fn push_table_cell_rows(
     }
 }
 
-/// Split one styled line at display-column boundaries, preserving span styles
-/// and keeping grapheme clusters (combining marks, ZWJ emoji) intact.
-#[allow(unused_assignments)]
+/// Split one styled table-cell line with the shared greedy word wrapper,
+/// preserving span styles and keeping grapheme clusters intact.
 fn wrap_styled_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
-    if width == 0 || line.width() <= width {
-        return vec![line];
-    }
-    let base = line.style;
-    let mut text = String::new();
-    let mut styles: Vec<(usize, usize, Style)> = Vec::new();
-    for span in &line.spans {
-        let start = text.len();
-        text.push_str(span.content.as_ref());
-        styles.push((start, text.len(), span.style));
-    }
-
-    let mut rows: Vec<Line<'static>> = Vec::new();
-    let mut row_spans: Vec<Span<'static>> = Vec::new();
-    let mut used = 0usize;
-    let mut have = false;
-
-    macro_rules! emit_range {
-        ($start:expr, $end:expr) => {{
-            for &(style_start, style_end, style) in &styles {
-                let from = $start.max(style_start);
-                let to = $end.min(style_end);
-                if from < to {
-                    row_spans.push(Span::styled(text[from..to].to_string(), style));
-                }
-            }
-        }};
-    }
-    macro_rules! end_row {
-        () => {{
-            rows.push(Line::from(std::mem::take(&mut row_spans)).patch_style(base));
-            used = 0;
-            have = false;
-        }};
-    }
-
-    for (start, grapheme) in text.grapheme_indices(true) {
-        let end = start + grapheme.len();
-        let grapheme_width = UnicodeWidthStr::width(grapheme);
-        if grapheme_width > width {
-            if have {
-                end_row!();
-            }
-            emit_range!(start, end);
-            have = true;
-            used = grapheme_width;
-            end_row!();
-            continue;
-        }
-        if have && used + grapheme_width > width {
-            end_row!();
-        }
-        emit_range!(start, end);
-        used += grapheme_width;
-        have = true;
-        if used == width {
-            end_row!();
-        }
-    }
-    if have {
-        end_row!();
-    }
-    if rows.is_empty() {
-        rows.push(Line::default().patch_style(base));
-    }
-    rows
+    crate::wrap::wrap_line(line, width)
 }
 // ---------------------------------------------------------------------------
 // List

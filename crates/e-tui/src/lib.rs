@@ -36,6 +36,7 @@ pub mod settings;
 pub mod theme;
 pub mod transcript_layout;
 pub mod ui;
+mod wrap;
 
 pub use action::{AgentRequest, DirtyState, DrawPriority, EffectResult, UiAction, UpdateResult};
 pub use agent::AgentEvent;

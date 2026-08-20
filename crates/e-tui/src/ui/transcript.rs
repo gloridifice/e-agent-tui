@@ -271,21 +271,27 @@ fn context_injection_lines(
             // The first row shares its columns with the label; later rows use
             // the full width.
             let budget = if first { first_avail } else { avail };
-            let mut chunks = wrap_text(&text, budget);
-            let head = chunks.remove(0);
+            let chunks = crate::wrap::wrap_text_chunks(&text, budget);
+            let Some(head) = chunks.first() else {
+                break;
+            };
+            let head_text = head.text.clone();
             if first {
                 rows.push(Line::from(vec![
                     Span::styled(LABEL.to_owned(), label_style),
-                    Span::styled(head.clone(), content_style),
+                    Span::styled(head_text.clone(), content_style),
                 ]));
                 first = false;
             } else {
-                rows.push(Line::from(Span::styled(head.clone(), content_style)));
+                rows.push(Line::from(Span::styled(head_text.clone(), content_style)));
             }
-            if chunks.is_empty() {
+            if chunks.len() <= 1 {
                 break;
             }
-            text = chunks.join("");
+            // Resume from the next emitted chunk. Whitespace consumed by the
+            // row break is deliberately skipped; a hard-split word resumes at
+            // exactly the next byte.
+            text = text[chunks[1].byte_start..].to_owned();
         }
     }
     if rows.is_empty() {
@@ -593,6 +599,11 @@ fn refresh_transcript_cache(state: &mut TuiApp, width: usize) {
                 end: keep + count,
                 owns_gap: true,
             });
+            // The streamed block can gain or lose rendered rows as Markdown
+            // structure and wrapping evolve. The next splice must discard
+            // this entire newly rendered suffix, not the previous suffix's
+            // length, or stale rows accumulate ahead of every later update.
+            cache.tail_len = count + 1;
             cache.dirty_messages.remove(&index);
         } else {
             cache.tail_len = 0;

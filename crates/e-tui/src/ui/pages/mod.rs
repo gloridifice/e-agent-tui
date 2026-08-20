@@ -15,8 +15,6 @@ use resume::render_resume_page;
 pub(super) use settings::render_settings;
 use theme::render_theme_page;
 
-use unicode_segmentation::UnicodeSegmentation;
-
 use super::*;
 
 fn input_page_shell(
@@ -96,28 +94,10 @@ pub(super) fn render_input_page(
     }
 }
 
-/// Wrap `text` into rows of at most `width` display columns. Grapheme
-/// clusters (combining marks, emoji ZWJ sequences, flags) are never split
-/// across rows; a single cluster wider than `width` still occupies its own
-/// row.
-pub fn wrap_text(text: &str, width: usize) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut line = String::new();
-    let mut used = 0usize;
-    for grapheme in text.graphemes(true) {
-        let w = UnicodeWidthStr::width(grapheme);
-        if used + w > width && !line.is_empty() {
-            lines.push(std::mem::take(&mut line));
-            used = 0;
-        }
-        line.push_str(grapheme);
-        used += w;
-    }
-    if !line.is_empty() {
-        lines.push(line);
-    }
-    lines
-}
+/// Wrap `text` into rows of at most `width` display columns using greedy
+/// word wrapping. Grapheme clusters are never split; a word wider than the
+/// whole row falls back to grapheme splitting.
+pub use crate::wrap::wrap_text;
 
 /// Trim `text` to at most `width` display columns, appending `…` when it
 /// overflows (the ellipsis itself counts against the budget).

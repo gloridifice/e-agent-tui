@@ -174,6 +174,48 @@ fn input_box_rows_follow_wrapped_content() {
 }
 
 #[test]
+fn input_bar_word_wrap_keeps_cursor_anchored_after_consumed_space() {
+    // 7 `aaaa` words fill the 36-column input content width; the following
+    // separator is consumed by the greedy break, so the cursor sitting on
+    // that separator must render at the end of the previous wrapped row.
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    let mut input = InputState::new(&state.config);
+    input.buf = "aaaa ".repeat(10);
+    input.cursor = 34; // the consumed space between row 1 and row 2
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    let mut anchor = None;
+    terminal
+        .draw(|frame| {
+            anchor = render_with_cursor(frame, &mut state, &input, &mut scroll, &theme, overlays());
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let row = |y: u16| {
+        (0..80u16)
+            .map(|x| buffer[(x, y)].symbol().chars().next().unwrap_or(' '))
+            .collect::<String>()
+    };
+    assert_eq!(
+        &row(18)[6..40],
+        "aaaa aaaa aaaa aaaa aaaa aaaa aaaa",
+        "first wrapped row keeps the seven fitting words"
+    );
+    assert_eq!(
+        &row(19)[6..20],
+        "aaaa aaaa aaaa",
+        "second wrapped row starts with the next whole word"
+    );
+    assert_eq!(
+        anchor,
+        Some(Position::new(40, 18)),
+        "IME anchor sits after the first wrapped row at the consumed space"
+    );
+}
+
+#[test]
 fn extracted_main_pane_preserves_status_spacing_and_hidden_cursor() {
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();
@@ -204,6 +246,94 @@ fn extracted_main_pane_preserves_status_spacing_and_hidden_cursor() {
     assert!(main_row(38).contains("^h Help"));
     assert!(main_row(39).contains("refactor bridge"));
     assert_eq!(buffer[(4, 38)].bg, Color::Reset);
+}
+
+#[test]
+fn streaming_tail_splice_replaces_the_whole_growing_markdown_suffix() {
+    fn streaming_block(id: DisplayId, content: &str) -> DisplayItem {
+        DisplayItem::Block(crate::display::TranscriptBlock {
+            id,
+            unit: None,
+            content: content.into(),
+            format: crate::display::TranscriptFormat::Markdown,
+            tone: DisplayTone::Normal,
+            copy_source: content.into(),
+            streaming: true,
+        })
+    }
+
+    fn draw(state: &mut TuiApp) {
+        let input = InputState::new(&state.config);
+        let mut scroll = ScrollState::default();
+        let theme = Theme::ferra();
+        let mut terminal = Terminal::new(TestBackend::new(40, 16)).unwrap();
+        terminal
+            .draw(|frame| render(frame, state, &input, &mut scroll, &theme, overlays()))
+            .unwrap();
+    }
+
+    fn replace_source(state: &mut TuiApp, id: &DisplayId, content: &str) {
+        let node = state.transcript.get_mut(id).expect("streaming block");
+        let DisplayItem::Block(block) = &mut node.item else {
+            panic!("expected markdown block");
+        };
+        block.content = content.into();
+        block.copy_source = content.into();
+        state.transcript.touch(id);
+        state.render.transcript_cache.mark_tail_dirty();
+    }
+
+    let id = DisplayId::correlated("assistant", "growing-tail");
+    let mut incremental = TuiApp::default();
+    incremental.config.resolved_theme = Theme::ferra();
+    incremental
+        .transcript
+        .append(streaming_block(id.clone(), "alpha"), None);
+    draw(&mut incremental);
+    replace_source(&mut incremental, &id, "alpha\n\nbeta");
+    draw(&mut incremental);
+    replace_source(&mut incremental, &id, "alpha\n\nbeta\n\ngamma");
+    draw(&mut incremental);
+
+    let final_source = "alpha\n\nbeta\n\ngamma";
+    let mut rebuilt = TuiApp::default();
+    rebuilt.config.resolved_theme = Theme::ferra();
+    rebuilt
+        .transcript
+        .append(streaming_block(id, final_source), None);
+    draw(&mut rebuilt);
+
+    let incremental_lines = incremental
+        .render
+        .transcript_cache
+        .lines
+        .iter()
+        .map(Line::to_string)
+        .collect::<Vec<_>>();
+    let rebuilt_lines = rebuilt
+        .render
+        .transcript_cache
+        .lines
+        .iter()
+        .map(Line::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        incremental_lines, rebuilt_lines,
+        "incremental streaming must not retain rows from older tail renders"
+    );
+    assert_eq!(
+        incremental.render.transcript_cache.tail_len,
+        incremental.render.transcript_cache.lines.len(),
+        "the sole message owns the complete cached suffix including its gap"
+    );
+    assert_eq!(
+        incremental_lines
+            .iter()
+            .filter(|line| line.contains("alpha"))
+            .count(),
+        1,
+        "the first streamed paragraph must not be duplicated"
+    );
 }
 
 #[test]

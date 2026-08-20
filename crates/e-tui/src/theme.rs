@@ -221,6 +221,10 @@ pub struct Theme {
     pub rose: Color,
     pub err: Color,
     pub running: Color,
+    /// Flat palette alias for the `coral` palette color (top-level list
+    /// bullets). Themes without a `coral` palette entry fall back to the
+    /// `card.detail` tone, keeping the alias safe for older user themes.
+    pub coral: Color,
 }
 
 impl Theme {
@@ -327,6 +331,7 @@ fn resolve_document(document: ThemeDocument) -> Result<ThemeFile, String> {
         rose: markdown.emphasis.fg,
         err: log.error.fg,
         running: working_status.running.fg,
+        coral: colors.get("coral").copied().unwrap_or(card.detail.fg),
         surface,
         markdown,
         input,

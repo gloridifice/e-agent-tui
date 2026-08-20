@@ -12,6 +12,7 @@ accent = "#4d6bfe"
 emphasis = "#c792ea"
 danger = "#ff6b7a"
 warning = "#ffcc66"
+coral = "#ffa07a"
 
 [semantics.surface]
 base = { fg = "text", bg = "midnight" }

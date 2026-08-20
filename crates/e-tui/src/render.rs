@@ -1101,6 +1101,17 @@ fn emit_item_tree(
     }
 }
 
+/// Top-level list markers (unordered bullets and ordered numbers) render in
+/// the theme's `coral` tone; nested markers keep the regular muted
+/// `list_marker` tone.
+fn top_level_marker_style(theme: &Theme, depth: usize) -> Style {
+    if depth == 0 {
+        Style::default().fg(theme.coral)
+    } else {
+        theme.markdown.list_marker.style()
+    }
+}
+
 /// Render one list item: task checkbox or `◦`/numbered marker, inline
 /// markdown inside.
 fn emit_list_item(
@@ -1131,10 +1142,10 @@ fn emit_list_item(
                 counters[depth] += 1;
                 (
                     format!("{}. ", counters[depth]),
-                    theme.markdown.list_marker.style(),
+                    top_level_marker_style(theme, depth),
                 )
             } else {
-                ("◦ ".to_string(), theme.markdown.list_marker.style())
+                ("◦ ".to_string(), top_level_marker_style(theme, depth))
             }
         }
     };
@@ -1396,6 +1407,35 @@ mod tests {
         let text = plain(&lines);
         assert_eq!(text[0], "1. 甲");
         assert_eq!(text[1], "2. 乙");
+    }
+
+    #[test]
+    fn top_level_bullet_marker_is_coral_and_nested_keeps_muted_tone() {
+        let theme = Theme::ferra();
+        let lines = render("- top\n  - nested");
+        let top = &lines[0].line.spans[1];
+        assert!(top.content.starts_with('◦'), "top-level bullet marker");
+        assert_eq!(
+            top.style.fg,
+            Some(theme.coral),
+            "top-level bullet uses the coral tone"
+        );
+        let nested = &lines[1].line.spans[1];
+        assert!(nested.content.starts_with('◦'), "nested bullet marker");
+        assert_eq!(
+            nested.style.fg,
+            Some(theme.markdown.list_marker.fg),
+            "nested bullet keeps the muted marker tone"
+        );
+        // Top-level ordered numbers use the coral tone too.
+        let ordered = render("1. one");
+        let top = &ordered[0].line.spans[1];
+        assert!(top.content.starts_with("1."), "ordered marker");
+        assert_eq!(
+            top.style.fg,
+            Some(theme.coral),
+            "top-level ordered number uses the coral tone"
+        );
     }
 
     #[test]

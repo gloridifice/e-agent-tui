@@ -4,7 +4,10 @@ use crate::{
     app::TuiApp,
     display::{CardRole, ContentCard, DisplayId, DisplayItem, DisplayTone},
     input::InputState,
-    preview::{PreviewContent, PreviewState},
+    preview::{
+        PreviewContent, PreviewState, ToolMetrics, ToolPreview, ToolPreviewPrimary,
+        ToolPreviewSecondary,
+    },
     theme::Theme,
 };
 
@@ -250,6 +253,122 @@ fn extracted_main_pane_keeps_card_background_and_copy_provenance() {
 }
 
 #[test]
+fn context_injection_renders_as_plain_text_capped_at_two_lines() {
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    let source = "x".repeat(200);
+    state.render.units.insert(7, source.clone());
+    state.transcript.append(
+        DisplayItem::Card(ContentCard {
+            id: DisplayId::correlated("context", "fixture"),
+            unit: Some(7),
+            header: Some("Context · instructions".into()),
+            content: source.clone(),
+            role: CardRole::Context,
+            tone: DisplayTone::Dim,
+            horizontal_padding: 2,
+            copy_source: source.clone(),
+        }),
+        None,
+    );
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+    terminal
+        .draw(|frame| {
+            render(frame, &mut state, &input, &mut scroll, &theme, overlays());
+        })
+        .unwrap();
+
+    let buffer = terminal.backend().buffer();
+    let label = |x: u16| buffer[(x, 0)].symbol().chars().next().unwrap_or(' ');
+    let row_text = |y: u16| {
+        (0..40u16)
+            .map(|x| buffer[(x, y)].symbol().chars().next().unwrap_or(' '))
+            .collect::<String>()
+    };
+    // Plain text (no card shell background): the first row starts with the
+    // `提示词注入` label in the activity label tone (umber in ferra) and the
+    // content in the activity detail tone (bark), with no background fill.
+    assert_eq!(label(4), '提', "label glyph starts the first row");
+    assert_eq!(label(6), '示', "label glyph on the first row");
+    assert_eq!(label(8), '词', "label glyph on the first row");
+    assert_eq!(label(10), '注', "label glyph on the first row");
+    assert_eq!(label(12), '入', "label glyph on the first row");
+    assert_eq!(
+        buffer[(4, 0)].fg,
+        theme.activity.label.fg,
+        "label uses the activity label tone (umber)"
+    );
+    assert_eq!(
+        buffer[(15, 0)].fg,
+        theme.activity.detail.fg,
+        "content uses the activity detail tone (bark)"
+    );
+    assert_eq!(buffer[(4, 0)].bg, Color::Reset, "no card background");
+    assert_eq!(buffer[(15, 0)].bg, Color::Reset, "no card background");
+    // Capped at two wrapped rows with an explicit ellipsis marker on row 2.
+    assert_eq!(
+        row_text(1).trim(),
+        format!("{}…", "x".repeat(31)),
+        "second row ends with the ellipsis marker"
+    );
+    assert!(row_text(2).trim().is_empty(), "gap row after the message");
+    // Copy provenance keeps the full original text.
+    assert_eq!(state.render.units.get(&7), Some(&source));
+    let rows = provenance_layout_rows(&state);
+    assert!(rows.iter().any(|row| row.unit == 7));
+}
+
+#[test]
+fn context_injection_short_content_fits_on_one_row() {
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    let source = "short context".to_string();
+    state.transcript.append(
+        DisplayItem::Card(ContentCard {
+            id: DisplayId::correlated("context", "short"),
+            unit: None,
+            header: Some("Context · instructions".into()),
+            content: source.clone(),
+            role: CardRole::Context,
+            tone: DisplayTone::Dim,
+            horizontal_padding: 2,
+            copy_source: source.clone(),
+        }),
+        None,
+    );
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+    terminal
+        .draw(|frame| {
+            render(frame, &mut state, &input, &mut scroll, &theme, overlays());
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let row_text = |y: u16| {
+        (0..40u16)
+            .map(|x| buffer[(x, y)].symbol().chars().next().unwrap_or(' '))
+            .collect::<String>()
+    };
+    // Each CJK glyph occupies two cells, so compare per-cell glyphs and the
+    // plain-ASCII content tail rather than a single raw substring.
+    assert_eq!(buffer[(4, 0)].symbol(), "提");
+    assert_eq!(buffer[(6, 0)].symbol(), "示");
+    assert_eq!(buffer[(8, 0)].symbol(), "词");
+    assert_eq!(buffer[(10, 0)].symbol(), "注");
+    assert_eq!(buffer[(12, 0)].symbol(), "入");
+    assert!(row_text(0).contains("short context"));
+    assert!(row_text(1).trim().is_empty(), "one row then the gap");
+    assert_eq!(buffer[(4, 0)].fg, theme.activity.label.fg);
+    assert_eq!(buffer[(15, 0)].fg, theme.activity.detail.fg);
+    assert_eq!(buffer[(4, 0)].bg, Color::Reset, "no card background");
+}
+
+#[test]
 fn wide_screen_renders_preview_without_changing_main_provenance() {
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();
@@ -389,6 +508,69 @@ fn preview_skips_markdown_answers_and_shows_reasoning_text() {
         theme.surface.muted_text.fg,
         "reasoning preview must use the Bark/muted tone"
     );
+}
+
+#[test]
+fn tool_preview_renders_header_primary_and_secondary_with_ferra_semantics() {
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    state.preview.fullscreen = true;
+    state.preview.policy = crate::preview::PreviewPolicy::FollowReadingCursor;
+    state.preview.state = PreviewState::Ready(PreviewContent::Tool(ToolPreview {
+        name: "bash".into(),
+        primary: ToolPreviewPrimary::Command {
+            command: "grep -R table".into(),
+            metrics: ToolMetrics {
+                output_lines: 2,
+                truncated: false,
+                duration_ms: Some(1200),
+            },
+        },
+        secondary: Some(ToolPreviewSecondary::Terminal {
+            output: "plain \u{1b}[31mred\u{1b}[0m".into(),
+            truncated: false,
+        }),
+    }));
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let area = *buffer.area();
+    let find = |needle: &str| -> Option<(u16, u16)> {
+        for y in 0..area.height {
+            for x in 0..area.width.saturating_sub(needle.chars().count() as u16) {
+                let matched = needle
+                    .chars()
+                    .enumerate()
+                    .all(|(offset, ch)| buffer[(x + offset as u16, y)].symbol() == ch.to_string());
+                if matched {
+                    return Some((x, y));
+                }
+            }
+        }
+        None
+    };
+    let (name_x, name_y) = find("bash").expect("tool name header renders");
+    let (dollar_x, dollar_y) = find("$").expect("command prompt renders");
+    let (metrics_x, metrics_y) = find("lines 2, duration 1.2s").expect("metrics render");
+    assert!(find("grep -R table").is_some());
+    assert!(
+        find("plain").is_some() && find("red").is_some(),
+        "terminal output renders"
+    );
+    // No blank row between the name header and the primary `$` row.
+    assert_eq!(dollar_y, name_y + 1);
+    // One blank row between the metrics row and the secondary terminal output.
+    assert_eq!(dollar_y + 1, metrics_y);
+    // Ferra semantics: name = activity.label (umber), `$` = prompt (coral),
+    // metrics = activity.detail (bark).
+    assert_eq!(buffer[(name_x, name_y)].fg, theme.activity.label.fg);
+    assert_eq!(buffer[(dollar_x, dollar_y)].fg, theme.input.prompt.fg);
+    assert_eq!(buffer[(metrics_x, metrics_y)].fg, theme.activity.detail.fg);
 }
 
 #[test]

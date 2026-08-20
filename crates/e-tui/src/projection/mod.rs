@@ -84,6 +84,9 @@ pub struct EventProjector {
     pub surface_owners: HashMap<u64, usize>,
     pub pending_surface_insert_at: Option<usize>,
     pub tool_calls: HashMap<String, DisplayId>,
+    /// Adapter-provided structured preview seed keyed by call id, retained so a
+    /// result can enrich the same target instead of replacing it.
+    pub tool_preview_seeds: HashMap<String, crate::preview::ToolPreview>,
     pub commands: HashMap<String, DisplayId>,
     pub retries: HashMap<String, DisplayId>,
     pub compactions: HashMap<String, DisplayId>,

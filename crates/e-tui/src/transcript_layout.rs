@@ -22,6 +22,7 @@ use crate::{
 #[derive(Debug, Clone)]
 struct MarkdownLayoutEntry {
     source: String,
+    table_width: Option<usize>,
     unit_start: u64,
     lines: Vec<RenderLine>,
 }
@@ -44,10 +45,9 @@ impl MarkdownLayoutRegistry {
         options: &RenderOptions,
         units: &mut HashMap<u64, String>,
     ) -> &[RenderLine] {
-        let unchanged = self
-            .entries
-            .get(id)
-            .is_some_and(|entry| entry.source == source);
+        let unchanged = self.entries.get(id).is_some_and(|entry| {
+            entry.source == source && entry.table_width == options.table_width
+        });
         if !unchanged {
             let unit_start = self
                 .entries
@@ -60,6 +60,7 @@ impl MarkdownLayoutRegistry {
                 id.clone(),
                 MarkdownLayoutEntry {
                     source: source.to_owned(),
+                    table_width: options.table_width,
                     unit_start,
                     lines,
                 },
@@ -293,6 +294,27 @@ mod tests {
         );
         assert_eq!(registry.unit_start(&id), Some(start));
         assert_eq!(registry.lines(&id).unwrap()[0].unit, start);
+    }
+
+    #[test]
+    fn markdown_registry_rerenders_when_table_width_changes() {
+        let id = DisplayId::correlated("assistant", "width-change");
+        let theme = crate::config::Config::default().theme();
+        let mut registry = MarkdownLayoutRegistry::default();
+        let mut next_unit = 0;
+        let mut units = HashMap::new();
+        let mut options = RenderOptions::default();
+        options.table_width = Some(24);
+        let source = "| c |\n|---|\n| xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx |";
+        registry.materialize(&id, source, &theme, &mut next_unit, &options, &mut units);
+        let narrow_rows = registry.lines(&id).unwrap().len();
+        options.table_width = Some(64);
+        registry.materialize(&id, source, &theme, &mut next_unit, &options, &mut units);
+        let wide_rows = registry.lines(&id).unwrap().len();
+        assert!(
+            narrow_rows > wide_rows,
+            "narrower table should wrap into more rows: narrow={narrow_rows} wide={wide_rows}"
+        );
     }
 
     #[test]

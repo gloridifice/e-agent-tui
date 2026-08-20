@@ -52,7 +52,76 @@ pub enum PreviewContent {
     /// Live model-reasoning text; rendered with the muted (Bark) tone so the
     /// Thinking phase reads as secondary content in the Preview pane.
     Reasoning(String),
+    /// Injected/context content rendered as full Markdown with every foreground
+    /// forced to the muted (Bark) tone. Distinct from `Reasoning` so context
+    /// content is never mislabeled as model thinking in the model.
+    MutedMarkdown(String),
     PlainText(String),
+    /// Structured tool presentation: name, typed primary, optional secondary.
+    Tool(ToolPreview),
+    /// Structured mutation fragments rendered as linear removed/added rows.
+    Hunks(Vec<MutationHunk>),
+}
+
+/// A 1-based inclusive line window. `end: None` is open-ended (through EOF).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LineSelection {
+    pub start: usize,
+    pub end: Option<usize>,
+}
+
+/// Settled command metrics: retained line count, truncation qualification, and
+/// wall-clock duration in milliseconds (None while still running or unknown).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ToolMetrics {
+    pub output_lines: usize,
+    pub truncated: bool,
+    pub duration_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolPreviewPrimary {
+    Location {
+        path: String,
+        lines: Option<LineSelection>,
+    },
+    Command {
+        command: String,
+        metrics: ToolMetrics,
+    },
+    Search {
+        query: String,
+        path: Option<String>,
+    },
+    Json {
+        source: String,
+        truncated: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolPreviewSecondary {
+    Terminal { output: String, truncated: bool },
+}
+
+/// Provider-neutral structured tool preview. Semantic content only: no Ratatui
+/// styles, no terminal-width wrapping, and no DSH-specific field names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolPreview {
+    pub name: String,
+    pub primary: ToolPreviewPrimary,
+    pub secondary: Option<ToolPreviewSecondary>,
+}
+
+/// One event-supplied mutation fragment. `old`/`new` are the raw before/after
+/// texts; `anchor_line` records an insert's 0-based insertion line when the
+/// event supplied no before-image.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MutationHunk {
+    pub path: Option<String>,
+    pub old: Option<String>,
+    pub new: Option<String>,
+    pub anchor_line: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

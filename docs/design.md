@@ -244,6 +244,43 @@ semantics.
 **Other tools (write/edit/search etc.)**: keep the D6 inline single card — `●` Honey running → `✓` Sage / `✗`
 Ember, format `✓ tool-name arg-summary · elapsed`.
 
+#### 3.3.2.1 Structured tool Preview
+
+The Preview pane presents known tool calls through one `PreviewContent::Tool` layout, with a blank row only
+before the optional secondary:
+
+```
+tool_name                       ← Umber (semantics.activity.label)
+primary_content                 ← tool-specific semantic colors
+
+optional secondary_content      ← tool-specific semantic colors
+```
+
+| tool | Preview name | primary | secondary |
+|---|---|---|---|
+| read / view | `read` / `view` | workspace-relative `path[:lines]` (`N`, `N-M`, or `N-`) in Mist | — |
+| create | `create` | path in Mist | — |
+| search (grep/glob) | `search` | `"query"` in Mist, optional `at "path"` in Bark+Mist | — |
+| command / bash / pwsh | `command` / `bash` / `pwsh` | `$` Coral + command Mist; `lines N, duration X.Xs` Bark | command output, two-tone |
+| other (unknown schema) | original tool name | bounded pretty JSON in Mist | — |
+
+- The two-tone terminal secondary maps ANSI-colored output to Bark and uncolored output to Umber, preserving
+  bold/italic and stripping every other terminal control (a `vte`-backed component, never raw escape bytes).
+- Command tools keep their real name on both surfaces: the transcript activity label and the Preview header show
+  `bash`, `pwsh`, `cmd`, `powershell`, `sh`, or `shell` when the tool name is one of those, and fall back to
+  `command` for any other Command-capability name (e.g. a third-party `run_command`). This replaces the old
+  behavior that labeled every shell tool `command` in the transcript.
+- A settled command result enriches the same `tool:<call-id>` target (metrics + secondary); read/view/create/search
+  and generic results stay primary-only and never grow an output body.
+- edit/replace/insert render event-supplied mutation fragments, never a client-computed diff:
+  the DSH `edit` tool persists applied contextual hunks in result `meta.diffs` (`{ path, oldText, newText }`);
+  `str_replace_editor.str_replace` exposes call-time `old_str/new_str` (a requested hunk, retained after
+  settlement because DSH supplies no applied result hunk); `insert` exposes only `new_str` + `insert_line`, so it
+  renders as an addition-only hunk anchored to that line. `create` stays common-format even though it carries a
+  full `file_text`.
+- Prompt-injection/context cards preview as `MutedMarkdown` (full Markdown with every foreground forced to Bark),
+  distinct from the `Reasoning` kind that Thinking uses.
+
 #### 3.3.3 Markdown and rich content
 
 - Markdown: headings, bold, italic, inline code, fenced code blocks (language label + plain color; syntect still
@@ -685,7 +722,7 @@ Events display uniformly as four public surfaces:
 |---|---|---|
 | `ActivityRow` | Waiting/Running/Success/Failure/Cancelled activity, optionally with parent/depth | Thinking, tool, retry, command, Code Mode, workflow, compaction |
 | `TranscriptBlock` | plain/Markdown/fallback content without work state; in compact mode reasoning blocks fold into the `• Thinking...` breathing light — not rendered, not in copy provenance, and transparent to activity-row adjacency; lines/full mode renders the content directly (lines truncates by post-wrap display row count), and the adjacent Thinking indicator row is then taken over and hidden | assistant, turn notice/error |
-| `ContentCard` | content card with uniform padding, background, and copy source; context injection cards show at most 5 lines by post-wrap display row count, showing `...` on the last line when overflowing, but copy source keeps the full original text | user message, context, attachment placeholder, compaction summary |
+| `ContentCard` | content card with uniform padding, background, and copy source; context injection events render as plain text (no shell) with a `提示词注入` label in the activity label tone and the content in the activity detail tone, showing at most 2 lines by post-wrap display row count with a trailing `…` when overflowing, but copy source keeps the full original text | user message, context, attachment placeholder, compaction summary |
 | `InputAccessory` | above the input bar, unified height budget/priority/focus | queue, approval, todo, goal, plan |
 
 File activity keeps operation labels via `FileAction`: consecutive `read`, `view`, `edit`, `replace`, `insert` can

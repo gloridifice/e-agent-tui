@@ -2,6 +2,8 @@
 
 use super::tool::ToolActivity;
 
+use crate::preview::MutationHunk;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SurfaceOperation {
     Append,
@@ -69,6 +71,8 @@ pub enum TimelineFact {
         output: String,
         state: super::tool::ActivityState,
         output_truncated: bool,
+        /// Event-supplied mutation fragments (e.g. DSH edit `meta.diffs`).
+        mutation_hunks: Vec<MutationHunk>,
     },
     TurnStart,
     StepStart {

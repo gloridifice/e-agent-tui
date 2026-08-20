@@ -1,9 +1,12 @@
 use super::*;
 use crate::ui::component::{card, text, working};
 
-/// Context-injection cards retain their full raw source for copying, but only
-/// expose this many width-aware content rows in the transcript.
-const MAX_CONTEXT_CARD_DISPLAY_LINES: usize = 5;
+/// Prompt-injection events render as plain text (no card shell): the
+/// `提示词注入` label in the activity label tone (umber in the ferra theme)
+/// followed by the injected content in the activity detail tone (bark),
+/// capped at this many width-aware rows with a trailing ellipsis when
+/// overflowing. The card retains its full raw source for copying.
+const MAX_INJECTION_DISPLAY_LINES: usize = 2;
 
 /// First-seen-ordered per-file counts over full paths.
 /// `foo.rs x2, bar.rs` — the `xN` suffix appears only for repeats.
@@ -172,6 +175,9 @@ fn thinking_node_lines(
 }
 
 fn content_card_lines(card: &ContentCard, state: &TuiApp, area_width: usize) -> Vec<Line<'static>> {
+    if card.role == CardRole::Context {
+        return context_injection_lines(card, state, area_width);
+    }
     let theme = state.theme();
     let gutter = card.horizontal_padding.min(area_width);
     let avail = area_width.saturating_sub(gutter).max(1);
@@ -217,30 +223,101 @@ fn content_card_lines(card: &ContentCard, state: &TuiApp, area_width: usize) -> 
         out.push(row);
     }
 
-    let content_limit = (card.role == CardRole::Context).then_some(MAX_CONTEXT_CARD_DISPLAY_LINES);
-    let mut content_rows = Vec::new();
-    let mut truncated = false;
-    'content: for line in card.content.lines() {
+    for line in card.content.lines() {
         let chunks = if line.is_empty() {
             vec![String::new()]
         } else {
             wrap_text(line, avail)
         };
         for chunk in chunks {
-            if content_limit.is_some_and(|limit| content_rows.len() == limit) {
+            out.push(content_row(chunk));
+        }
+    }
+    out.push(fill_row());
+    out
+}
+
+/// Prompt-injection events render as plain text instead of a card shell: a
+/// `提示词注入` label in the activity label tone (umber in the ferra theme)
+/// followed by the injected content in the activity detail tone (bark),
+/// capped at `MAX_INJECTION_DISPLAY_LINES` wrapped rows with a trailing `…`
+/// marker when the content overflows. The card's `copy_source` keeps the full
+/// original text.
+fn context_injection_lines(
+    card: &ContentCard,
+    state: &TuiApp,
+    area_width: usize,
+) -> Vec<Line<'static>> {
+    const LABEL: &str = "提示词注入 ";
+    let theme = state.theme();
+    let label_style = theme.activity.label.style();
+    let content_style = theme.activity.detail.style();
+    let avail = area_width.max(1);
+    let first_avail = avail.saturating_sub(UnicodeWidthStr::width(LABEL)).max(1);
+
+    let mut rows: Vec<Line<'static>> = Vec::new();
+    let mut truncated = false;
+    let mut first = true;
+    'content: for source_line in card.content.lines() {
+        if source_line.is_empty() {
+            continue;
+        }
+        let mut text = source_line.to_owned();
+        loop {
+            if rows.len() == MAX_INJECTION_DISPLAY_LINES {
                 truncated = true;
                 break 'content;
             }
-            content_rows.push(content_row(chunk));
+            // The first row shares its columns with the label; later rows use
+            // the full width.
+            let budget = if first { first_avail } else { avail };
+            let mut chunks = wrap_text(&text, budget);
+            let head = chunks.remove(0);
+            if first {
+                rows.push(Line::from(vec![
+                    Span::styled(LABEL.to_owned(), label_style),
+                    Span::styled(head.clone(), content_style),
+                ]));
+                first = false;
+            } else {
+                rows.push(Line::from(Span::styled(head.clone(), content_style)));
+            }
+            if chunks.is_empty() {
+                break;
+            }
+            text = chunks.join("");
         }
     }
-    if truncated {
-        // Reserve the final permitted row for an explicit truncation marker.
-        content_rows.truncate(MAX_CONTEXT_CARD_DISPLAY_LINES - 1);
-        content_rows.push(content_row("...".into()));
+    if rows.is_empty() {
+        rows.push(Line::from(Span::styled(LABEL.to_owned(), label_style)));
     }
-    out.extend(content_rows);
-    out.push(fill_row());
+    if truncated {
+        // End the final permitted row with an explicit ellipsis marker.
+        if let Some(last) = rows.last_mut() {
+            let text: String = last
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect();
+            let kept = trim_text_to_width(&text, avail.saturating_sub(1));
+            *last = Line::from(Span::styled(format!("{kept}…"), content_style));
+        }
+    }
+    rows
+}
+
+/// Trim `text` to at most `width` display columns without adding a marker.
+fn trim_text_to_width(text: &str, width: usize) -> String {
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let w = UnicodeWidthStr::width(ch.to_string().as_str());
+        if used + w > width {
+            break;
+        }
+        used += w;
+        out.push(ch);
+    }
     out
 }
 

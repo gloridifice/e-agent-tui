@@ -45,6 +45,14 @@ pub struct HostMessageSource {
     pub producer: Option<String>,
 }
 
+/// One DSH-supplied mutation fragment narrowed from opaque result `meta`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostMutationHunk {
+    pub path: Option<String>,
+    pub old_text: Option<String>,
+    pub new_text: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TokenUsage {
     pub input_tokens: u64,
@@ -93,6 +101,7 @@ pub enum HostEventKind {
         output: String,
         is_error: bool,
         output_truncated: bool,
+        mutation_hunks: Vec<HostMutationHunk>,
     },
     TurnStart,
     StepStart {

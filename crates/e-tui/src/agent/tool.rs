@@ -87,6 +87,7 @@ pub enum ToolReference {
     PlainText {
         text: String,
     },
+    Hunks(Vec<crate::preview::MutationHunk>),
     Custom {
         namespace: String,
         kind: String,
@@ -108,6 +109,18 @@ impl ToolReference {
                 start: *start,
                 lines: lines.clone(),
             },
+            Self::Hunks(hunks) => Self::Hunks(
+                hunks
+                    .iter()
+                    .map(|hunk| crate::preview::MutationHunk {
+                        path: hunk
+                            .path
+                            .as_deref()
+                            .map(|path| workspace_relative_path(path, workspace)),
+                        ..hunk.clone()
+                    })
+                    .collect(),
+            ),
             _ => self.clone(),
         }
     }
@@ -152,6 +165,7 @@ impl ToolReference {
                 PreviewContent::PlainText(text.clone())
             }
             Self::Diff { diff, .. } => PreviewContent::Diff(diff.clone()),
+            Self::Hunks(hunks) => PreviewContent::Hunks(hunks.clone()),
             Self::Lines { path, start, lines } => PreviewContent::Lines {
                 path: path.clone(),
                 start: *start,
@@ -184,6 +198,9 @@ pub struct ToolActivity {
     pub state: ActivityState,
     pub reference: Option<ToolReference>,
     pub items: Vec<ToolItem>,
+    /// Adapter-provided structured preview seed (common-format tools).
+    /// Mutation tools carry their preview through `reference` instead.
+    pub preview: Option<crate::preview::ToolPreview>,
 }
 
 #[cfg(test)]

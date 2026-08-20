@@ -6,14 +6,18 @@ use ratatui::{
 };
 
 use crate::{
-    preview::{PreviewContent, PreviewPaneState, PreviewState},
+    preview::{
+        LineSelection, PreviewContent, PreviewPaneState, PreviewState, ToolMetrics, ToolPreview,
+        ToolPreviewPrimary, ToolPreviewSecondary,
+    },
     render::{render_markdown, RenderOptions},
     theme::Theme,
     transcript_layout::wrap_line,
-    ui::component::diff,
+    ui::component::{ansi, diff},
 };
 
 pub fn render(frame: &mut Frame, area: Rect, preview: &mut PreviewPaneState, theme: &Theme) {
+    let inner_width = usize::from(area.width).saturating_sub(2).max(1);
     let lines = match &preview.state {
         PreviewState::Empty => vec![Line::styled("No preview", theme.surface.muted_text.style())],
         PreviewState::Loading { .. } => vec![Line::styled(
@@ -24,11 +28,10 @@ pub fn render(frame: &mut Frame, area: Rect, preview: &mut PreviewPaneState, the
             format!("Preview error: {error}"),
             theme.log.error.style(),
         )],
-        PreviewState::Ready(content) => content_lines(content, theme),
+        PreviewState::Ready(content) => content_lines(content, theme, inner_width),
     };
     // Wrap every row to the padded content width first so long reasoning
     // lines stay fully visible instead of truncating at the pane edge.
-    let inner_width = usize::from(area.width).saturating_sub(2).max(1);
     let mut lines = lines
         .into_iter()
         .flat_map(|line| wrap_line(line, inner_width))
@@ -58,7 +61,7 @@ pub fn render(frame: &mut Frame, area: Rect, preview: &mut PreviewPaneState, the
     );
 }
 
-fn content_lines(content: &PreviewContent, theme: &Theme) -> Vec<Line<'static>> {
+fn content_lines(content: &PreviewContent, theme: &Theme, width: usize) -> Vec<Line<'static>> {
     match content {
         PreviewContent::Link { label, url } => vec![Line::from(vec![
             Span::styled(
@@ -115,35 +118,166 @@ fn content_lines(content: &PreviewContent, theme: &Theme) -> Vec<Line<'static>> 
             .lines()
             .map(|line| Line::styled(line.to_owned(), theme.markdown.text.style()))
             .collect(),
-        PreviewContent::Reasoning(source) => {
-            // Full markdown rendering (bold/italic/code/links/…), with every
-            // foreground forced to the muted (Bark) tone so the Thinking
-            // phase stays visually secondary; backgrounds and modifiers
-            // (bold, italic, underline, strikethrough) are preserved. The
-            // renderer's collapse windows are disabled for preview.
-            let mut next_unit = 0u64;
-            let mut units = std::collections::HashMap::new();
-            let options = RenderOptions {
-                collapse_rows: usize::MAX,
-                mermaid_enabled: false,
-                ..Default::default()
-            };
-            let bark = theme.surface.muted_text.fg;
-            render_markdown(source, theme, &mut next_unit, &options, &mut units)
-                .into_iter()
-                .map(|render_line| {
-                    let mut line = render_line.line;
-                    line.style = line.style.fg(bark);
-                    for span in line.spans.iter_mut() {
-                        span.style = span.style.fg(bark);
-                    }
-                    line
-                })
-                .collect()
+        PreviewContent::Reasoning(source) | PreviewContent::MutedMarkdown(source) => {
+            muted_markdown_lines(source, theme, width)
         }
+        PreviewContent::Tool(preview) => tool_lines(preview, theme, width),
+        PreviewContent::Hunks(hunks) => hunks
+            .iter()
+            .flat_map(|hunk| hunk_lines(hunk, theme))
+            .collect(),
         PreviewContent::PlainText(text) => text
             .lines()
             .map(|line| Line::styled(line.to_owned(), theme.surface.primary_text.style()))
             .collect(),
     }
+}
+
+/// Full Markdown rendering with every foreground forced to the muted (Bark)
+/// tone while preserving Markdown modifiers and backgrounds. Shared by the
+/// reasoning and injected-context content kinds.
+fn muted_markdown_lines(source: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+    let mut next_unit = 0u64;
+    let mut units = std::collections::HashMap::new();
+    let options = RenderOptions {
+        collapse_rows: usize::MAX,
+        mermaid_enabled: false,
+        table_width: Some(width),
+        ..Default::default()
+    };
+    let bark = theme.surface.muted_text.fg;
+    render_markdown(source, theme, &mut next_unit, &options, &mut units)
+        .into_iter()
+        .map(|render_line| {
+            let mut line = render_line.line;
+            line.style = line.style.fg(bark);
+            for span in line.spans.iter_mut() {
+                span.style = span.style.fg(bark);
+            }
+            line
+        })
+        .collect()
+}
+
+fn tool_lines(preview: &ToolPreview, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    lines.push(Line::styled(
+        preview.name.clone(),
+        theme.activity.label.style(),
+    ));
+    match &preview.primary {
+        ToolPreviewPrimary::Location { path, lines: range } => {
+            lines.push(Line::styled(
+                location_text(path, range),
+                theme.surface.primary_text.style(),
+            ));
+        }
+        ToolPreviewPrimary::Command { command, metrics } => {
+            lines.push(Line::from(vec![
+                Span::styled("$ ", theme.input.prompt.style()),
+                Span::styled(command.clone(), theme.surface.primary_text.style()),
+            ]));
+            lines.push(Line::styled(
+                metrics_text(metrics),
+                theme.activity.detail.style(),
+            ));
+        }
+        ToolPreviewPrimary::Search { query, path } => {
+            lines.push(Line::styled(
+                format!("\"{query}\""),
+                theme.surface.primary_text.style(),
+            ));
+            if let Some(path) = path {
+                lines.push(Line::from(vec![
+                    Span::styled("at ", theme.activity.detail.style()),
+                    Span::styled(format!("\"{path}\""), theme.surface.primary_text.style()),
+                ]));
+            }
+        }
+        ToolPreviewPrimary::Json { source, truncated } => {
+            for line in source.lines() {
+                lines.push(Line::styled(
+                    line.to_owned(),
+                    theme.surface.primary_text.style(),
+                ));
+            }
+            if *truncated {
+                lines.push(Line::styled("…", theme.activity.detail.style()));
+            }
+        }
+    }
+    if let Some(secondary) = &preview.secondary {
+        lines.push(Line::raw(""));
+        match secondary {
+            ToolPreviewSecondary::Terminal { output, truncated } => {
+                lines.extend(ansi::terminal_lines(
+                    output,
+                    theme.surface.muted_text.style(),
+                    theme.activity.label.style(),
+                ));
+                if *truncated {
+                    lines.push(Line::styled("…", theme.activity.detail.style()));
+                }
+            }
+        }
+    }
+    // Terminal output is the only section rendered as-is; everything else is
+    // already width-agnostic logical rows the caller wraps.
+    let _ = width;
+    lines
+}
+
+fn location_text(path: &str, range: &Option<LineSelection>) -> String {
+    match range {
+        None => path.to_owned(),
+        Some(LineSelection { start, end: None }) => format!("{path}:{start}-"),
+        Some(LineSelection {
+            start,
+            end: Some(end),
+        }) if end == start => {
+            format!("{path}:{start}")
+        }
+        Some(LineSelection {
+            start,
+            end: Some(end),
+        }) => format!("{path}:{start}-{end}"),
+    }
+}
+
+fn metrics_text(metrics: &ToolMetrics) -> String {
+    let noun = if metrics.output_lines == 1 {
+        "line"
+    } else {
+        "lines"
+    };
+    let suffix = if metrics.truncated { "+" } else { "" };
+    let mut text = format!("{noun} {}{suffix}", metrics.output_lines);
+    if let Some(duration_ms) = metrics.duration_ms {
+        text.push_str(&format!(", duration {:.1}s", duration_ms as f64 / 1000.0));
+    }
+    text
+}
+
+fn hunk_lines(hunk: &crate::preview::MutationHunk, theme: &Theme) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    if let Some(path) = &hunk.path {
+        lines.push(Line::styled(path.clone(), theme.markdown.code_meta.style()));
+    }
+    if let Some(anchor) = hunk.anchor_line {
+        lines.push(Line::styled(
+            format!("@ line {anchor}"),
+            theme.markdown.code_meta.style(),
+        ));
+    }
+    if let Some(old) = &hunk.old {
+        for line in old.lines() {
+            lines.push(Line::styled(format!("- {line}"), diff::removed(theme)));
+        }
+    }
+    if let Some(new) = &hunk.new {
+        for line in new.lines() {
+            lines.push(Line::styled(format!("+ {line}"), diff::added(theme)));
+        }
+    }
+    lines
 }

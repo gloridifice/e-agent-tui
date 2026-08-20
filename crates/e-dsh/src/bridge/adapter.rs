@@ -13,14 +13,15 @@ use e_tui::{
         Preset, ProxyRoute, Question, QuestionOption, SessionEvent, SessionSummary, Skill,
         TimelineEvent,
     },
+    preview::{LineSelection, MutationHunk, ToolMetrics, ToolPreview, ToolPreviewPrimary},
 };
 use serde_json::Value;
 
 use crate::protocol::{
     ClientMessage, CommandInfo, CommandInputInfo, HostContentBlock, HostEvent, HostEventKind,
-    HostLifecycleOutcome, HostMessageSource, HostSurfaceOp, ModelCurrent, ModelInfo,
-    ModelProviderInfo, PresetInfo, ProviderInfo, ProxyInfo, QuestionAnswer, QuestionItem,
-    QuestionOption as WireQuestionOption, ServerMessage, SessionInfo, SkillInfo,
+    HostLifecycleOutcome, HostMessageSource, HostMutationHunk, HostSurfaceOp, ModelCurrent,
+    ModelInfo, ModelProviderInfo, PresetInfo, ProviderInfo, ProxyInfo, QuestionAnswer,
+    QuestionItem, QuestionOption as WireQuestionOption, ServerMessage, SessionInfo, SkillInfo,
     TokenUsage as HostTokenUsage,
 };
 
@@ -511,6 +512,7 @@ fn normalize_host_fact(kind: HostEventKind) -> TimelineFact {
             output,
             is_error,
             output_truncated,
+            mutation_hunks,
         } => TimelineFact::ToolResult {
             activity_id: call_id,
             state: if is_error || exit_code(&output).is_some_and(|code| code != 0) {
@@ -520,6 +522,10 @@ fn normalize_host_fact(kind: HostEventKind) -> TimelineFact {
             },
             output,
             output_truncated,
+            mutation_hunks: mutation_hunks
+                .into_iter()
+                .map(normalize_mutation_hunk)
+                .collect(),
         },
         HostEventKind::TurnStart => TimelineFact::TurnStart,
         HostEventKind::StepStart { turn, step } => TimelineFact::StepStart { turn, step },
@@ -658,7 +664,8 @@ fn normalize_tool_call(call_id: String, name: String, arguments: String) -> Tool
         .clone()
         .unwrap_or_else(|| normalized_tool_summary(&name, parsed.as_ref(), &arguments));
     let label = capability_label(&capability, &name).to_owned();
-    let reference = normalize_tool_reference(&capability, parsed.as_ref(), path);
+    let reference = normalize_tool_reference(&capability, parsed.as_ref(), path.clone());
+    let preview = normalize_tool_preview(&capability, &name, parsed.as_ref(), path, &arguments);
     let items = reference
         .clone()
         .map(|reference| {
@@ -677,8 +684,12 @@ fn normalize_tool_call(call_id: String, name: String, arguments: String) -> Tool
         state: ActivityState::Running,
         reference,
         items,
+        preview,
     }
 }
+
+/// Bound on the pretty-printed JSON carried in a generic tool Preview primary.
+const GENERIC_PREVIEW_MAX_CHARS: usize = 2000;
 
 fn normalize_tool_reference(
     capability: &ToolCapability,
@@ -694,15 +705,35 @@ fn normalize_tool_reference(
         })
     };
     match capability {
-        ToolCapability::Edit | ToolCapability::Replace | ToolCapability::Insert => {
-            let old = string(&["old_str", "old", "before"]);
-            let new = string(&["new_str", "new", "after", "insert_line"]);
-            match (old, new) {
-                (Some(old), Some(new)) => Some(ToolReference::Diff {
+        ToolCapability::Edit | ToolCapability::Replace => {
+            let old = string(&["old_str", "old_string", "old", "before"]);
+            let new = string(&["new_str", "new_string", "new", "after"]);
+            if old.is_some() || new.is_some() {
+                Some(ToolReference::Hunks(vec![MutationHunk {
                     path,
-                    diff: format!("- {old}\n+ {new}"),
-                }),
-                _ => path.map(|path| ToolReference::Path { path }),
+                    old,
+                    new,
+                    anchor_line: None,
+                }]))
+            } else {
+                path.map(|path| ToolReference::Path { path })
+            }
+        }
+        ToolCapability::Insert => {
+            let new = string(&["new_str", "new_string", "new", "after"]);
+            let anchor_line = arguments
+                .and_then(|value| value.get("insert_line"))
+                .and_then(Value::as_u64)
+                .map(|value| value as usize);
+            if new.is_some() || anchor_line.is_some() {
+                Some(ToolReference::Hunks(vec![MutationHunk {
+                    path,
+                    old: None,
+                    new,
+                    anchor_line,
+                }]))
+            } else {
+                path.map(|path| ToolReference::Path { path })
             }
         }
         ToolCapability::Read | ToolCapability::View => path.map(|path| ToolReference::Lines {
@@ -734,6 +765,164 @@ fn normalize_tool_reference(
     }
 }
 
+/// Build the structured preview seed for common-format tools. Mutation tools
+/// (Edit/Replace/Insert) return `None` because their preview rides in
+/// `reference`; interaction tools (Custom) also return `None`.
+fn normalize_tool_preview(
+    capability: &ToolCapability,
+    name: &str,
+    arguments: Option<&Value>,
+    path: Option<String>,
+    raw_arguments: &str,
+) -> Option<ToolPreview> {
+    let string = |keys: &[&str]| {
+        keys.iter().find_map(|key| {
+            arguments
+                .and_then(|value| value.get(*key))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+    };
+    match capability {
+        ToolCapability::Read | ToolCapability::View => {
+            let path = path?;
+            let lines = if matches!(capability, ToolCapability::View) {
+                // `str_replace_editor` view: `view_range: [start, end]`, where
+                // `end` may be -1 for "to EOF".
+                let range = arguments
+                    .and_then(|value| value.get("view_range"))
+                    .and_then(Value::as_array);
+                range.and_then(|range| {
+                    let start = range.first().and_then(Value::as_i64)?;
+                    if start < 1 {
+                        return None;
+                    }
+                    let end = range
+                        .get(1)
+                        .and_then(Value::as_i64)
+                        .filter(|end| *end >= start);
+                    Some(LineSelection {
+                        start: start as usize,
+                        end: end.map(|end| end as usize),
+                    })
+                })
+            } else {
+                // `read`: `offset` (1-based first line) + `limit` (count).
+                let offset = arguments
+                    .and_then(|value| value.get("offset"))
+                    .and_then(Value::as_u64)
+                    .map(|value| value as usize);
+                offset.map(|start| {
+                    let end = arguments
+                        .and_then(|value| value.get("limit"))
+                        .and_then(Value::as_u64)
+                        .filter(|limit| *limit > 0)
+                        .map(|limit| start.saturating_add(limit as usize).saturating_sub(1));
+                    LineSelection { start, end }
+                })
+            };
+            Some(ToolPreview {
+                name: preview_tool_name(capability, name).to_owned(),
+                primary: ToolPreviewPrimary::Location { path, lines },
+                secondary: None,
+            })
+        }
+        ToolCapability::Create => Some(ToolPreview {
+            name: "create".to_owned(),
+            primary: ToolPreviewPrimary::Location {
+                path: path?,
+                lines: None,
+            },
+            secondary: None,
+        }),
+        ToolCapability::Search => Some(ToolPreview {
+            name: "search".to_owned(),
+            primary: ToolPreviewPrimary::Search {
+                query: string(&["pattern", "query"]).unwrap_or_default(),
+                path,
+            },
+            secondary: None,
+        }),
+        ToolCapability::Command => {
+            let command = string(&["command", "cmd"])?;
+            Some(ToolPreview {
+                name: preview_tool_name(capability, name).to_owned(),
+                primary: ToolPreviewPrimary::Command {
+                    command,
+                    metrics: ToolMetrics::default(),
+                },
+                secondary: None,
+            })
+        }
+        ToolCapability::Generic => {
+            let (source, truncated) = bounded_json(arguments, raw_arguments);
+            Some(ToolPreview {
+                name: name.to_owned(),
+                primary: ToolPreviewPrimary::Json { source, truncated },
+                secondary: None,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Stable, bounded pretty JSON for unsupported tool arguments.
+fn bounded_json(arguments: Option<&Value>, raw: &str) -> (String, bool) {
+    let source = arguments
+        .map(|value| serde_json::to_string_pretty(value).unwrap_or_else(|_| raw.to_owned()))
+        .unwrap_or_else(|| raw.to_owned());
+    let chars = source.chars().count();
+    if chars <= GENERIC_PREVIEW_MAX_CHARS {
+        (source, false)
+    } else {
+        (
+            source.chars().take(GENERIC_PREVIEW_MAX_CHARS).collect(),
+            true,
+        )
+    }
+}
+
+/// Display name for a Command-capability tool: the original tool name for
+/// recognized shells (`bash`/`pwsh`/`cmd`/…), with `command` as the fallback.
+/// Shared by the transcript label and the Preview header so both surfaces
+/// preserve the real tool identity instead of collapsing into `command`.
+fn shell_display_name(name: &str) -> &str {
+    match name.to_ascii_lowercase().as_str() {
+        "bash" | "pwsh" | "powershell" | "cmd" | "sh" | "shell" => name,
+        _ => "command",
+    }
+}
+
+/// Preview-only display name: keeps command identity distinct while transcript
+/// labels stay unchanged.
+fn preview_tool_name<'a>(capability: &ToolCapability, name: &'a str) -> &'a str {
+    match capability {
+        ToolCapability::Read => "read",
+        ToolCapability::View => "view",
+        ToolCapability::Create => "create",
+        ToolCapability::Search => "search",
+        ToolCapability::Command => shell_display_name(name),
+        _ => name,
+    }
+}
+
+fn normalize_mutation_hunk(hunk: HostMutationHunk) -> MutationHunk {
+    MutationHunk {
+        path: hunk.path,
+        old: hunk.old_text,
+        new: hunk.new_text,
+        anchor_line: None,
+    }
+}
+
+fn legacy_mutation_hunk(hunk: MutationHunk) -> HostMutationHunk {
+    HostMutationHunk {
+        path: hunk.path,
+        old_text: hunk.old,
+        new_text: hunk.new,
+    }
+}
+
 pub fn normalize_capability(name: &str, arguments: Option<&Value>) -> ToolCapability {
     if let Some(command) = arguments.and_then(editor_command) {
         match command {
@@ -748,7 +937,12 @@ pub fn normalize_capability(name: &str, arguments: Option<&Value>) -> ToolCapabi
     let lower = name.to_ascii_lowercase();
     if lower.contains("grep") || lower.contains("search") || lower.contains("glob") {
         ToolCapability::Search
-    } else if lower.contains("bash") || lower.contains("command") || lower.contains("shell") {
+    } else if lower.contains("bash")
+        || lower.contains("command")
+        || lower.contains("shell")
+        || lower.contains("pwsh")
+        || lower.contains("cmd")
+    {
         ToolCapability::Command
     } else if lower.contains("create") {
         ToolCapability::Create
@@ -778,7 +972,7 @@ fn capability_label<'a>(capability: &ToolCapability, fallback: &'a str) -> &'a s
         ToolCapability::Insert => "insert",
         ToolCapability::Replace => "replace",
         ToolCapability::Search => "search",
-        ToolCapability::Command => "command",
+        ToolCapability::Command => shell_display_name(fallback),
         ToolCapability::Create => "create",
         ToolCapability::Generic | ToolCapability::Custom { .. } => fallback,
     }
@@ -919,11 +1113,16 @@ fn legacy_host_fact(fact: TimelineFact) -> HostEventKind {
             output,
             state,
             output_truncated,
+            mutation_hunks,
         } => HostEventKind::ToolResult {
             call_id: activity_id,
             output,
             is_error: state == ActivityState::Failure,
             output_truncated,
+            mutation_hunks: mutation_hunks
+                .into_iter()
+                .map(legacy_mutation_hunk)
+                .collect(),
         },
         TimelineFact::TurnStart => HostEventKind::TurnStart,
         TimelineFact::StepStart { turn, step } => HostEventKind::StepStart { turn, step },
@@ -1063,6 +1262,20 @@ fn legacy_tool_arguments(reference: Option<ToolReference>, summary: String) -> S
         }
         Some(ToolReference::Diff { path, diff }) => {
             serde_json::json!({ "path": path, "diff": diff }).to_string()
+        }
+        Some(ToolReference::Hunks(hunks)) => {
+            let hunks = hunks
+                .iter()
+                .map(|hunk| {
+                    serde_json::json!({
+                        "path": hunk.path,
+                        "old": hunk.old,
+                        "new": hunk.new,
+                        "anchor_line": hunk.anchor_line,
+                    })
+                })
+                .collect::<Vec<_>>();
+            serde_json::json!({ "hunks": hunks }).to_string()
         }
         Some(ToolReference::Lines { path, start, lines }) => {
             serde_json::json!({ "path": path, "start": start, "lines": lines }).to_string()
@@ -1253,6 +1466,153 @@ mod tests {
                 ..
             }] if path == "src/main.rs" && lines.is_empty()
         ));
+    }
+
+    #[test]
+    fn str_replace_editor_view_produces_location_preview() {
+        let activity = normalize_tool_call(
+            "c1".into(),
+            "str_replace_editor".into(),
+            r#"{"command":"view","path":"/repo/src/main.rs","view_range":[12,20]}"#.into(),
+        );
+        let preview = activity.preview.expect("view call carries a preview seed");
+        assert_eq!(preview.name, "view");
+        assert!(matches!(
+            &preview.primary,
+            ToolPreviewPrimary::Location {
+                path,
+                lines: Some(LineSelection {
+                    start: 12,
+                    end: Some(20)
+                })
+            } if path == "/repo/src/main.rs"
+        ));
+        assert!(preview.secondary.is_none());
+    }
+
+    #[test]
+    fn read_offset_limit_produces_closed_line_selection() {
+        let activity = normalize_tool_call(
+            "c1".into(),
+            "read".into(),
+            r#"{"file_path":"/repo/a.rs","offset":5,"limit":10}"#.into(),
+        );
+        let preview = activity.preview.expect("read call carries a preview seed");
+        assert!(matches!(
+            &preview.primary,
+            ToolPreviewPrimary::Location {
+                path,
+                lines: Some(LineSelection {
+                    start: 5,
+                    end: Some(14)
+                })
+            } if path == "/repo/a.rs"
+        ));
+    }
+
+    #[test]
+    fn str_replace_produces_requested_mutation_hunks() {
+        let activity = normalize_tool_call(
+            "c1".into(),
+            "str_replace_editor".into(),
+            r#"{"command":"str_replace","path":"/repo/a.rs","old_str":"hello","new_str":"hi"}"#
+                .into(),
+        );
+        assert!(
+            activity.preview.is_none(),
+            "mutations preview via reference"
+        );
+        assert!(matches!(
+            activity.reference,
+            Some(ToolReference::Hunks(ref hunks))
+                if hunks.len() == 1
+                    && hunks[0].old.as_deref() == Some("hello")
+                    && hunks[0].new.as_deref() == Some("hi")
+                    && hunks[0].anchor_line.is_none()
+        ));
+    }
+
+    #[test]
+    fn insert_produces_addition_only_hunk_with_anchor() {
+        let activity = normalize_tool_call(
+            "c1".into(),
+            "str_replace_editor".into(),
+            r#"{"command":"insert","path":"/repo/a.rs","insert_line":3,"new_str":"use x;"}"#.into(),
+        );
+        assert!(matches!(
+            activity.reference,
+            Some(ToolReference::Hunks(ref hunks))
+                if hunks.len() == 1
+                    && hunks[0].old.is_none()
+                    && hunks[0].new.as_deref() == Some("use x;")
+                    && hunks[0].anchor_line == Some(3)
+        ));
+    }
+
+    #[test]
+    fn shell_tools_keep_distinct_preview_names() {
+        let bash = normalize_tool_call("c1".into(), "bash".into(), r#"{"command":"ls"}"#.into());
+        let pwsh = normalize_tool_call("c2".into(), "pwsh".into(), r#"{"command":"ls"}"#.into());
+        let bash_preview = bash.preview.expect("bash preview");
+        let pwsh_preview = pwsh.preview.expect("pwsh preview");
+        assert_eq!(bash_preview.name, "bash");
+        assert_eq!(pwsh_preview.name, "pwsh");
+        assert!(matches!(
+            &pwsh_preview.primary,
+            ToolPreviewPrimary::Command { command, metrics }
+                if command == "ls" && *metrics == ToolMetrics::default()
+        ));
+    }
+
+    #[test]
+    fn shell_tools_preserve_transcript_label_and_command_is_fallback() {
+        let bash = normalize_tool_call("c1".into(), "bash".into(), r#"{"command":"ls"}"#.into());
+        let pwsh = normalize_tool_call("c2".into(), "pwsh".into(), r#"{"command":"ls"}"#.into());
+        let cmd = normalize_tool_call("c3".into(), "cmd".into(), r#"{"command":"dir"}"#.into());
+        assert_eq!(bash.label, "bash");
+        assert_eq!(pwsh.label, "pwsh");
+        assert_eq!(cmd.label, "cmd");
+        // A Command-capability name that is not a recognized shell falls back
+        // to the generic `command` label.
+        let weird = normalize_tool_call(
+            "c4".into(),
+            "run_command".into(),
+            r#"{"command":"x"}"#.into(),
+        );
+        assert_eq!(weird.label, "command");
+    }
+
+    #[test]
+    fn unknown_tool_produces_bounded_json_preview() {
+        let activity = normalize_tool_call(
+            "c1".into(),
+            "write".into(),
+            r#"{"file_path":"/repo/a.rs","content":"fn main() {}"}"#.into(),
+        );
+        let preview = activity.preview.expect("generic tool preview");
+        assert_eq!(preview.name, "write");
+        assert!(matches!(
+            &preview.primary,
+            ToolPreviewPrimary::Json { source, truncated: false } if source.contains("file_path")
+        ));
+    }
+
+    #[test]
+    fn tool_result_meta_diffs_narrow_to_mutation_hunks() {
+        let wire = ServerMessage::from_wire(
+            r#"{"type":"event","event":{"seq":8,"type":"tool/result","data":{"message":{"content":[{"toolCallId":"c1","content":[{"type":"text","text":"ok"}]}]},"meta":{"diffs":[{"path":"/repo/a.rs","oldText":"hello","newText":"hi"}]}}}}"#,
+        )
+        .expect("tool result parses");
+        let event = normalize_server_message(wire);
+        let AgentEvent::Timeline(TimelineEvent::Append(record)) = event else {
+            panic!("expected normalized timeline event");
+        };
+        let TimelineFact::ToolResult { mutation_hunks, .. } = record.fact else {
+            panic!("expected tool result");
+        };
+        assert_eq!(mutation_hunks.len(), 1);
+        assert_eq!(mutation_hunks[0].old.as_deref(), Some("hello"));
+        assert_eq!(mutation_hunks[0].new.as_deref(), Some("hi"));
     }
 
     #[test]

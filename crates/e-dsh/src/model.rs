@@ -38,6 +38,7 @@ use e_tui::render::RenderLine;
 use e_tui::render::RenderOptions;
 use e_tui::{
     agent::timeline::{SurfaceOperation, TimelineFact, TimelineRecord, TokenUsage},
+    preview::{MutationHunk, ToolMetrics, ToolPreview, ToolPreviewPrimary, ToolPreviewSecondary},
     ActivityTransition, PreviewContent, PreviewKey, PreviewRef, PreviewRevision, TuiApp,
 };
 
@@ -1392,6 +1393,23 @@ impl AppState {
             .flatten();
         self.insert_transcript_item(item.clone(), surface_seq, preferred);
 
+        // Injected context previews as complete muted Markdown (prompt
+        // injection reads as a distinct content kind, never plain text).
+        if let DisplayItem::Card(card) = &item {
+            if card.role == CardRole::Context {
+                let id = card.id.clone();
+                let generation = self.transcript.generation();
+                self.preview_refs.insert(
+                    id.clone(),
+                    PreviewRef::Inline {
+                        key: PreviewKey(format!("context:{}", id.0)),
+                        revision: PreviewRevision(generation),
+                        content: PreviewContent::MutedMarkdown(card.copy_source.clone()),
+                    },
+                );
+            }
+        }
+
         #[cfg(test)]
         match item {
             DisplayItem::Card(card) if card.role == CardRole::User => {
@@ -1566,6 +1584,7 @@ impl AppState {
             expanded: self.render.expanded.clone(),
             collapse_rows: self.config.atomic_collapse_rows,
             mermaid_enabled: self.config.mermaid_enabled,
+            table_width: Some(self.render.transcript_cache.width),
         };
         let lines = {
             let render = &mut self.render;
@@ -1641,6 +1660,7 @@ impl AppState {
                     output,
                     state,
                     output_truncated,
+                    mutation_hunks,
                 } = &event.fact
                 {
                     if let Some(seq) = event.sequence {
@@ -1654,6 +1674,7 @@ impl AppState {
                             output_truncated: *output_truncated,
                             time_ms: now_ms,
                             surface_seq: event.sequence,
+                            mutation_hunks: mutation_hunks.clone(),
                         },
                     );
                 }
@@ -1688,32 +1709,63 @@ impl AppState {
                     })
                     .collect::<Vec<_>>();
                 self.tool_items.insert(row_id.clone(), items);
-                let reference = activity
-                    .reference
-                    .as_ref()
-                    .map(|reference| reference.relativized(workspace.as_deref()));
-                if let Some(reference) = reference.as_ref().and_then(|reference| {
-                    reference.preview_reference(
-                        &format!("tool:{}", activity.id),
-                        PreviewRevision(event.sequence.unwrap_or_default()),
-                    )
-                }) {
-                    self.preview_refs.insert(row_id.clone(), reference);
+                let revision = PreviewRevision(event.sequence.unwrap_or_default());
+                let key = PreviewKey(format!("tool:{}", activity.id));
+                // Common-format tools carry a structured seed; mutation tools
+                // carry their preview through `reference` instead.
+                let content = if let Some(preview) = activity.preview.as_ref() {
+                    let preview = relativize_tool_preview(preview, workspace.as_deref());
+                    self.projector
+                        .tool_preview_seeds
+                        .insert(activity.id.clone(), preview.clone());
+                    Some(PreviewContent::Tool(preview))
+                } else {
+                    activity.reference.as_ref().and_then(|reference| {
+                        reference
+                            .relativized(workspace.as_deref())
+                            .preview_content()
+                    })
+                };
+                if let Some(content) = content {
+                    self.preview_refs.insert(
+                        row_id.clone(),
+                        PreviewRef::Inline {
+                            key,
+                            revision,
+                            content,
+                        },
+                    );
                 }
             }
             TimelineFact::ToolResult {
                 activity_id,
                 output,
+                output_truncated,
+                mutation_hunks,
                 ..
-            } if !output.is_empty() => {
-                self.preview_refs.insert(
-                    row_id.clone(),
-                    PreviewRef::Inline {
-                        key: PreviewKey(format!("tool:{activity_id}")),
-                        revision: PreviewRevision(event.sequence.unwrap_or_default()),
-                        content: PreviewContent::PlainText(output.clone()),
-                    },
+            } => {
+                let seed = self.projector.tool_preview_seeds.get(activity_id).cloned();
+                let metrics = ToolMetrics {
+                    output_lines: row.output_lines.unwrap_or(output.lines().count()),
+                    truncated: *output_truncated || row.output_lines_truncated,
+                    duration_ms: row.duration_ms,
+                };
+                let content = tool_preview_result(
+                    seed.as_ref(),
+                    Some((output, *output_truncated, mutation_hunks)),
+                    Some(metrics),
+                    self.session.session_cwd.as_deref(),
                 );
+                if let Some(content) = content {
+                    self.preview_refs.insert(
+                        row_id.clone(),
+                        PreviewRef::Inline {
+                            key: PreviewKey(format!("tool:{activity_id}")),
+                            revision: PreviewRevision(event.sequence.unwrap_or_default()),
+                            content,
+                        },
+                    );
+                }
             }
             _ => {}
         }
@@ -1732,6 +1784,40 @@ impl AppState {
                 row.output_lines = Some(pending.output.lines().count());
                 row.output_lines_truncated = pending.output_truncated;
                 row.live_duration_since = None;
+            }
+        }
+        // A call that carried a staged result (result-before-call history)
+        // finalizes its structured preview from the same settled facts as the
+        // live result path.
+        if let (TimelineFact::ToolCall(activity), Some(pending)) = (&event.fact, &pending_result) {
+            let seed = self.projector.tool_preview_seeds.get(&activity.id).cloned();
+            let metrics = ToolMetrics {
+                output_lines: row.output_lines.unwrap_or(pending.output.lines().count()),
+                truncated: pending.output_truncated || row.output_lines_truncated,
+                duration_ms: row.duration_ms,
+            };
+            let revision = pending
+                .surface_seq
+                .unwrap_or(event.sequence.unwrap_or_default());
+            let content = tool_preview_result(
+                seed.as_ref(),
+                Some((
+                    &pending.output,
+                    pending.output_truncated,
+                    &pending.mutation_hunks,
+                )),
+                Some(metrics),
+                self.session.session_cwd.as_deref(),
+            );
+            if let Some(content) = content {
+                self.preview_refs.insert(
+                    row_id.clone(),
+                    PreviewRef::Inline {
+                        key: PreviewKey(format!("tool:{}", activity.id)),
+                        revision: PreviewRevision(revision),
+                        content,
+                    },
+                );
             }
         }
         let surface_seq = event.sequence.filter(|_| is_surface_node(&event.fact));
@@ -1785,6 +1871,7 @@ impl AppState {
             output,
             state,
             output_truncated,
+            ..
         } = &event.fact
         {
             self.apply_tool_result_to_display(
@@ -2381,6 +2468,73 @@ fn host_event_time(event: &TimelineRecord) -> u64 {
     })
 }
 
+/// Rewrite path-bearing primaries to their workspace-relative display form.
+fn relativize_tool_preview(preview: &ToolPreview, workspace: Option<&str>) -> ToolPreview {
+    let mut out = preview.clone();
+    match &mut out.primary {
+        ToolPreviewPrimary::Location { path, .. } => {
+            *path = e_tui::agent::tool::workspace_relative_path(path, workspace);
+        }
+        ToolPreviewPrimary::Search { path, .. } => {
+            if let Some(path) = path.as_mut() {
+                *path = e_tui::agent::tool::workspace_relative_path(path, workspace);
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+/// Enrich a stored preview seed with settled result facts. `None` keeps the
+/// existing call-time preview: primary-only tools (read/view/create/search/
+/// generic) never grow a secondary, and a mutation tool without result hunks
+/// retains its call-time fragment.
+fn tool_preview_result(
+    seed: Option<&ToolPreview>,
+    result: Option<(&str, bool, &[MutationHunk])>,
+    metrics: Option<ToolMetrics>,
+    workspace: Option<&str>,
+) -> Option<PreviewContent> {
+    match seed {
+        Some(seed) => match &seed.primary {
+            ToolPreviewPrimary::Command { command, .. } => {
+                let (output, truncated, _) = result?;
+                let metrics = metrics?;
+                Some(PreviewContent::Tool(ToolPreview {
+                    name: seed.name.clone(),
+                    primary: ToolPreviewPrimary::Command {
+                        command: command.clone(),
+                        metrics,
+                    },
+                    secondary: Some(ToolPreviewSecondary::Terminal {
+                        output: output.to_owned(),
+                        truncated,
+                    }),
+                }))
+            }
+            _ => None,
+        },
+        None => {
+            let (_, _, hunks) = result?;
+            if hunks.is_empty() {
+                None
+            } else {
+                Some(PreviewContent::Hunks(
+                    hunks
+                        .iter()
+                        .map(|hunk| MutationHunk {
+                            path: hunk.path.as_deref().map(|path| {
+                                e_tui::agent::tool::workspace_relative_path(path, workspace)
+                            }),
+                            ..hunk.clone()
+                        })
+                        .collect(),
+                ))
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2422,6 +2576,30 @@ mod tests {
             }),
         ));
         assert!(matches!(&s.msgs[0], Msg::System { .. }));
+    }
+
+    #[test]
+    fn context_injection_previews_as_muted_markdown() {
+        let mut s = AppState::default();
+        s.apply_event(&event(
+            "user/message",
+            serde_json::json!({
+                "content": [{"type": "text", "text": "**bold** injected"}],
+                "source": {"kind": "context", "form": "instructions"}
+            }),
+        ));
+        let node = &s.transcript.nodes()[0];
+        let reference = s
+            .preview_refs
+            .get(node.id())
+            .expect("context card owns a muted-markdown preview");
+        assert!(matches!(
+            reference,
+            e_tui::preview::PreviewRef::Inline {
+                content: e_tui::preview::PreviewContent::MutedMarkdown(text),
+                ..
+            } if text == "**bold** injected"
+        ));
     }
 
     #[test]
@@ -2483,6 +2661,166 @@ mod tests {
     }
 
     #[test]
+    fn command_result_enriches_preview_with_metrics_and_output() {
+        let mut s = AppState::default();
+        s.apply_event(&event_seq(
+            "tool/call",
+            1,
+            serde_json::json!({
+                "callId": "c1", "name": "bash",
+                "arguments": "{\"command\": \"npm run build\"}"
+            }),
+        ));
+        s.apply_event(&event_seq(
+            "tool/result",
+            2,
+            serde_json::json!({
+                "message": {"content": [{
+                    "toolCallId": "c1",
+                    "content": [{"type": "text", "text": "line1\nline2"}]
+                }]}
+            }),
+        ));
+        let reference = s
+            .preview_refs
+            .get(s.transcript.nodes()[0].id())
+            .expect("command row owns a preview");
+        assert!(matches!(
+            reference,
+            e_tui::preview::PreviewRef::Inline {
+                content: e_tui::preview::PreviewContent::Tool(preview),
+                ..
+            } if preview.name == "bash"
+                && matches!(
+                    &preview.primary,
+                    e_tui::preview::ToolPreviewPrimary::Command { command, metrics }
+                        if command == "npm run build"
+                            && metrics.output_lines == 2
+                            && metrics.duration_ms.is_some()
+                )
+                && matches!(
+                    &preview.secondary,
+                    Some(e_tui::preview::ToolPreviewSecondary::Terminal { output, truncated: false })
+                        if output == "line1\nline2"
+                )
+        ));
+    }
+
+    #[test]
+    fn read_result_keeps_primary_only_location_preview() {
+        let mut s = AppState::default();
+        s.apply_event(&event_seq(
+            "tool/call",
+            1,
+            serde_json::json!({
+                "callId": "c1", "name": "str_replace_editor",
+                "arguments": "{\"command\":\"view\",\"path\":\"src/main.rs\"}"
+            }),
+        ));
+        s.apply_event(&event_seq(
+            "tool/result",
+            2,
+            serde_json::json!({
+                "message": {"content": [{
+                    "toolCallId": "c1",
+                    "content": [{"type": "text", "text": "fn main() {}"}]
+                }]}
+            }),
+        ));
+        let reference = s
+            .preview_refs
+            .get(s.transcript.nodes()[0].id())
+            .expect("read row owns a preview");
+        assert!(matches!(
+            reference,
+            e_tui::preview::PreviewRef::Inline {
+                content: e_tui::preview::PreviewContent::Tool(preview),
+                ..
+            } if preview.secondary.is_none()
+                && matches!(
+                    &preview.primary,
+                    e_tui::preview::ToolPreviewPrimary::Location { path, .. }
+                        if path == "src/main.rs"
+                )
+        ));
+    }
+
+    #[test]
+    fn edit_result_meta_diffs_replace_pending_hunk() {
+        let mut s = AppState::default();
+        s.apply_event(&event_seq(
+            "tool/call",
+            1,
+            serde_json::json!({
+                "callId": "c1", "name": "edit",
+                "arguments": "{\"file_path\":\"a.rs\",\"old_string\":\"hello\",\"new_string\":\"hi\"}"
+            }),
+        ));
+        s.apply_event(&event_seq(
+            "tool/result",
+            2,
+            serde_json::json!({
+                "message": {"content": [{
+                    "toolCallId": "c1",
+                    "content": [{"type": "text", "text": "ok"}]
+                }]},
+                "meta": {"diffs": [
+                    {"path": "a.rs", "oldText": "hello\nworld", "newText": "hi\nthere"}
+                ]}
+            }),
+        ));
+        let reference = s
+            .preview_refs
+            .get(s.transcript.nodes()[0].id())
+            .expect("edit row owns a preview");
+        assert!(matches!(
+            reference,
+            e_tui::preview::PreviewRef::Inline {
+                content: e_tui::preview::PreviewContent::Hunks(hunks),
+                ..
+            } if hunks.len() == 1
+                && hunks[0].old.as_deref() == Some("hello\nworld")
+                && hunks[0].new.as_deref() == Some("hi\nthere")
+        ));
+    }
+
+    #[test]
+    fn str_replace_result_keeps_requested_hunk() {
+        let mut s = AppState::default();
+        s.apply_event(&event_seq(
+            "tool/call",
+            1,
+            serde_json::json!({
+                "callId": "c1", "name": "str_replace_editor",
+                "arguments": "{\"command\":\"str_replace\",\"path\":\"a.rs\",\"old_str\":\"hello\",\"new_str\":\"hi\"}"
+            }),
+        ));
+        s.apply_event(&event_seq(
+            "tool/result",
+            2,
+            serde_json::json!({
+                "message": {"content": [{
+                    "toolCallId": "c1",
+                    "content": [{"type": "text", "text": "ok"}]
+                }]}
+            }),
+        ));
+        let reference = s
+            .preview_refs
+            .get(s.transcript.nodes()[0].id())
+            .expect("str_replace row owns a preview");
+        assert!(matches!(
+            reference,
+            e_tui::preview::PreviewRef::Inline {
+                content: e_tui::preview::PreviewContent::Hunks(hunks),
+                ..
+            } if hunks.len() == 1
+                && hunks[0].old.as_deref() == Some("hello")
+                && hunks[0].new.as_deref() == Some("hi")
+        ));
+    }
+
+    #[test]
     fn tool_card_lifecycle_exit_code() {
         let mut s = AppState::default();
         s.apply_event(&event(
@@ -2536,9 +2874,14 @@ mod tests {
         assert!(matches!(
             reference,
             e_tui::preview::PreviewRef::Inline {
-                content: e_tui::preview::PreviewContent::Path(path),
+                content: e_tui::preview::PreviewContent::Tool(preview),
                 ..
-            } if path == "src/main.rs"
+            } if preview.name == "view"
+                && matches!(
+                    &preview.primary,
+                    e_tui::preview::ToolPreviewPrimary::Location { path, lines: None }
+                        if path == "src/main.rs"
+                )
         ));
         let stored = &state.tool_items[state.transcript.nodes()[0].id()][0].reference;
         assert!(
@@ -2567,9 +2910,13 @@ mod tests {
         assert!(matches!(
             reference,
             e_tui::preview::PreviewRef::Inline {
-                content: e_tui::preview::PreviewContent::Path(path),
+                content: e_tui::preview::PreviewContent::Tool(preview),
                 ..
-            } if path == "C:/other/lib.rs"
+            } if matches!(
+                &preview.primary,
+                e_tui::preview::ToolPreviewPrimary::Location { path, .. }
+                    if path == "C:/other/lib.rs"
+            )
         ));
     }
 

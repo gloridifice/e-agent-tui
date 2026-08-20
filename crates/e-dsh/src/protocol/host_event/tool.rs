@@ -43,6 +43,7 @@ pub(super) fn parse(event_type: &str, data: &Value) -> super::HostEventKind {
                         == Some(true),
                 output_truncated: data.get("dshTuiOutputTrimmed").and_then(Value::as_bool)
                     == Some(true),
+                mutation_hunks: parse_mutation_hunks(data),
             }
         }
         "tool/code-dispatch-start" => HostEventKind::CodeDispatchStart {
@@ -64,4 +65,40 @@ pub(super) fn parse(event_type: &str, data: &Value) -> super::HostEventKind {
         },
         _ => unreachable!("tool parser called for {event_type}"),
     }
+}
+
+/// Narrow `data.meta.diffs` into ordered mutation hunks. Malformed, absent, or
+/// bridge-trimmed metadata soft-falls to an empty list; the caller degrades to
+/// the path/JSON fallback rather than exposing arbitrary payloads.
+fn parse_mutation_hunks(data: &Value) -> Vec<super::HostMutationHunk> {
+    let Some(diffs) = data
+        .get("meta")
+        .and_then(|meta| meta.get("diffs"))
+        .and_then(Value::as_array)
+    else {
+        return Vec::new();
+    };
+    diffs
+        .iter()
+        .filter_map(|entry| {
+            let path = entry.get("path").and_then(Value::as_str).map(str::to_owned);
+            let old_text = entry
+                .get("oldText")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let new_text = entry
+                .get("newText")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            if old_text.is_some() || new_text.is_some() {
+                Some(super::HostMutationHunk {
+                    path,
+                    old_text,
+                    new_text,
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
 }

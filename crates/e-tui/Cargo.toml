@@ -21,4 +21,5 @@ tracy-client = { version = "0.18", optional = true, default-features = false, fe
 ] }
 unicode-segmentation = "1.13"
 unicode-width = "0.2"
+vte = "0.13"
 wasmi = "1.1"

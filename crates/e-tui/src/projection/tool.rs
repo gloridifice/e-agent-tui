@@ -186,6 +186,7 @@ impl ToolProjectionState {
             output,
             state,
             output_truncated,
+            ..
         } = &event.fact
         else {
             return None;

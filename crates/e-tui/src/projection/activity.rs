@@ -1,5 +1,7 @@
 use crate::display::{ActivityRow, ActivityState, DisplayId};
 
+use crate::preview::MutationHunk;
+
 use super::EventProjector;
 
 #[derive(Debug, Clone)]
@@ -9,6 +11,7 @@ pub struct PendingToolResult {
     pub output_truncated: bool,
     pub time_ms: u64,
     pub surface_seq: Option<u64>,
+    pub mutation_hunks: Vec<MutationHunk>,
 }
 
 #[derive(Debug, Clone)]

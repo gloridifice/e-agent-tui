@@ -45,9 +45,10 @@ pub use config::{Config, ThinkingDisplayMode};
 pub use event::InputEvent;
 pub use interaction::{InteractionModel, ScrollState};
 pub use preview::{
-    PreviewCache, PreviewContent, PreviewKey, PreviewPaneState, PreviewPolicy, PreviewRef,
-    PreviewRequest, PreviewRequestId, PreviewRevision, PreviewState, PreviewTarget,
-    PreviewWorkStats,
+    LineSelection, MutationHunk, PreviewCache, PreviewContent, PreviewKey, PreviewPaneState,
+    PreviewPolicy, PreviewRef, PreviewRequest, PreviewRequestId, PreviewRevision, PreviewState,
+    PreviewTarget, PreviewWorkStats, ToolMetrics, ToolPreview, ToolPreviewPrimary,
+    ToolPreviewSecondary,
 };
 pub use projection::TimelineModel;
 pub use reading::{

@@ -14,7 +14,7 @@ use crate::{
     agent::{timeline::TokenUsage, AgentEvent},
     catalog::CatalogModel,
     config::Config,
-    display::{DisplayItem, TranscriptFormat},
+    display::{CardRole, DisplayItem, TranscriptFormat},
     event::InputEvent,
     input::InputState,
     interaction::{InteractionModel, ScrollState},
@@ -267,7 +267,10 @@ impl TuiApp {
                         TranscriptFormat::Reasoning => PreviewContent::Reasoning(block.copy_source),
                         _ => PreviewContent::PlainText(block.copy_source),
                     },
-                    DisplayItem::Card(card) => PreviewContent::PlainText(card.copy_source),
+                    DisplayItem::Card(card) => match card.role {
+                        CardRole::Context => PreviewContent::MutedMarkdown(card.copy_source),
+                        _ => PreviewContent::PlainText(card.copy_source),
+                    },
                     DisplayItem::Activity(row) => PreviewContent::PlainText(
                         [row.label, row.summary]
                             .into_iter()

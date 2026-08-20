@@ -13,6 +13,7 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
 };
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::config::Theme;
@@ -69,6 +70,10 @@ pub struct RenderOptions {
     pub collapse_rows: usize,
     /// Whether mermaid fences render via WASM (D9); off = raw fence.
     pub mermaid_enabled: bool,
+    /// Optional maximum display width for markdown tables. When set, table
+    /// columns are sized to fit the limit and cell text wraps inside the
+    /// table instead of being emitted as one over-wide line.
+    pub table_width: Option<usize>,
 }
 
 impl Default for RenderOptions {
@@ -77,6 +82,7 @@ impl Default for RenderOptions {
             expanded: HashSet::new(),
             collapse_rows: 40,
             mermaid_enabled: true,
+            table_width: None,
         }
     }
 }
@@ -825,17 +831,39 @@ fn render_table(
     }
 
     let cols = rows.iter().map(Vec::len).max().unwrap_or(1);
-    let mut widths: Vec<usize> = vec![0; cols];
-    for row in &rows {
-        for (c, cell) in row.iter().enumerate() {
-            let w = UnicodeWidthStr::width(cell.as_str());
-            widths[c] = widths[c].max(w.min(MAX_CELL_WIDTH));
-        }
-    }
     let has_header = rows.len() >= 2
         && rows[1]
             .iter()
             .all(|c| c.chars().all(|ch| ch == '-' || ch == ':'));
+
+    let mut widths: Vec<usize> = vec![1; cols];
+    let mut min_widths: Vec<usize> = vec![1; cols];
+    let mut layouts: Vec<Vec<TableCellLayout>> = Vec::with_capacity(rows.len());
+    for (r, row) in rows.iter().enumerate() {
+        let base = if has_header && r == 0 {
+            theme.markdown.table_header.style()
+        } else {
+            theme.markdown.text.style()
+        };
+        let mut row_layouts = Vec::with_capacity(cols);
+        for c in 0..cols {
+            let cell = row.get(c).map(String::as_str).unwrap_or("");
+            let layout = TableCellLayout::new(theme, cell, base);
+            widths[c] = widths[c].max(layout.width);
+            min_widths[c] = min_widths[c].max(layout.min_width);
+            row_layouts.push(layout);
+        }
+        layouts.push(row_layouts);
+    }
+    if options.table_width.is_none() {
+        for width in &mut widths {
+            *width = (*width).min(MAX_CELL_WIDTH);
+        }
+    }
+    let widths = match options.table_width {
+        Some(limit) => fit_table_widths(&widths, &min_widths, limit),
+        None => widths,
+    };
 
     let dim_style = theme.markdown.table_border.style();
     let body_rows: Vec<usize> = (0..rows.len())
@@ -843,28 +871,40 @@ fn render_table(
         .collect();
     let collapsed =
         !options.expanded.contains(&unit) && body_rows.len() > options.collapse_rows / 2;
+    let push_row = |out: &mut Vec<RenderLine>, row_idx: usize, header: bool| {
+        if options.table_width.is_some() {
+            push_table_cell_rows(out, unit, dim_style, &widths, &layouts[row_idx]);
+        } else {
+            push_table_cells(out, unit, dim_style, &widths, &rows[row_idx], header, theme);
+        }
+    };
+
     push_plain(out, unit, table_border("┌", "┬", "┐", &widths), dim_style);
     if collapsed {
         // Header + separator + first rows … last rows.
-        push_table_cells(out, unit, dim_style, &widths, &rows[0], true, theme);
+        push_row(out, 0, true);
         push_plain(out, unit, table_border("├", "┼", "┤", &widths), dim_style);
         let shown = 3usize.min(body_rows.len().saturating_sub(1));
         for idx in &body_rows[1..1 + shown] {
-            push_table_cells(out, unit, dim_style, &widths, &rows[*idx], false, theme);
+            push_row(out, *idx, false);
         }
         let hidden = body_rows.len() - shown - 1 - 2;
-        let hint = format!("│ … 收起 {hidden} 行 [Enter 展开]");
+        let hint_content = format!(" … 收起 {hidden} 行 [Enter 展开]");
+        let total_width = 3 * widths.len() + 1 + widths.iter().sum::<usize>();
+        let hint_pad =
+            total_width.saturating_sub(UnicodeWidthStr::width(hint_content.as_str()) + 2);
+        let hint = format!("│{hint_content}{}│", " ".repeat(hint_pad));
         push_plain(out, unit, hint, dim_style);
         for idx in &body_rows[body_rows.len() - 2..] {
-            push_table_cells(out, unit, dim_style, &widths, &rows[*idx], false, theme);
+            push_row(out, *idx, false);
         }
     } else {
-        for (r, row) in rows.iter().enumerate() {
+        for (r, _row) in rows.iter().enumerate() {
             if r == 1 && has_header {
                 push_plain(out, unit, table_border("├", "┼", "┤", &widths), dim_style);
                 continue;
             }
-            push_table_cells(out, unit, dim_style, &widths, row, r == 0, theme);
+            push_row(out, r, r == 0);
         }
     }
     push_plain(out, unit, table_border("└", "┴", "┘", &widths), dim_style);
@@ -970,6 +1010,209 @@ fn table_border(left: &str, mid: &str, right: &str, widths: &[usize]) -> String 
     s
 }
 
+/// Cached inline rendering for one table cell, used both for column sizing
+/// and for wrapping the cell body to the chosen column width.
+struct TableCellLayout {
+    lines: Vec<Line<'static>>,
+    width: usize,
+    min_width: usize,
+}
+
+impl TableCellLayout {
+    fn new(theme: &Theme, text: &str, base: Style) -> Self {
+        let lines = collect_inlines(theme, text, base);
+        let rendered_width = lines.iter().map(|line| line.width()).max().unwrap_or(0);
+        let width = rendered_width.max(1);
+        let min_width = max_grapheme_width(text).max(1).min(width);
+        Self {
+            lines,
+            width,
+            min_width,
+        }
+    }
+}
+
+fn max_grapheme_width(text: &str) -> usize {
+    text.grapheme_indices(true)
+        .map(|(_, grapheme)| UnicodeWidthStr::width(grapheme))
+        .max()
+        .unwrap_or(0)
+}
+
+/// Shrink natural column widths until the whole boxed table fits `max_width`.
+/// Columns never go below their widest grapheme so CJK/emoji do not split.
+fn fit_table_widths(natural: &[usize], min: &[usize], max_width: usize) -> Vec<usize> {
+    let cols = natural.len();
+    if cols == 0 {
+        return Vec::new();
+    }
+    let border = 3 * cols + 1;
+    if max_width <= border {
+        return min.to_vec();
+    }
+    let budget = max_width - border;
+    let total_natural: usize = natural.iter().sum();
+    if total_natural <= budget {
+        return natural.to_vec();
+    }
+    let total_min: usize = min.iter().sum();
+    if total_min >= budget {
+        return min.to_vec();
+    }
+    let flexible_natural: usize = natural.iter().zip(min.iter()).map(|(n, m)| n - m).sum();
+    let flexible_budget = budget - total_min;
+    let mut widths: Vec<usize> = natural
+        .iter()
+        .zip(min.iter())
+        .map(|(n, m)| {
+            if flexible_natural == 0 {
+                *m
+            } else {
+                m + (n - m) * flexible_budget / flexible_natural
+            }
+        })
+        .collect();
+    let mut overflow = widths.iter().sum::<usize>().saturating_sub(budget);
+    let mut indices: Vec<usize> = (0..cols).collect();
+    indices.sort_by_key(|&i| std::cmp::Reverse(widths[i] - min[i]));
+    for i in indices {
+        while overflow > 0 && widths[i] > min[i] {
+            widths[i] -= 1;
+            overflow -= 1;
+        }
+    }
+    widths
+}
+
+/// Emit one table row as multiple visual lines when cells wrap. The row's
+/// inline layouts are already styled; missing continuation rows are padded
+/// with spaces so all vertical borders stay aligned.
+fn push_table_cell_rows(
+    out: &mut Vec<RenderLine>,
+    unit: u64,
+    dim_style: Style,
+    widths: &[usize],
+    row_layouts: &[TableCellLayout],
+) {
+    let mut cell_lines: Vec<Vec<Line<'static>>> = Vec::with_capacity(row_layouts.len());
+    let mut height = 1usize;
+    for (i, layout) in row_layouts.iter().enumerate() {
+        let width = widths.get(i).copied().unwrap_or(1);
+        let mut lines = Vec::new();
+        for line in &layout.lines {
+            if line.width() <= width {
+                lines.push(line.clone());
+            } else {
+                lines.extend(wrap_styled_line(line.clone(), width));
+            }
+        }
+        if lines.is_empty() {
+            lines.push(Line::default());
+        }
+        height = height.max(lines.len());
+        cell_lines.push(lines);
+    }
+
+    for row in 0..height {
+        let mut spans = vec![Span::styled("\u{2502}", dim_style)];
+        for (i, w) in widths.iter().enumerate() {
+            spans.push(Span::styled(" ", dim_style));
+            if let Some(lines) = cell_lines.get(i) {
+                if let Some(line) = lines.get(row) {
+                    spans.extend(line.spans.iter().cloned());
+                    let used = line.width();
+                    if used < *w {
+                        spans.push(Span::styled(" ".repeat(*w - used), Style::default()));
+                    }
+                } else {
+                    spans.push(Span::styled(" ".repeat(*w), Style::default()));
+                }
+            } else {
+                spans.push(Span::styled(" ".repeat(*w), Style::default()));
+            }
+            spans.push(Span::styled(" \u{2502}", dim_style));
+        }
+        out.push(RenderLine {
+            line: Line::from(spans),
+            unit,
+            raw_line: None, // atomic block
+            atomic: true,
+            fill: false,
+        });
+    }
+}
+
+/// Split one styled line at display-column boundaries, preserving span styles
+/// and keeping grapheme clusters (combining marks, ZWJ emoji) intact.
+#[allow(unused_assignments)]
+fn wrap_styled_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
+    if width == 0 || line.width() <= width {
+        return vec![line];
+    }
+    let base = line.style;
+    let mut text = String::new();
+    let mut styles: Vec<(usize, usize, Style)> = Vec::new();
+    for span in &line.spans {
+        let start = text.len();
+        text.push_str(span.content.as_ref());
+        styles.push((start, text.len(), span.style));
+    }
+
+    let mut rows: Vec<Line<'static>> = Vec::new();
+    let mut row_spans: Vec<Span<'static>> = Vec::new();
+    let mut used = 0usize;
+    let mut have = false;
+
+    macro_rules! emit_range {
+        ($start:expr, $end:expr) => {{
+            for &(style_start, style_end, style) in &styles {
+                let from = $start.max(style_start);
+                let to = $end.min(style_end);
+                if from < to {
+                    row_spans.push(Span::styled(text[from..to].to_string(), style));
+                }
+            }
+        }};
+    }
+    macro_rules! end_row {
+        () => {{
+            rows.push(Line::from(std::mem::take(&mut row_spans)).patch_style(base));
+            used = 0;
+            have = false;
+        }};
+    }
+
+    for (start, grapheme) in text.grapheme_indices(true) {
+        let end = start + grapheme.len();
+        let grapheme_width = UnicodeWidthStr::width(grapheme);
+        if grapheme_width > width {
+            if have {
+                end_row!();
+            }
+            emit_range!(start, end);
+            have = true;
+            used = grapheme_width;
+            end_row!();
+            continue;
+        }
+        if have && used + grapheme_width > width {
+            end_row!();
+        }
+        emit_range!(start, end);
+        used += grapheme_width;
+        have = true;
+        if used == width {
+            end_row!();
+        }
+    }
+    if have {
+        end_row!();
+    }
+    if rows.is_empty() {
+        rows.push(Line::default().patch_style(base));
+    }
+    rows
+}
 // ---------------------------------------------------------------------------
 // List
 // ---------------------------------------------------------------------------
@@ -1280,6 +1523,78 @@ mod tests {
             total,
             1 + 1 + MAX_CELL_WIDTH + 2,
             "cell padded to 40 columns"
+        );
+    }
+
+    #[test]
+    fn table_wraps_to_fit_width_limit() {
+        let theme = Theme::ferra();
+        let mut next = 0;
+        let mut units = HashMap::new();
+        let options = RenderOptions {
+            collapse_rows: 40,
+            table_width: Some(24),
+            ..Default::default()
+        };
+        let long = "x".repeat(30);
+        let lines = render_markdown(
+            &format!("| c |\n|---|\n| {long} |"),
+            &theme,
+            &mut next,
+            &options,
+            &mut units,
+        );
+        let text = plain(&lines);
+        for row in &text {
+            assert!(
+                UnicodeWidthStr::width(row.as_str()) <= 24,
+                "table row exceeds limit: {row:?}"
+            );
+        }
+        // One column with a 30-cell value must wrap inside the 20-cell column
+        // instead of emitting an over-wide row that the outer layout would
+        // later split and misalign.
+        assert!(
+            text.iter().any(|row| row.contains(&"x".repeat(20))),
+            "first wrapped segment present: {text:?}"
+        );
+        assert!(
+            text.iter().any(|row| row.trim_end().ends_with('\u{2502}')),
+            "wrapped row closes its right border: {text:?}"
+        );
+        assert_eq!(
+            UnicodeWidthStr::width(text[0].as_str()),
+            24,
+            "top border uses the limited width"
+        );
+        assert_eq!(text[0].chars().next(), Some('\u{250c}'));
+        assert_eq!(text[0].chars().last(), Some('\u{2510}'));
+    }
+
+    #[test]
+    fn table_uses_available_width_before_wrapping() {
+        let theme = Theme::ferra();
+        let mut next = 0;
+        let mut units = HashMap::new();
+        let options = RenderOptions {
+            collapse_rows: 40,
+            table_width: Some(64),
+            ..Default::default()
+        };
+        let long = "x".repeat(60);
+        let lines = render_markdown(
+            &format!("| c |\n|---|\n| {long} |"),
+            &theme,
+            &mut next,
+            &options,
+            &mut units,
+        );
+        let text = plain(&lines);
+        // With a 64-column limit a single column can use 60 columns (border
+        // overhead is 4), so the content should not be truncated at 40.
+        assert!(
+            text.iter().any(|row| row.contains(&"x".repeat(60))),
+            "long single-column content uses the available width: {text:?}"
         );
     }
 

@@ -130,15 +130,25 @@ pub(super) fn render_with_cursor(
     }
 }
 
-fn main_page_rect(main: Rect, state: &TuiApp) -> Rect {
+/// Content (page) width for a main pane: `max_width` capped by the pane width
+/// minus the fixed side margins (alignment shifts only x, never the width).
+fn content_page_width(main: Rect, max_width: u16) -> u16 {
     const MARGIN: u16 = 4;
     let available = main.width.saturating_sub(MARGIN * 2);
-    let max_width = state.config.page_max_width as u16;
-    let width = if max_width > 0 {
+    if max_width > 0 {
         max_width.min(available)
     } else {
         available
-    };
+    }
+}
+
+/// Content page rectangle for a main pane, owning the margin/cap/align policy.
+/// Shared by rendering and the runtime scroll path (`ui::input_bar_width`) so
+/// both resolve the same content width.
+pub(super) fn main_page_rect(main: Rect, state: &TuiApp) -> Rect {
+    const MARGIN: u16 = 4;
+    let max_width = state.config.page_max_width as u16;
+    let width = content_page_width(main, max_width);
     let x = match state.config.page_align.as_str() {
         "left" => main.x + MARGIN,
         "right" => main.x + main.width.saturating_sub(width.saturating_add(MARGIN)),

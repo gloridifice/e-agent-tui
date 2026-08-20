@@ -1,5 +1,12 @@
 use super::*;
 
+/// Right-hand blank gutter shared by every non-block accessory strip, so
+/// long/truncated rows (including their `…` ellipsis) never run flush into
+/// the last column. The input bar uses a configurable symmetric gutter and
+/// the approval card uses `Padding::new(1, 1, 0, 0)`; this constant gives the
+/// plain info/todo/queue strips the same breathing room.
+const ACCESSORY_RIGHT_PAD: u16 = 1;
+
 pub(super) fn render_info_accessory(
     frame: &mut Frame,
     area: ratatui::layout::Rect,
@@ -19,7 +26,9 @@ pub(super) fn render_info_accessory(
             Span::styled(
                 trim_to_width(
                     value,
-                    area.width.saturating_sub((label.len() + 4) as u16) as usize,
+                    area.width
+                        .saturating_sub(label.len() as u16 + 4 + ACCESSORY_RIGHT_PAD)
+                        as usize,
                 ),
                 Style::default().fg(theme.dim).bg(theme.bg),
             ),
@@ -56,7 +65,10 @@ pub(super) fn render_todo(
         rows.push(Line::from(Span::styled(
             format!(
                 "  {marker} {}",
-                trim_to_width(content, area.width.saturating_sub(5) as usize)
+                trim_to_width(
+                    content,
+                    area.width.saturating_sub(4 + ACCESSORY_RIGHT_PAD) as usize
+                )
             ),
             Style::default().fg(theme.dim).bg(theme.bg),
         )));
@@ -77,7 +89,7 @@ pub(super) fn render_queue(
     frame.render_widget(Block::default().style(Style::default().bg(theme.bg)), area);
     let truncated = queue.len() > visible;
     let shown = visible.saturating_sub(usize::from(truncated));
-    let width = (area.width as usize).saturating_sub(4);
+    let width = (area.width as usize).saturating_sub(4 + usize::from(ACCESSORY_RIGHT_PAD));
     let mut rows: Vec<Line<'static>> = queue
         .iter()
         .take(shown)
@@ -90,7 +102,10 @@ pub(super) fn render_queue(
         .collect();
     if truncated {
         rows.push(Line::from(Span::styled(
-            format!("  * … 还有 {} 条", queue.len() - shown),
+            format!(
+                "  * {}",
+                trim_to_width(&format!("… 还有 {} 条", queue.len() - shown), width)
+            ),
             Style::default().fg(theme.dim).bg(theme.bg),
         )));
     }
@@ -228,4 +243,96 @@ pub(super) fn render_approval(
     let inner = block.inner(area);
     frame.render_widget(block, area);
     frame.render_widget(Paragraph::new(Text::from(rows)), inner);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{backend::TestBackend, layout::Rect, Terminal};
+
+    /// Render one accessory strip into a width×height test frame and return
+    /// every row as a string of cell symbols.
+    fn strip_rows<F>(width: u16, height: u16, f: F) -> Vec<String>
+    where
+        F: FnOnce(&mut Frame, Rect, &Theme),
+    {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = Theme::ferra();
+        terminal
+            .draw(|frame| f(frame, Rect::new(0, 0, width, height), &theme))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol().chars().next().unwrap_or(' '))
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    fn assert_last_column_blank(rows: &[String], y: usize, width: usize) {
+        let last = width - 1;
+        assert_ne!(
+            rows[y].chars().nth(last),
+            Some('…'),
+            "ellipsis must not touch the right edge"
+        );
+        assert_eq!(
+            rows[y].chars().nth(last),
+            Some(' '),
+            "right padding column must be blank"
+        );
+    }
+
+    /// Long rows truncate to the shared right gutter instead of running flush
+    /// into the last column (regression: ellipsis used to land on the edge).
+    #[test]
+    fn accessory_rows_reserve_right_padding_when_truncated() {
+        let width = 12usize;
+
+        let queue = strip_rows(width as u16, 1, |frame, area, theme| {
+            render_queue(frame, area, &["abcdefghijklmnop".to_string()], 1, theme);
+        });
+        assert_last_column_blank(&queue, 0, width);
+        assert!(
+            queue[0].contains('…'),
+            "long prompt truncates: {:?}",
+            queue[0]
+        );
+
+        let todo = strip_rows(width as u16, 2, |frame, area, theme| {
+            render_todo(
+                frame,
+                area,
+                &[("abcdefghijklmnop".to_string(), "pending".to_string())],
+                theme,
+            );
+        });
+        assert_last_column_blank(&todo, 1, width);
+        assert!(todo[1].contains('…'), "long todo truncates: {:?}", todo[1]);
+
+        let info = strip_rows(width as u16, 1, |frame, area, theme| {
+            render_info_accessory(frame, area, "Goal", "abcdefghijklmnop", theme);
+        });
+        assert_last_column_blank(&info, 0, width);
+        assert!(info[0].contains('…'), "long info truncates: {:?}", info[0]);
+    }
+
+    /// The pending-count summary row keeps the same right gutter.
+    #[test]
+    fn queue_summary_row_respects_right_padding() {
+        let width = 12usize;
+        let queue = strip_rows(width as u16, 1, |frame, area, theme| {
+            render_queue(
+                frame,
+                area,
+                &["a".to_string(), "b".to_string(), "c".to_string()],
+                1,
+                theme,
+            );
+        });
+        assert_last_column_blank(&queue, 0, width);
+    }
 }

@@ -67,7 +67,9 @@ pub(super) fn render_input(
     if chunks.is_empty() {
         chunks.push((String::new(), 0));
     }
-    // Multiline window: keep the cursor row visible within INPUT_MAX_ROWS.
+    // The visible window is exactly the text area height (the box grows with
+    // wrapped rows up to INPUT_MAX_ROWS); the cursor row is always kept in
+    // view when content overflows the window.
     let total = chunks.len();
     let mut cursor_row = 0usize;
     for (i, (text, off)) in chunks.iter().enumerate() {
@@ -77,14 +79,15 @@ pub(super) fn render_input(
             cursor_row = i;
         }
     }
-    let start = if total <= INPUT_MAX_ROWS {
+    let visible_rows = (inner.height as usize).max(1);
+    let start = if total <= visible_rows {
         0
     } else {
         cursor_row
-            .saturating_sub(INPUT_MAX_ROWS - 1)
-            .min(total - INPUT_MAX_ROWS)
+            .saturating_sub(visible_rows - 1)
+            .min(total - visible_rows)
     };
-    let end = (start + INPUT_MAX_ROWS).min(total);
+    let end = (start + visible_rows).min(total);
 
     let mut rendered: Vec<Line<'static>> = Vec::new();
     for i in start..end {

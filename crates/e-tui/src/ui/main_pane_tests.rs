@@ -21,6 +21,156 @@ fn overlays() -> RenderOverlays<'static> {
 }
 
 #[test]
+fn input_bar_box_grows_with_wrapped_rows_and_keeps_cursor_visible() {
+    // 80 cols → split main 48 / preview 32 → page width 40 → inner 36 with
+    // the default 2-column gutter. 200 chars wrap to 6 rows, so the box must
+    // grow to the 3-row cap and the wrap window must follow the cursor: the
+    // last three wrapped rows are visible and the IME anchor stays inside the
+    // text area (previously the box stayed 3 rows tall, only the first chunk
+    // was visible, and the anchor landed on the gap row below the bar).
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    let mut input = InputState::new(&state.config);
+    input.buf = "x".repeat(200);
+    input.cursor = input.buf.chars().count();
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    let mut anchor = None;
+    terminal
+        .draw(|frame| {
+            anchor = render_with_cursor(frame, &mut state, &input, &mut scroll, &theme, overlays());
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let row = |y: u16| {
+        (0..80u16)
+            .map(|x| buffer[(x, y)].symbol().chars().next().unwrap_or(' '))
+            .collect::<String>()
+    };
+    // Box = 3 text rows + 2 padding = 5 rows at the bottom: y 16..20
+    // (bottom stack: 5 + 1 gap + 1 status + 1 title = 8).
+    assert_eq!(&row(17)[6..42], "x".repeat(36), "first visible wrapped row");
+    assert_eq!(
+        &row(18)[6..42],
+        "x".repeat(36),
+        "middle visible wrapped row"
+    );
+    assert_eq!(
+        &row(19)[6..26],
+        "x".repeat(20),
+        "cursor row shows the tail chunk"
+    );
+    assert_eq!(row(20).trim(), "", "bottom padding row of the box");
+    assert_eq!(
+        anchor,
+        Some(Position::new(26, 19)),
+        "IME anchor sits on the cursor row inside the text area"
+    );
+    // The reverse-video-style cursor block is drawn at the end of the tail
+    // chunk (ferra cursor = fg night / bg mist).
+    assert_eq!(
+        buffer[(26, 19)].bg,
+        theme
+            .input
+            .cursor
+            .bg
+            .expect("ferra cursor has a background"),
+        "drawn cursor on the wrapped cursor row"
+    );
+}
+
+#[test]
+fn input_bar_multiline_wrapped_rows_keep_cursor_row_in_box() {
+    // "a\n" + 200 y's: 7 display rows total, box capped at 3 text rows; the
+    // window follows the cursor so the last three wrapped rows are shown.
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    let mut input = InputState::new(&state.config);
+    input.multiline = true;
+    input.buf = format!("a\n{}", "y".repeat(200));
+    input.cursor = input.buf.chars().count();
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    let mut anchor = None;
+    terminal
+        .draw(|frame| {
+            anchor = render_with_cursor(frame, &mut state, &input, &mut scroll, &theme, overlays());
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let row = |y: u16| {
+        (0..80u16)
+            .map(|x| buffer[(x, y)].symbol().chars().next().unwrap_or(' '))
+            .collect::<String>()
+    };
+    assert_eq!(&row(17)[6..42], "y".repeat(36));
+    assert_eq!(&row(18)[6..42], "y".repeat(36));
+    assert_eq!(
+        &row(19)[6..26],
+        "y".repeat(20),
+        "cursor row shows the tail chunk"
+    );
+    assert_eq!(
+        anchor,
+        Some(Position::new(26, 19)),
+        "IME anchor stays on the cursor row inside the text area"
+    );
+}
+
+#[test]
+fn input_bar_fits_all_wrapped_rows_when_they_fit_the_box() {
+    // 100 chars → 3 wrapped rows at inner 36 → the whole content is visible
+    // from the top; the cursor row is the last one.
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    let mut input = InputState::new(&state.config);
+    input.buf = "z".repeat(100);
+    input.cursor = input.buf.chars().count();
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    let mut anchor = None;
+    terminal
+        .draw(|frame| {
+            anchor = render_with_cursor(frame, &mut state, &input, &mut scroll, &theme, overlays());
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let row = |y: u16| {
+        (0..80u16)
+            .map(|x| buffer[(x, y)].symbol().chars().next().unwrap_or(' '))
+            .collect::<String>()
+    };
+    assert_eq!(&row(17)[6..42], "z".repeat(36), "row 1 from the top");
+    assert_eq!(&row(18)[6..42], "z".repeat(36), "row 2 from the top");
+    assert_eq!(&row(19)[6..34], "z".repeat(28), "row 3 from the top");
+    assert_eq!(anchor, Some(Position::new(34, 19)));
+}
+
+#[test]
+fn input_box_rows_follow_wrapped_content() {
+    let config = crate::config::Config::default();
+    let mut input = InputState::new(&config);
+    // 40-column bar with a 2-column gutter on each side → inner 36.
+    assert_eq!(input_rows(&input, 40, 2), 1, "empty input is one row");
+    input.buf = "x".repeat(36);
+    assert_eq!(input_rows(&input, 40, 2), 1, "exactly one row fits");
+    input.buf = "x".repeat(37);
+    assert_eq!(input_rows(&input, 40, 2), 2, "one overflow column wraps");
+    input.buf = "x".repeat(200);
+    assert_eq!(input_rows(&input, 40, 2), INPUT_MAX_ROWS, "cap at 3 rows");
+    // Trailing newline still counts as an extra row (Shift+Enter growth).
+    input.buf = "a\n".into();
+    assert_eq!(input_rows(&input, 40, 2), 2);
+    // A single long line wraps inside a narrow bar and grows the box.
+    input.buf = "a very long single line that wraps".into();
+    let rows = input_rows(&input, 16, 0);
+    assert!(rows >= 2 && rows <= INPUT_MAX_ROWS);
+}
+
+#[test]
 fn extracted_main_pane_preserves_status_spacing_and_hidden_cursor() {
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();

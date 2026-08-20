@@ -54,9 +54,6 @@ pub use crate::interaction::ScrollState;
 /// Guard against pathological transcripts (huge snapshots).
 const MAX_RENDER_LINES_PER_MSG: usize = 800;
 
-/// Horizontal page margin in columns (user preference, 4 spaces each side).
-const PAGE_MARGIN: u16 = 4;
-
 pub use screen::RenderOverlays;
 
 fn input_accessories(state: &TuiApp) -> Vec<InputAccessory> {
@@ -114,31 +111,69 @@ fn input_accessories(state: &TuiApp) -> Vec<InputAccessory> {
     accessories
 }
 
-fn bottom_area_rows(area_height: u16, input: &InputState, input_page_open: bool) -> u16 {
+fn bottom_area_rows(
+    area_height: u16,
+    area_width: u16,
+    input: &InputState,
+    input_page_open: bool,
+    padding: usize,
+) -> u16 {
     if input_page_open {
         ((area_height as u32) * 2 / 3).min(area_height.saturating_sub(3) as u32) as u16
     } else {
-        (input_rows(input) + 2) as u16
+        (input_rows(input, area_width as usize, padding) + 2) as u16
     }
+}
+
+/// Width of the input bar (the content page) for a terminal of `area_width`
+/// columns, mirroring the split/page policy of rendering. The runtime scroll
+/// path uses this so keyboard/mouse paging stays aligned with the rendered
+/// input bar height, which grows with wrapped rows.
+pub fn input_bar_width(area_width: u16, state: &TuiApp) -> u16 {
+    let main = match screen::layout(
+        ratatui::layout::Rect::new(0, 0, area_width, 0),
+        state.config.main_pane_width,
+        state.preview.fullscreen,
+    ) {
+        screen::ScreenLayout::MainOnly(main) | screen::ScreenLayout::Split { main, .. } => main,
+        screen::ScreenLayout::PreviewOnly(_) => return area_width,
+    };
+    screen::main_page_rect(main, state).width
+}
+
+/// Terminal dimensions shared by the render path and the runtime scroll/input
+/// path. Named fields remove the transposition hazard of threading two
+/// adjacent `u16`s (height,width vs width,height) across the render→runtime
+/// boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TerminalSize {
+    pub width: u16,
+    pub height: u16,
 }
 
 /// Visible transcript rows for the same bottom/accessory policy used by
 /// `render`; keyboard and mouse scrolling must use this rather than the full
 /// terminal height.
 pub fn transcript_view_height(
-    area_height: u16,
+    size: TerminalSize,
     state: &TuiApp,
     input: &InputState,
     input_page_open: bool,
 ) -> usize {
-    let bottom_rows = bottom_area_rows(area_height, input, input_page_open);
-    let accessory_budget = area_height.saturating_sub(1 + bottom_rows + 3);
+    let bottom_rows = bottom_area_rows(
+        size.height,
+        input_bar_width(size.width, state),
+        input,
+        input_page_open,
+        state.config.user_input_padding,
+    );
+    let accessory_budget = size.height.saturating_sub(1 + bottom_rows + 3);
     let accessory_rows: u16 = allocate_accessories(&input_accessories(state), accessory_budget)
         .iter()
         .map(|item| item.rows)
         .sum();
     usize::from(
-        area_height
+        size.height
             .saturating_sub(bottom_rows + accessory_rows + 3)
             .max(1),
     )
@@ -188,35 +223,21 @@ pub(crate) fn render_main_pane_with_cursor(
     } = overlays;
     // Page: fixed side margins, capped at the configured max width and
     // horizontally aligned (居中/左对齐/右对齐); text wraps within this
-    // content width.
-    let available = area.width.saturating_sub(PAGE_MARGIN * 2);
-    let max_width = state.config.page_max_width as u16;
-    let content_width = if max_width > 0 {
-        max_width.min(available)
-    } else {
-        available
-    };
-    let content_x = match state.config.page_align.as_str() {
-        "left" => area.x + PAGE_MARGIN,
-        "right" => {
-            area.x
-                + area
-                    .width
-                    .saturating_sub(content_width.saturating_add(PAGE_MARGIN))
-        }
-        _ => area.x + area.width.saturating_sub(content_width) / 2,
-    };
-    let page = ratatui::layout::Rect {
-        x: content_x,
-        y: area.y,
-        width: content_width,
-        height: area.height,
-    };
+    // content width. Resolved by `screen::main_page_rect` — the single owner
+    // of the margin/cap/align policy — so rendering and the runtime scroll
+    // path always see the same width.
+    let page = screen::main_page_rect(area, state);
     let input_page_open = input_page.is_some() || settings.is_some() || login.is_some();
     let drafting = state.session.new_conversation.is_some();
     // Input Pages replace the input bar and take two thirds of the page height
     // without a floating window. The transcript keeps the top third.
-    let bottom_rows = bottom_area_rows(area.height, input, input_page_open);
+    let bottom_rows = bottom_area_rows(
+        area.height,
+        page.width,
+        input,
+        input_page_open,
+        state.config.user_input_padding,
+    );
     let bottom = Constraint::Length(bottom_rows);
     let accessories = if drafting {
         Vec::new()
@@ -442,13 +463,23 @@ pub(crate) fn render_main_pane_with_cursor(
 #[cfg(test)]
 mod main_pane_tests;
 
-fn input_rows(input: &InputState) -> usize {
-    if !input.multiline {
-        1
-    } else {
-        // Display lines = newline count + 1. `str::lines()` undercounts a
-        // trailing newline ("a\n" renders two rows but lines() reports one),
-        // which kept the box from growing on Shift+Enter before any text.
-        (input.buf.matches('\n').count() + 1).min(INPUT_MAX_ROWS)
-    }
+/// Display rows of the input buffer after width-aware wrapping, capped at
+/// `INPUT_MAX_ROWS`. The box grows with wrapped content (a single long line
+/// can occupy several rows), and `render_input`'s window scrolls within it
+/// once the content exceeds the cap.
+fn input_rows(input: &InputState, wrap_width: usize, padding: usize) -> usize {
+    let inner = wrap_width.saturating_sub(padding.saturating_mul(2)).max(1);
+    let (display, _) = input.display_text();
+    display
+        .split('\n')
+        .map(|line| {
+            if line.is_empty() {
+                1
+            } else {
+                wrap_text(line, inner).len().max(1)
+            }
+        })
+        .sum::<usize>()
+        .max(1)
+        .min(INPUT_MAX_ROWS)
 }

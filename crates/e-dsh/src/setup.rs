@@ -728,32 +728,31 @@ mod tests {
     }
 
     #[test]
-    fn workspace_insert_is_not_duplicated() {
-        let home = temp_home("workspace-idempotent");
-        let profile = profile_dir(&home);
-        fs::create_dir_all(&profile).unwrap();
-        fs::write(
-            profile.join("pnpm-workspace.yaml"),
-            "packages:\n  - .\n  - packages/*\nminimumReleaseAgeExclude:\n  - dsh-win32@0.13.0\n",
-        )
-        .unwrap();
-        ensure_workspace_yaml(&profile).unwrap();
-        let raw = fs::read_to_string(profile.join("pnpm-workspace.yaml")).unwrap();
-        assert_eq!(raw.matches("- packages/*").count(), 1);
-        assert!(raw.contains("minimumReleaseAgeExclude"));
-        remove_tree(&home);
-    }
-
-    #[test]
-    fn workspace_insert_handles_single_entry_list() {
-        let home = temp_home("workspace-insert");
-        let profile = profile_dir(&home);
-        fs::create_dir_all(&profile).unwrap();
-        fs::write(profile.join("pnpm-workspace.yaml"), "packages:\n  - .\n").unwrap();
-        ensure_workspace_yaml(&profile).unwrap();
-        let raw = fs::read_to_string(profile.join("pnpm-workspace.yaml")).unwrap();
-        assert_eq!(raw.matches("- packages/*").count(), 1);
-        remove_tree(&home);
+    fn workspace_insert_appends_packages_glob_once() {
+        for (name, before, keep_extra) in [
+            (
+                "single-entry",
+                "packages:\n  - .\n",
+                false,
+            ),
+            (
+                "existing-glob",
+                "packages:\n  - .\n  - packages/*\nminimumReleaseAgeExclude:\n  - dsh-win32@0.13.0\n",
+                true,
+            ),
+        ] {
+            let home = temp_home(&format!("workspace-{name}"));
+            let profile = profile_dir(&home);
+            fs::create_dir_all(&profile).unwrap();
+            fs::write(profile.join("pnpm-workspace.yaml"), before).unwrap();
+            ensure_workspace_yaml(&profile).unwrap();
+            let raw = fs::read_to_string(profile.join("pnpm-workspace.yaml")).unwrap();
+            assert_eq!(raw.matches("- packages/*").count(), 1);
+            if keep_extra {
+                assert!(raw.contains("minimumReleaseAgeExclude"));
+            }
+            remove_tree(&home);
+        }
     }
 
     #[test]

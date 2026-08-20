@@ -17,7 +17,7 @@ use e_tui::{
     input::{InputAction, InputState},
     input_page::{InputPageSession, PageEffect},
     login::LoginView,
-    ui::{scroll_lines, scroll_page, transcript_view_height, ScrollState},
+    ui::{scroll_lines, scroll_page, transcript_view_height, ScrollState, TerminalSize},
     AgentEvent,
 };
 pub use e_tui::{DrawPriority, EffectResult, UiAction};
@@ -157,7 +157,7 @@ fn protocol_mismatch_fatal(detail: &str) -> String {
 impl RuntimeController {
     pub fn apply_terminal_route(
         route: TerminalRoute,
-        terminal_height: u16,
+        size: TerminalSize,
         _now: Instant,
         state: &Arc<Mutex<AppState>>,
         ui: &mut TerminalUiState<'_>,
@@ -168,12 +168,8 @@ impl RuntimeController {
                 let page = matches!(route, TerminalRoute::TranscriptPage { .. });
                 let before = {
                     let mut app = state.lock().unwrap();
-                    let height = transcript_view_height(
-                        terminal_height,
-                        &app,
-                        ui.input,
-                        ui.input_page.is_some(),
-                    );
+                    let height =
+                        transcript_view_height(size, &app, ui.input, ui.input_page.is_some());
                     if page {
                         scroll_page(
                             ui.scroll,
@@ -238,10 +234,10 @@ impl RuntimeController {
             }
             TerminalRoute::Approval(key) => effects.extend(Self::answer_approval(&key, state)),
             TerminalRoute::Reading(key) => {
-                effects.extend(Self::apply_reading_key(&key, terminal_height, state, ui));
+                effects.extend(Self::apply_reading_key(&key, size, state, ui));
             }
             TerminalRoute::Ordinary(key) => {
-                effects.extend(Self::apply_ordinary_key(key, terminal_height, state, ui));
+                effects.extend(Self::apply_ordinary_key(key, size, state, ui));
             }
             TerminalRoute::Ignore => {}
         }
@@ -250,13 +246,13 @@ impl RuntimeController {
 
     fn apply_reading_key(
         key: &KeyEvent,
-        terminal_height: u16,
+        size: TerminalSize,
         state: &Arc<Mutex<AppState>>,
         ui: &mut TerminalUiState<'_>,
     ) -> Vec<UiAction> {
         let viewport_height = {
             let app = state.lock().unwrap();
-            transcript_view_height(terminal_height, &app, ui.input, ui.input_page.is_some())
+            transcript_view_height(size, &app, ui.input, ui.input_page.is_some())
         };
         let item_mode = state
             .lock()
@@ -324,7 +320,7 @@ impl RuntimeController {
 
     fn apply_ordinary_key(
         key: KeyEvent,
-        terminal_height: u16,
+        size: TerminalSize,
         state: &Arc<Mutex<AppState>>,
         ui: &mut TerminalUiState<'_>,
     ) -> Vec<UiAction> {
@@ -350,7 +346,7 @@ impl RuntimeController {
         if outcome.activate_reading {
             let viewport_height = {
                 let app = state.lock().unwrap();
-                transcript_view_height(terminal_height, &app, ui.input, ui.input_page.is_some())
+                transcript_view_height(size, &app, ui.input, ui.input_page.is_some())
             };
             let (entered, actions) = {
                 let mut app = state.lock().unwrap();
@@ -386,7 +382,7 @@ impl RuntimeController {
             if command.activate_reading {
                 let viewport_height = {
                     let app = state.lock().unwrap();
-                    transcript_view_height(terminal_height, &app, ui.input, ui.input_page.is_some())
+                    transcript_view_height(size, &app, ui.input, ui.input_page.is_some())
                 };
                 let mut app = state.lock().unwrap();
                 if !app.enter_reading(ui.input, ui.scroll, viewport_height) {
@@ -1325,7 +1321,10 @@ mod tests {
 
         let command = RuntimeController::apply_terminal_route(
             TerminalRoute::Ordinary(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-            40,
+            TerminalSize {
+                width: 120,
+                height: 40,
+            },
             Instant::now(),
             &state,
             &mut TerminalUiState {
@@ -1347,7 +1346,10 @@ mod tests {
 
         let interrupt = RuntimeController::apply_terminal_route(
             TerminalRoute::Ordinary(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
-            40,
+            TerminalSize {
+                width: 120,
+                height: 40,
+            },
             Instant::now(),
             &state,
             &mut TerminalUiState {

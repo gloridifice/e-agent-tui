@@ -1102,6 +1102,71 @@ fn wrapped_markdown_list_rows_align_under_the_item_text() {
 }
 
 #[test]
+fn list_item_inline_code_paints_its_chip() {
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    let source = "1. run `cargo fmt` now";
+    state.transcript.append(
+        DisplayItem::Block(crate::display::TranscriptBlock {
+            id: DisplayId::correlated("assistant", "list-chip"),
+            unit: None,
+            content: source.into(),
+            format: crate::display::TranscriptFormat::Markdown,
+            tone: DisplayTone::Normal,
+            copy_source: source.into(),
+            streaming: false,
+        }),
+        None,
+    );
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+
+    // The chip must paint its own foreground/background inside a list item,
+    // just as it does in a paragraph.
+    let buffer = terminal.backend().buffer();
+    let chip_bg = theme
+        .markdown
+        .inline_code
+        .bg
+        .expect("ferra chip background");
+    let cells = buffer
+        .content()
+        .iter()
+        .filter(|cell| cell.bg == chip_bg)
+        .collect::<Vec<_>>();
+    let text = cells.iter().map(|cell| cell.symbol()).collect::<String>();
+    assert_eq!(
+        text, " cargo fmt ",
+        "the chip covers the code text plus one padding cell each side"
+    );
+    assert!(
+        cells
+            .iter()
+            .all(|cell| cell.fg == theme.markdown.inline_code.fg),
+        "every chip cell keeps the inline-code foreground"
+    );
+    // The marker itself stays a marker: coral number, no chip background.
+    let row = (0..12u16)
+        .find(|y| {
+            (0..40u16)
+                .map(|x| buffer[(x, *y)].symbol().chars().next().unwrap_or(' '))
+                .collect::<String>()
+                .contains("1.")
+        })
+        .expect("marker row painted");
+    let marker_x = (0..40u16)
+        .find(|x| buffer[(*x, row)].symbol() == "1")
+        .expect("marker cell");
+    assert_eq!(buffer[(marker_x, row)].fg, theme.coral);
+    assert_eq!(buffer[(marker_x, row)].bg, Color::Reset);
+}
+
+#[test]
 fn wrapped_markdown_quote_rows_keep_the_painted_gutter() {
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();

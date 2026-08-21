@@ -109,6 +109,17 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
   these styles must sync the built-in theme TOML, `render.rs`, and TestBackend regression tests.
 - **Table cells**: must go through `cell_spans()` (`render.rs`) for inline rendering + display column-width
   truncation/padding — never stuff bare strings in.
+- **Inline styling is event-driven**: `render.rs::InlineBuilder` owns the single inline implementation (chips,
+  strong/emph/strikethrough, link text + underlined URL, HTML as text) and is fed the events of the block being
+  parsed; `collect_inlines()` is the thin wrapper for blocks that hold their own source (paragraph, heading,
+  quote, table cell). **Never re-parse a block's flattened text**: by then the parser has consumed the markers, so
+  chips, emphasis, link URLs, and escapes vanish and a leading `1.`/`#` in the text is eaten as a block marker —
+  exactly the bug list items had. `render_list` therefore feeds each item's own events into its builder,
+  `SoftBreak::Space` keeps a source line break a word separator (the item wraps for itself), an item's
+  `End(Paragraph)` starts a new row so loose items do not run together, and every open list level hands out its
+  own ordered numbers (`ListLevel`), so the source's `3.` starts at 3 and a nested list cannot reset the outer
+  level back to bullets. `InlineBuilder::finish()` trims trailing plain whitespace only — whitespace that carries
+  a background is chip padding and must survive.
 - **Width-aware Markdown layout**: `RenderOptions.content_width` is the resolved display width of the surface
   being painted (transcript cache width, or the padded Preview content width). Tables fit their columns to it;
   list items wrap against it inside `render.rs::ListRenderer` so continuation rows carry a hanging indent of

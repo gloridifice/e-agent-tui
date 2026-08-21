@@ -498,104 +498,218 @@ fn heading_style(theme: &Theme, level: usize) -> Style {
     }
 }
 
-/// Collect inline content of a paragraph/heading/quote block. Soft/hard
-/// breaks split lines, matching the raw source's own line breaks. Inline
-/// styling follows glamour dark: strong/emph turn pink, inline code is a
-/// padded pink-on-soft chip, links render `text` (bold pink) followed by the
-/// underlined URL, and a style stack keeps nesting correct.
-fn collect_inlines(theme: &Theme, raw: &str, base: Style) -> Vec<Line<'static>> {
-    let options = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH;
-    let mut lines: Vec<Line<'static>> = vec![Line::default()];
-    let mut style = base;
-    let mut stack: Vec<Style> = Vec::new();
-    // Pending link/image: (url, span index on the current line at start).
-    let mut pending: Option<(String, usize)> = None;
+/// Whether a source soft break starts a new logical row or is just a word
+/// separator. Blocks that wrap for themselves (list items) must not turn a
+/// source line break into a display row.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SoftBreak {
+    NewLine,
+    Space,
+}
 
-    let parser = Parser::new_ext(raw, options);
-    for event in parser {
+/// Event-driven inline styling shared by paragraphs, headings, quotes, table
+/// cells, and list items. Inline styling follows glamour dark: strong/emph turn
+/// pink, inline code is a padded pink-on-soft chip, links render `text` (bold
+/// pink) followed by the underlined URL, and a style stack keeps nesting
+/// correct.
+///
+/// Callers feed the events of the block they are already parsing. Never
+/// re-parse a block's flattened text: the parser has consumed the markers by
+/// then, so chips, emphasis, link URLs, and escapes silently disappear and a
+/// leading `3.`/`#` in the text is eaten as a block marker.
+struct InlineBuilder<'a> {
+    theme: &'a Theme,
+    base: Style,
+    soft_break: SoftBreak,
+    lines: Vec<Line<'static>>,
+    style: Style,
+    stack: Vec<Style>,
+    /// Pending link/image: (url, span index on the current line at start).
+    pending: Option<(String, usize)>,
+}
+
+impl<'a> InlineBuilder<'a> {
+    fn new(theme: &'a Theme, base: Style, soft_break: SoftBreak) -> Self {
+        Self {
+            theme,
+            base,
+            soft_break,
+            lines: vec![Line::default()],
+            style: base,
+            stack: Vec::new(),
+            pending: None,
+        }
+    }
+
+    fn push_event(&mut self, event: &Event) {
         match event {
-            Event::Text(t) => push_span(&mut lines, &style, &t),
-            Event::Code(t) => {
+            Event::Text(text) => self.push_text(text),
+            Event::Code(code) => {
                 // Inline code owns an independent semantic foreground/background.
-                let code_style = theme.markdown.inline_code.style();
-                let last = lines.last_mut().unwrap();
-                last.push_span(Span::styled(" ", code_style));
-                last.push_span(Span::styled(t.to_string(), code_style));
-                last.push_span(Span::styled(" ", code_style));
+                let code_style = self.theme.markdown.inline_code.style();
+                let line = self.lines.last_mut().unwrap();
+                line.push_span(Span::styled(" ", code_style));
+                line.push_span(Span::styled(code.to_string(), code_style));
+                line.push_span(Span::styled(" ", code_style));
             }
-            Event::Html(h) | Event::InlineHtml(h) => {
-                push_span(&mut lines, &style, &h);
-            }
-            Event::SoftBreak | Event::HardBreak => lines.push(Line::default()),
-            Event::Start(tag) => match tag {
-                Tag::Emphasis => {
-                    stack.push(style);
-                    style = style.patch(theme.markdown.emphasis.style());
-                }
-                Tag::Strong => {
-                    stack.push(style);
-                    style = style.patch(theme.markdown.strong.style());
-                }
-                Tag::Strikethrough => {
-                    stack.push(style);
-                    style = style
-                        .patch(theme.markdown.strikethrough.style())
-                        .add_modifier(Modifier::CROSSED_OUT);
-                }
-                Tag::Link { dest_url, .. } => {
-                    stack.push(style);
-                    pending = Some((dest_url.to_string(), lines.last().unwrap().spans.len()));
-                    style = style.patch(theme.markdown.link_text.style());
-                }
-                Tag::Image { dest_url, .. } => {
-                    stack.push(style);
-                    pending = Some((dest_url.to_string(), lines.last().unwrap().spans.len()));
-                    style = style.patch(theme.markdown.image.style());
-                }
-                _ => {}
+            Event::Html(html) | Event::InlineHtml(html) => self.push_text(html),
+            Event::SoftBreak => match self.soft_break {
+                SoftBreak::NewLine => self.break_line(),
+                SoftBreak::Space => self.push_text(" "),
             },
-            Event::End(tag) => match tag {
-                TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough => {
-                    style = stack.pop().unwrap_or(base);
-                }
-                TagEnd::Link | TagEnd::Image => {
-                    // glamour renders the URL after the link text, underlined.
-                    if let Some((url, start_idx)) = pending.take() {
-                        if !url.is_empty() {
-                            let spans = &lines.last().unwrap().spans;
-                            let text: String = spans[start_idx.min(spans.len())..]
-                                .iter()
-                                .map(|s| s.content.as_ref())
-                                .collect();
-                            if text != url {
-                                lines.last_mut().unwrap().push_span(Span::styled(" ", base));
-                                lines
-                                    .last_mut()
-                                    .unwrap()
-                                    .push_span(Span::styled(url, theme.markdown.link_url.style()));
-                            }
-                        }
-                    }
-                    style = stack.pop().unwrap_or(base);
-                }
-                _ => {}
-            },
+            Event::HardBreak => self.break_line(),
+            Event::Start(tag) => self.start_tag(tag),
+            Event::End(tag) => self.end_tag(tag),
             _ => {}
         }
     }
-    // Drop trailing empty line artifacts.
-    while lines.last().map_or(false, |l| l.width() == 0) {
-        lines.pop();
+
+    fn start_tag(&mut self, tag: &Tag) {
+        match tag {
+            Tag::Emphasis => {
+                self.stack.push(self.style);
+                self.style = self.style.patch(self.theme.markdown.emphasis.style());
+            }
+            Tag::Strong => {
+                self.stack.push(self.style);
+                self.style = self.style.patch(self.theme.markdown.strong.style());
+            }
+            Tag::Strikethrough => {
+                self.stack.push(self.style);
+                self.style = self
+                    .style
+                    .patch(self.theme.markdown.strikethrough.style())
+                    .add_modifier(Modifier::CROSSED_OUT);
+            }
+            Tag::Link { dest_url, .. } => {
+                self.stack.push(self.style);
+                self.pending = Some((dest_url.to_string(), self.span_count()));
+                self.style = self.style.patch(self.theme.markdown.link_text.style());
+            }
+            Tag::Image { dest_url, .. } => {
+                self.stack.push(self.style);
+                self.pending = Some((dest_url.to_string(), self.span_count()));
+                self.style = self.style.patch(self.theme.markdown.image.style());
+            }
+            _ => {}
+        }
     }
-    if lines.is_empty() {
-        lines.push(Line::default());
+
+    fn end_tag(&mut self, tag: &TagEnd) {
+        match tag {
+            TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough => {
+                self.style = self.stack.pop().unwrap_or(self.base);
+            }
+            TagEnd::Link | TagEnd::Image => {
+                // glamour renders the URL after the link text, underlined.
+                if let Some((url, start_idx)) = self.pending.take() {
+                    if !url.is_empty() {
+                        let spans = &self.lines.last().unwrap().spans;
+                        let text: String = spans[start_idx.min(spans.len())..]
+                            .iter()
+                            .map(|s| s.content.as_ref())
+                            .collect();
+                        if text != url {
+                            let url_style = self.theme.markdown.link_url.style();
+                            let line = self.lines.last_mut().unwrap();
+                            line.push_span(Span::styled(" ", self.base));
+                            line.push_span(Span::styled(url, url_style));
+                        }
+                    }
+                }
+                self.style = self.stack.pop().unwrap_or(self.base);
+            }
+            _ => {}
+        }
     }
-    lines
+
+    fn push_text(&mut self, text: &str) {
+        // Embedded newlines arrive with code or HTML blocks nested inside a
+        // list item: they are row breaks, never literal glyphs in a span.
+        let mut segments = text.split('\n');
+        if let Some(first) = segments.next() {
+            self.push_segment(first);
+        }
+        for segment in segments {
+            self.break_line();
+            self.push_segment(segment);
+        }
+    }
+
+    fn push_segment(&mut self, text: &str) {
+        // A stray carriage return would move the terminal cursor, so drop it
+        // with the row break that produced it.
+        let text = text.trim_end_matches('\r');
+        if text.is_empty() {
+            return;
+        }
+        let span = Span::styled(text.to_string(), self.style);
+        self.lines.last_mut().unwrap().push_span(span);
+    }
+
+    /// Start a new logical row (hard break, or a loose list item's next
+    /// paragraph).
+    fn break_line(&mut self) {
+        self.lines.push(Line::default());
+    }
+
+    fn span_count(&self) -> usize {
+        self.lines.last().map_or(0, |line| line.spans.len())
+    }
+
+    /// True while nothing but empty rows has been collected.
+    fn is_empty(&self) -> bool {
+        self.lines.iter().all(|line| line.width() == 0)
+    }
+
+    fn finish(mut self) -> Vec<Line<'static>> {
+        for line in self.lines.iter_mut() {
+            trim_line_end(line);
+        }
+        // Drop trailing empty line artifacts.
+        while self.lines.last().is_some_and(|line| line.width() == 0) {
+            self.lines.pop();
+        }
+        if self.lines.is_empty() {
+            self.lines.push(Line::default());
+        }
+        self.lines
+    }
 }
 
-fn push_span(lines: &mut [Line<'static>], style: &Style, text: &str) {
-    let span = Span::styled(text.to_string(), *style);
-    lines.last_mut().unwrap().push_span(span);
+/// Collect inline content of a paragraph/heading/quote/table cell from its own
+/// source. Soft and hard breaks split rows, matching the raw source's own line
+/// breaks.
+fn collect_inlines(theme: &Theme, raw: &str, base: Style) -> Vec<Line<'static>> {
+    let options = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH;
+    let mut builder = InlineBuilder::new(theme, base, SoftBreak::NewLine);
+    for event in Parser::new_ext(raw, options) {
+        builder.push_event(&event);
+    }
+    builder.finish()
+}
+
+/// Drop trailing plain whitespace so a stray source space cannot wrap into an
+/// extra row. Whitespace carrying its own background (inline-code chip
+/// padding) is content and must survive.
+fn trim_line_end(line: &mut Line<'static>) {
+    while let Some(last) = line.spans.last() {
+        if last.style.bg.is_some() {
+            break;
+        }
+        let trimmed = last.content.trim_end();
+        if trimmed.is_empty() {
+            line.spans.pop();
+            continue;
+        }
+        if trimmed.len() != last.content.len() {
+            let style = last.style;
+            let text = trimmed.to_string();
+            line.spans.pop();
+            line.spans.push(Span::styled(text, style));
+        }
+        break;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1178,24 +1292,39 @@ fn wrap_styled_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
 // List
 // ---------------------------------------------------------------------------
 
-/// One list item plus its nested sub-items (children complete first in
-/// pulldown's event order, so they attach to their parent instead of
-/// emitting out of order).
-struct ItemBuf {
-    text: String,
-    task: Option<bool>,
-    children: Vec<ItemBuf>,
+/// One open list level. An ordered level hands out the source's own numbers,
+/// so `3.` really starts at 3 and a nested level keeps its own sequence.
+struct ListLevel {
+    next: Option<u64>,
 }
 
-/// Per-list emit state: the ordered-marker counters per depth, the running
-/// raw-line cursor, and the resolved content width that gives every item its
-/// hanging indent.
+impl ListLevel {
+    fn take_number(&mut self) -> Option<u64> {
+        let current = self.next?;
+        self.next = Some(current + 1);
+        Some(current)
+    }
+}
+
+/// One list item plus its nested sub-items (children complete first in
+/// pulldown's event order, so they attach to their parent instead of
+/// emitting out of order). Inline content is built from the list's own parser
+/// events, never re-parsed from flattened text.
+struct ItemBuf<'a> {
+    inline: InlineBuilder<'a>,
+    task: Option<bool>,
+    /// Ordered-list number handed out by the owning level; `None` = bullet.
+    number: Option<u64>,
+    children: Vec<ItemBuf<'a>>,
+}
+
+/// Per-list emit state: the running raw-line cursor and the resolved content
+/// width that gives every item its hanging indent.
 struct ListRenderer<'a> {
     theme: &'a Theme,
     unit: u64,
     /// Resolved content width; `None` emits unwrapped logical rows.
     width: Option<usize>,
-    counters: Vec<u64>,
     raw_line_no: usize,
 }
 
@@ -1209,30 +1338,39 @@ fn render_list(
     let md_options =
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
     let parser = Parser::new_ext(raw, md_options);
-    let mut ordered: Option<u64> = None;
+    let mut levels: Vec<ListLevel> = Vec::new();
     let mut item_stack: Vec<ItemBuf> = Vec::new();
     let mut list = ListRenderer {
         theme,
         unit,
         width: options.content_width,
-        counters: Vec::new(),
         raw_line_no: 0,
     };
 
     for event in parser {
-        match event {
-            Event::Start(Tag::List(start)) => {
-                ordered = start;
-                list.counters.clear();
+        match &event {
+            Event::Start(Tag::List(start)) => levels.push(ListLevel { next: *start }),
+            Event::End(TagEnd::List(_)) => {
+                levels.pop();
             }
-            Event::Start(Tag::Item) => item_stack.push(ItemBuf {
-                text: String::new(),
-                task: None,
-                children: Vec::new(),
-            }),
+            Event::Start(Tag::Item) => {
+                let number = levels.last_mut().and_then(ListLevel::take_number);
+                item_stack.push(ItemBuf {
+                    // A list item wraps for itself, so its source line breaks
+                    // are word separators rather than display rows.
+                    inline: InlineBuilder::new(
+                        theme,
+                        theme.markdown.text.style(),
+                        SoftBreak::Space,
+                    ),
+                    task: None,
+                    number,
+                    children: Vec::new(),
+                });
+            }
             Event::TaskListMarker(checked) => {
                 if let Some(item) = item_stack.last_mut() {
-                    item.task = Some(checked);
+                    item.task = Some(*checked);
                 }
             }
             Event::End(TagEnd::Item) => {
@@ -1243,71 +1381,58 @@ fn render_list(
                     // Nested item: attach to its parent, emit with the tree.
                     parent.children.push(item);
                 } else {
-                    list.emit_tree(item, 0, ordered, out);
+                    list.emit_tree(item, 0, out);
                 }
             }
-            Event::Text(t) => {
+            Event::End(TagEnd::Paragraph) => {
+                // A loose item's paragraphs stay on separate rows instead of
+                // running together.
                 if let Some(item) = item_stack.last_mut() {
-                    item.text.push_str(&t);
+                    item.inline.break_line();
                 }
             }
-            Event::Code(t) => {
+            other => {
                 if let Some(item) = item_stack.last_mut() {
-                    item.text.push_str(&t);
+                    item.inline.push_event(other);
                 }
             }
-            Event::SoftBreak => {
-                if let Some(item) = item_stack.last_mut() {
-                    item.text.push(' ');
-                }
-            }
-            Event::End(TagEnd::List(_)) => ordered = None,
-            _ => {}
         }
     }
-    // Unclosed items (streaming safety).
-    while let Some(item) = item_stack.pop() {
-        let depth = item_stack.len();
-        list.emit_tree(item, depth, ordered, out);
+    // Unclosed items (streaming safety): outermost first, so a partially
+    // streamed list keeps source order.
+    for (depth, item) in item_stack.into_iter().enumerate() {
+        list.emit_tree(item, depth, out);
     }
 }
 
 impl ListRenderer<'_> {
-    /// Emit an item (marker + inline-styled text), then its children one level
+    /// Emit an item (marker + inline-styled rows), then its children one level
     /// deeper — source order, glamour 2-column indent per level.
-    fn emit_tree(
-        &mut self,
-        item: ItemBuf,
-        depth: usize,
-        ordered: Option<u64>,
-        out: &mut Vec<RenderLine>,
-    ) {
-        self.emit_item(item.text, item.task, depth, ordered, out);
+    fn emit_tree(&mut self, item: ItemBuf, depth: usize, out: &mut Vec<RenderLine>) {
+        if !item.inline.is_empty() {
+            self.emit_item(item.inline.finish(), item.task, item.number, depth, out);
+        }
         for child in item.children {
-            self.emit_tree(child, depth + 1, ordered, out);
+            self.emit_tree(child, depth + 1, out);
         }
     }
 
-    /// Render one list item: task checkbox or `◦`/numbered marker, inline
-    /// markdown inside, and a hanging indent. Over-wide text is wrapped here,
-    /// against the resolved content width, so every continuation row starts in
-    /// the item's text column instead of falling back to the page edge.
+    /// Render one list item: task checkbox or `◦`/numbered marker, the inline
+    /// rows built from the item's own events, and a hanging indent. Over-wide
+    /// rows are wrapped here, against the resolved content width, so every
+    /// continuation row starts in the item's text column instead of falling
+    /// back to the page edge.
     fn emit_item(
         &mut self,
-        text: String,
+        inlines: Vec<Line<'static>>,
         task: Option<bool>,
+        number: Option<u64>,
         depth: usize,
-        ordered: Option<u64>,
         out: &mut Vec<RenderLine>,
     ) {
-        let text = text.trim().to_string();
-        if text.is_empty() {
-            return;
-        }
         let theme = self.theme;
         let indent = "  ".repeat(depth);
-        let (marker, marker_style) = self.marker(task, depth, ordered);
-        self.counters.truncate(depth + 1);
+        let (marker, marker_style) = self.marker(task, number, depth);
         // Columns owned by the indent and marker: the continuation prefix and
         // the text budget are both derived from it, so the first row and every
         // wrapped row share one text column.
@@ -1316,7 +1441,6 @@ impl ListRenderer<'_> {
             .width
             .map(|width| width.saturating_sub(hang))
             .filter(|width| *width > 0);
-        let inlines = collect_inlines(theme, &text, theme.markdown.text.style());
         for (li, line) in inlines.into_iter().enumerate() {
             let rows = match body_width {
                 Some(width) => wrap_styled_line(line, width),
@@ -1354,30 +1478,19 @@ impl ListRenderer<'_> {
     /// Task checkbox, ordered number, or bullet marker. Top-level markers
     /// (unordered bullets and ordered numbers) render in the theme's `coral`
     /// tone; nested markers keep the regular muted `list_marker` tone.
-    fn marker(
-        &mut self,
-        task: Option<bool>,
-        depth: usize,
-        ordered: Option<u64>,
-    ) -> (String, Style) {
+    fn marker(&self, task: Option<bool>, number: Option<u64>, depth: usize) -> (String, Style) {
         let theme = self.theme;
         let top_level_style = if depth == 0 {
             Style::default().fg(theme.coral)
         } else {
             theme.markdown.list_marker.style()
         };
-        match task {
+        match (task, number) {
             // glamour task: "[✓]" / "[ ]" followed by the item text.
-            Some(true) => ("[✓] ".to_string(), theme.markdown.task_checked.style()),
-            Some(false) => ("[ ] ".to_string(), theme.markdown.task_unchecked.style()),
-            None if ordered.is_some() => {
-                while self.counters.len() <= depth {
-                    self.counters.push(0);
-                }
-                self.counters[depth] += 1;
-                (format!("{}. ", self.counters[depth]), top_level_style)
-            }
-            None => ("◦ ".to_string(), top_level_style),
+            (Some(true), _) => ("[✓] ".to_string(), theme.markdown.task_checked.style()),
+            (Some(false), _) => ("[ ] ".to_string(), theme.markdown.task_unchecked.style()),
+            (None, Some(number)) => (format!("{number}. "), top_level_style),
+            (None, None) => ("◦ ".to_string(), top_level_style),
         }
     }
 }
@@ -1425,6 +1538,24 @@ mod tests {
             ..Default::default()
         };
         render_markdown(text, &theme, &mut next, &options, &mut units)
+    }
+
+    #[test]
+    fn nested_block_content_in_a_list_item_becomes_rows() {
+        // A fenced code block inside an item arrives as text with embedded
+        // newlines. A literal `\n` inside a span would corrupt the terminal
+        // and the width math, so each source line becomes its own row and
+        // picks up the item's hanging indent.
+        let lines = render("- item\n\n  ```\n  code one\n  code two\n  ```\n");
+        assert_eq!(plain(&lines), vec!["◦ item", "  code one", "  code two"]);
+        assert!(
+            lines.iter().all(|line| line
+                .line
+                .spans
+                .iter()
+                .all(|span| !span.content.contains('\n'))),
+            "no span may carry a literal newline"
+        );
     }
 
     #[test]
@@ -1730,6 +1861,104 @@ mod tests {
         // and the paint-time wrapper stays authoritative.
         let lines = render("- aaa bbb ccc ddd eee fff");
         assert_eq!(plain(&lines), vec!["◦ aaa bbb ccc ddd eee fff"]);
+        // A source soft break inside an item is a word separator, not a row:
+        // the item owns its own wrapping.
+        let lines = render("- first half\n  second half");
+        assert_eq!(plain(&lines), vec!["◦ first half second half"]);
+    }
+
+    #[test]
+    fn list_items_render_inline_markdown_like_paragraphs() {
+        let theme = Theme::ferra();
+        // Items are built from the list's own parser events, so inline code
+        // keeps its independent chip foreground/background and padding instead
+        // of degrading to plain text (a flattened re-parse saw no backticks).
+        let lines = render("1. run `cargo fmt` now");
+        let spans = &lines[0].line.spans;
+        let chip = spans
+            .iter()
+            .find(|span| span.content == "cargo fmt")
+            .expect("inline code span");
+        assert_eq!(chip.style.fg, Some(theme.markdown.inline_code.fg));
+        assert_eq!(chip.style.bg, theme.markdown.inline_code.bg);
+        assert_eq!(
+            spans
+                .iter()
+                .filter(|span| span.content == " " && span.style.bg == theme.markdown.inline_code.bg)
+                .count(),
+            2,
+            "the chip keeps its padding on both sides"
+        );
+
+        // Emphasis, strong, and the link URL survive as well.
+        let lines = render("- **bold** and *em* and [label](https://x.y)");
+        let spans = &lines[0].line.spans;
+        let styled = |text: &str| {
+            spans
+                .iter()
+                .find(|span| span.content == text)
+                .unwrap_or_else(|| panic!("span {text:?} present in {spans:?}"))
+                .style
+        };
+        assert!(styled("bold").add_modifier.contains(Modifier::BOLD));
+        assert!(styled("em").add_modifier.contains(Modifier::ITALIC));
+        assert_eq!(styled("label").fg, Some(theme.markdown.link_text.fg));
+        assert_eq!(
+            styled("https://x.y").fg,
+            Some(theme.markdown.link_url.fg),
+            "the link URL is rendered, not dropped"
+        );
+    }
+
+    #[test]
+    fn list_items_keep_escaped_markers_literal() {
+        // A flattened re-parse consumed `1.` as an ordered marker and turned
+        // escaped `\*` into emphasis; both must stay literal text.
+        let lines = render("- 1\\. not a list");
+        assert_eq!(
+            plain(&lines),
+            vec!["◦ 1. not a list"],
+            "an escaped ordered marker keeps its digits"
+        );
+        let lines = render("- escaped \\*not em\\* here");
+        assert_eq!(plain(&lines), vec!["◦ escaped *not em* here"]);
+        assert!(
+            lines[0]
+                .line
+                .spans
+                .iter()
+                .all(|span| !span.style.add_modifier.contains(Modifier::ITALIC)),
+            "escaped asterisks must not become emphasis"
+        );
+    }
+
+    #[test]
+    fn loose_list_item_paragraphs_stay_on_separate_rows() {
+        let lines = render("1. loose item\n\n   second paragraph");
+        assert_eq!(plain(&lines), vec!["1. loose item", "   second paragraph"]);
+        assert_eq!(lines[0].raw_line, Some(0));
+        assert_eq!(lines[1].raw_line, Some(1));
+    }
+
+    #[test]
+    fn ordered_numbers_follow_the_source_across_nesting() {
+        // The source's own start number is authoritative.
+        assert_eq!(
+            plain(&render("3. three\n4. four")),
+            vec!["3. three", "4. four"]
+        );
+        // Each level counts independently, and a nested list must not reset the
+        // outer level back to bullets.
+        assert_eq!(
+            plain(&render(
+                "1. one\n   1. nested one\n   2. nested two\n2. two"
+            )),
+            vec!["1. one", "  1. nested one", "  2. nested two", "2. two"]
+        );
+        assert_eq!(
+            plain(&render("1. outer\n   - bullet child\n2. next")),
+            vec!["1. outer", "  ◦ bullet child", "2. next"]
+        );
     }
 
     #[test]

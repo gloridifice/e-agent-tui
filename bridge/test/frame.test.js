@@ -33,6 +33,39 @@ test('welcome reports the actual session preset from header or latest selection'
   assert.equal(shapeWelcomeFrame(agent, 4, 1024).mode, 'cordis')
 })
 
+test('welcome reports the installed model selection when agent options are unset', () => {
+  const agent = {
+    id: 's2',
+    status: 'idle',
+    options: undefined,
+    session: {
+      header: { cwd: '/work', agentPreset: 'standard' },
+      events: [],
+    },
+  }
+  const frame = shapeWelcomeFrame(agent, 4, 1024, { provider: 'deepseek', model: 'chat' })
+  assert.equal(frame.provider, 'deepseek')
+  assert.equal(frame.model, 'chat')
+  assert.equal(frame.mode, 'standard')
+  assert.equal(frame.cwd, '/work')
+})
+
+test('welcome prefers the installed model selection over stale agent options', () => {
+  const frame = shapeWelcomeFrame(
+    {
+      id: 's3',
+      status: 'idle',
+      options: { provider: 'stale', model: 'old' },
+      session: { header: {}, events: [] },
+    },
+    4,
+    1024,
+    { provider: 'deepseek', model: 'chat' },
+  )
+  assert.equal(frame.provider, 'deepseek')
+  assert.equal(frame.model, 'chat')
+})
+
 test('ordinary frames are encoded unchanged below the byte budget', () => {
   const message = { type: 'status', status: 'running' }
   assert.deepEqual(JSON.parse(encodeBoundedFrame(message, 1024)), message)

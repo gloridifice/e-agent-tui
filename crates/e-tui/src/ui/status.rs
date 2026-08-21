@@ -86,17 +86,15 @@ pub(super) fn render_title(
             _ => "新会话".to_owned(),
         }
     };
-    let cwd = if state.session.new_conversation.is_some() {
-        String::new()
-    } else {
-        state
-            .session
-            .session_cwd
-            .as_deref()
-            .unwrap_or("")
-            .trim()
-            .to_string()
-    };
+    // The draft overlays the still-attached session: keep rendering that
+    // session's workspace path until the next `welcome` replaces `session_cwd`.
+    let cwd = state
+        .session
+        .session_cwd
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .to_string();
     let path_w = UnicodeWidthStr::width(cwd.as_str());
     let avail = width.saturating_sub(path_w.saturating_add(2));
     let shown = if UnicodeWidthStr::width(title.as_str()) > avail {
@@ -119,5 +117,42 @@ pub(super) fn render_title(
         let right = Line::from(Span::styled(cwd, style));
         let right_x = area.x + area.width.saturating_sub(path_w as u16);
         buffer.set_line(right_x, area.y, &right, path_w as u16);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn new_draft_keeps_the_attached_sessions_workspace_path() {
+        let mut state = TuiApp::default();
+        state.session.session_cwd = Some(r"D:\workspace\project".into());
+        state.session.new_conversation = Some(crate::app::NewConversationDraft {
+            mode: "code".into(),
+            pending_input: None,
+            notice: None,
+        });
+
+        let mut terminal = Terminal::new(TestBackend::new(48, 1)).unwrap();
+        terminal
+            .draw(|frame| render_title(frame, frame.area(), &state, &Theme::ferra()))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let line = (0..48)
+            .map(|x| buffer[(x, 0)].symbol().chars().next().unwrap_or(' '))
+            .collect::<String>();
+        // CJK glyphs occupy two cells; symbol() returns the second cell empty.
+        let compact = line.replace(' ', "");
+        assert!(
+            compact.starts_with("新对话"),
+            "draft title missing: {line:?}"
+        );
+        assert!(
+            line.contains(r"D:\workspace\project"),
+            "workspace path should stay visible while /new draft is pending: {line:?}"
+        );
     }
 }

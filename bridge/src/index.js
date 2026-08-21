@@ -245,8 +245,15 @@ function apply(ctx, config = {}) {
 
     // Welcome owns the attached session's authoritative initial page state.
     // In particular, mode cannot be reconstructed from a new session's
-    // snapshot because its initial preset lives in the frozen header.
-    send(ws, shapeWelcomeFrame(agent, PROTOCOL_VERSION, MAX_FRAME_BYTES))
+    // snapshot because its initial preset lives in the frozen header. The
+    // installed model selection is the effective provider/model even before
+    // the user opens /model or changes the selection.
+    send(ws, shapeWelcomeFrame(
+      agent,
+      PROTOCOL_VERSION,
+      MAX_FRAME_BYTES,
+      modelSelections.get(agent.id)?.current,
+    ))
     sendSnapshot(conn, send)
     // DSH/plugin commands are effective per agent (scoped definitions may
     // shadow globals), so discover them after every attach/session switch.

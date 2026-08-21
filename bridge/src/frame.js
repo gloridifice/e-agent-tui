@@ -1,17 +1,27 @@
 import { Buffer } from 'node:buffer'
 import { latestTitle, sessionPresetOf } from './compose.js'
 
-/** Project the authoritative attached-session metadata into a welcome frame. */
-export function shapeWelcomeFrame(agent, protocolVersion, maxFrameBytes) {
+/**
+ * Project the authoritative attached-session metadata into a welcome frame.
+ * `selected` is the bridge-owned model selection kept in `modelSelections`;
+ * it takes precedence over `agent.options` because the model-selection
+ * installer closes over that mutable pair without necessarily writing it
+ * back to the agent options.
+ */
+export function shapeWelcomeFrame(agent, protocolVersion, maxFrameBytes, selected) {
   const events = agent.session?.events ?? []
+  const current = selected ?? {
+    provider: agent.options?.provider,
+    model: agent.options?.model,
+  }
   return {
     type: 'welcome',
     protocolVersion,
     maxFrameBytes,
     sessionId: agent.id,
     status: agent.status,
-    provider: agent.options?.provider,
-    model: agent.options?.model,
+    provider: current?.provider,
+    model: current?.model,
     // Creation records the initial preset in the frozen header; a later
     // blank-session recompose records agent-preset/selected in the log.
     mode: sessionPresetOf(agent.session?.header, events),

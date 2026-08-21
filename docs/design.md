@@ -394,7 +394,7 @@ The ferra palette comes from the casperstorm/ferra README:
 ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓   ← bottom margin 1 row (pure background)
 ```
 
-- Text area: single-line mode 1 row; multi-line mode shows at most **3 rows**, scrolling within the area when
+- Text area: single-line mode 1 row; multi-line mode shows at most **5 rows**, scrolling within the area when
   content overflows, keeping the cursor's line visible; over-wide content **auto-wraps** within the input bar
   (the wrap window also follows the cursor). The screen cursor is drawn by the input bar as a reverse-video block;
   the terminal hardware cursor is always hidden and only moved to the same position after each frame completes as

@@ -100,8 +100,8 @@ fn input_bar_paste_block_renders_placeholder_between_editable_text() {
 fn input_bar_box_grows_with_wrapped_rows_and_keeps_cursor_visible() {
     // 80 cols → split main 48 / preview 32 → page width 40 → inner 36 with
     // the default 2-column gutter. 200 chars wrap to 6 rows, so the box must
-    // grow to the 3-row cap and the wrap window must follow the cursor: the
-    // last three wrapped rows are visible and the IME anchor stays inside the
+    // grow to the 5-row cap and the wrap window must follow the cursor: the
+    // last five wrapped rows are visible and the IME anchor stays inside the
     // text area (previously the box stayed 3 rows tall, only the first chunk
     // was visible, and the anchor landed on the gap row below the bar).
     let mut state = TuiApp::default();
@@ -124,14 +124,12 @@ fn input_bar_box_grows_with_wrapped_rows_and_keeps_cursor_visible() {
             .map(|x| buffer[(x, y)].symbol().chars().next().unwrap_or(' '))
             .collect::<String>()
     };
-    // Box = 3 text rows + 2 padding = 5 rows at the bottom: y 16..20
-    // (bottom stack: 5 + 1 gap + 1 status + 1 title = 8).
-    assert_eq!(&row(17)[6..42], "x".repeat(36), "first visible wrapped row");
-    assert_eq!(
-        &row(18)[6..42],
-        "x".repeat(36),
-        "middle visible wrapped row"
-    );
+    // Box = 5 text rows + 2 padding = 7 rows at the bottom: y 14..20
+    // (bottom stack: 7 + 1 gap + 1 status + 1 title = 10).
+    assert_eq!(&row(15)[6..42], "x".repeat(36), "visible row 1");
+    assert_eq!(&row(16)[6..42], "x".repeat(36), "visible row 2");
+    assert_eq!(&row(17)[6..42], "x".repeat(36), "visible row 3");
+    assert_eq!(&row(18)[6..42], "x".repeat(36), "visible row 4");
     assert_eq!(
         &row(19)[6..26],
         "x".repeat(20),
@@ -157,9 +155,50 @@ fn input_bar_box_grows_with_wrapped_rows_and_keeps_cursor_visible() {
 }
 
 #[test]
+fn input_bar_full_final_row_keeps_cursor_out_of_bottom_padding() {
+    // 180 chars fill exactly 5 rows at inner 36. The synthetic cursor space
+    // after the final character must stay on the last text row (in the box's
+    // right gutter), not wrap into the bottom padding row.
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    let mut input = InputState::new(&state.config);
+    input.buf = "x".repeat(180);
+    input.cursor = input.buf.chars().count();
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    let mut anchor = None;
+    terminal
+        .draw(|frame| {
+            anchor = render_with_cursor(frame, &mut state, &input, &mut scroll, &theme, overlays());
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let row = |y: u16| {
+        (0..80u16)
+            .map(|x| buffer[(x, y)].symbol().chars().next().unwrap_or(' '))
+            .collect::<String>()
+    };
+    for y in 15..20 {
+        assert_eq!(&row(y)[6..42], "x".repeat(36), "full text row {y}");
+    }
+    assert_eq!(row(20).trim(), "", "bottom padding row stays blank");
+    assert_eq!(anchor, Some(Position::new(42, 19)));
+    assert_eq!(
+        buffer[(42, 19)].bg,
+        theme
+            .input
+            .cursor
+            .bg
+            .expect("ferra cursor has a background"),
+        "cursor block is patched into the right gutter on the last text row"
+    );
+}
+
+#[test]
 fn input_bar_multiline_wrapped_rows_keep_cursor_row_in_box() {
-    // "a\n" + 200 y's: 7 display rows total, box capped at 3 text rows; the
-    // window follows the cursor so the last three wrapped rows are shown.
+    // "a\n" + 200 y's: 7 display rows total, box capped at 5 text rows; the
+    // window follows the cursor so the last five wrapped rows are shown.
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();
     let mut input = InputState::new(&state.config);
@@ -181,8 +220,10 @@ fn input_bar_multiline_wrapped_rows_keep_cursor_row_in_box() {
             .map(|x| buffer[(x, y)].symbol().chars().next().unwrap_or(' '))
             .collect::<String>()
     };
-    assert_eq!(&row(17)[6..42], "y".repeat(36));
-    assert_eq!(&row(18)[6..42], "y".repeat(36));
+    assert_eq!(&row(15)[6..42], "y".repeat(36), "visible row 1");
+    assert_eq!(&row(16)[6..42], "y".repeat(36), "visible row 2");
+    assert_eq!(&row(17)[6..42], "y".repeat(36), "visible row 3");
+    assert_eq!(&row(18)[6..42], "y".repeat(36), "visible row 4");
     assert_eq!(
         &row(19)[6..26],
         "y".repeat(20),
@@ -197,8 +238,9 @@ fn input_bar_multiline_wrapped_rows_keep_cursor_row_in_box() {
 
 #[test]
 fn input_bar_fits_all_wrapped_rows_when_they_fit_the_box() {
-    // 100 chars → 3 wrapped rows at inner 36 → the whole content is visible
-    // from the top; the cursor row is the last one.
+    // 100 chars -> 3 wrapped rows at inner 36 -> the content still fits inside
+    // the 5-row cap, so the whole content is visible from the top; the cursor
+    // row is the last one.
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();
     let mut input = InputState::new(&state.config);
@@ -236,7 +278,7 @@ fn input_box_rows_follow_wrapped_content() {
     input.buf = "x".repeat(37);
     assert_eq!(input_rows(&input, 40, 2), 2, "one overflow column wraps");
     input.buf = "x".repeat(200);
-    assert_eq!(input_rows(&input, 40, 2), INPUT_MAX_ROWS, "cap at 3 rows");
+    assert_eq!(input_rows(&input, 40, 2), INPUT_MAX_ROWS, "cap at 5 rows");
     // Trailing newline still counts as an extra row (Shift+Enter growth).
     input.buf = "a\n".into();
     assert_eq!(input_rows(&input, 40, 2), 2);

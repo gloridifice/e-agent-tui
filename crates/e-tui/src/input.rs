@@ -1,7 +1,7 @@
 //! Input-line state and key handling (design §4.1, D23/D24).
 //!
 //! The input bar is a borderless Ash block: one margin row above, the text
-//! area (1 row, or up to 3 scrolling rows in multiline mode), one margin row
+//! area (1 row, or up to 5 scrolling rows in multiline mode), one margin row
 //! below. Each paste over the placeholder threshold is an independent atomic
 //! block that renders as `[N text pasted]` (like pi's paste markers); typed
 //! text around blocks stays editable and the cursor skips blocks whole.
@@ -906,32 +906,45 @@ impl InputState {
                 paste_ranges: Vec::new(),
             };
         }
+        let raw_cursor = self.cursor;
         let mut text = String::with_capacity(self.buf.len());
         let mut paste_ranges = Vec::with_capacity(self.paste_blocks.len());
-        let mut cursor = self.cursor;
+        let mut cursor = raw_cursor;
         let mut raw = 0usize;
+        let mut display_pos = 0usize;
+        let mut mapped = false;
         for block in &self.paste_blocks {
             let before = self.buf.chars().skip(raw).take(block.start - raw);
             for c in before {
                 text.push(c);
             }
+            let before_len = block.start - raw;
+            if !mapped && raw_cursor <= block.start {
+                // Cursor before the block: it stays at its own boundary in the
+                // plain segment just emitted.
+                cursor = display_pos + (raw_cursor - raw);
+                mapped = true;
+            }
+            display_pos += before_len;
             let placeholder = format!("[{} text pasted]", block.end - block.start);
-            let display_start = text.chars().count();
-            if cursor <= block.start {
-                // Cursor before the block: it stays at its own boundary.
-            } else if cursor <= block.end {
+            let placeholder_len = placeholder.chars().count();
+            if !mapped && raw_cursor <= block.end {
                 // Cursor inside the block: snap to the placeholder end.
-                cursor = display_start + placeholder.chars().count();
-            } else {
-                cursor += placeholder.chars().count() - (block.end - block.start);
+                cursor = display_pos + placeholder_len;
+                mapped = true;
             }
             text.push_str(&placeholder);
-            let display_end = text.chars().count();
-            paste_ranges.push(display_start..display_end);
+            display_pos += placeholder_len;
+            paste_ranges.push(display_pos - placeholder_len..display_pos);
             raw = block.end;
         }
         for c in self.buf.chars().skip(raw) {
             text.push(c);
+        }
+        if !mapped {
+            // Cursor after every block: all preceding placeholders have already
+            // been added, so offset from the last placeholder end.
+            cursor = display_pos + (raw_cursor - raw);
         }
         InputDisplay {
             text,
@@ -1608,6 +1621,37 @@ mod tests {
         // Enter sends the full expanded content verbatim.
         let action = s.handle_key(&key(KeyCode::Enter), true);
         assert!(matches!(action, InputAction::Send(text) if text == "AAAAAAxy"));
+    }
+
+    #[test]
+    fn multiple_paste_blocks_map_cursor_to_placeholder_boundaries() {
+        let mut s = state();
+        s.paste_placeholder_chars = 5;
+        s.paste("AAAAAA");
+        for c in "xy".chars() {
+            s.handle_key(&key(KeyCode::Char(c)), true);
+        }
+        s.paste("BBBBBB");
+        let expected = "[6 text pasted]xy[6 text pasted]";
+
+        // Cursor after the first block sits at the first placeholder end, not
+        // inside a later placeholder.
+        s.cursor = 6;
+        let display = s.display_text();
+        assert_eq!(display.text, expected);
+        assert_eq!(display.cursor, "[6 text pasted]".chars().count());
+
+        // Cursor before the second block sits at the second placeholder start.
+        s.cursor = 8;
+        let display = s.display_text();
+        assert_eq!(display.text, expected);
+        assert_eq!(display.cursor, "[6 text pasted]xy".chars().count());
+
+        // A cursor forced into a block still snaps to that block's placeholder end.
+        s.cursor = 3;
+        let display = s.display_text();
+        assert_eq!(display.text, expected);
+        assert_eq!(display.cursor, "[6 text pasted]".chars().count());
     }
 
     /// A paste inside multiline content keeps Up/Down line movement working:

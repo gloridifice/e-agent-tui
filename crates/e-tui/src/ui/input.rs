@@ -138,6 +138,12 @@ pub(super) fn render_input(
     };
 
     let mut rendered: Vec<Line<'static>> = Vec::new();
+    // When the cursor sits just past the final character of a row that already
+    // fills `wrap_w`, appending the synthetic cursor space would make Ratatui
+    // wrap that space into the next physical row (often the box's bottom
+    // padding). Render the text without that space and patch the cursor cell
+    // into the right gutter after the paragraph instead.
+    let mut cursor_patch: Option<(u16, u16)> = None;
     for i in start..end {
         let chunk = &chunks[i];
         let text = &chunk.text;
@@ -147,6 +153,16 @@ pub(super) fn render_input(
             // Draw the cursor on its wrapped row. A cursor in whitespace
             // consumed by a row break clamps to the end of the previous row.
             let cur = display.cursor.saturating_sub(off).min(text.chars().count());
+            if text.chars().nth(cur).is_none()
+                && UnicodeWidthStr::width(text.as_str()).saturating_add(1) > wrap_w
+            {
+                rendered.push(Line::from(styled_spans(text, off)));
+                cursor_patch = Some((
+                    (i - start) as u16,
+                    UnicodeWidthStr::width(text.as_str()) as u16,
+                ));
+                continue;
+            }
             let before: String = text.chars().take(cur).collect();
             let at: String = text
                 .chars()
@@ -164,6 +180,15 @@ pub(super) fn render_input(
     }
     let paragraph = Paragraph::new(Text::from(rendered)).style(theme.input.background.style());
     frame.render_widget(paragraph, inner);
+    if let Some((row, col)) = cursor_patch {
+        let x = inner.x.saturating_add(col);
+        let y = inner.y.saturating_add(row);
+        if x < area.right() && y < area.bottom() {
+            if let Some(cell) = frame.buffer_mut().cell_mut(Position::new(x, y)) {
+                cell.set_symbol(" ").set_style(theme.input.cursor.style());
+            }
+        }
+    }
     // Place the terminal cursor into the input bar for IME-friendly input.
     // x = display width of the wrapped row up to the cursor. CJK glyphs
     // occupy two cells, so use Unicode width, not char count.

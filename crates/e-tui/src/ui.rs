@@ -47,7 +47,7 @@ use overlay::help_overlay;
 use transcript::InputPageRegions;
 pub use transcript::{provenance_layout_rows, scroll_lines, scroll_page};
 
-const INPUT_MAX_ROWS: usize = 3;
+const INPUT_MAX_ROWS: usize = 5;
 
 pub use crate::interaction::ScrollState;
 

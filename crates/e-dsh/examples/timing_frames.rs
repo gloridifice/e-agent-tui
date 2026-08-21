@@ -183,6 +183,8 @@ fn run(width: u16, height: u16) -> anyhow::Result<()> {
                 toast: None,
                 settings: None,
                 login: None,
+                approval: None,
+                queue: &[],
             },
         );
     })?;
@@ -234,6 +236,8 @@ fn run(width: u16, height: u16) -> anyhow::Result<()> {
                     toast: None,
                     settings: None,
                     login: None,
+                    approval: None,
+                    queue: &[],
                 },
             );
         })?;

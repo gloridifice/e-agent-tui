@@ -32,6 +32,7 @@ pub mod question;
 pub mod reading;
 pub mod render;
 pub mod render_state;
+pub mod reveal;
 pub mod settings;
 pub mod theme;
 pub mod transcript_layout;
@@ -42,7 +43,7 @@ pub use action::{AgentRequest, DirtyState, DrawPriority, EffectResult, UiAction,
 pub use agent::AgentEvent;
 pub use app::{NewConversationDraft, SessionModel, SessionStatus, TuiApp};
 pub use catalog::CatalogModel;
-pub use config::{Config, ThinkingDisplayMode};
+pub use config::{Config, HexRgb, RevealRate, ThinkingDisplayMode};
 pub use event::InputEvent;
 pub use interaction::{InteractionModel, ScrollState};
 pub use preview::{

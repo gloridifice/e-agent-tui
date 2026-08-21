@@ -56,9 +56,13 @@ const MAX_RENDER_LINES_PER_MSG: usize = 800;
 
 pub use screen::RenderOverlays;
 
-fn input_accessories(state: &TuiApp) -> Vec<InputAccessory> {
+fn input_accessories(
+    state: &TuiApp,
+    approval: Option<&crate::interaction::ApprovalCard>,
+    queue: &[String],
+) -> Vec<InputAccessory> {
     let mut accessories = Vec::new();
-    if state.interaction.approval.is_some() {
+    if approval.is_some() {
         accessories.push(InputAccessory {
             kind: InputAccessoryKind::Approval,
             priority: 90,
@@ -98,11 +102,11 @@ fn input_accessories(state: &TuiApp) -> Vec<InputAccessory> {
             insertion_order: 3,
         });
     }
-    if !state.interaction.queue.is_empty() {
+    if !queue.is_empty() {
         accessories.push(InputAccessory {
             kind: InputAccessoryKind::Queue,
             priority: 10,
-            desired_rows: state.interaction.queue.len().min(u16::MAX as usize) as u16,
+            desired_rows: queue.len().min(u16::MAX as usize) as u16,
             minimum_rows: 1,
             blocking: false,
             insertion_order: 4,
@@ -153,12 +157,15 @@ pub struct TerminalSize {
 
 /// Visible transcript rows for the same bottom/accessory policy used by
 /// `render`; keyboard and mouse scrolling must use this rather than the full
-/// terminal height.
+/// terminal height. The live approval card and pending-prompt queue are passed
+/// in because the main loop may hold the InteractionModel out of AppState.
 pub fn transcript_view_height(
     size: TerminalSize,
     state: &TuiApp,
     input: &InputState,
     input_page_open: bool,
+    approval: Option<&crate::interaction::ApprovalCard>,
+    queue: &[String],
 ) -> usize {
     let bottom_rows = bottom_area_rows(
         size.height,
@@ -168,10 +175,11 @@ pub fn transcript_view_height(
         state.config.user_input_padding,
     );
     let accessory_budget = size.height.saturating_sub(1 + bottom_rows + 3);
-    let accessory_rows: u16 = allocate_accessories(&input_accessories(state), accessory_budget)
-        .iter()
-        .map(|item| item.rows)
-        .sum();
+    let accessory_rows: u16 =
+        allocate_accessories(&input_accessories(state, approval, queue), accessory_budget)
+            .iter()
+            .map(|item| item.rows)
+            .sum();
     usize::from(
         size.height
             .saturating_sub(bottom_rows + accessory_rows + 3)
@@ -220,6 +228,8 @@ pub(crate) fn render_main_pane_with_cursor(
         mut input_page,
         mut settings,
         mut login,
+        approval,
+        queue,
     } = overlays;
     // Page: fixed side margins, capped at the configured max width and
     // horizontally aligned (居中/左对齐/右对齐); text wraps within this
@@ -242,7 +252,7 @@ pub(crate) fn render_main_pane_with_cursor(
     let accessories = if drafting {
         Vec::new()
     } else {
-        input_accessories(state)
+        input_accessories(state, approval, queue)
     };
     let accessory_budget = area.height.saturating_sub(1 + bottom_rows + 3);
     let accessory_plan = allocate_accessories(&accessories, accessory_budget);
@@ -274,12 +284,9 @@ pub(crate) fn render_main_pane_with_cursor(
 
         region::transcript::render(frame, chunks[0], state, scroll, theme, help_visible);
         if approval_rows > 0 {
-            render_approval(
-                frame,
-                chunks[1],
-                state.interaction.approval.as_ref().unwrap(),
-                theme,
-            );
+            if let Some(card) = approval {
+                render_approval(frame, chunks[1], card, theme);
+            }
         }
         if goal_rows > 0 {
             render_info_accessory(
@@ -303,13 +310,7 @@ pub(crate) fn render_main_pane_with_cursor(
             render_todo(frame, chunks[4], &state.todos, theme);
         }
         if queue_visible > 0 {
-            render_queue(
-                frame,
-                chunks[5],
-                &state.interaction.queue,
-                queue_visible,
-                theme,
-            );
+            render_queue(frame, chunks[5], queue, queue_visible, theme);
         }
         let cursor_anchor = if let Some(page) = input_page.as_mut() {
             region::input_page::render(frame, chunks[6], page, &state.config, theme)
@@ -366,12 +367,14 @@ pub(crate) fn render_main_pane_with_cursor(
 
     if approval_rows > 0 && y < end_y {
         let h = (end_y - y).min(approval_rows);
-        render_approval(
-            frame,
-            ratatui::layout::Rect::new(page.x, y, page.width, h),
-            state.interaction.approval.as_ref().unwrap(),
-            theme,
-        );
+        if let Some(card) = approval {
+            render_approval(
+                frame,
+                ratatui::layout::Rect::new(page.x, y, page.width, h),
+                card,
+                theme,
+            );
+        }
         y = y.saturating_add(approval_rows);
     }
     if goal_rows > 0 && y < end_y {
@@ -411,7 +414,7 @@ pub(crate) fn render_main_pane_with_cursor(
         render_queue(
             frame,
             ratatui::layout::Rect::new(page.x, y, page.width, h),
-            &state.interaction.queue,
+            queue,
             queue_visible,
             theme,
         );
@@ -469,8 +472,9 @@ mod main_pane_tests;
 /// once the content exceeds the cap.
 fn input_rows(input: &InputState, wrap_width: usize, padding: usize) -> usize {
     let inner = wrap_width.saturating_sub(padding.saturating_mul(2)).max(1);
-    let (display, _) = input.display_text();
+    let display = input.display_text();
     display
+        .text
         .split('\n')
         .map(|line| {
             if line.is_empty() {

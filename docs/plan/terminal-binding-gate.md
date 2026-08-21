@@ -12,3 +12,17 @@ The selected binding is **`Ctrl+Y`**. It is unclaimed by dshe's global router, c
 | kitty-compatible Linux terminals | Configurable; not universal enough for the candidate | Delivered as control key | Delivered as paste event |
 
 Automated routing tests assert that `Ctrl+Y` maps only to Reading View, higher-priority blocking interactions retain ownership, and paste events cannot mutate the composer while Reading View is active. The public help and key references use `Ctrl+Y` consistently.
+
+## Update (Windows paste delivery)
+
+The "Delivered as paste event" rows above describe the *intended* delivery, but crossterm's Windows backend never
+emits `Event::Paste` — its Windows event source only produces key/mouse/resize/focus events from console input
+records, and the bracketed-paste parser (`ESC[200~ … ESC[201~`) exists only in the Unix backend
+(`crossterm/src/event/sys/unix/parse.rs`). The console consumes the wrapper before records reach the application,
+so pasted `\r` line endings arrive as plain Enter key events, which the composer treats as send. `dshe` therefore
+replaces the Windows record source with raw VT byte input (pi's proven approach): `TerminalOwner` enables
+`ENABLE_VIRTUAL_TERMINAL_INPUT`, a reader thread forwards stdin bytes, and `vt_input.rs` parses the byte stream —
+including the bracketed-paste wrapper — into `Event::Paste`, with `win_input.rs` sampling the physical
+Shift/Ctrl/Alt keys so `\r` Enter keeps its modifiers. This restores the paste event contract for Windows
+Terminal and modern ConHost. Terminals that do not honor bracketed paste at all still deliver pastes as typed key
+events and cannot be distinguished; that limitation is inherent to the terminal, not to the parser.

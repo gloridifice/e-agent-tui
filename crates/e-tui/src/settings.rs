@@ -5,7 +5,7 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::{
-    config::Config,
+    config::{Config, HexRgb, RevealRate},
     page_core::{handle_text_editor, TextEditResult, TextEditor},
 };
 
@@ -64,6 +64,18 @@ pub static ITEMS: &[ItemDef] = &[
         get: |c| bool_str(c.plain_color),
         apply: |c, v| {
             c.plain_color = v == "开";
+        },
+    },
+    ItemDef {
+        category: 0,
+        label: "淡入背景颜色",
+        desc: "新文字前景淡入时使用的 #RRGGBB 背景参考色",
+        kind: ItemKind::Input,
+        get: |c| c.background_color.to_string(),
+        apply: |c, v| {
+            if let Ok(color) = v.parse::<HexRgb>() {
+                c.background_color = color;
+            }
         },
     },
     ItemDef {
@@ -252,6 +264,30 @@ pub static ITEMS: &[ItemDef] = &[
         get: |c| bool_str(c.mermaid_enabled),
         apply: |c, v| {
             c.mermaid_enabled = v == "开";
+        },
+    },
+    ItemDef {
+        category: 2,
+        label: "消息文字速度",
+        desc: "AI Markdown 回复每秒最多出现的字符数（0-1024，0 为关闭渐显）",
+        kind: ItemKind::Input,
+        get: |c| c.message_chars_per_second.to_string(),
+        apply: |c, v| {
+            if let Ok(rate) = v.parse::<RevealRate>() {
+                c.message_chars_per_second = rate;
+            }
+        },
+    },
+    ItemDef {
+        category: 2,
+        label: "预览行速度",
+        desc: "Preview 每秒最多出现的折行显示行数（0-1024，0 为关闭渐显）",
+        kind: ItemKind::Input,
+        get: |c| c.preview_lines_per_second.to_string(),
+        apply: |c, v| {
+            if let Ok(rate) = v.parse::<RevealRate>() {
+                c.preview_lines_per_second = rate;
+            }
         },
     },
     ItemDef {
@@ -567,6 +603,7 @@ mod tests {
         let mut s = SettingsState::default(); // 主题: deepseek-e/ferra
         s.themes = vec!["deepseek-e".into(), "ferra".into()];
         let mut config = Config::default();
+        config.theme = "deepseek-e".into();
         assert_eq!(config.theme, "deepseek-e");
         s.handle_key(&key(KeyCode::Enter), &mut config);
         assert_eq!(
@@ -604,7 +641,7 @@ mod tests {
     fn enter_edits_number_confirm_and_cancel() {
         let mut s = SettingsState::default();
         let mut config = Config::default();
-        s.pos[0] = 2; // 消息/输入框内边距
+        s.pos[0] = 3; // 消息/输入框内边距
         s.handle_key(&key(KeyCode::Enter), &mut config);
         assert!(matches!(s.editing, Some(Edit::Input { .. })));
         for c in "6".chars() {
@@ -622,6 +659,47 @@ mod tests {
             config.user_input_padding, 6,
             "cancelled edit keeps the value"
         );
+    }
+
+    #[test]
+    fn reveal_inputs_apply_valid_values_and_retain_old_values_when_invalid() {
+        fn confirm(
+            state: &mut SettingsState,
+            config: &mut Config,
+            category: usize,
+            label: &str,
+            value: &str,
+        ) {
+            state.category = category;
+            state.pos[category] = items_in(category)
+                .iter()
+                .position(|item| item.label == label)
+                .expect("setting exists");
+            state.handle_key(&key(KeyCode::Enter), config);
+            for character in value.chars() {
+                state.handle_key(&key(KeyCode::Char(character)), config);
+            }
+            assert!(matches!(
+                state.handle_key(&key(KeyCode::Enter), config),
+                SettingsAction::Changed
+            ));
+        }
+
+        let mut state = SettingsState::default();
+        let mut config = Config::default();
+        confirm(&mut state, &mut config, 0, "淡入背景颜色", "#1A2b3C");
+        assert_eq!(config.background_color.to_string(), "#1a2b3c");
+        confirm(&mut state, &mut config, 0, "淡入背景颜色", "black");
+        assert_eq!(config.background_color.to_string(), "#1a2b3c");
+
+        confirm(&mut state, &mut config, 2, "消息文字速度", "1024");
+        assert_eq!(config.message_chars_per_second.get(), 1024);
+        confirm(&mut state, &mut config, 2, "消息文字速度", "0");
+        assert_eq!(config.message_chars_per_second.get(), 0);
+        confirm(&mut state, &mut config, 2, "预览行速度", "7");
+        assert_eq!(config.preview_lines_per_second.get(), 7);
+        confirm(&mut state, &mut config, 2, "预览行速度", "1025");
+        assert_eq!(config.preview_lines_per_second.get(), 7);
     }
 
     #[test]

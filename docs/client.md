@@ -55,17 +55,52 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
 - **Render cache** (`e-tui::{cache,transcript_layout,ui::region::transcript}`): only
   structural events invalidate the cache and trigger a full rebuild; streaming chunks only set `tail_dirty`,
   and rendering **splices the tail** and recomputes only the tail display-row suffix/prefix — never clear the
-  entire layout; spinner/settle only patch the active `DisplayId` range, and settle must submit one more
-  precise target-color patch after expiry before stopping the clock. Semantic Reading geometry and
+  entire layout. Paced assistant reveal records the earliest changed message and splices from that message
+  through the suffix, because adding a grapheme may change wrapped/Markdown line counts; it must not fall back
+  to rebuilding earlier messages. Spinner/settle only patch the active `DisplayId` range, and settle must submit
+  one more precise target-color patch after expiry before stopping the clock. Semantic Reading geometry and
   `ProvenanceLayoutRow` values come from the same width/generation layout; Reading cursor movement and Preview
-  selection must not flatten or rebuild the transcript. Wrap scanning is greedy word wrapping: rows fill
+  selection must not flatten or rebuild the transcript. Wrap scanning is greedy line wrapping: rows fill
   with whole words until the next word no longer fits, the break consumes the separating whitespace, and a
-  word wider than the row falls back to grapheme splitting. Display width is computed by Unicode grapheme
-  cluster; combining marks / emoji ZWJ must not be split even across style spans.
+  word wider than the row falls back to grapheme splitting. A word is a maximal run with no Unicode Line
+  Breaking Algorithm (UAX #14) break opportunity between its graphemes: Latin words, glued punctuation
+  pairs, and Hangul syllable blocks stay whole, while CJK ideographs, kana, and Hangul syllables each
+  offer a break opportunity (so kinsoku punctuation never starts a row). Display width is computed by
+  Unicode grapheme cluster; combining marks / emoji ZWJ must not be split even across style spans.
+- **Paced text reveal** (`e-tui::reveal`): semantic transcript/Preview content is always complete; only
+  presentation sidecars hold paint progress. `TEXT_FADE_WEIGHTS` is the single newest-to-oldest static profile
+  (currently `[0.217, 0.53]`), and each affected foreground is
+  `background_color + (semantic_fg - background_color) * weight`; backgrounds and modifiers are preserved.
+  Live assistant Markdown remains grapheme-paced at `message_chars_per_second` (default 120), but admits only a
+  stable rendered tail prefix: the shared UAX #14 wrapper retains the open trailing atom/deferred separator until
+  a later break, 100ms rendered-idle timeout, 300ms absolute timeout, or stream settlement. Completed hard-wrap
+  rows of an over-wide atom remain eligible. Ready Preview is first wrapped and then row-paced at
+  `preview_lines_per_second` (default 30); a unit is a non-empty terminal display row, not a source line or
+  grapheme. Preview resize retains its semantic grapheme frontier while recomputing current row boundaries.
+  The first admitted grapheme/row may appear immediately; higher rates reveal `ceil(rate × 16ms)` units as one
+  visible batch and delayed deadlines advance at most one batch. Admission, content reveal, and a 16ms fade clock
+  have independent deadlines. Fade groups continue to restore original foregrounds even when an open stream has
+  no queued content, then become deadline-idle until new content arrives. Markdown control syntax and structural
+  line boundaries consume no transcript budget; semantic printable whitespace and Unicode grapheme clusters do,
+  while generated code-block fill padding is applied after clipping and never enters the signature. Replay/history
+  never starts transcript reveal, copy and Reading use complete source, plain-color mode keeps pacing but omits
+  interpolation, and Preview identity changes restart only Preview while same-target revisions retain the common
+  semantic prefix.
 - **Performance red lines** (all have regression tests): terminal input wakes the main loop directly through
   `EventStream` — do not restore fixed ticker polling; interaction/content/animation deadlines are separated,
-  and the bridge backlog is bounded per turn by a count+time budget. The terminal is initialized/restored at a
-  single point via `terminal_runtime.rs::TerminalOwner`; frames are committed atomically with a 64KiB
+  spinner, transcript reveal, and Preview reveal keep independent due times whose minimum wakes the loop; each
+  due reveal lane advances at most one visible batch, and the bridge backlog is bounded per turn by a count+time
+  budget. On Windows, crossterm's record-based event source never emits `Event::Paste`, so
+  `ProductionTerminalEvents` (`runtime_ports.rs`) reads the raw VT byte stream instead: `TerminalOwner` enables
+  `ENABLE_VIRTUAL_TERMINAL_INPUT` only after ratatui/crossterm terminal construction (that setup clears an earlier
+  flag), a reader thread forwards stdin bytes, and `vt_input.rs` parses them into
+  crossterm events (bracketed paste, navigation, SGR mouse scroll, Alt prefixes) with `win_input.rs` sampling the
+  physical Shift/Ctrl/Alt keys so `\r` Enter keeps its modifiers and raw BS can distinguish plain Backspace from
+  Ctrl+H. Escape/partial-sequence deadlines are stored on `WindowsRawInput`, not in one cancellable
+  `next_event()` future; otherwise frame or bridge wakeups can restart the timeout forever and swallow Esc. Keep
+  that raw-input path between the stream and the router, or pasted `\r` line endings commit/send the message at
+  every newline. The terminal is initialized/restored at a single point via
+  `terminal_runtime.rs::TerminalOwner`; frames are committed atomically with a 64KiB
   `BufWriter` + DEC 2026 synchronized output (`DSHE_DISABLE_SYNC_OUTPUT=1` only as a compatibility diagnostic).
   Never full-render per event; redraw P95 ≤30ms and only when dirty/deadline expires; animation only patches
   the active message range, streaming only splices the tail; display-row layout is cached by width/generation,
@@ -80,10 +115,22 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
   or you will self-deadlock. Compute plain values/actions in a separate scope before matching, or perform
   atomic state changes within a single guard; `main.rs` already denies `clippy::significant_drop_in_scrutinee`
   and has queue-dispatch/copy-mode lock-release regression tests.
-- **Frontend interaction ownership**: `e-tui::{catalog,command_catalog,input,page_core,input_page,login,settings,question,interaction}` owns composer state, catalog presentation/completion, Input Page focus/editing, login/settings page state, retained question batches, approval routing, scroll/follow, help, notices, and prompt queues. The old executable-side re-export facades have been removed; protocol DTO conversion and external action execution remain in `e-dsh`.
+- **Frontend interaction ownership**:
+  `e-tui::{catalog,command_catalog,input,page_core,input_page,login,settings,question,interaction}` owns composer
+  state, catalog presentation/completion, Input Page focus/editing, login/settings page state, retained question
+  batches, approval routing, scroll/follow, help, notices, and prompt queues. Question, approval, and queued-prompt
+  state is session-scoped and must be cleared together on a bridge welcome that switches session identity. The old
+  executable-side re-export facades have been removed; protocol DTO conversion and external action execution remain
+  in `e-dsh`.
 - **Input interaction and character boundaries**: `InputState.cursor` is a **character index**;
   `String::insert/remove` and slicing need byte indices — use `char_to_byte()` (`input.rs`); CJK has regression
   tests; cursor x uses `unicode_width`. Plain input is fixed: `Enter` sends, `Shift+Enter` inserts a newline;
+  over-threshold pastes become **independent atomic paste blocks** (`InputState.paste_blocks`, raw-buffer char
+  ranges): each renders as one Rose `[N text pasted]` placeholder between ordinary editable text, ←/→ skip a
+  whole block, Backspace/Delete remove the whole block, Up/Down map the cursor through the placeholder
+  (snapping into a block to its start), Enter sends the full expanded content verbatim, and history-browsing
+  drafts keep their blocks. External text restoration (`restore_text`) cannot infer paste identity and yields
+  plain text. The suggestion popup never opens while a paste block exists (a fill would destroy the block).
   `↑/↓` move between input lines by character column first, and only switch to the previous/next history prompt
   at the first/last line boundary; `PageUp`/`PageDown` page by the currently visible transcript height, and the
   mouse wheel moves 3 lines per notch (always operating on the transcript even when an Input Page is open).
@@ -135,7 +182,7 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
   file-group merge/settlement scans skip it.
 - **Tracy/timing** (`profile.rs`): instrument with `e::tracy_zone!("literal")` (a macro that safely no-ops when
   no client is present); use `PhaseTimers` for stage timing. Zone names must be string literals.
-- **Responsive Screen and Preview**: at wide widths the Screen uses `main_width = min(floor(0.6 * W), main_pane_width)` when that leaves the measured 40-column main minimum and 32-column Preview minimum. Otherwise it renders main-only, with `Ctrl+P` selecting full-screen Preview. Normal mode follows the latest semantic Block; Reading View follows Item then Block. Preview has independent scroll, visible-row materialization, one shared cache, and request-id/key/revision stale-result checks. The remaining `e-dsh::preview_resolver` deferred path is retained for legacy file/line references and returns an event completion without holding a UI lock.
+- **Responsive Screen and Preview**: at wide widths the Screen uses `main_width = min(floor(0.6 * W), main_pane_width)` when that leaves the measured 40-column main minimum and 32-column Preview minimum. Otherwise it renders main-only, with `Ctrl+P` selecting full-screen Preview. Normal mode follows the latest semantic Block; Reading View follows Item then Block. Preview has independent scroll, visible-row materialization, one shared semantic cache, request-id/key/revision stale-result checks, and a selected-target reveal sidecar that never enters cache keys or invalidates the transcript. The remaining `e-dsh::preview_resolver` deferred path is retained for legacy file/line references and returns an event completion without holding a UI lock.
 - **Structured tool Preview**: known tool calls carry a provider-neutral `PreviewContent::Tool` seed built at the DSH adapter boundary (the renderer never inspects DSH tool names or argument keys). The layout is a `theme.activity.label` tool-name header, the primary content on the next row with no blank row between, then — only when secondary content exists — one blank row and the secondary. read/view show a workspace-relative `path[:lines]` location (`start-end` for a window, `start-` for open-ended, `N` for a single line); create shows its path; filesystem search shows a quoted query and an optional `at "path"` row; command/bash/pwsh (Preview name `bash`/`pwsh`, or `cmd`/`powershell`/`sh`/`shell` when that is the tool name; `command` is the fallback) show a Coral `$` + Mist command row and a Bark `lines N, duration X.Xs` metrics row; unsupported tools show bounded pretty JSON under the original tool name. A command's settled `tool/result` enriches the same `tool:<call-id>` target with final line count/duration and a Bark/Umber two-tone terminal secondary (ANSI-colored runs map to Bark, uncolored runs to Umber, bold/italic preserved, every other control stripped via a `vte`-backed component). read/view/create/search/generic results stay primary-only. edit/replace/insert render event-supplied mutation fragments (DSH edit `meta.diffs`, str-replace `old_str/new_str`, addition-only insert) as linear removed/added rows — the client never reads a file or computes a diff. Injected context (`CardRole::Context`) previews as `MutedMarkdown` (full Markdown with all foregrounds forced to Bark), distinct from `Reasoning`.
 - **Rendering layers**: production rendering lives in `e-tui` and points downward as `Screen -> Pane -> Region -> Component`. The main pane retains the characterized transcript/composer/status style; Preview reuses theme semantics without changing main-pane tokens. Terminal setup, restoration, synchronized output, and frame scheduling stay in `e-dsh`.
 - **Bottom layout and two-line status bar**: the fixed bottom row order is input bar or Input Page / gap /
@@ -170,8 +217,10 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
   id/TranscriptStore; only the first plain input sends the atomic `new-input{mode,text}` to create and deliver.
   During the draft, old-session frames keep reducing but are not displayed, and the Preview pane is cleared and
   held empty (the draft page must not inherit the previous session's preview, and late old-session frames must
-  not repopulate it); on create failure restore the input;
-  `/model`, `/skill`, and integrated commands must not be misrouted to the old session.
+  not repopulate it); on create failure restore the input; `/model` stays usable during the draft; the
+  provider/model catalog is session-independent and a selection made during the draft is applied to the
+  materialized session through `/new`'s provider/model mirror, while `/skill` and integrated commands must not be
+  misrouted to the old session.
 - **Input Page controller** (`input_page.rs` + `settings.rs` + `login.rs`): the main loop holds a single
   `Option<InputPageSession>` with the closed variant set Settings/Login/Model/Theme/Resume/Question; page keys only
   return `PageOutcome`/`PageEffect`, and the caller saves or `.await`s sending only after releasing the page borrow
@@ -191,7 +240,10 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
   enter the delete confirmation page on Enter, and `login-proxy-delete` is only sent after explicitly choosing
   delete.
 - **Config/theme/launcher (Rust boundary)**: the `Config`/theme value schemas and defaults live in `e-tui`; config defaults live only in `crates/e-tui/assets/default_config.toml`, embedded and parsed by `e-tui::config` via `include_str!`. `e-dsh::config` owns platform paths, config/state file reads and writes, and theme discovery/installation; `e-tui` performs no filesystem I/O. The persisted `Config` is deserialized directly with
-  `Deserialize` + `#[serde(deny_unknown_fields)]`, and `resolved_theme` is a `#[serde(skip)]` runtime cache.
+  `Deserialize` + `#[serde(deny_unknown_fields)]`; validated transparent values keep `background_color` as
+  `#RRGGBB` and both reveal rates in `0..=1024` (zero disables pacing and exposes complete content immediately),
+  while `resolved_theme` is a `#[serde(skip)]` runtime cache. The embedded default theme is `ferra`; `deepseek-e`
+  remains available as a built-in theme.
   `from_user_toml` first recursively `overlay_known`s user values onto the embedded TOML as the schema, then
   strictly deserializes exactly once: old files inherit missing fields, deprecated unknown keys are ignored,
   malformed/known-type errors fall back safely; `Config::default()` must not re-derive from Rust field literals.

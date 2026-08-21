@@ -63,6 +63,11 @@ pub struct RenderOverlays<'a> {
     pub input_page: Option<&'a mut InputPageSession>,
     pub settings: Option<&'a mut SettingsState>,
     pub login: Option<&'a mut LoginState>,
+    /// Live approval card and pending-prompt queue. These live in the
+    /// InteractionModel, which the main loop holds outside AppState while
+    /// rendering, so they are passed in instead of read off `state`.
+    pub approval: Option<&'a crate::interaction::ApprovalCard>,
+    pub queue: &'a [String],
 }
 
 pub(super) fn render_with_cursor(
@@ -79,6 +84,8 @@ pub(super) fn render_with_cursor(
         input_page,
         settings,
         login,
+        approval,
+        queue,
     } = overlays;
     let pane_overlays = pane::main::MainPaneOverlays {
         help_visible,
@@ -86,6 +93,8 @@ pub(super) fn render_with_cursor(
         input_page,
         settings,
         login,
+        approval,
+        queue,
     };
     match layout(
         frame.area(),
@@ -120,11 +129,11 @@ pub(super) fn render_with_cursor(
             state.rebuild_reading_model();
             render_reading_rail(frame, main, state, scroll, theme);
             render_reading_item(frame, main, state, scroll, theme);
-            pane::preview::render(frame, preview, &mut state.preview, theme);
+            pane::preview::render(frame, preview, &mut state.preview, &state.config, theme);
             cursor
         }
         ScreenLayout::PreviewOnly(preview) => {
-            pane::preview::render(frame, preview, &mut state.preview, theme);
+            pane::preview::render(frame, preview, &mut state.preview, &state.config, theme);
             None
         }
     }

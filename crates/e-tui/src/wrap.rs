@@ -1,11 +1,16 @@
-//! Width-aware greedy word wrapping shared by transcript, preview, cards, and
+//! Width-aware greedy line wrapping shared by transcript, preview, cards, and
 //! the input bar.
 //!
 //! The algorithm fills each row with as many whole words as fit (greedy
 //! first-fit), breaks at the whitespace that precedes an overflowing word, and
 //! only falls back to grapheme splitting when one word is wider than a whole
-//! row. Display widths always use `unicode_width`; grapheme clusters such as
-//! combining marks, emoji ZWJ sequences, and flags are never split.
+//! row. A "word" is a maximal run of graphemes with no line break opportunity
+//! between them: whitespace runs and, per the Unicode Line Breaking Algorithm
+//! (UAX #14), runs such as Latin words, glued punctuation pairs, and Hangul
+//! syllable blocks stay whole, while CJK ideographs, kana, and Hangul
+//! syllables each offer a break opportunity. Display widths always use
+//! `unicode_width`; grapheme clusters such as combining marks, emoji ZWJ
+//! sequences, and flags are never split.
 
 use std::ops::Range;
 
@@ -82,25 +87,47 @@ fn word_wrap_ranges(text: &str, width: usize) -> Vec<Range<usize>> {
     builder.rows
 }
 
+/// Split `text` into tokens: whitespace runs and non-whitespace segments.
+/// Consecutive whitespace graphemes merge into one space token; non-whitespace
+/// graphemes merge into a word token only when UAX #14 forbids a break at that
+/// boundary, so a word is a maximal run with no internal break opportunity.
+///
+/// Break opportunities are consumed in lockstep with the grapheme iterator, so
+/// no membership structure is materialized per call. Opportunities that fall
+/// inside a grapheme cluster (before the next grapheme boundary) are skipped.
 fn tokenize(text: &str) -> Vec<Token> {
+    use unicode_linebreak::{linebreaks, BreakOpportunity};
+
+    let mut breaks = linebreaks(text)
+        .filter(|&(_, opportunity)| opportunity == BreakOpportunity::Allowed)
+        .map(|(index, _)| index)
+        .peekable();
     let mut tokens: Vec<Token> = Vec::new();
     for (index, grapheme) in text.grapheme_indices(true) {
         let end = index + grapheme.len();
         let space = grapheme.chars().all(char::is_whitespace);
         let width = UnicodeWidthStr::width(grapheme);
-        if let Some(last) = tokens.last_mut() {
-            if last.space == space && last.end == index {
-                last.end = end;
-                last.width += width;
-                continue;
-            }
+        while breaks.peek().is_some_and(|offset| *offset < index) {
+            breaks.next();
         }
-        tokens.push(Token {
-            start: index,
-            end,
-            width,
-            space,
-        });
+        let break_allowed = breaks.peek() == Some(&index);
+        let merge = matches!(
+            tokens.last(),
+            Some(last)
+                if last.space == space && last.end == index && (space || !break_allowed)
+        );
+        if merge {
+            let last = tokens.last_mut().expect("tokens.last() matched above");
+            last.end = end;
+            last.width += width;
+        } else {
+            tokens.push(Token {
+                start: index,
+                end,
+                width,
+                space,
+            });
+        }
     }
     tokens
 }
@@ -224,6 +251,56 @@ pub fn wrap_text(text: &str, width: usize) -> Vec<String> {
         .into_iter()
         .map(|chunk| chunk.text)
         .collect()
+}
+
+/// Number of graphemes at the start of an append-only streaming line whose
+/// placement cannot be changed by extending its open trailing wrap atom.
+///
+/// The deferred separator and final non-space token stay held. For an
+/// over-wide token, complete hard-wrapped rows are stable and may be admitted;
+/// only its final partial row remains held. This deliberately reuses the same
+/// UAX #14 tokenization as `word_wrap_ranges`.
+pub fn stable_wrap_prefix_graphemes(text: &str, width: usize) -> usize {
+    let tokens = tokenize(text);
+    let Some(last) = tokens.last().copied() else {
+        return 0;
+    };
+    let held_start = if last.space {
+        last.start
+    } else {
+        tokens
+            .get(tokens.len().saturating_sub(2))
+            .filter(|token| token.space)
+            .map_or(last.start, |space| space.start)
+    };
+    if last.space || width == 0 || last.width <= width {
+        return text[..held_start].graphemes(true).count();
+    }
+
+    let mut used = 0usize;
+    let mut stable_end = last.start;
+    for (offset, grapheme) in text[last.start..last.end].grapheme_indices(true) {
+        let grapheme_width = UnicodeWidthStr::width(grapheme);
+        if grapheme_width > width {
+            stable_end = last.start + offset + grapheme.len();
+            used = 0;
+            continue;
+        }
+        if used + grapheme_width > width {
+            used = 0;
+        }
+        used += grapheme_width;
+        if used == width {
+            stable_end = last.start + offset + grapheme.len();
+            used = 0;
+        }
+    }
+    let admitted_end = if stable_end > last.start {
+        stable_end
+    } else {
+        held_start
+    };
+    text[..admitted_end].graphemes(true).count()
 }
 
 /// Split one styled line into wrapped rows without Ratatui's exact-width
@@ -356,13 +433,112 @@ mod tests {
     }
 
     #[test]
+    fn cjk_ideographs_offer_break_opportunities() {
+        assert_eq!(wrap_text("你好世界", 2), vec!["你", "好", "世", "界"]);
+        assert_eq!(wrap_text("你好世界", 4), vec!["你好", "世界"]);
+        assert_eq!(wrap_text("你好世界", 6), vec!["你好世", "界"]);
+        assert_eq!(wrap_text("你好世界", 8), vec!["你好世界"]);
+        // Mixed CJK + Latin: the Latin word stays whole on its own row.
+        assert_eq!(wrap_text("世界abc", 5), vec!["世界", "abc"]);
+        assert_eq!(wrap_text("好abc", 4), vec!["好", "abc"]);
+        assert_eq!(wrap_text("abc好", 4), vec!["abc", "好"]);
+    }
+
+    #[test]
+    fn kinsoku_punctuation_never_starts_a_row() {
+        // Fullwidth comma is CL: it glues to the preceding ideograph, so it
+        // can never start a row.
+        assert_eq!(wrap_text("你好，世界", 4), vec!["你", "好，", "世界"]);
+        assert_eq!(wrap_text("你好，世界", 6), vec!["你好，", "世界"]);
+        assert_eq!(wrap_text("你好！世界", 4), vec!["你", "好！", "世界"]);
+        // Closing brackets/marks never start a row; opening brackets never end
+        // one.
+        let rows = wrap_text("（你好）世界！", 4);
+        assert_eq!(rows, vec!["（你", "好）", "世", "界！"]);
+        for row in &rows {
+            assert!(
+                !row.starts_with(['）', '！']),
+                "row {row:?} starts with forbidden punctuation"
+            );
+            assert!(
+                !row.ends_with('（'),
+                "row {row:?} ends with an opening bracket"
+            );
+        }
+        assert_eq!(wrap_text("「你好」世界", 6), vec!["「你", "好」世", "界"]);
+    }
+
+    #[test]
+    fn small_kana_never_starts_a_row() {
+        // Small kana (CJ → NS) glues to the preceding grapheme.
+        assert_eq!(wrap_text("ああっあ", 4), vec!["あ", "あっ", "あ"]);
+    }
+
+    #[test]
+    fn hangul_syllable_blocks_stay_together() {
+        // Jamo of one syllable form a single grapheme cluster (UAX #29), so
+        // the block never splits regardless of width...
+        assert_eq!(wrap_text("한", 1), vec!["한"]);
+        assert_eq!(wrap_text("한", 2), vec!["한"]);
+        // ...while separate syllables break only between themselves (LB31).
+        assert_eq!(wrap_text("가나", 2), vec!["가", "나"]);
+        assert_eq!(wrap_text("가나", 4), vec!["가나"]);
+    }
+
+    #[test]
+    fn numeric_and_symbol_contexts_do_not_split_internally() {
+        // 1 × . × 5 (LB13 × IS, LB25 IS × NU): the number stays together.
+        assert_eq!(wrap_text("1.5", 3), vec!["1.5"]);
+        assert_eq!(wrap_text("1.5", 2), vec!["1.", "5"]);
+        // No break before a hyphen, break allowed after it.
+        assert_eq!(wrap_text("a-b", 2), vec!["a-", "b"]);
+    }
+
+    #[test]
+    fn chunks_track_character_offsets_across_cjk_breaks() {
+        let chunks = wrap_text_chunks("你好，世界", 4);
+        assert_eq!(
+            chunks
+                .iter()
+                .map(|chunk| (chunk.text.as_str(), chunk.start, chunk.end))
+                .collect::<Vec<_>>(),
+            vec![("你", 0, 1), ("好，", 1, 3), ("世界", 3, 5)]
+        );
+        assert_eq!(chunks[0].byte_end, 3);
+        assert_eq!(chunks[1].byte_start, 3);
+        assert_eq!(chunks[2].byte_end, 15);
+    }
+
+    #[test]
     fn row_count_matches_materialized_word_wraps() {
         for width in 1..=8 {
-            let line = Line::from("aa bb 中cdef");
+            let line = Line::from("aa bb 中cdef，你好「世界」abc");
             assert_eq!(
                 wrapped_rows(&line, width),
                 wrap_line(line.clone(), width).len()
             );
         }
+    }
+
+    #[test]
+    fn stable_stream_prefix_holds_open_words_and_deferred_spaces() {
+        assert_eq!(stable_wrap_prefix_graphemes("hello wor", 10), 5);
+        assert_eq!(stable_wrap_prefix_graphemes("hello world", 10), 5);
+        assert_eq!(stable_wrap_prefix_graphemes("hello world ", 10), 11);
+        assert_eq!(stable_wrap_prefix_graphemes("hello world n", 10), 11);
+    }
+
+    #[test]
+    fn stable_stream_prefix_respects_cjk_punctuation_atoms() {
+        assert_eq!(stable_wrap_prefix_graphemes("你好", 4), 1);
+        assert_eq!(stable_wrap_prefix_graphemes("你好，", 4), 1);
+        assert_eq!(stable_wrap_prefix_graphemes("你好，世", 4), 3);
+    }
+
+    #[test]
+    fn stable_stream_prefix_releases_complete_overwide_rows() {
+        assert_eq!(stable_wrap_prefix_graphemes("abcdefghij", 4), 8);
+        assert_eq!(stable_wrap_prefix_graphemes("aa abcdefghi", 4), 11);
+        assert_eq!(stable_wrap_prefix_graphemes("", 4), 0);
     }
 }

@@ -14,6 +14,8 @@ pub(crate) struct MainPaneOverlays<'a> {
     pub input_page: Option<&'a mut InputPageSession>,
     pub settings: Option<&'a mut SettingsState>,
     pub login: Option<&'a mut LoginState>,
+    pub approval: Option<&'a crate::interaction::ApprovalCard>,
+    pub queue: &'a [String],
 }
 
 pub(crate) fn render_with_cursor(

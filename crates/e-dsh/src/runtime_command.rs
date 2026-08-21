@@ -47,6 +47,11 @@ pub struct LocalCommandContext<'a> {
     pub input_paste_placeholder_chars: &'a mut usize,
     pub input_history_limit: &'a mut usize,
     pub theme: &'a mut Theme,
+    /// A question page or approval card is open (the caller reads the live
+    /// interaction, which is not reachable through the state lock while the
+    /// main loop holds the InteractionModel out of AppState).
+    pub question_open: bool,
+    pub approval_open: bool,
     pub state: &'a Arc<Mutex<AppState>>,
 }
 
@@ -156,15 +161,11 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
             if reject_arguments(&context, name, raw_input) {
                 return outcome;
             }
-            if has_new_conversation(context.state) {
-                set_new_conversation_notice(
-                    context.state,
-                    "请先发送一条消息创建新对话，再选择模型",
-                );
-            } else {
-                *context.input_page = Some(InputPageSession::model());
-                outcome.outbound.push(ClientMessage::ModelGet);
-            }
+            // The model picker is session-independent: providers and models
+            // come from the host catalog, and a pending selection is applied
+            // to the next materialized session (including a deferred `/new`).
+            *context.input_page = Some(InputPageSession::model());
+            outcome.outbound.push(ClientMessage::ModelGet);
         }
         CommandAction::Reload => {
             if reject_arguments(&context, name, raw_input) {
@@ -202,17 +203,15 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
             }
         }
         CommandAction::New => {
-            let (blocked, materializing) = {
-                let state = context.state.lock().unwrap();
-                (
-                    state.interaction.question.is_some() || state.interaction.approval.is_some(),
-                    state
-                        .session
-                        .new_conversation
-                        .as_ref()
-                        .is_some_and(|draft| draft.pending_input.is_some()),
-                )
-            };
+            let blocked = context.question_open || context.approval_open;
+            let materializing = context
+                .state
+                .lock()
+                .unwrap()
+                .session
+                .new_conversation
+                .as_ref()
+                .is_some_and(|draft| draft.pending_input.is_some());
             if blocked {
                 push_error(context.state, "请先完成当前提问或审批，再新建对话");
             } else if materializing {
@@ -321,6 +320,8 @@ mod tests {
                 input_paste_placeholder_chars: &mut paste_chars,
                 input_history_limit: &mut history_limit,
                 theme: &mut theme,
+                question_open: false,
+                approval_open: false,
                 state: &state,
             },
         );
@@ -364,6 +365,8 @@ mod tests {
                 input_paste_placeholder_chars: &mut paste_chars,
                 input_history_limit: &mut history_limit,
                 theme: &mut theme,
+                question_open: false,
+                approval_open: false,
                 state: &state,
             },
         );
@@ -376,6 +379,58 @@ mod tests {
             .as_ref()
             .and_then(|draft| draft.notice.as_deref())
             .is_some_and(|notice| notice.contains("先发送一条消息")));
+    }
+
+    #[test]
+    fn model_picker_opens_after_a_deferred_new() {
+        let state = Arc::new(Mutex::new(AppState::default()));
+        state.lock().unwrap().begin_new_conversation("code");
+        let mut input_page = None;
+        let mut help_visible = false;
+        let mut config = Config::default();
+        let mut themes = Vec::new();
+        let new_modes = Vec::new();
+        let mut paste_chars = config.paste_placeholder_chars;
+        let mut history_limit = config.history_limit;
+        let mut theme = config.theme();
+        let outcome = handle_local_command(
+            "/model".into(),
+            LocalCommandContext {
+                input_page: &mut input_page,
+                help_visible: &mut help_visible,
+                config: &mut config,
+                themes: &mut themes,
+                new_modes: &new_modes,
+                input_paste_placeholder_chars: &mut paste_chars,
+                input_history_limit: &mut history_limit,
+                theme: &mut theme,
+                question_open: false,
+                approval_open: false,
+                state: &state,
+            },
+        );
+        assert!(
+            matches!(
+                input_page.as_ref().map(|page| &page.page),
+                Some(e_tui::input_page::InputPage::Model(_))
+            ),
+            "/model must open the picker even while a new conversation is deferred"
+        );
+        assert!(
+            outcome
+                .outbound
+                .iter()
+                .any(|message| matches!(message, ClientMessage::ModelGet)),
+            "/model must request the host catalog"
+        );
+        assert!(state
+            .lock()
+            .unwrap()
+            .session
+            .new_conversation
+            .as_ref()
+            .and_then(|draft| draft.notice.as_deref())
+            .is_none());
     }
 
     #[test]

@@ -25,17 +25,17 @@ muted_text = { fg = "bark" }
 [semantics.markdown]
 text = { fg = "mist" }
 heading1 = { fg = "coral", bold = true }
-heading2 = { fg = "sage", bold = true }
-heading3 = { fg = "blush" }
+heading2 = { fg = "blush", bold = true }
+heading3 = { fg = "sage", bold = true }
 heading4 = { fg = "rose", italic = true }
 heading5 = { fg = "blush" }
 heading6 = { fg = "bark" }
 emphasis = { fg = "mist", italic = true }
-strong = { fg = "mist", bold = true }
+strong = { fg = "blush", bold = true }
 strikethrough = { fg = "mist" }
 inline_code = { fg = "rose", bg = "night" }
-link_text = { fg = "rose", bold = true }
-link_url = { fg = "blush", underline = true }
+link_text = { fg = "coral", bold = true }
+link_url = { fg = "coral", underline = true }
 image = { fg = "blush", italic = true }
 quote_marker = { fg = "bark" }
 rule = { fg = "bark" }

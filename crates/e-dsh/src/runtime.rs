@@ -113,11 +113,17 @@ fn agent_action(message: ClientMessage) -> UiAction {
 
 /// Mutable UI-local state affected by bridge frames. Keeping it separate from
 /// AppState makes session-switch behavior explicit without giving the bridge
-/// handler ownership of terminal or transport infrastructure.
+/// handler ownership of terminal or transport infrastructure. The interaction
+/// fields (approval/question/queue) are borrowed from the same InteractionModel
+/// the terminal path uses, so bridge frames and key handling mutate the same
+/// object — never a transient default.
 pub struct BridgeUiState<'a> {
     pub scroll: &'a mut ScrollState,
     pub input: &'a mut InputState,
     pub input_page: &'a mut Option<InputPageSession>,
+    pub approval: &'a mut Option<ApprovalCard>,
+    pub question: &'a mut Option<String>,
+    pub queue: &'a mut Vec<String>,
 }
 
 #[derive(Default)]
@@ -133,6 +139,7 @@ pub struct InputPageUiState<'a> {
     pub config: &'a mut Config,
     pub themes: &'a [ThemeFile],
     pub theme: &'a mut Theme,
+    pub question: &'a mut Option<String>,
 }
 
 pub struct TerminalUiState<'a> {
@@ -141,6 +148,9 @@ pub struct TerminalUiState<'a> {
     pub input_page: &'a mut Option<InputPageSession>,
     pub help_visible: &'a mut bool,
     pub copy_toast: &'a mut Option<(String, Instant)>,
+    pub approval: &'a mut Option<ApprovalCard>,
+    pub question: &'a mut Option<String>,
+    pub queue: &'a mut Vec<String>,
     pub config: &'a mut Config,
     pub themes: &'a mut Vec<ThemeFile>,
     pub theme: &'a mut Theme,
@@ -168,8 +178,14 @@ impl RuntimeController {
                 let page = matches!(route, TerminalRoute::TranscriptPage { .. });
                 let before = {
                     let mut app = state.lock().unwrap();
-                    let height =
-                        transcript_view_height(size, &app, ui.input, ui.input_page.is_some());
+                    let height = transcript_view_height(
+                        size,
+                        &app,
+                        ui.input,
+                        ui.input_page.is_some(),
+                        ui.approval.as_ref(),
+                        ui.queue,
+                    );
                     if page {
                         scroll_page(
                             ui.scroll,
@@ -229,10 +245,13 @@ impl RuntimeController {
                         config: ui.config,
                         themes: ui.themes,
                         theme: ui.theme,
+                        question: ui.question,
                     },
                 ));
             }
-            TerminalRoute::Approval(key) => effects.extend(Self::answer_approval(&key, state)),
+            TerminalRoute::Approval(key) => {
+                effects.extend(Self::answer_approval(&key, ui.approval))
+            }
             TerminalRoute::Reading(key) => {
                 effects.extend(Self::apply_reading_key(&key, size, state, ui));
             }
@@ -252,7 +271,14 @@ impl RuntimeController {
     ) -> Vec<UiAction> {
         let viewport_height = {
             let app = state.lock().unwrap();
-            transcript_view_height(size, &app, ui.input, ui.input_page.is_some())
+            transcript_view_height(
+                size,
+                &app,
+                ui.input,
+                ui.input_page.is_some(),
+                ui.approval.as_ref(),
+                ui.queue,
+            )
         };
         let item_mode = state
             .lock()
@@ -342,11 +368,18 @@ impl RuntimeController {
             )
         };
         let action = ui.input.handle_key_with_catalog(&key, idle, &catalogs);
-        let mut outcome = Self::apply_input_action(action, state);
+        let mut outcome = Self::apply_input_action(action, state, ui.queue);
         if outcome.activate_reading {
             let viewport_height = {
                 let app = state.lock().unwrap();
-                transcript_view_height(size, &app, ui.input, ui.input_page.is_some())
+                transcript_view_height(
+                    size,
+                    &app,
+                    ui.input,
+                    ui.input_page.is_some(),
+                    ui.approval.as_ref(),
+                    ui.queue,
+                )
             };
             let (entered, actions) = {
                 let mut app = state.lock().unwrap();
@@ -370,6 +403,8 @@ impl RuntimeController {
                     input_paste_placeholder_chars: &mut ui.input.paste_placeholder_chars,
                     input_history_limit: &mut ui.input.history_limit,
                     theme: ui.theme,
+                    question_open: ui.question.is_some(),
+                    approval_open: ui.approval.is_some(),
                     state,
                 },
             );
@@ -382,7 +417,14 @@ impl RuntimeController {
             if command.activate_reading {
                 let viewport_height = {
                     let app = state.lock().unwrap();
-                    transcript_view_height(size, &app, ui.input, ui.input_page.is_some())
+                    transcript_view_height(
+                        size,
+                        &app,
+                        ui.input,
+                        ui.input_page.is_some(),
+                        ui.approval.as_ref(),
+                        ui.queue,
+                    )
                 };
                 let mut app = state.lock().unwrap();
                 if !app.enter_reading(ui.input, ui.scroll, viewport_height) {
@@ -512,6 +554,11 @@ impl RuntimeController {
                     {
                         *ui.input_page = None;
                     }
+                    // Pending interaction belongs to the session where it was
+                    // created and must never accept input after a switch.
+                    *ui.approval = None;
+                    *ui.question = None;
+                    ui.queue.clear();
                     let catalogs = {
                         let mut app = state.lock().unwrap();
                         app.catalogs.integrated_commands.clear();
@@ -727,7 +774,7 @@ impl RuntimeController {
                 reason,
                 ..
             } => {
-                state.lock().unwrap().interaction.approval = Some(ApprovalCard {
+                *ui.approval = Some(ApprovalCard {
                     id: id.clone(),
                     tool_name: tool_name.clone(),
                     reason: reason.clone(),
@@ -761,18 +808,16 @@ impl RuntimeController {
                         })
                         .collect(),
                 );
-                state.lock().unwrap().interaction.question = Some(rpc_id.clone());
+                *ui.question = Some(rpc_id.clone());
                 *ui.input_page = Some(InputPageSession::question(batch));
                 Vec::new()
             }
             ServerMessage::QuestionResolved {
                 question_rpc_id, ..
             } => {
-                let mut state = state.lock().unwrap();
-                if state.interaction.question.as_deref() == Some(question_rpc_id.as_str()) {
-                    state.interaction.question = None;
+                if ui.question.as_deref() == Some(question_rpc_id.as_str()) {
+                    *ui.question = None;
                 }
-                drop(state);
                 if ui
                     .input_page
                     .as_ref()
@@ -804,9 +849,7 @@ impl RuntimeController {
                         restored
                     };
                     if let Some(text) = restored {
-                        ui.input.buf = text;
-                        ui.input.cursor = ui.input.buf.chars().count();
-                        ui.input.pasted = false;
+                        ui.input.restore_text(text);
                         ui.input.multiline = ui.input.buf.contains('\n');
                     } else {
                         state
@@ -844,7 +887,11 @@ impl RuntimeController {
         }
     }
 
-    pub fn apply_input_action(action: InputAction, state: &Mutex<AppState>) -> InputHandlerOutcome {
+    pub fn apply_input_action(
+        action: InputAction,
+        state: &Mutex<AppState>,
+        queue: &mut Vec<String>,
+    ) -> InputHandlerOutcome {
         let mut outcome = InputHandlerOutcome::default();
         match action {
             InputAction::None | InputAction::ToggleMultiline => {}
@@ -871,7 +918,7 @@ impl RuntimeController {
                 }
                 let immediate = {
                     let mut state = state.lock().unwrap();
-                    let immediate = state.enqueue_or_immediate(&text);
+                    let immediate = state.enqueue_or_immediate(&text, queue);
                     if immediate {
                         state.start_thinking();
                     }
@@ -885,7 +932,7 @@ impl RuntimeController {
             }
             InputAction::Command(line) => outcome.command = Some(line),
             InputAction::Interrupt => {
-                state.lock().unwrap().interaction.queue.clear();
+                queue.clear();
                 outcome.effects.push(agent_action(ClientMessage::Interrupt));
             }
             InputAction::Quit => outcome.effects.push(UiAction::Quit),
@@ -898,16 +945,12 @@ impl RuntimeController {
         outcome
     }
 
-    pub fn answer_approval(key: &KeyEvent, state: &Mutex<AppState>) -> Vec<UiAction> {
+    pub fn answer_approval(key: &KeyEvent, approval: &mut Option<ApprovalCard>) -> Vec<UiAction> {
         let allow = matches!(key.code, KeyCode::Char('y' | 'Y'));
-        let request = {
-            let mut state = state.lock().unwrap();
-            let Some(card) = state.interaction.approval.take() else {
-                return Vec::new();
-            };
-            card.answer(allow)
+        let Some(card) = approval.take() else {
+            return Vec::new();
         };
-        vec![UiAction::Agent(request)]
+        vec![UiAction::Agent(card.answer(allow))]
     }
 
     /// Apply one Input Page key synchronously, consume page-state actions, and
@@ -936,7 +979,7 @@ impl RuntimeController {
                     .and_then(InputPageSession::question_rpc_id)
                     .map(str::to_owned)
             };
-            state.lock().unwrap().interaction.question = question;
+            *ui.question = question;
         }
         let mut effects = Vec::new();
         for effect in outcome.effects {
@@ -1037,11 +1080,17 @@ mod tests {
         scroll: &'a mut ScrollState,
         input: &'a mut InputState,
         input_page: &'a mut Option<InputPageSession>,
+        approval: &'a mut Option<ApprovalCard>,
+        question: &'a mut Option<String>,
+        queue: &'a mut Vec<String>,
     ) -> BridgeUiState<'a> {
         BridgeUiState {
             scroll,
             input,
             input_page,
+            approval,
+            question,
+            queue,
         }
     }
 
@@ -1076,6 +1125,13 @@ mod tests {
                 input_hint: None,
             });
         let mut page = None;
+        let mut approval = Some(ApprovalCard {
+            id: "old-approval".into(),
+            tool_name: "bash".into(),
+            reason: "old session".into(),
+        });
+        let mut question = Some("old-question".into());
+        let mut queue = vec!["old prompt".into()];
         let effects = apply_bridge(
             ServerMessage::Welcome {
                 protocol_version: Some(WIRE_PROTOCOL_VERSION),
@@ -1089,9 +1145,19 @@ mod tests {
                 cwd: None,
             },
             &state,
-            &mut ui(&mut scroll, &mut input, &mut page),
+            &mut ui(
+                &mut scroll,
+                &mut input,
+                &mut page,
+                &mut approval,
+                &mut question,
+                &mut queue,
+            ),
         );
         assert!(scroll.follow && scroll.offset == 0);
+        assert!(approval.is_none());
+        assert!(question.is_none());
+        assert!(queue.is_empty());
         assert!(state
             .lock()
             .unwrap()
@@ -1112,6 +1178,9 @@ mod tests {
         input.buf = "draft prompt".into();
         input.cursor = input.buf.chars().count();
         let mut page = None;
+        let mut approval = None;
+        let mut question = None;
+        let mut queue = Vec::new();
         apply_bridge(
             ServerMessage::Question {
                 rpc_id: "rpc".into(),
@@ -1128,7 +1197,14 @@ mod tests {
                 }],
             },
             &state,
-            &mut ui(&mut scroll, &mut input, &mut page),
+            &mut ui(
+                &mut scroll,
+                &mut input,
+                &mut page,
+                &mut approval,
+                &mut question,
+                &mut queue,
+            ),
         );
         assert!(matches!(
             page.as_ref().map(|page| &page.page),
@@ -1148,9 +1224,11 @@ mod tests {
                 config: &mut config,
                 themes: &themes,
                 theme: &mut theme,
+                question: &mut question,
             },
         );
         assert!(page.is_none());
+        assert!(question.is_none());
         assert!(state.lock().unwrap().interaction.question.is_none());
         assert_eq!(input.buf, "draft prompt");
         assert!(matches!(
@@ -1165,7 +1243,21 @@ mod tests {
         let mut scroll = ScrollState::default();
         let mut input = InputState::new(&Config::default());
         let mut page = None;
-        apply_bridge(message, &state, &mut ui(&mut scroll, &mut input, &mut page))
+        let mut approval = None;
+        let mut question = None;
+        let mut queue = Vec::new();
+        apply_bridge(
+            message,
+            &state,
+            &mut ui(
+                &mut scroll,
+                &mut input,
+                &mut page,
+                &mut approval,
+                &mut question,
+                &mut queue,
+            ),
+        )
     }
 
     fn bridge_error(code: &str, message: &str) -> Vec<UiAction> {
@@ -1315,6 +1407,9 @@ mod tests {
         let mut input_page = None;
         let mut help_visible = false;
         let mut copy_toast = None;
+        let mut approval = None;
+        let mut question = None;
+        let mut queue = Vec::new();
         let mut config = Config::default();
         let mut themes = Vec::new();
         let mut theme = config.theme();
@@ -1333,6 +1428,9 @@ mod tests {
                 input_page: &mut input_page,
                 help_visible: &mut help_visible,
                 copy_toast: &mut copy_toast,
+                approval: &mut approval,
+                question: &mut question,
+                queue: &mut queue,
                 config: &mut config,
                 themes: &mut themes,
                 theme: &mut theme,
@@ -1358,6 +1456,9 @@ mod tests {
                 input_page: &mut input_page,
                 help_visible: &mut help_visible,
                 copy_toast: &mut copy_toast,
+                approval: &mut approval,
+                question: &mut question,
+                queue: &mut queue,
                 config: &mut config,
                 themes: &mut themes,
                 theme: &mut theme,
@@ -1369,7 +1470,14 @@ mod tests {
         ));
 
         let before = state.lock().unwrap().transcript.len();
-        let mut bridge_ui = ui(&mut scroll, &mut input, &mut input_page);
+        let mut bridge_ui = ui(
+            &mut scroll,
+            &mut input,
+            &mut input_page,
+            &mut approval,
+            &mut question,
+            &mut queue,
+        );
         apply_bridge(
             ServerMessage::Error {
                 code: "command-cancelled".into(),
@@ -1434,6 +1542,9 @@ mod tests {
         let mut input_page = None;
         let mut help_visible = false;
         let mut copy_toast = None;
+        let mut approval = None;
+        let mut question = None;
+        let mut queue = Vec::new();
         let mut config = Config::default();
         let mut themes = Vec::new();
         let mut runtime_theme = config.theme();
@@ -1447,6 +1558,9 @@ mod tests {
                 input_page: &mut input_page,
                 help_visible: &mut help_visible,
                 copy_toast: &mut copy_toast,
+                approval: &mut approval,
+                question: &mut question,
+                queue: &mut queue,
                 config: &mut config,
                 themes: &mut themes,
                 theme: &mut runtime_theme,
@@ -1465,8 +1579,12 @@ mod tests {
     fn draft_first_prompt_uses_atomic_new_input_without_old_queue() {
         let state = Mutex::new(AppState::default());
         state.lock().unwrap().begin_new_conversation("code");
-        let outcome =
-            RuntimeController::apply_input_action(InputAction::Send("first prompt".into()), &state);
+        let mut queue = Vec::new();
+        let outcome = RuntimeController::apply_input_action(
+            InputAction::Send("first prompt".into()),
+            &state,
+            &mut queue,
+        );
         assert!(matches!(
             outcome.effects.as_slice(),
             [UiAction::Agent(AgentRequest::NewInput { mode, text })]
@@ -1488,10 +1606,17 @@ mod tests {
     fn new_failure_restores_the_retained_first_prompt() {
         let state = Arc::new(Mutex::new(AppState::default()));
         state.lock().unwrap().begin_new_conversation("standard");
-        let _ = RuntimeController::apply_input_action(InputAction::Send("retry me".into()), &state);
+        let mut queue = Vec::new();
+        let _ = RuntimeController::apply_input_action(
+            InputAction::Send("retry me".into()),
+            &state,
+            &mut queue,
+        );
         let mut scroll = ScrollState::default();
         let mut input = InputState::new(&Config::default());
         let mut input_page = None;
+        let mut approval = None;
+        let mut question = None;
         let effects = apply_bridge(
             ServerMessage::Error {
                 code: "new-failed".into(),
@@ -1502,6 +1627,9 @@ mod tests {
                 scroll: &mut scroll,
                 input: &mut input,
                 input_page: &mut input_page,
+                approval: &mut approval,
+                question: &mut question,
+                queue: &mut queue,
             },
         );
         assert!(effects.is_empty());
@@ -1527,5 +1655,94 @@ mod tests {
             effects.as_slice(),
             [UiAction::Agent(AgentRequest::Input { text })] if text == "next"
         ));
+    }
+
+    /// Regression: a Send while the agent runs must survive the main loop's
+    /// `take(&mut app.interaction)` + restore round trip (6cdb025b moved the
+    /// queue into the InteractionModel; handlers used to push into a transient
+    /// default that the restore discarded, silently eating the prompt).
+    #[test]
+    fn send_while_running_queues_into_the_live_interaction() {
+        let state = Arc::new(Mutex::new(AppState::default()));
+        state.lock().unwrap().session.status = crate::model::AgentStatus::Running;
+        let mut interaction = {
+            let mut app = state.lock().unwrap();
+            std::mem::take(&mut app.interaction)
+        };
+        let outcome = RuntimeController::apply_input_action(
+            InputAction::Send("排队测试".into()),
+            &state,
+            &mut interaction.queue,
+        );
+        assert!(
+            outcome.effects.is_empty(),
+            "running must not send immediately"
+        );
+        state.lock().unwrap().interaction = interaction;
+        assert_eq!(state.lock().unwrap().interaction.queue, vec!["排队测试"]);
+
+        // The idle transition then auto-dispatches the queued prompt.
+        {
+            let mut app = state.lock().unwrap();
+            app.session.status = crate::model::AgentStatus::Idle;
+            app.session.working = false;
+        }
+        let effects = RuntimeController::dispatch_next_queued(&state);
+        assert!(matches!(
+            effects.as_slice(),
+            [UiAction::Agent(AgentRequest::Input { text })] if text == "排队测试"
+        ));
+        assert!(state.lock().unwrap().interaction.queue.is_empty());
+    }
+
+    /// Regression: an approval frame must reach the live card (not a transient
+    /// default) and the next key press must answer it.
+    #[test]
+    fn approval_card_survives_take_restore_and_answers() {
+        let state = Arc::new(Mutex::new(AppState::default()));
+        {
+            let mut interaction = {
+                let mut app = state.lock().unwrap();
+                std::mem::take(&mut app.interaction)
+            };
+            {
+                let mut ui = BridgeUiState {
+                    scroll: &mut interaction.scroll,
+                    input: &mut interaction.input,
+                    input_page: &mut interaction.input_page,
+                    approval: &mut interaction.approval,
+                    question: &mut interaction.question,
+                    queue: &mut interaction.queue,
+                };
+                apply_bridge(
+                    ServerMessage::Approval {
+                        id: "a1".into(),
+                        tool_name: "bash".into(),
+                        reason: "run".into(),
+                        call_id: None,
+                    },
+                    &state,
+                    &mut ui,
+                );
+            }
+            state.lock().unwrap().interaction = interaction;
+        }
+        assert!(state.lock().unwrap().interaction.approval.is_some());
+
+        let mut interaction = {
+            let mut app = state.lock().unwrap();
+            std::mem::take(&mut app.interaction)
+        };
+        let effects = RuntimeController::answer_approval(
+            &KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+            &mut interaction.approval,
+        );
+        assert!(matches!(
+            effects.as_slice(),
+            [UiAction::Agent(AgentRequest::ApprovalAnswer { id, allow })]
+                if id == "a1" && *allow
+        ));
+        state.lock().unwrap().interaction = interaction;
+        assert!(state.lock().unwrap().interaction.approval.is_none());
     }
 }

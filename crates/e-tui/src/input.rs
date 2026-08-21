@@ -2,7 +2,11 @@
 //!
 //! The input bar is a borderless Ash block: one margin row above, the text
 //! area (1 row, or up to 3 scrolling rows in multiline mode), one margin row
-//! below. Pastes over the placeholder threshold render as `[N text pasted]`.
+//! below. Each paste over the placeholder threshold is an independent atomic
+//! block that renders as `[N text pasted]` (like pi's paste markers); typed
+//! text around blocks stays editable and the cursor skips blocks whole.
+
+use std::ops::Range;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -26,13 +30,15 @@ pub struct InputState {
     pub multiline: bool,
     /// Draft saved when entering multiline mode from a single line.
     pub draft: Option<String>,
+    /// Atomic paste ranges belonging to the saved history-browsing draft.
+    draft_paste_blocks: Vec<PasteBlock>,
     /// Ctrl+R history search, when active.
     pub search: Option<SearchState>,
     /// Paste placeholder threshold (D24, config-driven).
     pub paste_placeholder_chars: usize,
-    /// The buffer is one atomic paste block (a paste over the threshold):
-    /// it renders as `[N text pasted]` and the cursor can never enter it.
-    pub pasted: bool,
+    /// Over-threshold paste ranges in expanded-buffer character offsets.
+    /// Each range renders as one placeholder and remains independently atomic.
+    paste_blocks: Vec<PasteBlock>,
     /// History cap (D28).
     pub history_limit: usize,
     // Characterization fixtures retain local catalogs only in test builds;
@@ -45,6 +51,27 @@ pub struct InputState {
     pub skills: Vec<Skill>,
     /// Slash-command suggestion popup, when open.
     pub suggest: Option<Suggestion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PasteBlock {
+    start: usize,
+    end: usize,
+}
+
+/// Display projection of the expanded input buffer. Large paste contents are
+/// replaced by compact placeholders while the cursor is mapped to the same
+/// logical boundary in display-character coordinates.
+pub struct InputDisplay {
+    pub text: String,
+    pub cursor: usize,
+    pub paste_ranges: Vec<Range<usize>>,
+}
+
+impl InputDisplay {
+    pub fn is_paste_char(&self, index: usize) -> bool {
+        self.paste_ranges.iter().any(|range| range.contains(&index))
+    }
 }
 
 #[derive(Clone)]
@@ -88,9 +115,10 @@ impl InputState {
             hist_idx: None,
             multiline: false,
             draft: None,
+            draft_paste_blocks: Vec::new(),
             search: None,
             paste_placeholder_chars: config.paste_placeholder_chars,
-            pasted: false,
+            paste_blocks: Vec::new(),
             history_limit: config.history_limit,
             #[cfg(test)]
             new_modes: Vec::new(),
@@ -122,19 +150,44 @@ impl InputState {
         self.catalog_changed(&catalogs);
     }
 
-    /// Insert pasted text at the cursor. Content over the threshold becomes
-    /// one atomic paste block: it renders as `[N text pasted]`, the cursor
-    /// skips across it as a whole, and Backspace removes the whole block.
+    /// Insert pasted text at the cursor. Paste content over the threshold
+    /// becomes an independent atomic block: surrounding typed text and other
+    /// paste blocks remain editable, while cursor movement and deletion treat
+    /// this range as one unit.
     pub fn paste(&mut self, text: &str) {
-        for c in text.chars() {
-            self.buf.insert(char_to_byte(&self.buf, self.cursor), c);
-            self.cursor += 1;
+        let count = text.chars().count();
+        if count == 0 {
+            return;
         }
-        if self.buf.chars().count() > self.paste_placeholder_chars {
-            self.pasted = true;
-            // The cursor may never sit inside the block.
-            self.cursor = self.buf.chars().count();
+        let start = self.cursor;
+        self.shift_blocks_for_insert(start, count);
+        self.buf.insert_str(char_to_byte(&self.buf, start), text);
+        self.cursor += count;
+        if count > self.paste_placeholder_chars {
+            self.paste_blocks.push(PasteBlock {
+                start,
+                end: self.cursor,
+            });
+            self.paste_blocks.sort_by_key(|block| block.start);
         }
+        self.suggest = None;
+    }
+
+    /// Replace the whole composer with ordinary text from an external state
+    /// restoration. Paste identity cannot be inferred from expanded text.
+    pub fn restore_text(&mut self, text: String) {
+        self.buf = text;
+        self.cursor = self.buf.chars().count();
+        self.paste_blocks.clear();
+        self.suggest = None;
+    }
+
+    /// Fill the buffer with a plain command line while the suggestion popup
+    /// stays open (popup navigation must not close itself).
+    fn fill_text(&mut self, text: String) {
+        self.buf = text;
+        self.cursor = self.buf.chars().count();
+        self.paste_blocks.clear();
     }
 }
 
@@ -256,6 +309,7 @@ impl InputState {
                 self.search = None;
                 self.multiline = false;
                 self.draft = None;
+                self.draft_paste_blocks.clear();
                 return InputAction::None;
             }
             if idle {
@@ -293,8 +347,7 @@ impl InputState {
                 KeyCode::Enter if !key.modifiers.contains(KeyModifiers::SHIFT) => {
                     let matches = self.matching_history(&search.query);
                     if let Some(entry) = matches.get(search.sel) {
-                        self.buf = entry.clone();
-                        self.cursor = self.buf.chars().count();
+                        self.restore_text(entry.clone());
                     }
                     return InputAction::None;
                 }
@@ -332,8 +385,7 @@ impl InputState {
                 KeyCode::Esc => {
                     // Restore what was typed before the fill.
                     let query = self.suggest.take().map(|s| s.query).unwrap_or_default();
-                    self.buf = query.clone();
-                    self.cursor = query.chars().count();
+                    self.restore_text(query);
                     return InputAction::None;
                 }
                 KeyCode::Up | KeyCode::Down => {
@@ -378,8 +430,7 @@ impl InputState {
                         s.matches[s.sel].to_string()
                     };
                     // Auto-fill the selected command into the input bar.
-                    self.buf = cmd.clone();
-                    self.cursor = cmd.chars().count();
+                    self.fill_text(cmd.clone());
                     if cmd == "/skill" {
                         self.refresh_suggest(catalogs);
                     }
@@ -396,8 +447,7 @@ impl InputState {
                     }
                     let cmd = s.matches[s.sel].to_string();
                     // Auto-fill the selected command into the input bar.
-                    self.buf = cmd.clone();
-                    self.cursor = cmd.chars().count();
+                    self.fill_text(cmd.clone());
                     if cmd == "/skill" {
                         self.refresh_suggest(catalogs);
                     }
@@ -412,8 +462,7 @@ impl InputState {
                         .map(|s| s.matches[s.sel].to_string())
                         .unwrap_or_default();
                     if !cmd.is_empty() {
-                        self.buf = cmd.clone();
-                        self.cursor = cmd.chars().count();
+                        self.restore_text(cmd.clone());
                     }
                     return self.commit();
                 }
@@ -458,8 +507,7 @@ impl InputState {
                     self.refresh_suggest(catalogs);
                     if let Some(s) = self.suggest.as_mut() {
                         let cmd = s.matches[s.sel].clone();
-                        self.buf = cmd.clone();
-                        self.cursor = cmd.chars().count();
+                        self.fill_text(cmd.clone());
                         if cmd == "/skill" {
                             self.refresh_suggest(catalogs);
                         }
@@ -481,38 +529,33 @@ impl InputState {
                 InputAction::None
             }
             KeyCode::Backspace => {
-                if self.pasted {
-                    // The cursor sits after the block; Backspace removes the
-                    // whole placeholder content (design §4.1).
-                    self.clear();
+                if let Some(block) = self.block_ending_at(self.cursor).cloned() {
+                    self.remove_range(block.start, block.end);
                 } else if self.cursor > 0 {
-                    self.cursor -= 1;
-                    self.buf.remove(char_to_byte(&self.buf, self.cursor));
+                    let end = self.cursor;
+                    self.remove_range(end - 1, end);
                 }
                 InputAction::None
             }
             KeyCode::Delete => {
-                if self.pasted {
-                    // Cursor before the block: Delete removes the whole
-                    // placeholder content.
-                    self.clear();
+                if let Some(block) = self.block_starting_at(self.cursor).cloned() {
+                    self.remove_range(block.start, block.end);
                 } else if self.cursor < self.buf.chars().count() {
-                    self.buf.remove(char_to_byte(&self.buf, self.cursor));
+                    self.remove_range(self.cursor, self.cursor + 1);
                 }
                 InputAction::None
             }
             KeyCode::Left => {
-                // The cursor skips the paste block as one unit.
-                if self.pasted {
-                    self.cursor = 0;
+                if let Some(block) = self.block_ending_at(self.cursor) {
+                    self.cursor = block.start;
                 } else if self.cursor > 0 {
                     self.cursor -= 1;
                 }
                 InputAction::None
             }
             KeyCode::Right => {
-                if self.pasted {
-                    self.cursor = self.buf.chars().count();
+                if let Some(block) = self.block_starting_at(self.cursor) {
+                    self.cursor = block.end;
                 } else if self.cursor < self.buf.chars().count() {
                     self.cursor += 1;
                 }
@@ -527,13 +570,13 @@ impl InputState {
                 InputAction::None
             }
             KeyCode::Up => {
-                if !self.multiline || (!self.pasted && !self.cursor_up()) {
+                if !self.multiline || !self.cursor_up() {
                     self.history_prev();
                 }
                 InputAction::None
             }
             KeyCode::Down => {
-                if !self.multiline || (!self.pasted && !self.cursor_down()) {
+                if !self.multiline || !self.cursor_down() {
                     self.history_next();
                 }
                 InputAction::None
@@ -583,6 +626,10 @@ impl InputState {
     /// the list and its query stay pinned, so the highlight follows the
     /// filled value and Esc can still restore the typed query.
     fn refresh_suggest(&mut self, catalogs: &CatalogModel) {
+        if !self.paste_blocks.is_empty() {
+            self.suggest = None;
+            return;
+        }
         if let Some(s) = &mut self.suggest {
             let buf_matches = s.matches.iter().position(|m| *m == self.buf);
             let entering_skill_roster = s.kind == SuggestionKind::Commands && self.buf == "/skill";
@@ -679,31 +726,69 @@ impl InputState {
     }
 
     fn insert_char(&mut self, c: char) {
-        self.buf.insert(char_to_byte(&self.buf, self.cursor), c);
+        let at = self.cursor;
+        self.shift_blocks_for_insert(at, 1);
+        self.buf.insert(char_to_byte(&self.buf, at), c);
         self.cursor += 1;
-        // The cursor may never rest inside a paste block: snap to the end.
-        if self.pasted {
-            self.cursor = self.buf.chars().count();
+    }
+
+    fn shift_blocks_for_insert(&mut self, at: usize, count: usize) {
+        for block in &mut self.paste_blocks {
+            if block.start >= at {
+                block.start += count;
+                block.end += count;
+            }
         }
+    }
+
+    fn block_starting_at(&self, cursor: usize) -> Option<&PasteBlock> {
+        self.paste_blocks.iter().find(|block| block.start == cursor)
+    }
+
+    fn block_ending_at(&self, cursor: usize) -> Option<&PasteBlock> {
+        self.paste_blocks.iter().find(|block| block.end == cursor)
+    }
+
+    fn remove_range(&mut self, start: usize, end: usize) {
+        debug_assert!(start < end);
+        let byte_start = char_to_byte(&self.buf, start);
+        let byte_end = char_to_byte(&self.buf, end);
+        self.buf.replace_range(byte_start..byte_end, "");
+        let removed = end - start;
+        // Drop any block the removal touched (fully or partially); a block
+        // whose content was edited is no longer an atomic paste.
+        self.paste_blocks
+            .retain(|block| block.end <= start || block.start >= end);
+        for block in &mut self.paste_blocks {
+            if block.start >= end {
+                block.start -= removed;
+                block.end -= removed;
+            }
+        }
+        self.cursor = start;
     }
 
     /// Move to the previous visual input line while preserving the character
     /// column where possible. Returns false at the first line so the caller
     /// can recall the previous prompt from history.
     fn cursor_up(&mut self) -> bool {
-        let byte = char_to_byte(&self.buf, self.cursor);
-        let current_start = self.buf[..byte].rfind('\n').map_or(0, |index| index + 1);
+        let display = self.display_text();
+        let byte = char_to_byte(&display.text, display.cursor);
+        let current_start = display.text[..byte]
+            .rfind('\n')
+            .map_or(0, |index| index + 1);
         if current_start == 0 {
             return false;
         }
-        let column = self.buf[current_start..byte].chars().count();
+        let column = display.text[current_start..byte].chars().count();
         let previous_end = current_start - 1;
-        let previous_start = self.buf[..previous_end]
+        let previous_start = display.text[..previous_end]
             .rfind('\n')
             .map_or(0, |index| index + 1);
-        let previous_len = self.buf[previous_start..previous_end].chars().count();
+        let previous_len = display.text[previous_start..previous_end].chars().count();
         let target_column = column.min(previous_len);
-        self.cursor = self.buf[..previous_start].chars().count() + target_column;
+        let target = display.text[..previous_start].chars().count() + target_column;
+        self.cursor = self.display_to_raw_cursor(target);
         true
     }
 
@@ -711,19 +796,23 @@ impl InputState {
     /// column where possible. Returns false at the last line so the caller
     /// can advance through prompt history or restore the draft.
     fn cursor_down(&mut self) -> bool {
-        let byte = char_to_byte(&self.buf, self.cursor);
-        let current_start = self.buf[..byte].rfind('\n').map_or(0, |index| index + 1);
-        let Some(relative_end) = self.buf[byte..].find('\n') else {
+        let display = self.display_text();
+        let byte = char_to_byte(&display.text, display.cursor);
+        let current_start = display.text[..byte]
+            .rfind('\n')
+            .map_or(0, |index| index + 1);
+        let Some(relative_end) = display.text[byte..].find('\n') else {
             return false;
         };
-        let column = self.buf[current_start..byte].chars().count();
+        let column = display.text[current_start..byte].chars().count();
         let next_start = byte + relative_end + 1;
-        let next_end = self.buf[next_start..]
+        let next_end = display.text[next_start..]
             .find('\n')
-            .map_or(self.buf.len(), |index| next_start + index);
-        let next_len = self.buf[next_start..next_end].chars().count();
+            .map_or(display.text.len(), |index| next_start + index);
+        let next_len = display.text[next_start..next_end].chars().count();
         let target_column = column.min(next_len);
-        self.cursor = self.buf[..next_start].chars().count() + target_column;
+        let target = display.text[..next_start].chars().count() + target_column;
+        self.cursor = self.display_to_raw_cursor(target);
         true
     }
 
@@ -741,10 +830,11 @@ impl InputState {
         self.hist_idx = None;
         self.buf.clear();
         self.cursor = 0;
-        self.pasted = false;
+        self.paste_blocks.clear();
+        self.draft = None;
+        self.draft_paste_blocks.clear();
         if self.multiline {
             self.multiline = false;
-            self.draft = None;
         }
         if text.starts_with('/') {
             InputAction::Command(text)
@@ -759,6 +849,7 @@ impl InputState {
         } else {
             self.multiline = false;
             self.draft = None;
+            self.draft_paste_blocks.clear();
         }
         InputAction::ToggleMultiline
     }
@@ -774,10 +865,12 @@ impl InputState {
         };
         if self.hist_idx.is_none() {
             self.draft = Some(self.buf.clone());
+            self.draft_paste_blocks = self.paste_blocks.clone();
         }
         self.hist_idx = Some(idx);
         self.buf = self.history[idx].clone();
         self.cursor = self.buf.chars().count();
+        self.paste_blocks.clear();
     }
 
     fn history_next(&mut self) {
@@ -785,9 +878,11 @@ impl InputState {
         if idx + 1 < self.history.len() {
             self.hist_idx = Some(idx + 1);
             self.buf = self.history[idx + 1].clone();
+            self.paste_blocks.clear();
         } else {
             self.hist_idx = None;
             self.buf = self.draft.take().unwrap_or_default();
+            self.paste_blocks = std::mem::take(&mut self.draft_paste_blocks);
         }
         self.cursor = self.buf.chars().count();
     }
@@ -796,18 +891,81 @@ impl InputState {
         self.buf.clear();
         self.cursor = 0;
         self.suggest = None;
-        self.pasted = false;
+        self.paste_blocks.clear();
     }
 
-    /// The buffer as shown: a paste block collapses into a colored
-    /// placeholder (D24). Return the display text plus whether it is a
-    /// placeholder.
-    pub fn display_text(&self) -> (String, bool) {
-        if self.pasted {
-            (format!("[{} text pasted]", self.buf.chars().count()), true)
-        } else {
-            (self.buf.clone(), false)
+    /// The buffer as shown: each atomic paste block collapses into a
+    /// placeholder (D24). The returned cursor is a character index into the
+    /// returned display text; `paste_ranges` are display-character ranges of
+    /// placeholder content.
+    pub fn display_text(&self) -> InputDisplay {
+        if self.paste_blocks.is_empty() {
+            return InputDisplay {
+                text: self.buf.clone(),
+                cursor: self.cursor,
+                paste_ranges: Vec::new(),
+            };
         }
+        let mut text = String::with_capacity(self.buf.len());
+        let mut paste_ranges = Vec::with_capacity(self.paste_blocks.len());
+        let mut cursor = self.cursor;
+        let mut raw = 0usize;
+        for block in &self.paste_blocks {
+            let before = self.buf.chars().skip(raw).take(block.start - raw);
+            for c in before {
+                text.push(c);
+            }
+            let placeholder = format!("[{} text pasted]", block.end - block.start);
+            let display_start = text.chars().count();
+            if cursor <= block.start {
+                // Cursor before the block: it stays at its own boundary.
+            } else if cursor <= block.end {
+                // Cursor inside the block: snap to the placeholder end.
+                cursor = display_start + placeholder.chars().count();
+            } else {
+                cursor += placeholder.chars().count() - (block.end - block.start);
+            }
+            text.push_str(&placeholder);
+            let display_end = text.chars().count();
+            paste_ranges.push(display_start..display_end);
+            raw = block.end;
+        }
+        for c in self.buf.chars().skip(raw) {
+            text.push(c);
+        }
+        InputDisplay {
+            text,
+            cursor,
+            paste_ranges,
+        }
+    }
+
+    /// Map a display-character cursor (from `display_text`) back to the
+    /// raw-buffer character index, keeping it out of paste-block interiors.
+    fn display_to_raw_cursor(&self, display_cursor: usize) -> usize {
+        if self.paste_blocks.is_empty() {
+            return display_cursor;
+        }
+        let mut raw = 0usize;
+        let mut display_pos = 0usize;
+        for block in &self.paste_blocks {
+            let before = block.start - raw;
+            if display_cursor <= display_pos + before {
+                // In the plain segment before this block.
+                return raw + (display_cursor - display_pos);
+            }
+            display_pos += before;
+            let placeholder_len = format!("[{} text pasted]", block.end - block.start)
+                .chars()
+                .count();
+            if display_cursor < display_pos + placeholder_len {
+                // Inside a placeholder: snap to the block start.
+                return block.start;
+            }
+            display_pos += placeholder_len;
+            raw = block.end;
+        }
+        raw + (display_cursor - display_pos).min(self.buf.chars().count() - raw)
     }
 }
 
@@ -1370,46 +1528,117 @@ mod tests {
         let mut s = state();
         s.paste_placeholder_chars = 5;
         s.paste("123456");
-        assert!(s.pasted, "paste over the threshold becomes a block");
-        let (text, placeholder) = s.display_text();
-        assert!(placeholder);
-        assert_eq!(text, "[6 text pasted]");
-        assert_eq!(s.cursor, 6, "cursor snapped to the end of the block");
+        assert_eq!(
+            s.paste_blocks.len(),
+            1,
+            "paste over the threshold becomes a block"
+        );
+        let display = s.display_text();
+        assert_eq!(display.text, "[6 text pasted]");
+        assert_eq!(display.paste_ranges.len(), 1);
+        assert_eq!(display.cursor, display.text.chars().count());
+        assert_eq!(s.cursor, 6, "cursor sits at the end of the block");
         // A short paste stays ordinary text.
         let mut s2 = state();
         s2.paste_placeholder_chars = 5;
         s2.paste("12345");
-        assert!(!s2.pasted);
-        assert_eq!(s2.display_text().0, "12345");
+        assert!(s2.paste_blocks.is_empty());
+        assert_eq!(s2.display_text().text, "12345");
     }
 
-    /// The paste block is atomic: the cursor can never enter it, and
-    /// Backspace removes the whole block.
+    /// A paste block between typed text stays atomic: the cursor skips it
+    /// as one unit, Backspace/Delete remove the whole block, and surrounding
+    /// text remains editable.
     #[test]
     fn paste_block_cursor_is_atomic() {
         let mut s = state();
         s.paste_placeholder_chars = 5;
+        for c in "ab".chars() {
+            s.handle_key(&key(KeyCode::Char(c)), true);
+        }
         s.paste("123456");
-        // Left from the end jumps to the very front.
+        for c in "cd".chars() {
+            s.handle_key(&key(KeyCode::Char(c)), true);
+        }
+        assert_eq!(s.buf, "ab123456cd");
+        // Left walks up to the block boundary, then skips it whole.
         s.handle_key(&key(KeyCode::Left), true);
-        assert_eq!(s.cursor, 0, "Left skips across the block");
-        // Right from the front jumps to the very end.
+        assert_eq!(s.cursor, 9, "Left moves before 'd'");
+        s.handle_key(&key(KeyCode::Left), true);
+        assert_eq!(s.cursor, 8, "Left stops at the block end");
+        s.handle_key(&key(KeyCode::Left), true);
+        assert_eq!(s.cursor, 2, "Left skips across the block");
+        // Right from the front jumps to the very end of the block.
         s.handle_key(&key(KeyCode::Right), true);
-        assert_eq!(s.cursor, 6, "Right skips across the block");
-        // Typing snaps the cursor back out of the block.
-        s.handle_key(&key(KeyCode::Left), true);
-        s.handle_key(&key(KeyCode::Char('x')), true);
-        assert_eq!(s.cursor, 7, "cursor snaps to the block end after typing");
-        // Backspace removes the whole placeholder content.
+        assert_eq!(s.cursor, 8, "Right skips across the block");
+        // Backspace removes the whole block, keeping surrounding text.
         s.handle_key(&key(KeyCode::Backspace), true);
-        assert!(s.buf.is_empty());
-        assert!(!s.pasted);
+        assert_eq!(s.buf, "abcd");
+        assert!(s.paste_blocks.is_empty());
+        assert_eq!(s.cursor, 2);
         // Delete before the block removes it too.
         s.paste("123456");
         s.handle_key(&key(KeyCode::Left), true);
         s.handle_key(&key(KeyCode::Delete), true);
-        assert!(s.buf.is_empty());
-        assert!(!s.pasted);
+        assert_eq!(s.buf, "abcd");
+        assert!(s.paste_blocks.is_empty());
+    }
+
+    /// Two paste blocks are independently atomic; deleting one leaves the
+    /// other's range shifted correctly.
+    #[test]
+    fn multiple_paste_blocks_are_independent() {
+        let mut s = state();
+        s.paste_placeholder_chars = 5;
+        s.paste("AAAAAA");
+        for c in "xy".chars() {
+            s.handle_key(&key(KeyCode::Char(c)), true);
+        }
+        s.paste("BBBBBB");
+        assert_eq!(s.buf, "AAAAAAxyBBBBBB");
+        assert_eq!(s.paste_blocks.len(), 2);
+        let display = s.display_text();
+        assert_eq!(display.text, "[6 text pasted]xy[6 text pasted]");
+        assert_eq!(display.paste_ranges.len(), 2);
+        // Backspace at the end removes only the second block.
+        s.handle_key(&key(KeyCode::Backspace), true);
+        assert_eq!(s.buf, "AAAAAAxy");
+        assert_eq!(s.paste_blocks.len(), 1);
+        assert_eq!(s.paste_blocks[0].end, 6);
+        // Enter sends the full expanded content verbatim.
+        let action = s.handle_key(&key(KeyCode::Enter), true);
+        assert!(matches!(action, InputAction::Send(text) if text == "AAAAAAxy"));
+    }
+
+    /// A paste inside multiline content keeps Up/Down line movement working:
+    /// the cursor maps through the placeholder and never rests inside it.
+    #[test]
+    fn multiline_navigation_maps_through_paste_block() {
+        let mut s = state();
+        s.paste_placeholder_chars = 5;
+        for c in "ab".chars() {
+            s.handle_key(&key(KeyCode::Char(c)), true);
+        }
+        s.handle_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT), true);
+        s.paste("123456");
+        s.handle_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT), true);
+        for c in "cd".chars() {
+            s.handle_key(&key(KeyCode::Char(c)), true);
+        }
+        assert_eq!(s.buf, "ab\n123456\ncd");
+        assert_eq!(s.cursor, 12);
+        // Up from the last line lands on the placeholder line, snapped to
+        // the block start (pi's snap-to-marker-start behavior).
+        s.handle_key(&key(KeyCode::Up), true);
+        assert_eq!(s.cursor, 3, "cursor snaps to the block start");
+        // Up again reaches the first line.
+        s.handle_key(&key(KeyCode::Up), true);
+        assert_eq!(s.cursor, 0);
+        // Down maps back onto the placeholder line without entering it.
+        s.handle_key(&key(KeyCode::Down), true);
+        assert_eq!(s.cursor, 3);
+        s.handle_key(&key(KeyCode::Down), true);
+        assert_eq!(s.cursor, 10);
     }
 
     /// Typed text over the threshold stays ordinary (the block is for
@@ -1421,8 +1650,8 @@ mod tests {
         for c in "123456".chars() {
             s.handle_key(&key(KeyCode::Char(c)), true);
         }
-        assert!(!s.pasted);
-        assert_eq!(s.display_text().0, "123456");
+        assert!(s.paste_blocks.is_empty());
+        assert_eq!(s.display_text().text, "123456");
         assert_eq!(s.cursor, 6);
     }
 

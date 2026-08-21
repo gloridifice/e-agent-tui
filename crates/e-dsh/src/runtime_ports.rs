@@ -7,7 +7,10 @@
 
 use std::{future::Future, time::Instant};
 
-use crossterm::event::{Event, EventStream};
+use crossterm::event::Event;
+#[cfg(not(windows))]
+use crossterm::event::EventStream;
+#[cfg(not(windows))]
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
 
@@ -44,12 +47,18 @@ pub trait TerminalEventPort {
 }
 
 pub struct ProductionTerminalEvents {
+    #[cfg(windows)]
+    raw: crate::win_input::WindowsRawInput,
+    #[cfg(not(windows))]
     stream: EventStream,
 }
 
 impl ProductionTerminalEvents {
     pub fn new() -> Self {
         Self {
+            #[cfg(windows)]
+            raw: crate::win_input::WindowsRawInput::new(),
+            #[cfg(not(windows))]
             stream: EventStream::new(),
         }
     }
@@ -64,10 +73,20 @@ impl Default for ProductionTerminalEvents {
 impl TerminalEventPort for ProductionTerminalEvents {
     fn next_event(&mut self) -> impl Future<Output = Option<Result<Event, String>>> + Send {
         async move {
-            self.stream
-                .next()
-                .await
-                .map(|result| result.map_err(|error| error.to_string()))
+            #[cfg(windows)]
+            {
+                // crossterm's Windows backend never emits `Event::Paste`, so
+                // input comes from the raw VT byte stream instead (see
+                // `win_input` / `vt_input`).
+                self.raw.next_event().await
+            }
+            #[cfg(not(windows))]
+            {
+                self.stream
+                    .next()
+                    .await
+                    .map(|result| result.map_err(|error| error.to_string()))
+            }
         }
     }
 }

@@ -5,10 +5,14 @@ use std::path::{Path, PathBuf};
 type Graph = BTreeMap<String, BTreeSet<String>>;
 
 fn production_source(source: &str) -> &str {
-    let lines: Vec<&str> = source.lines().collect();
+    // Chunks keep their line terminators so `offset` always advances by the
+    // exact byte length (CRLF `\r` must count too, or the slice drifts into
+    // the middle of a multi-byte UTF-8 character and panics).
+    let lines: Vec<&str> = source.split_inclusive('\n').collect();
     let mut offset = 0usize;
     for (index, line) in lines.iter().enumerate() {
-        if line.trim() == "#[cfg(test)]"
+        let body = line.trim_end_matches(['\r', '\n']);
+        if body.trim() == "#[cfg(test)]"
             && lines
                 .iter()
                 .skip(index + 1)
@@ -17,7 +21,7 @@ fn production_source(source: &str) -> &str {
         {
             return &source[..offset];
         }
-        offset += line.len() + 1;
+        offset += line.len();
     }
     source
 }
@@ -569,7 +573,7 @@ fn production_crate_graphs_are_acyclic_and_keep_leaf_boundaries() {
     assert!(
         tui_graph["transcript_layout"]
             .iter()
-            .all(|module| matches!(module.as_str(), "config" | "display" | "render")),
+            .all(|module| matches!(module.as_str(), "config" | "display" | "render" | "wrap")),
         "transcript_layout may only depend on presentation leaf services: {:?}",
         tui_graph["transcript_layout"]
     );

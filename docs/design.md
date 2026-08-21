@@ -5,8 +5,8 @@
 > v0.4 changes: message format spec (user messages verbatim, shell card spinner+line count, read merge-fold);
 > borderless input-bar background block + paste placeholder.
 > v0.5 changes (v0.1.0 milestone): project renamed **e** (executable **`dshe`**); config moved to
-> `%APPDATA%\dshe\config.toml`, theme directory `%APPDATA%\dshe\themes\` (default **deepseek-e**, plus built-in
-> ferra); added `/theme` `/model` `/reload` `/skill:<name>`; the `dshe` launcher auto-spawns
+> `%APPDATA%\dshe\config.toml`, theme directory `%APPDATA%\dshe\themes\` (default **ferra**, plus built-in
+> deepseek-e); added `/theme` `/model` `/reload` `/skill:<name>`; the `dshe` launcher auto-spawns
 > `dsh --profile dshe` (or npx) / bridges to an already-running dsh; uses the dedicated `dshe` profile to avoid
 > conflicts with DSH's own or the user's existing `tui` profile. The Windows service started by `dshe` terminates
 > the `cmd /C` shim's full process tree with `taskkill /T` both on startup-timeout cleanup and when the last TUI
@@ -30,7 +30,7 @@
 | D2 | Layout | responsive main conversation pane plus full-height Preview at wide widths; main-only/full-screen Preview fallback when narrow |
 | D3 | Client language | Rust (ratatui + crossterm + tokio-tungstenite + serde) |
 | D4 | Project composition | TS bridge plugin (DSH side) + Rust client |
-| D5 | Themes | two built-in themes deepseek-e (default) and ferra; every valid toml under `%APPDATA%\dshe\themes\` is selectable |
+| D5 | Themes | two built-in themes ferra (default) and deepseek-e; every valid toml under `%APPDATA%\dshe\themes\` is selectable |
 | D6 | Tool call card | inline single-line card (folded by default, expandable) |
 | D7 | User message prefix | `❯` symbol |
 | D8 | Markdown rendering | full rendering in the first phase: headings/bold-italic/inline code/code blocks/lists/quotes/**tables**/**mermaid** |
@@ -49,13 +49,14 @@
 | D21 | Command execution tool card | breathing bullet + command + live output line count and elapsed time; success/failure color the bullet Sage/Ember; over-width commands truncate before the trailing metrics so those metrics remain visible |
 | D22 | read merge and fold | adjacent reads within the same turn merge into a compact status list; when all finish, fold into Bark gray `<a>, <b>, <c>` (filenames only, over-width truncates `+N`); Enter expands back, Esc collapses |
 | D23 | Input bar shape | borderless background block: Ash base, 1-row top margin + text area + 1-row bottom margin; prefix `❯` Coral; `Enter` fixed send, `Shift+Enter` newline; `↑/↓` move between lines and switch prompts at first/last line boundary |
-| D24 | Overlong paste placeholder | paste over the config threshold shows Rose `[N text pasted]`; sends the full content verbatim; plain text inserts newlines with `Shift+Enter` |
+| D24 | Overlong paste placeholder | each paste over the config threshold shows its own Rose `[N text pasted]` block (independent and atomic like pi's paste markers); sends the full content verbatim; plain text inserts newlines with `Shift+Enter` |
 | D25 | Spinner configurable | default A half-moon rotation `◐◓◑◒` (~120ms/frame); frame sequence made a configurable enum (`config.toml` can switch B/C/D/E); missing glyphs degrade to ASCII `\|/-\` |
 | D26 | Input Page | `/settings` `/login` `/model` `/theme` `/resume` uniformly replace the input area (not a floating window); 1-row top/bottom, 2-column left/right padding; single focus moves with arrows/`hjkl`, `Enter` executes, `Esc` returns; in settings, `←`/`→` and `h`/`l` switch category pages and the category strip is display-only |
 | D27 | Config storage | the sole source of defaults is `crates/e-tui/assets/default_config.toml` (embedded via `include_str!` and parsed); `%APPDATA%\dshe\config.toml` is an overlay allowed to omit fields; priority embedded defaults < user file < runtime; **save immediately, take effect immediately** |
 | D28 | In-TUI editable items | see §4.7 list: appearance/behavior/display are all editable, advanced is read-only |
 | D29 | Not editable in TUI | connection parameters (startup flag), font size (terminal side), clipboard backend (platform), key rebinding (v2), syntax highlighting theme (phase two) |
 | D30 | Send key semantics | fixed `Enter` send, `Shift+Enter` newline; the legacy `enter_sends` config only keeps deserialization compatibility and no longer changes interaction |
+| D31 | Paced text reveal | live assistant Markdown paints stable admitted text at most 120 graphemes/s; selected Ready Preview paints wrapped display rows at 30 rows/s by default; new content fades from configurable `background_color` through one static `[0.217, 0.53]` profile |
 
 ## 1. Goals and shape
 
@@ -304,8 +305,8 @@ optional secondary_content      ← tool-specific semantic colors
   (copyable).
 - Long content fold: plain long text / tool results > N lines (default 20) fold, showing head + tail +
   `… [Enter] expand`. (Atomic blocks table/mermaid/code don't fold; see O12 for whether there's an exception.)
-- Streaming: token-level append; auto-follow the bottom when not scrolled up; scrolling up pauses follow and shows
-  a `↓ new messages` indicator.
+- Streaming: complete token/chunk source is reduced immediately, but live assistant Markdown admits only a stable tail prefix to its presentation-only Unicode-grapheme lane at no more than `message_chars_per_second` (default 120). The shared UAX #14 wrapper retains the open trailing atom and deferred separator until a natural break, 100ms rendered-idle timeout, 300ms absolute timeout, or stream settlement. The newest graphemes use the shared `[0.217, 0.53]` foreground-contribution profile from configurable `background_color` toward each semantic foreground; high rates reveal `ceil(rate × 16ms)` graphemes per visible batch and give each batch one shared fade color. A 16ms fade clock runs independently of source settlement and queue availability, so every trailing group receives its final original-color frame before becoming idle. Delayed deadlines never catch up multiple batches. Width-dependent code-block fill padding is applied after reveal clipping and does not consume character budget or change resize progress. Snapshot/history content is immediate, and copy/Reading always use the full source. Auto-follow stays at the bottom when not scrolled up; scrolling up pauses follow and shows a `↓ new messages` indicator.
+- Preview: every textual Ready content variant is materialized with complete semantic styles, wrapped to the current pane width, then revealed/faded by an independent `preview_lines_per_second` lane (default 30) before scrolling and centering. One pacing unit is one non-empty terminal display row. Identity changes restart that Preview lane; same-target revisions retain the common semantic prefix and scroll, and resize remaps row boundaries without resetting semantic progress. Semantic Preview cache entries remain complete and width-independent.
 
 ### 3.4 Two-layer theme system and ferra palette
 
@@ -400,9 +401,16 @@ The ferra palette comes from the casperstorm/ferra README:
   the IME anchor, to avoid flickering between the running status light and the input bar during diff drawing.
 - Prefix `❯` Coral, consistent with the user message prefix; input text Mist.
 - **Paste placeholder** (bracketed paste): pasted content > **64 characters** → the input bar shows a Rose
-  `[N text pasted]` **paste block**, content not expanded; the paste block is atomic — the cursor cannot enter its
-  interior (←/→ skip the whole block), Backspace/Delete delete the whole placeholder content; pressing Enter sends
-  the content verbatim and complete.
+  `[N text pasted]` **paste block**, content not expanded; each over-threshold paste is its own independent
+  atomic block (like pi's paste markers) — typed text before/after it stays editable, the cursor cannot enter
+  any block's interior (←/→ skip the whole block, ↑/↓ snap to its start), Backspace/Delete delete the whole
+  block, and deleting one block leaves the others intact; pressing Enter sends
+  the content verbatim and complete. Delivery note: crossterm's Windows backend never emits `Event::Paste` (the
+  console consumes the `ESC[200~ … ESC[201~` wrapper before records reach the application, so pasted `\r` line
+  endings would arrive as plain Enter and send at every newline). On Windows, `e-dsh` therefore reads the raw VT
+  byte stream (`ENABLE_VIRTUAL_TERMINAL_INPUT` + stdin reader) and parses it into events in `vt_input.rs`
+  (`win_input.rs` provides the reader and native Shift/Ctrl/Alt sampling), so the placeholder, Input Page pasting,
+  and Reading-View ignore behave identically on Windows and Unix.
 - **Pre-send queue**: prompts sent with Enter while the AI is running are not sent immediately but enter the client
   queue, shown line by line above the input bar (Night base Bark text, left-indented 2 spaces with a `* ` prefix,
   one per line, over-wide `…` truncation; the row count is bounded by panel height, overflow shows `… N more`).
@@ -551,8 +559,10 @@ Clipboard and deferred Preview effects execute after the UI guard is released.
   the new session into that cwd's workspace ledger (consistent with host `session.create`'s two steps); when the
   client sends no cwd (older clients) it falls back to the current session header's cwd / `process.cwd()`. A bare
   `/new` takes `config.default_mode`; an explicit `/new <mode>` overrides once. Before the draft materializes,
-  `/resume` is usable, but `/model`, `/skill`, and integrated commands must not be misrouted to the old session.
-  The bridge still keeps the older-client `/new` handler and mounts the preset in `agents.create`'s `setup`.
+  `/resume` is usable, and so is `/model`: its provider/model catalog is session-independent, and a selection made
+  during the draft is applied to the materialized session through `/new`'s provider/model mirror. `/skill` and
+  integrated commands must not be misrouted to the old session. The bridge still keeps the older-client `/new`
+  handler and mounts the preset in `agents.create`'s `setup`.
 - `/new <mode>`: create a new session by agent preset id (standard/code/minimal/cordis and user-built presets).
   The bridge sends a `presets` roster frame (id/name/description/order/broken) after each attach; the client pops
   up the mode prompt when typing `/new ` (with a trailing space) (same ↑↓/Tab/Enter/Esc semantics as command
@@ -621,8 +631,9 @@ Clipboard and deferred Preview effects execute after the UI guard is released.
 |------|------|------|------|
 | Appearance | spinner style (A/B/C/D/E) | enum | A half-moon rotation |
 | Appearance | spinner frame rate | numeric ms | 120 |
-| Appearance | theme (choose from `%APPDATA%\dshe\themes\*.toml`; palette and semantic mapping edited in two-layer TOML) | enum | deepseek-e |
-| Appearance | plain-color mode (NO_COLOR) | boolean | off |
+| Appearance | theme (choose from `%APPDATA%\dshe\themes\*.toml`; palette and semantic mapping edited in two-layer TOML) | enum | ferra |
+| Appearance | plain-color mode (NO_COLOR; pacing remains, fade interpolation is omitted) | boolean | off |
+| Appearance | text-fade background reference (`#RRGGBB`) | text | `#000000` |
 | Behavior | remember last session | boolean | **off** (new process creates a new session by default) |
 | Behavior | default mode (preset used by bare `/new` and new-process session creation, from the bridge `presets` roster; a stale config value is still shown/selectable, bridge falls back to standard) | enum | standard |
 | Behavior | paste placeholder threshold | numeric chars | 1000 |
@@ -634,6 +645,8 @@ Clipboard and deferred Preview effects execute after the UI guard is released.
 | Display | read auto-merge | boolean | on |
 | Display | message timestamp | boolean | off |
 | Display | mermaid rendering (off = source fence) | boolean | on |
+| Display | assistant Markdown maximum reveal speed | integer graphemes/s (0–1024; 0 disables pacing) | 120 |
+| Display | Preview maximum reveal speed | integer wrapped display rows/s (0–1024; 0 disables pacing) | 30 |
 | Advanced | bridge address / port / token path | read-only display | — |
 
 **Not editable in TUI (D29)**: connection parameters (changing them disconnects; startup flag / env var only),
@@ -764,16 +777,19 @@ Markdown/source mapping is still done client-side locally; `TranscriptRenderCach
 padding/wrap/spacing on each keypress. Wheel, paging, follow, history prepend anchors, Reading overlays, and Item
 fragments all use post-wrap display-row coordinates; row count is built by a
 linear Unicode grapheme-width scan prefix, combining marks and emoji ZWJ keep the same grapheme across style spans,
-and only visible rows are materialized per frame. Streaming text deltas only set `tail_dirty`; after splicing the
-tail only the tail row-count suffix is replaced and the prefix is written incrementally; pure breathing/settle
-animations only patch the active message's stable line range, and settle expiry first clears the interpolation
-source marker (keeping the completion-time sentinel), submits the precise target-color patch, then stops the
-deadline. A range line-count change safely falls back to full rebuild; structural changes like surface replace only
-invalidate once.
+and only visible rows are materialized per frame. Streaming source updates remain complete in the semantic model;
+ordinary streaming-tail changes splice the tail, while paced reveal records the earliest changed assistant message
+and rebuilds only that cached suffix so reveal-driven line-count growth never rebuilds earlier messages. Pure
+breathing/settle animations only patch the active message's stable line range, and settle expiry first clears the
+interpolation source marker (keeping the completion-time sentinel), submits the precise target-color patch, then
+stops the deadline. Preview reveal patches only Preview presentation. A range line-count change safely falls back
+to full rebuild; structural changes like surface replace only invalidate once.
 
 The main loop uses Crossterm `EventStream` to feed keyboard/mouse/paste/resize directly into `tokio::select!`, no
-longer relying on 50ms input polling; interaction frames 16ms, content frames ~30ms, animations coalesced by the
-`spinner_frame_ms` deadline, with zero-cycle wakeup when idle. Bridge inbound bursts process at most 64 messages
+longer relying on 50ms input polling; interaction frames 16ms and content frames ~30ms. Spinner/settle,
+assistant admission/reveal/fade, and Preview row-reveal/fade own independent due times; `tokio::select!` waits on their minimum, advances
+at most one bounded due step per lane class, and coalesces the dirty result into one frame, with zero-cycle wakeup
+when idle. Bridge inbound bursts process at most 64 messages
 or ~2ms per turn to avoid starving input/expiry frames. `TerminalOwner` manages raw mode, alternate screen, and
 restore at a single point, and the CrosstermBackend uses a 64KiB BufWriter; each frame wraps the diff, hidden IME
 anchor, and flush with DEC private mode 2026 Begin/End synchronized output — terminals that don't support the
@@ -792,7 +808,7 @@ disables it for diagnosis.
 | Code highlight | plain color + language label | syntect deferred |
 | Clipboard | arboard (system clipboard) | Windows writes the clipboard directly |
 | Config | toml + serde (embedded `crates/e-tui/assets/default_config.toml` + `%APPDATA%\dshe\config.toml` overlay) | missing fields inherit defaults, save immediately (§4.7) |
-| Wide chars | unicode-width | CJK/emoji width |
+| Wide chars | unicode-width + unicode-segmentation + unicode-linebreak | CJK/emoji width, grapheme-safe paced reveal, and UAX #14 wrapping |
 | Distribution | single exe (repo root is a Cargo workspace, root `cargo run` launches) | client runtime has no Node dependency; first install/update of the bridge needs Node.js/DSH |
 
 ### 6.1 Source install path

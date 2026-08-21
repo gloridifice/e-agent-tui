@@ -20,7 +20,80 @@ fn overlays() -> RenderOverlays<'static> {
         input_page: None,
         settings: None,
         login: None,
+        approval: None,
+        queue: &[],
     }
+}
+
+#[test]
+fn input_bar_paste_block_renders_placeholder_between_editable_text() {
+    // Typed text + an over-threshold paste + typed text: the paste collapses
+    // into one Rose placeholder span while the surrounding text keeps the
+    // Mist text tone, and the cursor (after the trailing text) stays on the
+    // same single row.
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    let mut input = InputState::new(&state.config);
+    input.paste_placeholder_chars = 5;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let plain = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+    for c in "ab".chars() {
+        input.handle_key(&plain(c), true);
+    }
+    input.paste("123456");
+    for c in "cd".chars() {
+        input.handle_key(&plain(c), true);
+    }
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    let mut anchor = None;
+    terminal
+        .draw(|frame| {
+            anchor = render_with_cursor(frame, &mut state, &input, &mut scroll, &theme, overlays());
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let row = |y: u16| {
+        (0..80)
+            .map(|x| buffer[(x, y)].symbol().chars().next().unwrap_or(' '))
+            .collect::<String>()
+    };
+    // Find the single text row that carries the projected content.
+    let expected = "ab[6 text pasted]cd";
+    let text_row = (15u16..22)
+        .find(|&y| row(y).contains(expected))
+        .unwrap_or_else(|| {
+            panic!(
+                "placeholder row not found; rows: {:?}",
+                (15u16..22).map(row).collect::<Vec<_>>()
+            )
+        });
+    let text = row(text_row);
+    let start_x = text.len() - text.trim_start().len();
+    // Placeholder characters use the Rose placeholder tone; typed text Mist.
+    let placeholder_fg = theme.input.placeholder.fg;
+    let text_fg = theme.input.text.fg;
+    let placeholder_span = 2..2 + "[6 text pasted]".chars().count();
+    for i in 0..expected.chars().count() {
+        let x = (start_x + i) as u16;
+        let cell = &buffer[(x, text_row)];
+        let expected_fg = if placeholder_span.contains(&i) {
+            placeholder_fg
+        } else {
+            text_fg
+        };
+        assert_eq!(cell.fg, expected_fg, "char {i} of {expected:?}");
+    }
+    // The IME anchor sits right after the trailing text on the same row.
+    assert_eq!(
+        anchor,
+        Some(Position::new(
+            (start_x + expected.chars().count()) as u16,
+            text_row
+        )),
+        "IME anchor sits right after the trailing text"
+    );
 }
 
 #[test]
@@ -322,17 +395,165 @@ fn streaming_tail_splice_replaces_the_whole_growing_markdown_suffix() {
         "incremental streaming must not retain rows from older tail renders"
     );
     assert_eq!(
-        incremental.render.transcript_cache.tail_len,
-        incremental.render.transcript_cache.lines.len(),
-        "the sole message owns the complete cached suffix including its gap"
-    );
-    assert_eq!(
         incremental_lines
             .iter()
             .filter(|line| line.contains("alpha"))
             .count(),
         1,
         "the first streamed paragraph must not be duplicated"
+    );
+}
+
+#[test]
+fn paced_markdown_reveal_splices_a_non_tail_suffix_and_keeps_full_source() {
+    fn block(id: &str, content: &str, format: crate::display::TranscriptFormat) -> DisplayItem {
+        DisplayItem::Block(crate::display::TranscriptBlock {
+            id: DisplayId::correlated("reveal-test", id),
+            unit: None,
+            content: content.into(),
+            format,
+            tone: DisplayTone::Normal,
+            copy_source: content.into(),
+            streaming: format == crate::display::TranscriptFormat::Markdown,
+        })
+    }
+
+    fn draw(state: &mut TuiApp) {
+        let input = InputState::new(&state.config);
+        let mut scroll = ScrollState::default();
+        let theme = Theme::ferra();
+        let mut terminal = Terminal::new(TestBackend::new(40, 16)).unwrap();
+        terminal
+            .draw(|frame| render(frame, state, &input, &mut scroll, &theme, overlays()))
+            .unwrap();
+    }
+
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    state.config.message_chars_per_second = crate::config::RevealRate::new(16).unwrap();
+    state.transcript.append(
+        block("before", "before", crate::display::TranscriptFormat::Plain),
+        None,
+    );
+    let reveal_id = DisplayId::correlated("reveal-test", "answer");
+    state.transcript.append(
+        block(
+            "answer",
+            "abcdef",
+            crate::display::TranscriptFormat::Markdown,
+        ),
+        None,
+    );
+    state.transcript.append(
+        block("after", "after", crate::display::TranscriptFormat::Plain),
+        None,
+    );
+    state
+        .render
+        .transcript_reveals
+        .insert(reveal_id.clone(), crate::reveal::RevealTrack::default());
+
+    draw(&mut state);
+    let first = state
+        .render
+        .transcript_cache
+        .lines
+        .iter()
+        .map(Line::to_string)
+        .collect::<Vec<_>>();
+    assert!(
+        !first.iter().any(|line| line.contains("abcdef")),
+        "an open trailing word waits for stable admission"
+    );
+    let node = state.transcript.get(&reveal_id).unwrap();
+    assert!(matches!(
+        &node.item,
+        DisplayItem::Block(block) if block.copy_source == "abcdef" && block.content == "abcdef"
+    ));
+    assert!(state.render.units.values().any(|source| source == "abcdef"));
+
+    state.render.transcript_cache.take_work_stats();
+    let admission_due = state
+        .transcript_reveal_deadline()
+        .expect("held streaming tail has a timeout");
+    assert!(state.tick_transcript_reveals(admission_due));
+    draw(&mut state);
+    let admitted = state
+        .render
+        .transcript_cache
+        .lines
+        .iter()
+        .map(Line::to_string)
+        .collect::<Vec<_>>();
+    assert!(admitted.iter().any(|line| line.contains("a •")));
+
+    let fade_due = state.transcript_reveal_deadline().expect("first fade");
+    assert!(state.tick_transcript_reveals(fade_due));
+    let final_fade_due = state.transcript_reveal_deadline().expect("final fade");
+    assert!(state.tick_transcript_reveals(final_fade_due));
+    let due = state.transcript_reveal_deadline().expect("queued reveal");
+    assert!(state.tick_transcript_reveals(due));
+    draw(&mut state);
+    let second = state
+        .render
+        .transcript_cache
+        .lines
+        .iter()
+        .map(Line::to_string)
+        .collect::<Vec<_>>();
+    assert!(second.iter().any(|line| line.contains("ab •")));
+    assert!(second.iter().any(|line| line.contains("before")));
+    assert!(second.iter().any(|line| line.contains("after")));
+    let work = state.render.transcript_cache.take_work_stats();
+    assert_eq!(work.rebuilds, 0, "reveal splices from the active message");
+}
+
+#[test]
+fn code_block_fill_padding_does_not_change_reveal_work_on_resize() {
+    fn reveal_steps(width: u16) -> usize {
+        let mut state = TuiApp::default();
+        state.config.resolved_theme = Theme::ferra();
+        state.config.message_chars_per_second = crate::config::RevealRate::new(16).unwrap();
+        let id = DisplayId::correlated("reveal-test", &format!("code-{width}"));
+        let source = "```\nx\n```";
+        state.transcript.append(
+            DisplayItem::Block(crate::display::TranscriptBlock {
+                id: id.clone(),
+                unit: None,
+                content: source.into(),
+                format: crate::display::TranscriptFormat::Markdown,
+                tone: DisplayTone::Normal,
+                copy_source: source.into(),
+                streaming: false,
+            }),
+            None,
+        );
+        state
+            .render
+            .transcript_reveals
+            .insert(id, crate::reveal::RevealTrack::default());
+
+        let input = InputState::new(&state.config);
+        let mut scroll = ScrollState::default();
+        let theme = Theme::ferra();
+        let mut terminal = Terminal::new(TestBackend::new(width, 16)).unwrap();
+        terminal
+            .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+            .unwrap();
+
+        let mut steps = 0;
+        while let Some(due) = state.transcript_reveal_deadline() {
+            assert!(state.tick_transcript_reveals(due));
+            steps += 1;
+            assert!(steps < 512, "reveal work did not converge");
+        }
+        steps
+    }
+
+    assert_eq!(
+        reveal_steps(40),
+        reveal_steps(120),
+        "width-only code-block fill must not change logical reveal work"
     );
 }
 
@@ -526,14 +747,14 @@ fn wide_screen_renders_preview_without_changing_main_provenance() {
         .unwrap();
 
     let buffer = terminal.backend().buffer();
-    // Border, title, and pane background are removed; content is vertically
-    // centered in the 30-row pane starting at the first padded column.
+    // Border, title, and pane background are removed. A newly selected Ready
+    // target starts with its first wrapped display row.
     assert_ne!(buffer[(72, 0)].symbol(), "┌");
-    assert_eq!(buffer[(73, 13)].symbol(), "#");
     let preview_text = (0..30)
         .flat_map(|y| (72..120).map(move |x| buffer[(x, y)].symbol()))
         .collect::<String>();
-    assert!(preview_text.contains("Preview source"));
+    assert!(preview_text.contains("# Preview source"));
+    assert!(!preview_text.contains("complete body"));
     let unit = state.transcript.nodes()[0]
         .unit()
         .expect("materialized unit");
@@ -630,13 +851,17 @@ fn preview_skips_markdown_answers_and_shows_reasoning_text() {
         PreviewState::Ready(PreviewContent::Reasoning("first reasoning delta".into()))
     );
     assert!(preview_text(&terminal).contains("first reasoning delta"));
-    // Reasoning preview uses the muted (Bark) tone: the first content cell of
-    // the centered single row carries `surface.muted_text`'s foreground.
+    // Reasoning keeps the Bark semantic target but the newest character is
+    // initially blended from the configured background.
     let buffer = terminal.backend().buffer();
     assert_eq!(
         buffer[(73, 14)].fg,
-        theme.surface.muted_text.fg,
-        "reasoning preview must use the Bark/muted tone"
+        crate::reveal::blend_rgb(
+            state.config.background_color.color(),
+            theme.surface.muted_text.fg,
+            crate::reveal::TEXT_FADE_WEIGHTS[0],
+        ),
+        "reasoning preview starts with the shared fade"
     );
 }
 
@@ -701,6 +926,95 @@ fn tool_preview_renders_header_primary_and_secondary_with_ferra_semantics() {
     assert_eq!(buffer[(name_x, name_y)].fg, theme.activity.label.fg);
     assert_eq!(buffer[(dollar_x, dollar_y)].fg, theme.input.prompt.fg);
     assert_eq!(buffer[(metrics_x, metrics_y)].fg, theme.activity.detail.fg);
+}
+
+#[test]
+fn selected_tool_preview_reveals_one_wrapped_row_per_tick_without_touching_transcript_cache() {
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    state.preview.fullscreen = true;
+    state.preview.policy = crate::preview::PreviewPolicy::FollowReadingCursor;
+    state.render.transcript_cache.valid = true;
+    state.preview.select(Some(crate::preview::PreviewTarget {
+        id: "tool:bash".into(),
+        reference: crate::preview::PreviewRef::Inline {
+            key: crate::preview::PreviewKey("tool:bash".into()),
+            revision: crate::preview::PreviewRevision(1),
+            content: PreviewContent::Tool(ToolPreview {
+                name: "bash".into(),
+                primary: ToolPreviewPrimary::Command {
+                    command: "echo ok".into(),
+                    metrics: ToolMetrics::default(),
+                },
+                secondary: None,
+            }),
+        },
+    }));
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+    let text = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(text.contains("bash"));
+    assert!(!text.contains("echo ok"));
+    let first_cell = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .find(|cell| cell.symbol() == "b")
+        .expect("first tool-name row");
+    assert_eq!(
+        first_cell.fg,
+        crate::reveal::blend_rgb(
+            state.config.background_color.color(),
+            theme.activity.label.fg,
+            crate::reveal::TEXT_FADE_WEIGHTS[0],
+        )
+    );
+
+    let fade_due = state
+        .preview
+        .reveal_deadline()
+        .expect("first row fade is active");
+    assert!(state
+        .preview
+        .tick_reveal(fade_due, state.config.preview_lines_per_second.get()));
+    let final_fade_due = state
+        .preview
+        .reveal_deadline()
+        .expect("first row final fade is active");
+    assert!(state
+        .preview
+        .tick_reveal(final_fade_due, state.config.preview_lines_per_second.get()));
+    let due = state
+        .preview
+        .reveal_deadline()
+        .expect("next Preview row is queued");
+    assert!(state
+        .preview
+        .tick_reveal(due, state.config.preview_lines_per_second.get()));
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+    let text = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(text.contains("echo ok"));
+    assert!(state.render.transcript_cache.valid);
 }
 
 #[test]
@@ -1102,6 +1416,71 @@ fn wrapped_markdown_list_rows_align_under_the_item_text() {
 }
 
 #[test]
+fn cjk_markdown_block_wraps_at_ideograph_boundaries() {
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    // No spaces anywhere: UAX #14 supplies the break opportunities between
+    // ideographs, keeps the fullwidth comma glued to the preceding character,
+    // and leaves the trailing Latin word intact.
+    let source = "你好，世界你好，世界你好，世界abc";
+    state.transcript.append(
+        DisplayItem::Block(crate::display::TranscriptBlock {
+            id: DisplayId::correlated("assistant", "cjk-wrap"),
+            unit: None,
+            content: source.into(),
+            format: crate::display::TranscriptFormat::Markdown,
+            tone: DisplayTone::Normal,
+            copy_source: source.into(),
+            streaming: false,
+        }),
+        None,
+    );
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(24, 12)).unwrap();
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+
+    // Plain paragraphs stay unwrapped in the cache by design; assert on the
+    // final painted rows, where the paint-time wrapper applied the breaks.
+    // Rebuild each row from glyph cells only: double-width characters leave
+    // empty continuation cells and padding cells hold spaces.
+    let buffer = terminal.backend().buffer();
+    let text_rows = (0..12u16)
+        .map(|y| {
+            (0..24u16)
+                .map(|x| buffer[(x, y)].symbol())
+                .filter(|symbol| !symbol.is_empty() && *symbol != " ")
+                .collect::<String>()
+        })
+        .filter(|row| !row.is_empty() && (row.contains('你') || row.contains("abc")))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        text_rows.len(),
+        3,
+        "expected three wrapped rows: {text_rows:?}"
+    );
+    assert_eq!(
+        text_rows.concat(),
+        source,
+        "wrapping must not drop or reorder text"
+    );
+    for row in &text_rows {
+        assert!(
+            !row.starts_with('，'),
+            "fullwidth comma must never start a painted row: {text_rows:?}"
+        );
+    }
+    // The trailing Latin word stays whole on its final row.
+    assert!(
+        text_rows.last().expect("painted rows").ends_with("abc"),
+        "Latin word must stay intact: {text_rows:?}"
+    );
+}
+
+#[test]
 fn list_item_inline_code_paints_its_chip() {
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();
@@ -1231,5 +1610,65 @@ fn wrapped_markdown_quote_rows_keep_the_painted_gutter() {
         buffer[(bar_x + 2, first + 1)].symbol(),
         "f",
         "wrapped text (`foxtrot …`) starts right after the bar"
+    );
+}
+
+/// Regression (6cdb025b): the pending-prompt queue and the approval card are
+/// passed through RenderOverlays (the main loop holds the InteractionModel out
+/// of AppState while drawing). The render must paint them instead of reading
+/// the transient `state.interaction`.
+#[test]
+fn overlays_paint_queue_and_approval_accessories() {
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let card = crate::interaction::ApprovalCard {
+        id: "a1".into(),
+        tool_name: "bash".into(),
+        reason: "run the test".into(),
+    };
+    let queue = vec!["排队提示".to_string()];
+    let backend = TestBackend::new(80, 40);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            render_with_cursor(
+                frame,
+                &mut state,
+                &input,
+                &mut scroll,
+                &theme,
+                RenderOverlays {
+                    help_visible: false,
+                    toast: None,
+                    input_page: None,
+                    settings: None,
+                    login: None,
+                    approval: Some(&card),
+                    queue: &queue,
+                },
+            );
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let text = (0..40u16)
+        .map(|y| {
+            (0..80u16)
+                .map(|x| buffer[(x, y)].symbol().chars().next().unwrap_or(' '))
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    // Cell extraction spaces wide CJK glyphs; strip whitespace for matching.
+    let flat: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    assert!(
+        flat.contains("审批") && flat.contains("bash"),
+        "approval card painted from overlays; screen:\n{text}"
+    );
+    assert!(
+        flat.contains("排队提示"),
+        "queued prompt strip painted from overlays; screen:\n{text}"
     );
 }

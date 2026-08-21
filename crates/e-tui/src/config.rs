@@ -4,7 +4,10 @@
 //! default configuration is embedded from `e-tui/assets/default_config.toml`;
 //! user documents are parsed here as partial overlays over that one schema.
 
-use serde::{Deserialize, Serialize};
+use std::{fmt, str::FromStr};
+
+use ratatui::style::Color;
+use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
 pub use crate::theme::Theme;
 
@@ -27,6 +30,136 @@ impl ThinkingDisplayMode {
     }
 }
 
+// ---------- validated persisted values ----------
+
+/// A persisted `#RRGGBB` color. TOML representation remains a string while
+/// direct Config deserialization rejects malformed known values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HexRgb {
+    red: u8,
+    green: u8,
+    blue: u8,
+}
+
+impl HexRgb {
+    pub const fn color(self) -> Color {
+        Color::Rgb(self.red, self.green, self.blue)
+    }
+}
+
+impl fmt::Display for HexRgb {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "#{:02x}{:02x}{:02x}",
+            self.red, self.green, self.blue
+        )
+    }
+}
+
+impl FromStr for HexRgb {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value.len() != 7
+            || !value.starts_with('#')
+            || !value[1..].bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err("expected #RRGGBB".into());
+        }
+        // The validation above guarantees that every sliced byte is ASCII and
+        // therefore a UTF-8 character boundary.
+        let parse = |range: std::ops::Range<usize>| {
+            u8::from_str_radix(&value[range], 16).map_err(|_| "expected #RRGGBB".to_string())
+        };
+        Ok(Self {
+            red: parse(1..3)?,
+            green: parse(3..5)?,
+            blue: parse(5..7)?,
+        })
+    }
+}
+
+impl Serialize for HexRgb {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for HexRgb {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(de::Error::custom)
+    }
+}
+
+/// Valid paced-reveal rate. Zero disables pacing and reveals content
+/// immediately; positive values are limited to 1024 graphemes per second.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RevealRate(u16);
+
+impl RevealRate {
+    pub const MAX: u16 = 1024;
+
+    pub fn new(value: u16) -> Result<Self, String> {
+        if value <= Self::MAX {
+            Ok(Self(value))
+        } else {
+            Err("reveal rate must be between 0 and 1024".into())
+        }
+    }
+
+    pub const fn get(self) -> u16 {
+        self.0
+    }
+
+    pub const fn is_disabled(self) -> bool {
+        self.0 == 0
+    }
+}
+
+impl fmt::Display for RevealRate {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl FromStr for RevealRate {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let value = value
+            .parse::<u16>()
+            .map_err(|_| "reveal rate must be a whole number".to_string())?;
+        Self::new(value)
+    }
+}
+
+impl Serialize for RevealRate {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u16(self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for RevealRate {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::new(u16::deserialize(deserializer)?).map_err(de::Error::custom)
+    }
+}
+
 // ---------- full config ----------
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -45,6 +178,8 @@ pub struct Config {
     #[serde(skip)]
     pub config_path_display: String,
     pub plain_color: bool,
+    /// Foreground-fade interpolation origin; does not replace theme surfaces.
+    pub background_color: HexRgb,
     // 行为
     pub remember_last_session: bool,
     /// Agent-preset mode for bare `/new` and the session a fresh TUI process
@@ -66,6 +201,10 @@ pub struct Config {
     pub thinking_lines: usize,
     pub show_timestamps: bool,
     pub mermaid_enabled: bool,
+    /// Maximum visible assistant-reply graphemes per second.
+    pub message_chars_per_second: RevealRate,
+    /// Maximum visible wrapped Preview display rows per second.
+    pub preview_lines_per_second: RevealRate,
     /// Horizontal gutter (in columns) of user message blocks and the input
     /// box — live-editable via /settings.
     pub user_input_padding: usize,
@@ -173,15 +312,42 @@ mod tests {
             toml::from_str(DEFAULT_CONFIG_SOURCE).expect("embedded defaults are the full schema");
         let config = Config::default();
         assert_eq!(config.spinner_style, direct.spinner_style);
-        assert_eq!(config.spinner_frame_ms, 120);
-        assert_eq!(config.theme, "deepseek-e");
-        assert_eq!(config.default_mode, "standard");
-        assert_eq!(config.paste_placeholder_chars, 64);
-        assert_eq!(config.main_pane_width, 120);
-        assert_eq!(config.page_max_width, 0);
-        assert_eq!(config.page_align, "center");
-        assert_eq!(config.thinking_display, "compact");
-        assert_eq!(config.thinking_lines, 2);
+        assert_eq!(config.spinner_frame_ms, direct.spinner_frame_ms);
+        assert_eq!(config.theme, direct.theme.as_str());
+        assert_eq!(
+            config.theme, "ferra",
+            "the embedded theme default is contractual"
+        );
+        assert_eq!(config.background_color, direct.background_color);
+        assert_eq!(config.background_color.to_string(), "#000000");
+        assert_eq!(
+            config.message_chars_per_second,
+            direct.message_chars_per_second
+        );
+        assert_eq!(
+            config.message_chars_per_second.get(),
+            120,
+            "the transcript reveal default is contractual"
+        );
+        assert_eq!(
+            config.preview_lines_per_second,
+            direct.preview_lines_per_second
+        );
+        assert_eq!(
+            config.preview_lines_per_second.get(),
+            30,
+            "the Preview row reveal default is contractual"
+        );
+        assert_eq!(config.default_mode, direct.default_mode.as_str());
+        assert_eq!(
+            config.paste_placeholder_chars,
+            direct.paste_placeholder_chars
+        );
+        assert_eq!(config.main_pane_width, direct.main_pane_width);
+        assert_eq!(config.page_max_width, direct.page_max_width);
+        assert_eq!(config.page_align, direct.page_align.as_str());
+        assert_eq!(config.thinking_display, direct.thinking_display.as_str());
+        assert_eq!(config.thinking_lines, direct.thinking_lines);
         assert_eq!(config.thinking_display_mode(), ThinkingDisplayMode::Compact);
     }
 
@@ -197,6 +363,16 @@ mod tests {
         .expect("partial config overlays defaults");
         assert_eq!(config.theme, "ferra");
         assert_eq!(config.spinner_frame_ms, 250);
+        let defaults = Config::default();
+        assert_eq!(config.background_color, defaults.background_color);
+        assert_eq!(
+            config.message_chars_per_second,
+            defaults.message_chars_per_second
+        );
+        assert_eq!(
+            config.preview_lines_per_second,
+            defaults.preview_lines_per_second
+        );
         assert_eq!(config.page_align, "right");
         assert_eq!(config.spinner_style, "A");
         assert_eq!(config.history_limit, 1000);
@@ -206,16 +382,57 @@ mod tests {
     }
 
     #[test]
+    fn valid_reveal_values_override_and_normalize() {
+        let config = Config::from_user_toml(
+            r##"
+                background_color = "#1A2b3C"
+                message_chars_per_second = 7
+                preview_lines_per_second = 1024
+            "##,
+        )
+        .unwrap();
+        assert_eq!(config.background_color.to_string(), "#1a2b3c");
+        assert_eq!(
+            config.background_color.color(),
+            Color::Rgb(0x1a, 0x2b, 0x3c)
+        );
+        assert_eq!(config.message_chars_per_second.get(), 7);
+        assert_eq!(config.preview_lines_per_second.get(), 1024);
+        let persisted = toml::to_string(&config).unwrap();
+        assert!(persisted.contains("background_color = \"#1a2b3c\""));
+        assert!(persisted.contains("message_chars_per_second = 7"));
+    }
+
+    #[test]
+    fn invalid_reveal_values_are_strict_known_value_errors() {
+        assert!(Config::from_user_toml("background_color = \"black\"").is_err());
+        assert!(Config::from_user_toml("background_color = \"#aééb\"").is_err());
+        assert!("#aééb".parse::<HexRgb>().is_err());
+        assert_eq!(
+            Config::from_user_toml("message_chars_per_second = 0")
+                .unwrap()
+                .message_chars_per_second
+                .get(),
+            0
+        );
+        assert!(Config::from_user_toml("preview_lines_per_second = 1025").is_err());
+        assert!("-1".parse::<RevealRate>().is_err());
+        assert!("1.5".parse::<RevealRate>().is_err());
+    }
+
+    #[test]
     fn obsolete_unknown_fields_are_filtered_without_losing_valid_overrides() {
         let config = Config::from_user_toml(
             r#"
                 theme = "ferra"
                 removed_legacy_option = true
+                preview_chars_per_second = 999
             "#,
         )
         .expect("unknown legacy key is ignored");
         assert_eq!(config.theme, "ferra");
         assert_eq!(config.spinner_frame_ms, 120);
+        assert_eq!(config.preview_lines_per_second.get(), 30);
     }
 
     #[test]
@@ -223,8 +440,8 @@ mod tests {
         assert!(Config::from_user_toml("spinner_frame_ms = \"fast\"").is_err());
         assert!(Config::from_user_toml("theme = [").is_err());
         let fallback = Config::user_toml_or_default("history_limit = \"many\"");
-        assert_eq!(fallback.history_limit, 1000);
-        assert_eq!(fallback.theme, "deepseek-e");
+        assert_eq!(fallback.history_limit, Config::default().history_limit);
+        assert_eq!(fallback.theme, Config::default().theme);
     }
 
     #[test]
@@ -245,6 +462,6 @@ mod tests {
     fn persisted_config_omits_the_resolved_theme_cache() {
         let text = toml::to_string(&Config::default()).expect("config serializes");
         assert!(!text.contains("resolved_theme"));
-        assert!(text.contains("theme = \"deepseek-e\""));
+        assert!(text.contains(&format!("theme = {:?}", Config::default().theme)));
     }
 }

@@ -59,6 +59,11 @@ fn main() -> anyhow::Result<()> {
             }
             DisplayItem::Block(_) => systems += 1,
             DisplayItem::Activity(row) if row.id.0.starts_with("thinking:") => {}
+            DisplayItem::Thinking(thinking) => {
+                if !thinking.copy_source.is_empty() {
+                    assistants += 1;
+                }
+            }
             DisplayItem::Activity(row) => count_activity(
                 row.state,
                 &mut tools,

@@ -16,6 +16,8 @@ Design and architecture documentation for the **e** / `dshe` project. Everything
   `bridge/protocol-contract.json`).
 - [tracy.md](tracy.md) — Tracy profiling notes.
 - [architecture-audit.md](architecture-audit.md) — architecture audit notes.
+- [cjk-line-wrapping.md](cjk-line-wrapping.md) — proposal: UAX #14 (Unicode line breaking) based CJK-aware
+  wrapping for `crates/e-tui/src/wrap.rs`; research, integration design, test and docs plan.
 - [plan/](plan/README.md): completed migration baselines, package/state/render extraction record, performance
   gates, and the Reading binding compatibility decision.
 

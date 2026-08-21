@@ -765,6 +765,8 @@ mod tests {
                         input_page: None,
                         settings: None,
                         login: None,
+                        approval: None,
+                        queue: &[],
                     },
                 );
             })

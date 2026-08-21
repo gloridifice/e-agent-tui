@@ -1,0 +1,2 @@
+[alias]
+dev = "install --path ./crates/e-dsh"

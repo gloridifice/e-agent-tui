@@ -121,6 +121,19 @@ impl TerminalOwner {
                 return Err(error);
             }
         };
+        // Ratatui/crossterm terminal construction leaves the Windows input
+        // mode at its raw-mode flags. Enable VT input only after construction;
+        // doing it immediately after `enable_raw_mode` is too early and the
+        // later setup silently clears 0x0200, so Esc/navigation never enter
+        // the byte stream even though ordinary characters still do.
+        #[cfg(windows)]
+        if let Err(error) = crate::win_input::enable_virtual_terminal_input() {
+            drop(terminal);
+            let mut stdout = std::io::stdout();
+            let _ = leave_terminal_modes(&mut stdout);
+            let _ = disable_raw_mode();
+            return Err(error);
+        }
         Ok(Self {
             terminal,
             counters,

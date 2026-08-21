@@ -65,7 +65,10 @@ pub struct TranscriptRenderCache {
     pub lines: Vec<Line<'static>>,
     pub valid: bool,
     pub tail_dirty: bool,
-    pub tail_len: usize,
+    /// Earliest message whose reveal changed base-line count/content. The UI
+    /// splices this message and the following suffix without touching earlier
+    /// cached messages.
+    pub reveal_dirty_from: Option<usize>,
     /// Previous display-row total captured before history prepend.
     pub prepend_anchor: Option<usize>,
     pub width: usize,
@@ -88,6 +91,15 @@ impl TranscriptRenderCache {
     pub fn mark_message_dirty(&mut self, index: usize) {
         if self.valid {
             self.dirty_messages.insert(index);
+        }
+    }
+
+    pub fn mark_reveal_dirty(&mut self, index: usize) {
+        if self.valid {
+            self.reveal_dirty_from = Some(
+                self.reveal_dirty_from
+                    .map_or(index, |current| current.min(index)),
+            );
         }
     }
 

@@ -1,0 +1,906 @@
+//! Byte-stream terminal input parser for the Windows raw-input path.
+//!
+//! crossterm's Windows backend reads console input records
+//! (`ReadConsoleInputW`) and never produces [`Event::Paste`]: the console
+//! consumes the bracketed-paste wrapper (`ESC[200~ … ESC[201~`) before records
+//! reach the application, so a paste's `\r` line endings arrive as plain Enter
+//! key events and the composer sends the message at every newline.
+//!
+//! With `ENABLE_VIRTUAL_TERMINAL_INPUT` set on the console input handle, the
+//! terminal instead delivers the raw VT byte stream to byte readers — the same
+//! stream Unix terminals produce. This module parses that stream into crossterm
+//! [`Event`]s, including [`Event::Paste`], following the proven design of the
+//! pi terminal client: byte-level sequence buffering, plus sampling of the
+//! physical modifier keys on Windows so that Shift/Ctrl+Enter survive even
+//! though the terminal cannot encode them in the raw bytes.
+//!
+//! The parser is a pure state machine over bytes: feed it chunks (reads may
+//! split sequences arbitrarily) and drain [`Event`]s. Incomplete escape
+//! sequences are held until more bytes arrive or a timeout flush decides what
+//! to do with them.
+
+use std::{collections::VecDeque, time::Duration};
+
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+
+/// Physical modifier state sampled at parse time (Windows `GetAsyncKeyState`).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NativeMods {
+    pub shift: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+}
+
+/// How long to wait after a lone `ESC` before treating it as the Escape key
+/// (the terminal encodes Alt+key as `ESC` followed by the key, so a lone `ESC`
+/// is ambiguous until more bytes arrive).
+pub const ESCAPE_TIMEOUT: Duration = Duration::from_millis(25);
+/// How long to wait for the rest of an incomplete CSI sequence before dropping
+/// it (a truncated sequence is never a key the client binds).
+pub const SEQUENCE_TIMEOUT: Duration = Duration::from_millis(50);
+
+/// Pending-input wait classification, used by the async reader to decide
+/// whether to arm a timeout while waiting for more bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pending {
+    None,
+    /// The buffer is exactly `ESC`: flush as Escape after `ESCAPE_TIMEOUT`.
+    Escape,
+    /// The buffer holds an incomplete escape sequence: drop it after
+    /// `SEQUENCE_TIMEOUT`.
+    Sequence,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EscapeOutcome {
+    Emitted,
+    Pending,
+    Dropped,
+}
+
+pub struct VtInputParser {
+    buf: Vec<u8>,
+    in_paste: bool,
+    out: VecDeque<Event>,
+    native_mods: Box<dyn Fn() -> NativeMods + Send>,
+}
+
+impl VtInputParser {
+    pub fn new(native_mods: Box<dyn Fn() -> NativeMods + Send>) -> Self {
+        Self {
+            buf: Vec::new(),
+            in_paste: false,
+            out: VecDeque::new(),
+            native_mods,
+        }
+    }
+
+    /// Feed a raw byte chunk; reads may split sequences anywhere.
+    pub fn feed(&mut self, bytes: &[u8]) {
+        self.buf.extend_from_slice(bytes);
+        self.drain();
+    }
+
+    /// Take the next parsed event, if any.
+    pub fn pop(&mut self) -> Option<Event> {
+        self.out.pop_front()
+    }
+
+    /// Whether the reader must arm a timeout while waiting for more bytes.
+    pub fn pending(&self) -> Pending {
+        if self.in_paste {
+            return Pending::None;
+        }
+        if self.buf == b"\x1b" {
+            return Pending::Escape;
+        }
+        if self.buf.first() == Some(&0x1b) {
+            return Pending::Sequence;
+        }
+        Pending::None
+    }
+
+    /// Apply the timeout decision: a lone `ESC` becomes Escape; an incomplete
+    /// sequence is dropped (it can never be a key the client binds).
+    pub fn flush_timeout(&mut self) {
+        match self.pending() {
+            Pending::Escape => {
+                self.buf.clear();
+                self.out
+                    .push_back(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+            }
+            Pending::Sequence => self.buf.clear(),
+            Pending::None => {}
+        }
+    }
+
+    fn drain(&mut self) {
+        loop {
+            if self.in_paste {
+                if let Some(index) = find_subslice(&self.buf, b"\x1b[201~") {
+                    let content = self.buf[..index].to_vec();
+                    self.buf.drain(..index + 6);
+                    self.in_paste = false;
+                    self.out.push_back(Event::Paste(normalize_paste(&content)));
+                    continue;
+                }
+                return;
+            }
+            if self.buf.is_empty() {
+                return;
+            }
+            if self.buf.starts_with(b"\x1b[200~") {
+                self.buf.drain(..6);
+                self.in_paste = true;
+                continue;
+            }
+            let byte = self.buf[0];
+            if byte == 0x1b {
+                match self.try_escape() {
+                    EscapeOutcome::Emitted | EscapeOutcome::Dropped => continue,
+                    EscapeOutcome::Pending => return,
+                }
+            } else if byte < 0x20 {
+                self.consume_control(byte);
+                continue;
+            } else if byte == 0x7f {
+                self.out.push_back(Event::Key(KeyEvent::new(
+                    KeyCode::Backspace,
+                    KeyModifiers::NONE,
+                )));
+                self.buf.remove(0);
+                continue;
+            } else {
+                if !self.consume_printable() {
+                    // Incomplete UTF-8 tail: wait for the next chunk.
+                    return;
+                }
+                continue;
+            }
+        }
+    }
+
+    fn consume_control(&mut self, byte: u8) {
+        let event = match byte {
+            // Windows terminals send Enter as CR; some terminals use LF.
+            0x0d | 0x0a => self.enter_event(),
+            0x09 => KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+            // BS is ambiguous on a VT byte stream. ConHost can emit it for
+            // plain Backspace, while Ctrl+H produces the same byte. Physical
+            // Ctrl state is enough to preserve both composer deletion and the
+            // global help binding.
+            0x08 => {
+                if (self.native_mods)().ctrl {
+                    KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL)
+                } else {
+                    KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)
+                }
+            }
+            0x00 => KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL),
+            0x1c => KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::CONTROL),
+            0x1d => KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL),
+            0x1e => KeyEvent::new(KeyCode::Char('^'), KeyModifiers::CONTROL),
+            0x1f => KeyEvent::new(KeyCode::Char('_'), KeyModifiers::CONTROL),
+            0x01..=0x1a => {
+                KeyEvent::new(KeyCode::Char((byte + 0x60) as char), KeyModifiers::CONTROL)
+            }
+            _ => {
+                self.buf.remove(0);
+                return;
+            }
+        };
+        self.out.push_back(Event::Key(event));
+        self.buf.remove(0);
+    }
+
+    /// Enter can carry Shift/Ctrl/Alt even though the terminal only sends `\r`:
+    /// sample the physical modifier state (pi's Windows heuristic).
+    fn enter_event(&mut self) -> KeyEvent {
+        let mods = (self.native_mods)();
+        let modifiers = if mods.shift {
+            KeyModifiers::SHIFT
+        } else if mods.ctrl {
+            KeyModifiers::CONTROL
+        } else if mods.alt {
+            KeyModifiers::ALT
+        } else {
+            KeyModifiers::NONE
+        };
+        KeyEvent::new(KeyCode::Enter, modifiers)
+    }
+
+    /// Consume one printable char (UTF-8). Returns false when the run ends
+    /// with an incomplete multi-byte sequence that needs more bytes.
+    fn consume_printable(&mut self) -> bool {
+        let run_end = self
+            .buf
+            .iter()
+            .position(|&b| b < 0x20 || b == 0x7f)
+            .unwrap_or(self.buf.len());
+        let run = &self.buf[..run_end];
+        match std::str::from_utf8(run) {
+            Ok(text) => {
+                for c in text.chars() {
+                    self.out.push_back(Event::Key(KeyEvent::new(
+                        KeyCode::Char(c),
+                        KeyModifiers::NONE,
+                    )));
+                }
+                self.buf.drain(..run_end);
+                true
+            }
+            Err(error) => {
+                let valid = error.valid_up_to();
+                if valid > 0 {
+                    let text = std::str::from_utf8(&run[..valid]).expect("validated prefix");
+                    for c in text.chars() {
+                        self.out.push_back(Event::Key(KeyEvent::new(
+                            KeyCode::Char(c),
+                            KeyModifiers::NONE,
+                        )));
+                    }
+                    self.buf.drain(..valid);
+                    true
+                } else if error.error_len().is_none() {
+                    // Incomplete trailing multi-byte char: hold for more bytes.
+                    false
+                } else {
+                    // Invalid byte: drop it and continue.
+                    self.buf.remove(0);
+                    true
+                }
+            }
+        }
+    }
+
+    fn try_escape(&mut self) -> EscapeOutcome {
+        if self.buf.len() == 1 {
+            return EscapeOutcome::Pending;
+        }
+        match self.buf[1] {
+            b'[' => self.try_csi(),
+            b'O' => self.try_ss3(),
+            other => {
+                // Alt+key arrives as ESC followed by the key byte.
+                self.emit_alt(other);
+                self.buf.drain(..2);
+                EscapeOutcome::Emitted
+            }
+        }
+    }
+
+    fn try_csi(&mut self) -> EscapeOutcome {
+        let rest = &self.buf[2..];
+        let Some(final_index) = rest.iter().position(|&b| (0x40..=0x7e).contains(&b)) else {
+            return EscapeOutcome::Pending;
+        };
+        let params = rest[..final_index].to_vec();
+        let final_byte = rest[final_index];
+        let total = 2 + final_index + 1;
+        self.buf.drain(..total);
+        if self.consume_csi(&params, final_byte) {
+            EscapeOutcome::Emitted
+        } else {
+            EscapeOutcome::Dropped
+        }
+    }
+
+    fn consume_csi(&mut self, params: &[u8], final_byte: u8) -> bool {
+        let params = std::str::from_utf8(params).unwrap_or_default();
+        match final_byte {
+            b'A' | b'B' | b'C' | b'D' => {
+                let code = match final_byte {
+                    b'A' => KeyCode::Up,
+                    b'B' => KeyCode::Down,
+                    b'C' => KeyCode::Right,
+                    _ => KeyCode::Left,
+                };
+                self.push_key(code, self.modifiers_from_csi(params));
+                true
+            }
+            b'H' | b'F' => {
+                let code = if final_byte == b'H' {
+                    KeyCode::Home
+                } else {
+                    KeyCode::End
+                };
+                self.push_key(code, self.modifiers_from_csi(params));
+                true
+            }
+            b'Z' => {
+                self.push_key(KeyCode::Tab, KeyModifiers::SHIFT);
+                true
+            }
+            b'~' => self.consume_csi_tilde(params),
+            b'M' | b'm' => self.consume_sgr_mouse(params),
+            b'u' => self.consume_csi_u(params),
+            _ => false,
+        }
+    }
+
+    fn consume_csi_tilde(&mut self, params: &str) -> bool {
+        let parts: Vec<&str> = params.split(';').collect();
+        let number = parts.first().copied().unwrap_or("");
+        let modifiers = self.modifiers_from_csi(params);
+        match number {
+            "1" | "7" => {
+                self.push_key(KeyCode::Home, modifiers);
+                true
+            }
+            "2" => {
+                self.push_key(KeyCode::Insert, modifiers);
+                true
+            }
+            "3" => {
+                self.push_key(KeyCode::Delete, modifiers);
+                true
+            }
+            "4" | "8" => {
+                self.push_key(KeyCode::End, modifiers);
+                true
+            }
+            "5" => {
+                self.push_key(KeyCode::PageUp, modifiers);
+                true
+            }
+            "6" => {
+                self.push_key(KeyCode::PageDown, modifiers);
+                true
+            }
+            // xterm modifyOtherKeys: ESC[27;<mod>;<code>~
+            "27" if parts.len() >= 3 => {
+                let code = parts[2].parse::<u32>().ok();
+                match code {
+                    Some(27) => {
+                        self.push_key(KeyCode::Esc, modifiers);
+                        true
+                    }
+                    Some(13) => {
+                        self.push_key(KeyCode::Enter, modifiers);
+                        true
+                    }
+                    Some(9) => {
+                        self.push_key(KeyCode::Tab, modifiers);
+                        true
+                    }
+                    Some(32) => {
+                        self.push_key(KeyCode::Char(' '), modifiers);
+                        true
+                    }
+                    Some(127) | Some(8) => {
+                        self.push_key(KeyCode::Backspace, modifiers);
+                        true
+                    }
+                    Some(code) if (32..=126).contains(&code) => {
+                        self.push_key(
+                            KeyCode::Char(char::from_u32(code).unwrap_or('?')),
+                            modifiers,
+                        );
+                        true
+                    }
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// SGR mouse: `ESC[<64;col;rowM` scrolls up, `ESC[<65;col;rowm` scrolls
+    /// down. The client only uses wheel scrolling.
+    fn consume_sgr_mouse(&mut self, params: &str) -> bool {
+        let Some(rest) = params.strip_prefix('<') else {
+            return false;
+        };
+        let mut parts = rest.split(';');
+        let button = parts.next();
+        let column = parts
+            .next()
+            .and_then(|v| v.parse::<u16>().ok())
+            .unwrap_or(0);
+        let row = parts
+            .next()
+            .and_then(|v| v.parse::<u16>().ok())
+            .unwrap_or(0);
+        let kind = match button {
+            Some("64") => MouseEventKind::ScrollUp,
+            Some("65") => MouseEventKind::ScrollDown,
+            _ => return false,
+        };
+        self.out.push_back(Event::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }));
+        true
+    }
+
+    /// Kitty CSI-u for the keys the client binds; other codepoints are dropped
+    /// (the client never enables the kitty protocol, so these only appear from
+    /// terminals that send CSI-u unconditionally).
+    fn consume_csi_u(&mut self, params: &str) -> bool {
+        let main = params.split(':').next().unwrap_or_default();
+        let mut parts = main.split(';');
+        let Some(codepoint) = parts.next().and_then(|v| v.parse::<u32>().ok()) else {
+            return false;
+        };
+        let modifiers = parts
+            .next()
+            .map(|v| v.parse::<u8>().ok())
+            .flatten()
+            .and_then(|v| csi_modifiers(v))
+            .unwrap_or(KeyModifiers::NONE);
+        let code = match codepoint {
+            27 => KeyCode::Esc,
+            13 => KeyCode::Enter,
+            9 => KeyCode::Tab,
+            32 => KeyCode::Char(' '),
+            127 => KeyCode::Backspace,
+            _ => return false,
+        };
+        self.push_key(code, modifiers);
+        true
+    }
+
+    fn try_ss3(&mut self) -> EscapeOutcome {
+        if self.buf.len() < 3 {
+            return EscapeOutcome::Pending;
+        }
+        let code = self.buf[2];
+        self.buf.drain(..3);
+        let key = match code {
+            b'A' => Some(KeyCode::Up),
+            b'B' => Some(KeyCode::Down),
+            b'C' => Some(KeyCode::Right),
+            b'D' => Some(KeyCode::Left),
+            b'H' => Some(KeyCode::Home),
+            b'F' => Some(KeyCode::End),
+            b'M' => Some(KeyCode::Enter),
+            _ => None,
+        };
+        if let Some(code) = key {
+            self.out
+                .push_back(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+            EscapeOutcome::Emitted
+        } else {
+            EscapeOutcome::Dropped
+        }
+    }
+
+    fn emit_alt(&mut self, byte: u8) {
+        let event = match byte {
+            0x0d | 0x0a => KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT),
+            0x09 => KeyEvent::new(KeyCode::Tab, KeyModifiers::ALT),
+            0x1b => KeyEvent::new(KeyCode::Esc, KeyModifiers::ALT),
+            0x7f | 0x08 => KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT),
+            0x01..=0x1a => KeyEvent::new(
+                KeyCode::Char((byte + 0x60) as char),
+                KeyModifiers::ALT | KeyModifiers::CONTROL,
+            ),
+            0x20..=0x7e => KeyEvent::new(KeyCode::Char(byte as char), KeyModifiers::ALT),
+            _ => return,
+        };
+        self.out.push_back(Event::Key(event));
+    }
+
+    fn push_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        self.out
+            .push_back(Event::Key(KeyEvent::new(code, modifiers)));
+    }
+
+    /// CSI modifier parameter: value-1 is a bitmask (1 shift, 2 alt, 4 ctrl).
+    fn modifiers_from_csi(&self, params: &str) -> KeyModifiers {
+        let mut parts = params.split(';');
+        // Skip the function-identifying first parameter (e.g. "1" in "1;5").
+        let _ = parts.next();
+        parts
+            .next()
+            .and_then(|v| v.parse::<u8>().ok())
+            .and_then(csi_modifiers)
+            .unwrap_or(KeyModifiers::NONE)
+    }
+}
+
+fn csi_modifiers(value: u8) -> Option<KeyModifiers> {
+    let bits = value.checked_sub(1)?;
+    let mut modifiers = KeyModifiers::NONE;
+    if bits & 1 != 0 {
+        modifiers |= KeyModifiers::SHIFT;
+    }
+    if bits & 2 != 0 {
+        modifiers |= KeyModifiers::ALT;
+    }
+    if bits & 4 != 0 {
+        modifiers |= KeyModifiers::CONTROL;
+    }
+    Some(modifiers)
+}
+
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+/// Windows clipboards and terminals deliver `\r\n` (or lone `\r`) line
+/// endings; the composer's internal newline is `\n`.
+fn normalize_paste(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let mut normalized = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\r' {
+            if chars.peek() == Some(&'\n') {
+                chars.next();
+            }
+            normalized.push('\n');
+        } else {
+            normalized.push(c);
+        }
+    }
+    normalized
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{Event, KeyEventKind};
+
+    fn parser() -> VtInputParser {
+        VtInputParser::new(Box::new(|| NativeMods::default()))
+    }
+
+    fn mods_parser(mods: NativeMods) -> VtInputParser {
+        VtInputParser::new(Box::new(move || mods))
+    }
+
+    fn feed_all(parser: &mut VtInputParser, bytes: &[u8]) -> Vec<Event> {
+        parser.feed(bytes);
+        let mut events = Vec::new();
+        while let Some(event) = parser.pop() {
+            events.push(event);
+        }
+        events
+    }
+
+    fn key(code: KeyCode, modifiers: KeyModifiers) -> Event {
+        Event::Key(KeyEvent::new(code, modifiers))
+    }
+
+    #[test]
+    fn plain_text_and_cjk_decode_to_chars() {
+        let mut parser = parser();
+        let events = feed_all(&mut parser, "hello 世界".as_bytes());
+        assert_eq!(
+            events,
+            vec![
+                key(KeyCode::Char('h'), KeyModifiers::NONE),
+                key(KeyCode::Char('e'), KeyModifiers::NONE),
+                key(KeyCode::Char('l'), KeyModifiers::NONE),
+                key(KeyCode::Char('l'), KeyModifiers::NONE),
+                key(KeyCode::Char('o'), KeyModifiers::NONE),
+                key(KeyCode::Char(' '), KeyModifiers::NONE),
+                key(KeyCode::Char('世'), KeyModifiers::NONE),
+                key(KeyCode::Char('界'), KeyModifiers::NONE),
+            ]
+        );
+    }
+
+    #[test]
+    fn utf8_split_across_chunks_is_reassembled() {
+        let mut parser = parser();
+        let bytes = "中".as_bytes(); // 3 bytes
+        parser.feed(&bytes[..2]);
+        assert!(parser.pop().is_none(), "incomplete UTF-8 is held");
+        assert_eq!(parser.pending(), Pending::None);
+        parser.feed(&bytes[2..]);
+        assert_eq!(
+            parser.pop(),
+            Some(key(KeyCode::Char('中'), KeyModifiers::NONE))
+        );
+    }
+
+    #[test]
+    fn control_bytes_map_to_keys() {
+        let mut parser = parser();
+        let events = feed_all(&mut parser, b"\x03\x0e\x10\x19\x0c\x12\t\x7f");
+        assert_eq!(
+            events,
+            vec![
+                key(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                key(KeyCode::Char('n'), KeyModifiers::CONTROL),
+                key(KeyCode::Char('p'), KeyModifiers::CONTROL),
+                key(KeyCode::Char('y'), KeyModifiers::CONTROL),
+                key(KeyCode::Char('l'), KeyModifiers::CONTROL),
+                key(KeyCode::Char('r'), KeyModifiers::CONTROL),
+                key(KeyCode::Tab, KeyModifiers::NONE),
+                key(KeyCode::Backspace, KeyModifiers::NONE),
+            ]
+        );
+    }
+
+    #[test]
+    fn raw_bs_distinguishes_plain_backspace_from_ctrl_h() {
+        let mut plain = parser();
+        assert_eq!(
+            feed_all(&mut plain, b"\x08"),
+            vec![key(KeyCode::Backspace, KeyModifiers::NONE)]
+        );
+
+        let mut ctrl = mods_parser(NativeMods {
+            ctrl: true,
+            ..NativeMods::default()
+        });
+        assert_eq!(
+            feed_all(&mut ctrl, b"\x08"),
+            vec![key(KeyCode::Char('h'), KeyModifiers::CONTROL)]
+        );
+    }
+
+    #[test]
+    fn cr_and_lf_are_enter() {
+        let mut parser = parser();
+        assert_eq!(
+            feed_all(&mut parser, b"\r\n"),
+            vec![
+                key(KeyCode::Enter, KeyModifiers::NONE),
+                key(KeyCode::Enter, KeyModifiers::NONE),
+            ]
+        );
+    }
+
+    #[test]
+    fn enter_carries_native_modifiers() {
+        let mut shift = mods_parser(NativeMods {
+            shift: true,
+            ..NativeMods::default()
+        });
+        assert_eq!(
+            feed_all(&mut shift, b"\r"),
+            vec![key(KeyCode::Enter, KeyModifiers::SHIFT)]
+        );
+        let mut ctrl = mods_parser(NativeMods {
+            ctrl: true,
+            ..NativeMods::default()
+        });
+        assert_eq!(
+            feed_all(&mut ctrl, b"\r"),
+            vec![key(KeyCode::Enter, KeyModifiers::CONTROL)]
+        );
+        let mut alt = mods_parser(NativeMods {
+            alt: true,
+            ..NativeMods::default()
+        });
+        assert_eq!(
+            feed_all(&mut alt, b"\r"),
+            vec![key(KeyCode::Enter, KeyModifiers::ALT)]
+        );
+    }
+
+    #[test]
+    fn lone_escape_flushes_after_timeout() {
+        let mut parser = parser();
+        parser.feed(b"\x1b");
+        assert!(parser.pop().is_none());
+        assert_eq!(parser.pending(), Pending::Escape);
+        parser.flush_timeout();
+        assert_eq!(parser.pop(), Some(key(KeyCode::Esc, KeyModifiers::NONE)));
+    }
+
+    #[test]
+    fn escape_then_char_is_alt_key() {
+        let mut parser = parser();
+        let events = feed_all(&mut parser, b"\x1bq\x1b\r\x1b\x1b");
+        assert_eq!(
+            events,
+            vec![
+                key(KeyCode::Char('q'), KeyModifiers::ALT),
+                key(KeyCode::Enter, KeyModifiers::ALT),
+                key(KeyCode::Esc, KeyModifiers::ALT),
+            ]
+        );
+    }
+
+    #[test]
+    fn navigation_sequences() {
+        let mut parser = parser();
+        let events = feed_all(
+            &mut parser,
+            b"\x1b[A\x1b[B\x1b[C\x1b[D\x1b[H\x1b[F\x1b[3~\x1b[5~\x1b[6~\x1b[Z",
+        );
+        assert_eq!(
+            events,
+            vec![
+                key(KeyCode::Up, KeyModifiers::NONE),
+                key(KeyCode::Down, KeyModifiers::NONE),
+                key(KeyCode::Right, KeyModifiers::NONE),
+                key(KeyCode::Left, KeyModifiers::NONE),
+                key(KeyCode::Home, KeyModifiers::NONE),
+                key(KeyCode::End, KeyModifiers::NONE),
+                key(KeyCode::Delete, KeyModifiers::NONE),
+                key(KeyCode::PageUp, KeyModifiers::NONE),
+                key(KeyCode::PageDown, KeyModifiers::NONE),
+                key(KeyCode::Tab, KeyModifiers::SHIFT),
+            ]
+        );
+    }
+
+    #[test]
+    fn ss3_application_arrows() {
+        let mut parser = parser();
+        let events = feed_all(&mut parser, b"\x1bOA\x1bOB\x1bOC\x1bOD\x1bOM");
+        assert_eq!(
+            events,
+            vec![
+                key(KeyCode::Up, KeyModifiers::NONE),
+                key(KeyCode::Down, KeyModifiers::NONE),
+                key(KeyCode::Right, KeyModifiers::NONE),
+                key(KeyCode::Left, KeyModifiers::NONE),
+                key(KeyCode::Enter, KeyModifiers::NONE),
+            ]
+        );
+    }
+
+    #[test]
+    fn modified_navigation_and_tilde_keys() {
+        let mut parser = parser();
+        let events = feed_all(&mut parser, b"\x1b[1;5A\x1b[1;3D\x1b[3;5~\x1b[1;2B");
+        assert_eq!(
+            events,
+            vec![
+                key(KeyCode::Up, KeyModifiers::CONTROL),
+                key(KeyCode::Left, KeyModifiers::ALT),
+                key(KeyCode::Delete, KeyModifiers::CONTROL),
+                key(KeyCode::Down, KeyModifiers::SHIFT),
+            ]
+        );
+    }
+
+    #[test]
+    fn modify_other_keys_forms_include_escape() {
+        let mut parser = parser();
+        let events = feed_all(
+            &mut parser,
+            b"\x1b[27;1;27~\x1b[27;2;13~\x1b[27;3;13~\x1b[27;5;13~\x1b[27;2;9~\x1b[27;5;97~",
+        );
+        assert_eq!(
+            events,
+            vec![
+                key(KeyCode::Esc, KeyModifiers::NONE),
+                key(KeyCode::Enter, KeyModifiers::SHIFT),
+                key(KeyCode::Enter, KeyModifiers::ALT),
+                key(KeyCode::Enter, KeyModifiers::CONTROL),
+                key(KeyCode::Tab, KeyModifiers::SHIFT),
+                key(KeyCode::Char('a'), KeyModifiers::CONTROL),
+            ]
+        );
+    }
+
+    #[test]
+    fn csi_u_forms_include_escape() {
+        let mut parser = parser();
+        let events = feed_all(
+            &mut parser,
+            b"\x1b[27u\x1b[13;2u\x1b[13;3u\x1b[13;5u\x1b[9;5u",
+        );
+        assert_eq!(
+            events,
+            vec![
+                key(KeyCode::Esc, KeyModifiers::NONE),
+                key(KeyCode::Enter, KeyModifiers::SHIFT),
+                key(KeyCode::Enter, KeyModifiers::ALT),
+                key(KeyCode::Enter, KeyModifiers::CONTROL),
+                key(KeyCode::Tab, KeyModifiers::CONTROL),
+            ]
+        );
+    }
+
+    #[test]
+    fn bracketed_paste_becomes_one_event_with_normalized_newlines() {
+        let mut parser = parser();
+        let payload = "line1\r\nline2\rline3\tend";
+        let mut bytes = b"\x1b[200~".to_vec();
+        bytes.extend_from_slice(payload.as_bytes());
+        bytes.extend_from_slice(b"\x1b[201~");
+        let events = feed_all(&mut parser, &bytes);
+        assert_eq!(
+            events,
+            vec![Event::Paste("line1\nline2\nline3\tend".into())]
+        );
+    }
+
+    #[test]
+    fn paste_marker_split_across_chunks() {
+        let mut parser = parser();
+        parser.feed(b"\x1b[20");
+        assert!(parser.pop().is_none(), "partial marker is held");
+        assert_eq!(parser.pending(), Pending::Sequence);
+        parser.feed(b"0~abc\x1b[20");
+        assert!(parser.pop().is_none(), "still inside the paste");
+        parser.feed(b"1~tail");
+        let mut events = Vec::new();
+        while let Some(event) = parser.pop() {
+            events.push(event);
+        }
+        assert_eq!(
+            events,
+            vec![
+                Event::Paste("abc".into()),
+                key(KeyCode::Char('t'), KeyModifiers::NONE),
+                key(KeyCode::Char('a'), KeyModifiers::NONE),
+                key(KeyCode::Char('i'), KeyModifiers::NONE),
+                key(KeyCode::Char('l'), KeyModifiers::NONE),
+            ]
+        );
+    }
+
+    #[test]
+    fn paste_without_close_marker_is_held_until_timeout_flush() {
+        let mut parser = parser();
+        parser.feed(b"\x1b[200~abc");
+        assert!(parser.pop().is_none());
+        // A stuck paste cannot be rescued by the timeout flush; the reader
+        // only drops incomplete sequences, and paste mode waits for the
+        // closing marker. This mirrors the terminal protocol: a paste that
+        // never closes leaves the stream in paste mode.
+        parser.flush_timeout();
+        assert!(parser.pop().is_none());
+        parser.feed(b"\x1b[201~");
+        assert_eq!(parser.pop(), Some(Event::Paste("abc".into())));
+    }
+
+    #[test]
+    fn incomplete_sequence_is_dropped_on_timeout() {
+        let mut parser = parser();
+        parser.feed(b"\x1b[1;");
+        assert!(parser.pop().is_none());
+        assert_eq!(parser.pending(), Pending::Sequence);
+        parser.flush_timeout();
+        assert!(parser.pop().is_none(), "truncated sequence is dropped");
+    }
+
+    #[test]
+    fn unknown_csi_is_dropped_immediately() {
+        let mut parser = parser();
+        let events = feed_all(&mut parser, b"\x1b[25~x");
+        assert_eq!(
+            events,
+            vec![key(KeyCode::Char('x'), KeyModifiers::NONE)],
+            "unbound function-key sequences are ignored"
+        );
+    }
+
+    #[test]
+    fn sgr_mouse_scroll_is_parsed_and_other_buttons_ignored() {
+        let mut parser = parser();
+        let events = feed_all(&mut parser, b"\x1b[<64;5;10M\x1b[<65;3;7m\x1b[<0;5;10M");
+        assert_eq!(
+            events,
+            vec![
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::ScrollUp,
+                    column: 5,
+                    row: 10,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::ScrollDown,
+                    column: 3,
+                    row: 7,
+                    modifiers: KeyModifiers::NONE,
+                }),
+            ]
+        );
+    }
+
+    #[test]
+    fn key_events_are_press_only() {
+        let mut parser = parser();
+        let events = feed_all(&mut parser, b"a");
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Event::Key(key) => assert_eq!(key.kind, KeyEventKind::Press),
+            _ => panic!("expected key event"),
+        }
+    }
+}

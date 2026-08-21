@@ -419,7 +419,7 @@ async fn run(
     let mut events = ProductionTerminalEvents::new();
     let mut runtime_ports = ProductionRuntimePorts;
     let mut scheduler = FrameScheduler::new(runtime_ports.now());
-    let mut animation_deadline: Option<Instant> = None;
+    let mut spinner_deadline: Option<Instant> = None;
     let mut frame_metrics = FrameMetrics::from_env();
     let mut pending_update_elapsed = Duration::ZERO;
     let mut fatal: Option<String> = None;
@@ -430,6 +430,9 @@ async fn run(
         let mut pending_event = None;
         let mut first_inbound = None;
         let frame_deadline = scheduler.deadline();
+        let reveal_deadline = state_r.lock().unwrap().reveal_deadline();
+        let animation_deadline =
+            e_tui::reveal::earliest_deadline(spinner_deadline, reveal_deadline);
         tokio::select! {
             maybe = bridge_io.inbound.recv() => {
                 let Some(msg) = maybe else {
@@ -458,12 +461,20 @@ async fn run(
             _ = wait_for_deadline(animation_deadline) => {
                 let now = Instant::now();
                 let mut state = state_r.lock().unwrap();
-                let redraw = tick_spinners(&mut state, now);
+                let spinner_due = spinner_deadline.is_some_and(|deadline| deadline <= now);
+                let reveal_due = state.reveal_deadline().is_some_and(|deadline| deadline <= now);
+                let mut redraw = false;
+                if spinner_due {
+                    redraw |= tick_spinners(&mut state, now);
+                    spinner_deadline = animation_active(&state, now)
+                        .then(|| now + animation_interval(&state));
+                }
+                if reveal_due {
+                    redraw |= state.tick_reveals(now);
+                }
                 if redraw {
                     scheduler.request(DirtyReason::Animation, now);
                 }
-                animation_deadline = animation_active(&state, now)
-                    .then(|| now + animation_interval(&state));
             }
         }
 
@@ -496,6 +507,9 @@ async fn run(
                     scroll: &mut interaction.scroll,
                     input: &mut interaction.input,
                     input_page: &mut interaction.input_page,
+                    approval: &mut interaction.approval,
+                    question: &mut interaction.question,
+                    queue: &mut interaction.queue,
                 };
                 let effects = RuntimeController::apply_agent(event, &state_r, &mut ui);
                 state_r.lock().unwrap().interaction = interaction;
@@ -588,6 +602,9 @@ async fn run(
                     input_page: &mut interaction.input_page,
                     help_visible: &mut interaction.help_visible,
                     copy_toast: &mut interaction.copy_toast,
+                    approval: &mut interaction.approval,
+                    question: &mut interaction.question,
+                    queue: &mut interaction.queue,
                     config: &mut config,
                     themes: &mut themes,
                     theme: &mut theme,
@@ -620,6 +637,9 @@ async fn run(
                                 input_page: &mut interaction.input_page,
                                 help_visible: &mut interaction.help_visible,
                                 copy_toast: &mut interaction.copy_toast,
+                                approval: &mut interaction.approval,
+                                question: &mut interaction.question,
+                                queue: &mut interaction.queue,
                                 config: &mut config,
                                 themes: &mut themes,
                                 theme: &mut theme,
@@ -643,13 +663,14 @@ async fn run(
             }
         }
 
-        // Start the animation clock only while a running/settling indicator
-        // exists. Idle clients have no periodic wakeup.
-        if animation_deadline.is_none() {
+        // Start the spinner clock only while a running/settling indicator
+        // exists. Reveal lanes contribute their own exact deadlines at the
+        // next select turn; a fully idle client has no periodic wakeup.
+        if spinner_deadline.is_none() {
             let now = Instant::now();
             let state = state_r.lock().unwrap();
             if animation_active(&state, now) {
-                animation_deadline = Some(now);
+                spinner_deadline = Some(now);
             }
         }
 
@@ -680,6 +701,8 @@ async fn run(
                         input_page: interaction.input_page.as_mut(),
                         settings: None,
                         login: None,
+                        approval: interaction.approval.as_ref(),
+                        queue: &interaction.queue,
                     },
                 )
             });
@@ -874,6 +897,60 @@ mod tests {
             Duration::ZERO
         ));
         assert!(!inbound_budget_remaining(1, INBOUND_BATCH_BUDGET));
+    }
+
+    #[test]
+    fn earliest_animation_deadline_keeps_reveal_and_spinner_independent() {
+        use ratatui::text::Line;
+
+        let now = Instant::now();
+        let spinner = now + Duration::from_millis(120);
+        let mut state = AppState::default();
+        state.config.message_chars_per_second = e_tui::config::RevealRate::new(16).unwrap();
+        state.config.preview_lines_per_second = e_tui::config::RevealRate::new(32).unwrap();
+        let mut transcript = e_tui::reveal::RevealTrack::default();
+        transcript.reconcile(
+            e_tui::reveal::RevealSignature::from_lines(&[Line::from("abc")]),
+            true,
+            now,
+            16,
+        );
+        state.render.transcript_reveals.insert(
+            e_tui::display::DisplayId::correlated("assistant", "deadline"),
+            transcript,
+        );
+        let mut preview = e_tui::reveal::LineRevealTrack::default();
+        preview.reconcile(&[Line::from("a"), Line::from("b")], now, 32);
+        state.preview.reveal = Some(preview);
+
+        let first_fade = now + Duration::from_millis(16);
+        assert_eq!(state.reveal_deadline(), Some(first_fade));
+        assert_eq!(
+            e_tui::reveal::earliest_deadline(Some(spinner), state.reveal_deadline()),
+            Some(first_fade)
+        );
+        assert!(state.tick_reveals(first_fade));
+        let preview_due = now + e_tui::reveal::reveal_interval(32);
+        assert_eq!(state.reveal_deadline(), Some(preview_due));
+        assert!(state.tick_reveals(preview_due));
+        assert_eq!(
+            state
+                .render
+                .transcript_reveals
+                .values()
+                .next()
+                .map(e_tui::reveal::RevealTrack::revealed),
+            Some(1),
+            "16/s transcript lane is not due at the 32/s Preview deadline"
+        );
+        assert_eq!(
+            state
+                .preview
+                .reveal
+                .as_ref()
+                .map(e_tui::reveal::LineRevealTrack::revealed),
+            Some(2)
+        );
     }
 
     #[test]

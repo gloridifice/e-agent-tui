@@ -6,17 +6,25 @@ use ratatui::{
 };
 
 use crate::{
+    config::Config,
     preview::{
         LineSelection, PreviewContent, PreviewPaneState, PreviewState, ToolMetrics, ToolPreview,
         ToolPreviewPrimary, ToolPreviewSecondary,
     },
     render::{render_markdown, RenderOptions},
+    reveal::{apply_line_reveal, LineRevealTrack},
     theme::Theme,
     transcript_layout::wrap_line,
     ui::component::{ansi, diff},
 };
 
-pub fn render(frame: &mut Frame, area: Rect, preview: &mut PreviewPaneState, theme: &Theme) {
+pub fn render(
+    frame: &mut Frame,
+    area: Rect,
+    preview: &mut PreviewPaneState,
+    config: &Config,
+    theme: &Theme,
+) {
     let inner_width = usize::from(area.width).saturating_sub(2).max(1);
     let lines = match &preview.state {
         PreviewState::Empty => vec![Line::styled("No preview", theme.surface.muted_text.style())],
@@ -28,7 +36,31 @@ pub fn render(frame: &mut Frame, area: Rect, preview: &mut PreviewPaneState, the
             format!("Preview error: {error}"),
             theme.log.error.style(),
         )],
-        PreviewState::Ready(content) => content_lines(content, theme, inner_width),
+        PreviewState::Ready(content) => {
+            let full = content_lines(content, theme, inner_width)
+                .into_iter()
+                .flat_map(|line| wrap_line(line, inner_width))
+                .collect::<Vec<_>>();
+            if preview.target.is_none() {
+                // Direct Ready injection is retained for renderer fixtures;
+                // production Ready content always belongs to a selected target.
+                full
+            } else {
+                let track = preview.reveal.get_or_insert_with(LineRevealTrack::default);
+                track.reconcile(
+                    &full,
+                    std::time::Instant::now(),
+                    config.preview_lines_per_second.get(),
+                );
+                apply_line_reveal(
+                    full,
+                    track,
+                    config.background_color.color(),
+                    theme.surface.primary_text.fg,
+                    !config.plain_color,
+                )
+            }
+        }
     };
     // Wrap every row to the padded content width first so long reasoning
     // lines stay fully visible instead of truncating at the pane edge.

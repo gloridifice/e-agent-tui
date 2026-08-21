@@ -68,6 +68,8 @@ fn main() -> anyhow::Result<()> {
                 toast: None,
                 settings: None,
                 login: None,
+                approval: None,
+                queue: &[],
             },
         );
     })?;

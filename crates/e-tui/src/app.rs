@@ -208,6 +208,69 @@ impl TuiApp {
         self.session.cache_hit_rate()
     }
 
+    pub fn transcript_reveal_deadline(&self) -> Option<Instant> {
+        self.render
+            .transcript_reveals
+            .values()
+            .filter_map(|track| track.next_due())
+            .min()
+    }
+
+    pub fn reveal_deadline(&self) -> Option<Instant> {
+        match (
+            self.transcript_reveal_deadline(),
+            self.preview.reveal_deadline(),
+        ) {
+            (Some(transcript), Some(preview)) => Some(transcript.min(preview)),
+            (transcript, preview) => transcript.or(preview),
+        }
+    }
+
+    /// Advance each due transcript lane by at most one grapheme/fade step.
+    /// Returns true when the frame became dirty.
+    pub fn tick_transcript_reveals(&mut self, now: Instant) -> bool {
+        let rate = self.config.message_chars_per_second.get();
+        let ids = self
+            .render
+            .transcript_reveals
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut changed = false;
+        let mut completed = Vec::new();
+        for id in ids {
+            let Some((track_changed, complete)) = self
+                .render
+                .transcript_reveals
+                .get_mut(&id)
+                .map(|track| (track.tick(now, rate), track.is_complete()))
+            else {
+                continue;
+            };
+            if track_changed {
+                changed = true;
+                if let Some(index) = self.transcript.position(&id) {
+                    self.render.transcript_cache.mark_reveal_dirty(index);
+                }
+            }
+            if complete {
+                completed.push(id);
+            }
+        }
+        for id in completed {
+            self.render.transcript_reveals.remove(&id);
+        }
+        changed
+    }
+
+    pub fn tick_reveals(&mut self, now: Instant) -> bool {
+        let transcript = self.tick_transcript_reveals(now);
+        let preview = self
+            .preview
+            .tick_reveal(now, self.config.preview_lines_per_second.get());
+        transcript || preview
+    }
+
     pub fn breath_phase(&self) -> f64 {
         match self.session.activity_epoch {
             Some(epoch) => {

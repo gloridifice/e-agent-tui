@@ -4,8 +4,10 @@
 # Appearance
 spinner_style = "A"
 spinner_frame_ms = 120
-theme = "deepseek-e"
+theme = "ferra"
 plain_color = false
+# Foreground-fade interpolation origin (does not replace theme surfaces).
+background_color = "#000000"
 
 # Behavior
 remember_last_session = false
@@ -28,6 +30,10 @@ thinking_display = "compact"
 thinking_lines = 2
 show_timestamps = false
 mermaid_enabled = true
+# Maximum visible Unicode graphemes per second in assistant messages.
+message_chars_per_second = 300
+# Maximum wrapped Preview display rows per second.
+preview_lines_per_second = 60
 user_input_padding = 2
 # Preferred total main-pane width in wide two-pane mode.
 main_pane_width = 120

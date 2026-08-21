@@ -46,15 +46,15 @@ pub(super) fn render_input(
         return None;
     }
 
-    let (display, placeholder) = input.display_text();
+    let display = input.display_text();
     // Wrap every display line at the inner width so long content stays
     // inside the input box; each chunk remembers its source character range
-    // within `display` (= `buf` for non-placeholder content). Word wrapping
-    // may consume whitespace at a row break, so ranges can have gaps.
+    // within `display.text`. Word wrapping may consume whitespace at a row
+    // break, so ranges can have gaps.
     let wrap_w = (inner.width as usize).max(1);
     let mut chunks: Vec<WrapChunk> = Vec::new();
     let mut offset = 0usize;
-    for line in display.split('\n') {
+    for line in display.text.split('\n') {
         if line.is_empty() {
             chunks.push(WrapChunk {
                 text: String::new(),
@@ -86,20 +86,16 @@ pub(super) fn render_input(
     // view when content overflows the window.
     let total = chunks.len();
     let mut cursor_row = chunks.len().saturating_sub(1);
-    if placeholder {
-        cursor_row = chunks.len().saturating_sub(1); // the cursor renders after the block
-    } else {
-        for (i, chunk) in chunks.iter().enumerate() {
-            if input.cursor < chunk.start {
-                cursor_row = i.checked_sub(1).unwrap_or(0);
-                break;
-            }
-            if input.cursor < chunk.end || (input.cursor == chunk.end && i + 1 == chunks.len()) {
-                cursor_row = i;
-                break;
-            }
-            // Cursor exactly at a shared boundary: the next chunk owns it.
+    for (i, chunk) in chunks.iter().enumerate() {
+        if display.cursor < chunk.start {
+            cursor_row = i.checked_sub(1).unwrap_or(0);
+            break;
         }
+        if display.cursor < chunk.end || (display.cursor == chunk.end && i + 1 == chunks.len()) {
+            cursor_row = i;
+            break;
+        }
+        // Cursor exactly at a shared boundary: the next chunk owns it.
     }
     let visible_rows = (inner.height as usize).max(1);
     let start = if total <= visible_rows {
@@ -111,24 +107,46 @@ pub(super) fn render_input(
     };
     let end = (start + visible_rows).min(total);
 
+    // Split a row segment into styled spans: characters inside a paste
+    // placeholder use the placeholder tone, everything else the text tone.
+    let styled_spans = |text: &str, off: usize| -> Vec<Span<'static>> {
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        let mut current = String::new();
+        let mut current_placeholder = display.is_paste_char(off);
+        for (i, c) in text.chars().enumerate() {
+            let is_placeholder = display.is_paste_char(off + i);
+            if is_placeholder != current_placeholder {
+                let style = if current_placeholder {
+                    theme.input.placeholder.style()
+                } else {
+                    theme.input.text.style()
+                };
+                spans.push(Span::styled(std::mem::take(&mut current), style));
+                current_placeholder = is_placeholder;
+            }
+            current.push(c);
+        }
+        if !current.is_empty() {
+            let style = if current_placeholder {
+                theme.input.placeholder.style()
+            } else {
+                theme.input.text.style()
+            };
+            spans.push(Span::styled(current, style));
+        }
+        spans
+    };
+
     let mut rendered: Vec<Line<'static>> = Vec::new();
     for i in start..end {
         let chunk = &chunks[i];
         let text = &chunk.text;
         let off = chunk.start;
         // No prompt prefix: the input bar text starts flush at the edge.
-        if placeholder {
-            let mut spans = vec![Span::styled(text.clone(), theme.input.placeholder.style())];
-            if i == cursor_row {
-                spans.push(Span::styled(" ", theme.input.cursor.style()));
-            }
-            rendered.push(Line::from(spans));
-            continue;
-        }
         if i == cursor_row {
             // Draw the cursor on its wrapped row. A cursor in whitespace
             // consumed by a row break clamps to the end of the previous row.
-            let cur = input.cursor.saturating_sub(off).min(text.chars().count());
+            let cur = display.cursor.saturating_sub(off).min(text.chars().count());
             let before: String = text.chars().take(cur).collect();
             let at: String = text
                 .chars()
@@ -136,16 +154,12 @@ pub(super) fn render_input(
                 .map(|c| c.to_string())
                 .unwrap_or_else(|| " ".into());
             let after: String = text.chars().skip(cur + 1).collect();
-            rendered.push(Line::from(vec![
-                Span::styled(before, theme.input.text.style()),
-                Span::styled(at, theme.input.cursor.style()),
-                Span::styled(after, theme.input.text.style()),
-            ]));
+            let mut spans = styled_spans(&before, off);
+            spans.push(Span::styled(at, theme.input.cursor.style()));
+            spans.extend(styled_spans(&after, off + cur + 1));
+            rendered.push(Line::from(spans));
         } else {
-            rendered.push(Line::from(Span::styled(
-                text.clone(),
-                theme.input.text.style(),
-            )));
+            rendered.push(Line::from(styled_spans(text, off)));
         }
     }
     let paragraph = Paragraph::new(Text::from(rendered)).style(theme.input.background.style());
@@ -153,17 +167,13 @@ pub(super) fn render_input(
     // Place the terminal cursor into the input bar for IME-friendly input.
     // x = display width of the wrapped row up to the cursor. CJK glyphs
     // occupy two cells, so use Unicode width, not char count.
-    let col = if placeholder {
-        UnicodeWidthStr::width(display.as_str())
-    } else {
-        let chunk = &chunks[cursor_row];
-        let before: String = chunk
-            .text
-            .chars()
-            .take(input.cursor.saturating_sub(chunk.start))
-            .collect();
-        UnicodeWidthStr::width(before.as_str())
-    } as u16;
+    let chunk = &chunks[cursor_row];
+    let before: String = chunk
+        .text
+        .chars()
+        .take(display.cursor.saturating_sub(chunk.start))
+        .collect();
+    let col = UnicodeWidthStr::width(before.as_str()) as u16;
     Some(Position::new(
         inner.x + col,
         inner.y + cursor_row.saturating_sub(start) as u16,

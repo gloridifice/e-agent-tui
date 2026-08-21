@@ -528,10 +528,13 @@ impl AppState {
     }
 
     /// Queue a prompt typed while the agent runs. Returns true when the
-    /// caller must send it immediately instead (the agent is idle).
-    pub fn enqueue_or_immediate(&mut self, text: &str) -> bool {
+    /// caller must send it immediately instead (the agent is idle). The queue
+    /// is passed in because the caller may hold the InteractionModel outside
+    /// the AppState lock (main-loop take/restore); the queue must never be a
+    /// transient default.
+    pub fn enqueue_or_immediate(&mut self, text: &str, queue: &mut Vec<String>) -> bool {
         if self.session.status == AgentStatus::Running {
-            self.interaction.queue.push(text.to_string());
+            queue.push(text.to_string());
             false
         } else {
             true
@@ -670,6 +673,8 @@ impl AppState {
         self.transcript.clear();
         self.render.markdown_layout.clear();
         self.render.activity_transitions.clear();
+        self.render.transcript_reveals.clear();
+        self.preview.reveal = None;
         #[cfg(test)]
         self.msgs.clear();
         self.projector = EventProjector::default();
@@ -1549,6 +1554,12 @@ impl AppState {
             let surface_seq = event.sequence.filter(|_| is_surface_node(&event.fact));
             self.insert_transcript_item(DisplayItem::Block(incoming.clone()), surface_seq, None);
         }
+        if !self.replaying {
+            self.render
+                .transcript_reveals
+                .entry(id.clone())
+                .or_default();
+        }
 
         if incoming.streaming {
             let is_tail = self.transcript.position(&id) == self.transcript.len().checked_sub(1);
@@ -1559,8 +1570,16 @@ impl AppState {
                     text: incoming.content,
                 }),
             }
-            if existed && is_tail {
-                self.render.transcript_cache.mark_tail_dirty();
+            if existed {
+                if self.render.transcript_reveals.contains_key(&id) {
+                    if let Some(index) = self.transcript.position(&id) {
+                        self.render.transcript_cache.mark_reveal_dirty(index);
+                    }
+                } else if is_tail {
+                    self.render.transcript_cache.mark_tail_dirty();
+                } else {
+                    self.render.transcript_cache.invalidate();
+                }
             } else {
                 self.render.transcript_cache.invalidate();
             }
@@ -1619,7 +1638,13 @@ impl AppState {
             lines,
             unit_start,
         });
-        self.render.transcript_cache.invalidate();
+        if existed && self.render.transcript_reveals.contains_key(&id) {
+            if let Some(index) = self.transcript.position(&id) {
+                self.render.transcript_cache.mark_reveal_dirty(index);
+            }
+        } else {
+            self.render.transcript_cache.invalidate();
+        }
     }
 
     fn project_tool_family(&mut self, event: &TimelineRecord) -> Option<ToolMutation> {
@@ -2637,6 +2662,11 @@ mod tests {
             }),
         ));
         assert!(matches!(&s.msgs[0], Msg::Streaming { text } if text == "你好，世界"));
+        assert_eq!(
+            s.render.transcript_reveals.len(),
+            1,
+            "new live assistant Markdown owns a presentation-only reveal track"
+        );
         s.apply_event(&event(
             "assistant/message",
             serde_json::json!({
@@ -2658,6 +2688,24 @@ mod tests {
             .markdown_layout
             .unit_start(s.transcript.nodes()[0].id())
             .is_some());
+    }
+
+    #[test]
+    fn replayed_assistant_markdown_does_not_start_a_reveal_track() {
+        let mut state = AppState::default();
+        state.replaying = true;
+        state.apply_event(&event(
+            "assistant/message",
+            serde_json::json!({
+                "message": {"content": [{"type": "text", "text": "historical"}]}
+            }),
+        ));
+        state.replaying = false;
+        assert!(state.render.transcript_reveals.is_empty());
+        assert!(state.transcript.nodes().iter().any(|node| matches!(
+            &node.item,
+            DisplayItem::Block(block) if block.content == "historical" && !block.streaming
+        )));
     }
 
     #[test]
@@ -3598,14 +3646,22 @@ mod tests {
     #[test]
     fn prompt_queue_queues_while_running_and_dispenses_when_idle() {
         let mut s = AppState::default();
+        let mut queue = Vec::new();
         // Idle: the prompt goes out immediately, nothing queued.
-        assert!(s.enqueue_or_immediate("直接发"), "idle sends immediately");
-        assert!(s.interaction.queue.is_empty());
+        assert!(
+            s.enqueue_or_immediate("直接发", &mut queue),
+            "idle sends immediately"
+        );
+        assert!(queue.is_empty());
         // Running: prompts queue up.
         s.session.status = AgentStatus::Running;
-        assert!(!s.enqueue_or_immediate("排队1"), "running queues");
-        assert!(!s.enqueue_or_immediate("排队2"));
-        assert_eq!(s.interaction.queue, vec!["排队1", "排队2"]);
+        assert!(
+            !s.enqueue_or_immediate("排队1", &mut queue),
+            "running queues"
+        );
+        assert!(!s.enqueue_or_immediate("排队2", &mut queue));
+        assert_eq!(queue, vec!["排队1", "排队2"]);
+        s.interaction.queue = queue;
         // Still running (or working on a just-dispatched item): hold.
         assert_eq!(s.take_next_queued(), None);
         s.session.status = AgentStatus::Idle;
@@ -4022,8 +4078,8 @@ mod tests {
 
     /// Perf regression: cache invalidation must be incremental — high-
     /// frequency non-rendered events leave the cache alone and streaming
-    /// chunks only dirty the tail, so the render loop never rebuilds the
-    /// whole transcript per chunk.
+    /// chunks only dirty the paced-reveal suffix, so the render loop never
+    /// rebuilds the whole transcript per chunk.
     #[test]
     fn snapshot_replays_unknown_surface_events_but_not_unknown_audit() {
         let mut s = AppState::default();
@@ -4094,7 +4150,7 @@ mod tests {
         assert!(!s.render.transcript_cache.valid);
         s.render.transcript_cache.valid = true;
         s.render.transcript_cache.tail_dirty = false;
-        // Appended chunks only dirty the tail.
+        // Appended chunks only dirty the paced-reveal suffix.
         s.apply_event(&event(
             "assistant/chunk",
             serde_json::json!({
@@ -4105,9 +4161,10 @@ mod tests {
             s.render.transcript_cache.valid,
             "chunk append must not invalidate the cache"
         );
-        assert!(
-            s.render.transcript_cache.tail_dirty,
-            "chunk append must mark the tail dirty"
+        assert_eq!(
+            s.render.transcript_cache.reveal_dirty_from,
+            Some(1),
+            "chunk append must mark only the assistant reveal suffix"
         );
         assert!(matches!(&s.msgs[1], Msg::Streaming { text } if text == "ab"));
     }

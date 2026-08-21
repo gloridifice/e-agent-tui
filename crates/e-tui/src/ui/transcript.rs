@@ -1,5 +1,10 @@
 use super::*;
-use crate::ui::component::{card, text, working};
+use crate::{
+    reveal::{apply_reveal, RevealSignature},
+    ui::component::{card, text, working},
+    wrap::stable_wrap_prefix_graphemes,
+};
+use unicode_segmentation::UnicodeSegmentation;
 
 /// Prompt-injection events render as plain text (no card shell): the
 /// `提示词注入` label in the activity label tone (umber in the ferra theme)
@@ -327,30 +332,103 @@ fn trim_text_to_width(text: &str, width: usize) -> String {
     out
 }
 
+fn markdown_block_semantic_lines(block: &TranscriptBlock, state: &TuiApp) -> Vec<Line<'static>> {
+    let theme = state.theme();
+    let Some(lines) = state.render.markdown_layout.lines(&block.id) else {
+        return transcript_block_lines(block, state);
+    };
+    lines
+        .iter()
+        .map(|render_line| {
+            let mut line = render_line.line.clone();
+            if render_line.fill {
+                line = line.patch_style(theme.markdown.code_background.style());
+            }
+            line
+        })
+        .collect()
+}
+
+/// Reveal input for a live assistant Markdown block, read from the already
+/// rendered layout without cloning the semantic lines. Returns the signature
+/// and, for the trailing streaming line, its text and grapheme count.
+fn markdown_block_reveal_source(
+    block: &TranscriptBlock,
+    state: &TuiApp,
+) -> (RevealSignature, Option<(String, usize)>) {
+    let (signature, last_text) = if let Some(lines) = state.render.markdown_layout.lines(&block.id)
+    {
+        let signature =
+            RevealSignature::from_line_iter(lines.iter().map(|render_line| &render_line.line));
+        let last_text = lines.last().map(|render_line| {
+            render_line
+                .line
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        });
+        (signature, last_text)
+    } else {
+        let owned = transcript_block_lines(block, state);
+        let last_text = owned.last().map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        });
+        let signature = RevealSignature::from_lines(&owned);
+        (signature, last_text)
+    };
+    let last = last_text.map(|text| {
+        let count = text.graphemes(true).count();
+        (text, count)
+    });
+    (signature, last)
+}
+
+fn pad_visible_markdown_fill_lines(
+    block: &TranscriptBlock,
+    state: &TuiApp,
+    area_width: usize,
+    lines: &mut [Line<'static>],
+) {
+    let Some(layout) = state.render.markdown_layout.lines(&block.id) else {
+        return;
+    };
+    let fill_style = state.theme().markdown.code_background.style();
+    for (line, render_line) in lines.iter_mut().zip(layout) {
+        if render_line.fill {
+            let width = line.width();
+            if width < area_width {
+                line.push_span(Span::styled(" ".repeat(area_width - width), fill_style));
+            }
+        }
+    }
+}
+
 fn markdown_block_lines(
     block: &TranscriptBlock,
     state: &TuiApp,
     area_width: usize,
 ) -> Vec<Line<'static>> {
     let theme = state.theme();
-    let Some(lines) = state.render.markdown_layout.lines(&block.id) else {
-        return transcript_block_lines(block, state);
+    let full = markdown_block_semantic_lines(block, state);
+    let mut rendered = if let Some(track) = state.render.transcript_reveals.get(&block.id) {
+        apply_reveal(
+            full,
+            track,
+            state.config.background_color.color(),
+            theme.markdown.text.fg,
+            !state.config.plain_color,
+        )
+    } else {
+        full
     };
-    let mut rendered = lines
-        .iter()
-        .map(|render_line| {
-            let mut line = render_line.line.clone();
-            if render_line.fill {
-                let fill_style = theme.markdown.code_background.style();
-                line = line.patch_style(fill_style);
-                let width = line.width();
-                if width < area_width {
-                    line.push_span(Span::styled(" ".repeat(area_width - width), fill_style));
-                }
-            }
-            line
-        })
-        .collect::<Vec<_>>();
+    // Fill padding is presentation geometry, not rendered source. Add it only
+    // after reveal clipping so it neither consumes pacing budget nor changes
+    // the logical signature when the terminal width changes.
+    pad_visible_markdown_fill_lines(block, state, area_width, &mut rendered);
     if block.streaming {
         if let Some(last) = rendered.last_mut() {
             last.push_span(Span::raw(" "));
@@ -526,11 +604,76 @@ fn append_unit_rows(
     }
 }
 
+fn refresh_transcript_reveals(state: &mut TuiApp) {
+    if state.render.transcript_reveals.is_empty() {
+        return;
+    }
+    let now = std::time::Instant::now();
+    let rate = state.config.message_chars_per_second.get();
+    let ids = state
+        .render
+        .transcript_reveals
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut stale = Vec::new();
+    for id in ids {
+        let Some(index) = state.transcript.position(&id) else {
+            stale.push(id);
+            continue;
+        };
+        let (signature, last_line, streaming, settled) = {
+            let Some(node) = state.transcript.nodes().get(index) else {
+                stale.push(id);
+                continue;
+            };
+            let DisplayItem::Block(block) = &node.item else {
+                stale.push(id);
+                continue;
+            };
+            if block.format != TranscriptFormat::Markdown {
+                stale.push(id);
+                continue;
+            }
+            let (signature, last_line) = markdown_block_reveal_source(block, state);
+            (
+                signature,
+                last_line,
+                block.streaming,
+                block.content.ends_with('\n'),
+            )
+        };
+        let admitted = if !streaming || settled {
+            signature.grapheme_count()
+        } else if let Some((last_text, last_graphemes)) = last_line {
+            let prefix_count = signature.grapheme_count().saturating_sub(last_graphemes);
+            prefix_count
+                + stable_wrap_prefix_graphemes(&last_text, state.render.transcript_cache.width)
+        } else {
+            0
+        };
+        let track = state
+            .render
+            .transcript_reveals
+            .get_mut(&id)
+            .expect("collected reveal track remains present");
+        if track.reconcile_admitted(signature, admitted, !streaming, now, rate) {
+            state.render.transcript_cache.mark_reveal_dirty(index);
+        }
+        if track.is_complete() {
+            stale.push(id);
+            state.render.transcript_cache.mark_reveal_dirty(index);
+        }
+    }
+    for id in stale {
+        state.render.transcript_reveals.remove(&id);
+    }
+}
+
 fn rebuild_transcript_cache(state: &mut TuiApp, width: usize) {
     let _zone = crate::tracy_zone!("transcript rebuild");
     let mut base = Vec::new();
     let mut ranges = vec![None; state.transcript.len()];
-    let mut tail_len = 0usize;
     let nodes = state.transcript.nodes();
     for (index, node) in nodes.iter().enumerate() {
         let item = &node.item;
@@ -548,7 +691,6 @@ fn rebuild_transcript_cache(state: &mut TuiApp, width: usize) {
             end: start + line_count,
             owns_gap: gap,
         });
-        tail_len = line_count + usize::from(gap);
         if gap {
             base.push(Line::default());
         }
@@ -556,9 +698,9 @@ fn rebuild_transcript_cache(state: &mut TuiApp, width: usize) {
     let cache = &mut state.render.transcript_cache;
     cache.lines = base;
     cache.message_ranges = ranges;
-    cache.tail_len = tail_len;
     cache.valid = true;
     cache.tail_dirty = false;
+    cache.reveal_dirty_from = None;
     cache.dirty_messages.clear();
     cache.structural_rebuilt();
 }
@@ -569,51 +711,76 @@ fn refresh_transcript_cache(state: &mut TuiApp, width: usize) {
         state.render.transcript_cache.invalidate();
     }
     crate::presentation::materialize_transcript(state);
+    refresh_transcript_reveals(state);
     if !state.render.transcript_cache.valid {
         rebuild_transcript_cache(state, width);
         return;
     }
 
-    if state.render.transcript_cache.tail_dirty {
-        let keep = state
+    let tail_index = state
+        .render
+        .transcript_cache
+        .tail_dirty
+        .then(|| state.transcript.len().checked_sub(1))
+        .flatten();
+    let suffix_index = match (tail_index, state.render.transcript_cache.reveal_dirty_from) {
+        (Some(tail), Some(reveal)) => Some(tail.min(reveal)),
+        (tail, reveal) => tail.or(reveal),
+    };
+    if let Some(suffix_index) = suffix_index {
+        let Some(keep) = state
             .render
             .transcript_cache
-            .lines
-            .len()
-            .saturating_sub(state.render.transcript_cache.tail_len);
-        let last_index = state.transcript.len().checked_sub(1);
-        let rendered = last_index
-            .map(|index| display_item_lines(&state.transcript.nodes()[index].item, state, width));
+            .message_ranges
+            .get(suffix_index)
+            .and_then(|range| *range)
+            .map(|range| range.start)
+        else {
+            rebuild_transcript_cache(state, width);
+            return;
+        };
+        let nodes = state.transcript.nodes();
+        let mut suffix_lines = Vec::new();
+        let mut ranges = Vec::new();
+        for (index, node) in nodes.iter().enumerate().skip(suffix_index) {
+            if is_hidden_node(nodes, index, state) {
+                ranges.push((index, None));
+                continue;
+            }
+            let start = keep + suffix_lines.len();
+            let lines = display_item_lines(&node.item, state, width);
+            let line_count = lines.len();
+            suffix_lines.extend(lines);
+            let gap =
+                !(is_activity_item(&node.item) && next_visible_item_is_activity(state, index));
+            ranges.push((
+                index,
+                Some(MessageLineRange {
+                    start,
+                    end: start + line_count,
+                    owns_gap: gap,
+                }),
+            ));
+            if gap {
+                suffix_lines.push(Line::default());
+            }
+        }
         let transcript_len = state.transcript.len();
         let cache = &mut state.render.transcript_cache;
         cache.lines.truncate(keep);
-        if let (Some(index), Some(lines)) = (last_index, rendered) {
-            let count = lines.len();
-            cache.lines.extend(lines);
-            cache.lines.push(Line::default());
-            if cache.message_ranges.len() != transcript_len {
-                cache.message_ranges.resize(transcript_len, None);
-            }
-            cache.message_ranges[index] = Some(MessageLineRange {
-                start: keep,
-                end: keep + count,
-                owns_gap: true,
-            });
-            // The streamed block can gain or lose rendered rows as Markdown
-            // structure and wrapping evolve. The next splice must discard
-            // this entire newly rendered suffix, not the previous suffix's
-            // length, or stale rows accumulate ahead of every later update.
-            cache.tail_len = count + 1;
-            cache.dirty_messages.remove(&index);
-        } else {
-            cache.tail_len = 0;
+        cache.lines.extend(suffix_lines);
+        cache.message_ranges.resize(transcript_len, None);
+        for (index, range) in ranges {
+            cache.message_ranges[index] = range;
         }
         cache.tail_dirty = false;
-        let tail_row_counts = cache.lines[keep..]
+        cache.reveal_dirty_from = None;
+        cache.dirty_messages.retain(|index| *index < suffix_index);
+        let row_counts = cache.lines[keep..]
             .iter()
             .map(|line| wrapped_rows(line, width))
             .collect::<Vec<_>>();
-        cache.structural_tail_updated(keep, width, &tail_row_counts);
+        cache.structural_tail_updated(keep, width, &row_counts);
     }
 
     if !state.render.transcript_cache.dirty_messages.is_empty() {

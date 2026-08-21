@@ -1,6 +1,8 @@
 //! Shared normal/Reading Preview target, cache, and race reconciliation.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Instant};
+
+use crate::reveal::LineRevealTrack;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreviewPolicy {
@@ -237,6 +239,8 @@ pub struct PreviewPaneState {
     pub scroll: usize,
     pub fullscreen: bool,
     pub cache: PreviewCache,
+    /// Presentation-only wrapped-row cursor for the selected Ready target.
+    pub reveal: Option<LineRevealTrack>,
     next_request_id: u64,
     work: PreviewWorkStats,
 }
@@ -250,6 +254,7 @@ impl PreviewPaneState {
             != target.as_ref().map(|target| target.id.as_str());
         if identity_changed {
             self.scroll = 0;
+            self.reveal = None;
             self.work.rebuilds = self.work.rebuilds.saturating_add(1);
         } else if self.target != target {
             self.work.patches = self.work.patches.saturating_add(1);
@@ -325,6 +330,16 @@ impl PreviewPaneState {
         visible
     }
 
+    pub fn reveal_deadline(&self) -> Option<Instant> {
+        self.reveal.as_ref().and_then(LineRevealTrack::next_due)
+    }
+
+    pub fn tick_reveal(&mut self, now: Instant, lines_per_second: u16) -> bool {
+        self.reveal
+            .as_mut()
+            .is_some_and(|track| track.tick(now, lines_per_second))
+    }
+
     pub fn record_materialized_rows(&mut self, rows: usize) {
         self.work.materialized_rows = self.work.materialized_rows.saturating_add(rows as u64);
     }
@@ -383,6 +398,22 @@ mod tests {
         pane.scroll = 6;
         pane.select(Some(deferred("a", "a", 2)));
         assert_eq!(pane.scroll, 6);
+    }
+
+    #[test]
+    fn identity_change_resets_reveal_but_same_target_revision_preserves_it() {
+        use ratatui::text::Line;
+
+        let now = Instant::now();
+        let mut pane = PreviewPaneState::default();
+        pane.select(Some(deferred("a", "a", 1)));
+        let mut reveal = LineRevealTrack::default();
+        reveal.reconcile(&[Line::from("prefix")], now, 32);
+        pane.reveal = Some(reveal);
+        pane.select(Some(deferred("a", "a", 2)));
+        assert_eq!(pane.reveal.as_ref().map(LineRevealTrack::revealed), Some(6));
+        pane.select(Some(deferred("b", "b", 1)));
+        assert!(pane.reveal.is_none());
     }
 
     #[test]

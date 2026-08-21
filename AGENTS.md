@@ -16,7 +16,7 @@ Terminal client for DeepSeek Harness (DSH) (project name **e**, executable **`ds
 - `bridge/` — Node.js (ESM) DSH **host-composition plugin** (one WS upgrade route `/dsh-tui`). Conventions:
   [docs/bridge.md](docs/bridge.md).
 - `crates/e-dsh/` — Rust DSH adapter and executable package (`e-dsh`, artifact `dshe.exe`; transitional library import name `e`).
-- `crates/e-tui/` — kernel-neutral frontend library package (`e-tui`), owning lifecycle state, projection, rendering, responsive Preview, Reading View, themes, and config values. Rust conventions: [docs/client.md](docs/client.md).
+- `crates/e-tui/` — kernel-neutral frontend library package (`e-tui`), owning lifecycle state, projection, rendering, paced transcript/Preview text reveal, responsive Preview, Reading View, themes, and config values. Rust conventions: [docs/client.md](docs/client.md).
 
 The two processes communicate over JSON WebSocket; the machine-readable contract is
 `bridge/protocol-contract.json` (see [docs/protocol.md](docs/protocol.md)). Token auth lives at
@@ -86,7 +86,7 @@ Implementation conventions are documented per part and are the source of truth w
   performance red lines, runtime/lock discipline, input & character boundaries, overlays/Input Page (including
   ask_user_question pages that suppress tool activity and preserve the input draft), semantic Reading/copy,
   responsive Preview and deferred resolution, layered rendering, markdown/table styling, history paging,
-  status bar, command paradigm, deferred `/new`,
+  status bar, command paradigm, deferred `/new`, stable transcript grapheme reveal, Preview row reveal/fade and independent animation deadlines,
   config/theme/launcher.
 - **bridge (Node.js)** — [docs/bridge.md](docs/bridge.md): module layout, DSH command integration, dynamic
   user-question relay, cross-await conn discipline, snapshot/history data sources, payload trimming,
@@ -139,3 +139,4 @@ Implementation conventions are documented per part and are the source of truth w
 - Design-doc M milestone numbering has fallen behind the implementation (features exceed M6); code and README
   are authoritative.
 - Under `DSH_TUI_TIMING=1`, per-stage startup timings print to stderr, for locating startup regressions.
+- Live assistant Markdown and selected Ready Preview content use presentation-only reveal sidecars; retain complete semantic/copy/cache content, exclude width-dependent fill padding from signatures, and preserve transcript suffix-splice behavior. Transcript admission must reuse UAX #14 wrapping and hold only the unstable trailing atom until a break, timeout, or settlement; Preview pacing applies after wrapping and counts display rows. Compose independent admission, content, and fade deadlines with the spinner clock rather than restoring a fixed ticker.

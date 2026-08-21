@@ -8,7 +8,8 @@ use std::{
 use ratatui::style::Color;
 
 use crate::{
-    cache::TranscriptRenderCache, display::DisplayId, transcript_layout::MarkdownLayoutRegistry,
+    cache::TranscriptRenderCache, display::DisplayId, reveal::RevealTrack,
+    transcript_layout::MarkdownLayoutRegistry,
 };
 
 #[derive(Debug, Clone)]
@@ -26,6 +27,9 @@ pub struct RenderState {
     pub units: HashMap<u64, String>,
     pub expanded: HashSet<u64>,
     pub transcript_cache: TranscriptRenderCache,
+    /// Live assistant Markdown paint cursors. Semantic source remains in the
+    /// transcript; replay/history never create these sidecars.
+    pub transcript_reveals: HashMap<DisplayId, RevealTrack>,
     pub stream_frame: usize,
 }
 
@@ -41,6 +45,7 @@ impl Default for RenderState {
                 width: 80,
                 ..TranscriptRenderCache::default()
             },
+            transcript_reveals: HashMap::new(),
             stream_frame: 0,
         }
     }

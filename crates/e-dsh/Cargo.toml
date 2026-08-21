@@ -37,6 +37,8 @@ arboard = "3"
 wasmi = "1.1"
 toml = "1.1"
 directories = "6"
+# Windows console input mode + native modifier sampling for the raw-input path.
+winapi = { version = "0.3", features = ["winbase", "wincon", "winuser", "processenv", "consoleapi", "handleapi"] }
 tracy-client = { version = "0.18", optional = true, default-features = false, features = [
     "enable",
     "manual-lifetime",

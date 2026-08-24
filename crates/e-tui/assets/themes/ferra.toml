@@ -31,7 +31,7 @@ heading4 = { fg = "rose", italic = true }
 heading5 = { fg = "blush" }
 heading6 = { fg = "bark" }
 emphasis = { fg = "mist", italic = true }
-strong = { fg = "blush", bold = true }
+strong = { fg = "blush" }
 strikethrough = { fg = "mist" }
 inline_code = { fg = "rose", bg = "night" }
 link_text = { fg = "coral", bold = true }

@@ -17,7 +17,7 @@ enter_sends = true
 paste_placeholder_chars = 64
 long_content_lines = 20
 atomic_collapse_rows = 40
-copy_toast_secs = 2
+copy_toast_secs = 3
 history_limit = 1000
 
 # Display

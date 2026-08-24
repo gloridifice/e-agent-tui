@@ -1,9 +1,8 @@
 //! Kernel-neutral interaction state and blocking-input ownership.
 
-use std::time::Instant;
-
 use crate::{
     action::AgentRequest, config::Config, input::InputState, input_page::InputPageSession,
+    mouse_selection::MouseSelection, notice::NoticeState,
 };
 
 /// One pending approval prompt owned by the frontend interaction lifecycle.
@@ -46,7 +45,8 @@ pub struct InteractionModel {
     pub approval: Option<ApprovalCard>,
     pub question: Option<String>,
     pub queue: Vec<String>,
-    pub copy_toast: Option<(String, Instant)>,
+    pub notice: NoticeState,
+    pub mouse_selection: MouseSelection,
 }
 
 impl InteractionModel {
@@ -59,7 +59,8 @@ impl InteractionModel {
             approval: None,
             question: None,
             queue: Vec::new(),
-            copy_toast: None,
+            notice: NoticeState::default(),
+            mouse_selection: MouseSelection::default(),
         }
     }
 }

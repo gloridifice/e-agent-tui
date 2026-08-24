@@ -7,7 +7,7 @@ use std::{
 
 use crossterm::{
     cursor,
-    event::{DisableMouseCapture, EnableMouseCapture},
+    event::{DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture},
     execute,
     terminal::{
         disable_raw_mode, enable_raw_mode, BeginSynchronizedUpdate, EndSynchronizedUpdate,
@@ -55,6 +55,7 @@ fn leave_terminal_modes<W: Write>(writer: &mut W) -> io::Result<()> {
         LeaveAlternateScreen,
         cursor::Show,
         DisableMouseCapture,
+        DisableFocusChange,
         crossterm::event::DisableBracketedPaste
     )
 }
@@ -97,6 +98,7 @@ impl TerminalOwner {
             backend,
             crossterm::event::EnableBracketedPaste,
             EnableMouseCapture,
+            EnableFocusChange,
             EnterAlternateScreen,
             cursor::Hide
         ) {

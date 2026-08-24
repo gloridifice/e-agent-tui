@@ -123,6 +123,7 @@ main (Tokio composition root)
   ├─ input / runtime_command ──> command_catalog
   ├─ input_page ──> page_core + settings/login/model/theme/resume
   └─ ui + copy ──> transcript_layout ──> display/render/config
+      └─ ui::selection ──> selection reducer/frame kernel
 
 protocol (typed DTO + HostEvent family parser)
   └─ projection/{assistant,tool,lifecycle,retry,command,workflow,surface}
@@ -130,7 +131,11 @@ protocol (typed DTO + HostEvent family parser)
 ```
 
 `RuntimeController` receives already-typed bridge frames, terminal events, and deadlines, and while holding a
-short-lived state lock only produces internal actions or a complete `RuntimeEffect`. `main.rs` only handles
+short-lived state lock only produces internal actions or a complete `RuntimeEffect`. Mouse gestures reduce against
+an immutable committed visible-frame artifact owned locally by the runner; rendering returns a candidate artifact,
+and only a successful terminal transaction replaces the committed frame. Frame revision and viewport mismatch
+invalidate stale selection, while the pure selection kernel stays independent of Ratatui buffer painting.
+`main.rs` only handles
 `tokio::select!`, bounded inbound, deadlines, terminal lifecycle, and the effect executor; transport, terminal
 events, config/state files, clipboard, clock, and the launcher's processes/locks are all adapted through narrow
 ports, so scripted stand-ins can verify races without awaiting/I/O inside the lock. The launcher treats process
@@ -138,6 +143,8 @@ spawn failure, exit-before-readiness, and readiness timeout as explicit startup 
 with a stale token into a raw WebSocket connection error. The transport briefly retries transient upgrade races;
 wire compatibility is then checked in both directions (the bridge rejects a newer client, and the client rejects a
 mismatched `welcome.protocolVersion`) with one same-checkout update/`dshe setup`/rebuild/restart recovery path.
+Clipboard completion updates frontend-owned transient notice state; the composition root executes the external
+write and waits on the notice deadline but does not own localized notice formatting.
 
 Production `AppState` stores only `ActivityRow`, `TranscriptBlock`, `ContentCard`, and composite `DisplayItem` in
 `TranscriptStore`. `EventProjector` and the family projections are the only HostEvent→display entry point;
@@ -469,6 +476,7 @@ aborts both those command signals and any active agent turn.
 | Ctrl+L | redraw | |
 | PgUp / PgDn | page by currently visible transcript height | scrolling up pauses auto-follow |
 | Wheel | scroll the message stream 3 lines per notch | still only scrolls the stream when an Input Page is open |
+| Primary mouse drag | select visible Transcript or Preview text and copy on release | visual rendered-range copy; drag stays in its starting surface |
 | Esc | interrupt an active turn/direct command; otherwise Input Page back/close or close popup | owning surface takes precedence |
 | Arrows / hjkl (Input Page) | move the single focus; in settings, `←`/`→` and `h`/`l` switch category pages | in text-edit state hjkl is text; settings category strip is not focusable |
 | Enter (folded card) | expand/collapse tool result | focus navigation v2 |
@@ -493,7 +501,8 @@ changing wrapping. Item highlights are local and never overwrite explicit span b
 | y | copy the complete owning Block source, even when an Item is selected |
 | Esc | Item mode → Block mode; Block mode → normal composer |
 
-Tables, Mermaid, and code retain atomic complete-source payloads, including original fence/pipe syntax. Resize,
+Tables, Mermaid, and code retain atomic complete-source payloads, including original fence/pipe syntax. Primary
+mouse drag separately copies the selected visible rendered cells and never reconstructs this complete source. Resize,
 streaming, settlement, history prepend, and theme rematerialization preserve semantic ids; only geometry is rebuilt.
 Clipboard and deferred Preview effects execute after the UI guard is released.
 

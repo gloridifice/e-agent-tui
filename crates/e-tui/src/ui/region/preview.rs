@@ -7,6 +7,7 @@ use ratatui::{
 
 use crate::{
     config::Config,
+    mouse_selection::{SelectionFrame, SelectionSurface},
     preview::{
         LineSelection, PreviewContent, PreviewPaneState, PreviewState, ToolMetrics, ToolPreview,
         ToolPreviewPrimary, ToolPreviewSecondary,
@@ -24,6 +25,7 @@ pub fn render(
     preview: &mut PreviewPaneState,
     config: &Config,
     theme: &Theme,
+    selection_frame: &mut SelectionFrame,
 ) {
     let inner_width = usize::from(area.width).saturating_sub(2).max(1);
     let lines = match &preview.state {
@@ -84,6 +86,16 @@ pub fn render(
     // Vertically center content that fits the pane; overflowing content is
     // already bottom-anchored and fills the pane, so no centering applies.
     let top_padding = usize::from(area.height).saturating_sub(lines.len()) / 2;
+    for (index, line) in lines.iter().enumerate() {
+        crate::ui::selection::register_line(
+            selection_frame,
+            SelectionSurface::Preview,
+            start + index,
+            area.x.saturating_add(1),
+            area.y.saturating_add((top_padding + index) as u16),
+            line,
+        );
+    }
     let mut centered = Vec::with_capacity(usize::from(area.height));
     centered.extend(std::iter::repeat_n(Line::raw(""), top_padding));
     centered.extend(lines);

@@ -102,7 +102,10 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
   every newline. The terminal is initialized/restored at a single point via
   `terminal_runtime.rs::TerminalOwner`; frames are committed atomically with a 64KiB
   `BufWriter` + DEC 2026 synchronized output (`DSHE_DISABLE_SYNC_OUTPUT=1` only as a compatibility diagnostic).
-  Never full-render per event; redraw P95 ≤30ms and only when dirty/deadline expires; animation only patches
+  Selectable geometry is an ephemeral render artifact: `e-tui` returns a candidate visible-row frame, the runner
+  replaces its local committed frame only after terminal submission succeeds, and neither pending nor committed
+  selection geometry enters `RenderState` or semantic cache state. Never full-render per event; redraw P95 ≤30ms
+  and only when dirty/deadline expires; animation only patches
   the active message range, streaming only splices the tail; display-row layout is cached by width/generation,
   and each frame only materializes/clones the visible window. Do not break the shared layout semantics of
   `valid/tail_dirty/dirty_messages`, history display-row anchor, and copy provenance.
@@ -118,7 +121,8 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
 - **Frontend interaction ownership**:
   `e-tui::{catalog,command_catalog,input,page_core,input_page,login,settings,question,interaction}` owns composer
   state, catalog presentation/completion, Input Page focus/editing, login/settings page state, retained question
-  batches, approval routing, scroll/follow, help, notices, and prompt queues. Question, approval, and queued-prompt
+  batches, approval routing, scroll/follow, help, transient notice deadlines, mouse-selection reducer state, and
+  prompt queues. Question, approval, and queued-prompt
   state is session-scoped and must be cleared together on a bridge welcome that switches session identity. The old
   executable-side re-export facades have been removed; protocol DTO conversion and external action execution remain
   in `e-dsh`.
@@ -134,6 +138,13 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
   `↑/↓` move between input lines by character column first, and only switch to the previous/next history prompt
   at the first/last line boundary; `PageUp`/`PageDown` page by the currently visible transcript height, and the
   mouse wheel moves 3 lines per notch (always operating on the transcript even when an Input Page is open).
+  Captured primary-button drags select only visible Transcript or Preview text in the surface where the drag
+  starts, use display-cell/grapheme boundaries, and copy rendered visual rows on release; this partial visual copy
+  is distinct from Reading View `y`, which copies the complete owning source Block. The pure selection reducer
+  reads only the immutable runner-owned committed visible frame; frame revision or viewport mismatch rejects stale
+  paint/copy after resize, session/draft/history/Preview identity changes, while focus loss and new primary press
+  are explicit cancellation transitions. Ratatui line collection and reverse-video painting stay in
+  `ui::selection`, outside the selection kernel.
   `Ctrl+H` is a global help key handled before the Input Page, and `hjkl` with Control/Alt/Super must not enter
   the focus graph. `Config.enter_sends` exists only for legacy config deserialization compatibility and must
   no longer change key semantics. The terminal hardware cursor must always be hidden inside the TUI; the screen
@@ -147,7 +158,17 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
   `Clear`, with the shared shell fixed at 1 row top/bottom and 2 columns left/right padding. Within the Ash shell,
   settings paints the full category strip and right-side value pane with the base (Night) surface; the strip is
   display-only, while value edit focus on the Night pane uses the panel (Ash) surface for contrast.
-- **Reading View and copy semantics**: `Ctrl+Y` enters Reading View (the `Ctrl+V` candidate failed the supported-terminal paste gate); `Ctrl+P` toggles full-screen Preview on narrow terminals. Block mode uses `j`/`k`, `l`, `y`, and `Esc`; Item mode uses spatial `h`/`j`/`k`/`l`, with `Esc` returning to Block mode. `y` always copies the complete owning Block from `ReadingCopyPayload`, never clipped terminal cells. Tables/code/Mermaid remain atomic through stable render-unit provenance, and render unit ids are reused across re-renders (`unit_start`). Row-oriented Copy Mode and `Ctrl+B` no longer exist.
+- **Reading View and copy semantics**: `Ctrl+Y` enters Reading View (the `Ctrl+V` candidate failed the
+  supported-terminal paste gate); `Ctrl+P` toggles full-screen Preview on narrow terminals. Block mode uses
+  `j`/`k`, `l`, `y`, and `Esc`; Item mode uses spatial `h`/`j`/`k`/`l`, with `Esc` returning to Block mode. `y`
+  always copies the complete owning Block from `ReadingCopyPayload`, never clipped terminal cells. Mouse drag
+  copies only the selected visible rendered range and is intentionally separate from this complete-source
+  operation. Clipboard completion is reduced into a frontend-owned generic transient notice; a successful copy
+  uses a small top-layer popup (three seconds by default) showing the copied line count and a grapheme-safe
+  six-character content preview, with an ellipsis only when truncated, without replacing the composer draft or
+  cursor. The composition root executes clipboard I/O and schedules the exact notice deadline but does not format
+  localized notice text. Tables/code/Mermaid remain atomic through stable render-unit provenance, and render unit
+  ids are reused across re-renders (`unit_start`). Row-oriented Copy Mode and `Ctrl+B` no longer exist.
 - **Markdown headings and localized backgrounds**: headings directly use the fixed semantics
   `semantics.markdown.heading1..6`; in ferra, level 1 is Coral `#ffa07a` bold (no background), level 2 is Sage
   `#b1b695` bold, level 3 is Blush `#fecdb2` non-bold. inline code `bg` may only apply to the chip span;

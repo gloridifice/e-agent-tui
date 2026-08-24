@@ -8,7 +8,7 @@ use ratatui::{
 
 use crate::{
     app::TuiApp, input::InputState, input_page::InputPageSession, interaction::ScrollState,
-    login::LoginState, settings::SettingsState, theme::Theme,
+    login::LoginState, mouse_selection::SelectionFrame, settings::SettingsState, theme::Theme,
 };
 
 use super::pane;
@@ -77,10 +77,11 @@ pub(super) fn render_with_cursor(
     scroll: &mut ScrollState,
     theme: &Theme,
     overlays: RenderOverlays<'_>,
+    selection_frame: &mut SelectionFrame,
 ) -> Option<Position> {
     let RenderOverlays {
         help_visible,
-        toast,
+        toast: _,
         input_page,
         settings,
         login,
@@ -89,7 +90,6 @@ pub(super) fn render_with_cursor(
     } = overlays;
     let pane_overlays = pane::main::MainPaneOverlays {
         help_visible,
-        toast,
         input_page,
         settings,
         login,
@@ -110,6 +110,7 @@ pub(super) fn render_with_cursor(
                 scroll,
                 theme,
                 pane_overlays,
+                selection_frame,
             );
             state.rebuild_reading_model();
             render_reading_rail(frame, main, state, scroll, theme);
@@ -125,15 +126,30 @@ pub(super) fn render_with_cursor(
                 scroll,
                 theme,
                 pane_overlays,
+                selection_frame,
             );
             state.rebuild_reading_model();
             render_reading_rail(frame, main, state, scroll, theme);
             render_reading_item(frame, main, state, scroll, theme);
-            pane::preview::render(frame, preview, &mut state.preview, &state.config, theme);
+            pane::preview::render(
+                frame,
+                preview,
+                &mut state.preview,
+                &state.config,
+                theme,
+                selection_frame,
+            );
             cursor
         }
         ScreenLayout::PreviewOnly(preview) => {
-            pane::preview::render(frame, preview, &mut state.preview, &state.config, theme);
+            pane::preview::render(
+                frame,
+                preview,
+                &mut state.preview,
+                &state.config,
+                theme,
+                selection_frame,
+            );
             None
         }
     }

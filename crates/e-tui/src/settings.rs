@@ -181,12 +181,12 @@ pub static ITEMS: &[ItemDef] = &[
     ItemDef {
         category: 1,
         label: "复制提示时长",
-        desc: "复制成功的提示停留时间（秒）",
+        desc: "复制成功弹窗的停留时间（秒，最少 3 秒）",
         kind: ItemKind::Input,
-        get: |c| c.copy_toast_secs.to_string(),
+        get: |c| c.copy_toast_secs.max(3).to_string(),
         apply: |c, v| {
-            if let Ok(n) = v.parse() {
-                c.copy_toast_secs = n;
+            if let Ok(n) = v.parse::<u64>() {
+                c.copy_toast_secs = n.max(3);
             }
         },
     },

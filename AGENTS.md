@@ -85,7 +85,7 @@ Implementation conventions are documented per part and are the source of truth w
   folding, file/tool activity formatting (including reserved trailing metrics), surface semantics, render cache,
   performance red lines, runtime/lock discipline, input & character boundaries, overlays/Input Page (including
   ask_user_question pages that suppress tool activity and preserve the input draft), semantic Reading/copy,
-  responsive Preview and deferred resolution, layered rendering, markdown/table styling, history paging,
+  responsive Preview and deferred resolution, application-owned visible mouse selection/copy alongside wheel scrolling, layered rendering, markdown/table styling, history paging,
   status bar, command paradigm, deferred `/new`, stable transcript grapheme reveal, Preview row reveal/fade and independent animation deadlines,
   config/theme/launcher.
 - **bridge (Node.js)** — [docs/bridge.md](docs/bridge.md): module layout, DSH command integration, dynamic

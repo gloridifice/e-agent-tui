@@ -22,6 +22,7 @@ use crate::{
     input::{InputState, Suggestion, SuggestionKind},
     input_page::{FocusId, InputPage, InputPageSession, ModelPage, ResumePage, ThemePage},
     login::LoginState,
+    mouse_selection::{MouseSelection, SelectionFrame},
     projection::TranscriptNode,
     settings::SettingsState,
     transcript_layout::{truncate_activity_line, wrap_line, wrapped_rows, ProvenanceLayoutRow},
@@ -36,6 +37,7 @@ mod pages;
 pub mod pane;
 pub mod region;
 pub mod screen;
+pub(crate) mod selection;
 mod status;
 mod transcript;
 use pages::{render_login, render_settings, trim_to_width, wrap_text};
@@ -195,7 +197,7 @@ pub fn render(
     theme: &Theme,
     overlays: RenderOverlays<'_>,
 ) {
-    let _ = screen::render_with_cursor(frame, state, input, scroll, theme, overlays);
+    let _ = render_with_cursor(frame, state, input, scroll, theme, overlays);
 }
 
 /// Render one frame and return the hidden terminal-cursor anchor used by IME.
@@ -210,9 +212,64 @@ pub fn render_with_cursor(
     theme: &Theme,
     overlays: RenderOverlays<'_>,
 ) -> Option<Position> {
-    screen::render_with_cursor(frame, state, input, scroll, theme, overlays)
+    render_with_cursor_and_selection(
+        frame,
+        state,
+        input,
+        scroll,
+        theme,
+        overlays,
+        &MouseSelection::default(),
+        &SelectionFrame::default(),
+    )
+    .cursor
 }
 
+/// Ephemeral artifacts produced by one render attempt. The runner publishes
+/// `selection_frame` only after terminal submission succeeds.
+pub struct RenderOutput {
+    pub cursor: Option<Position>,
+    pub selection_frame: SelectionFrame,
+}
+
+#[allow(clippy::too_many_arguments)] // Explicit render inputs preserve the UI boundary.
+pub fn render_with_cursor_and_selection(
+    frame: &mut Frame,
+    state: &mut TuiApp,
+    input: &InputState,
+    scroll: &mut ScrollState,
+    theme: &Theme,
+    overlays: RenderOverlays<'_>,
+    selection: &MouseSelection,
+    committed_selection_frame: &SelectionFrame,
+) -> RenderOutput {
+    let toast = overlays.toast;
+    let area = frame.area();
+    let mut selection_frame = SelectionFrame::for_viewport(area.width, area.height);
+    let cursor = screen::render_with_cursor(
+        frame,
+        state,
+        input,
+        scroll,
+        theme,
+        overlays,
+        &mut selection_frame,
+    );
+    // Never paint a range from stale coordinates onto a newly composed frame.
+    // The runner publishes the new geometry only after terminal submission.
+    if selection_frame.same_geometry(committed_selection_frame) {
+        selection::paint(committed_selection_frame, selection, frame.buffer_mut());
+    }
+    if let Some(toast) = toast {
+        overlay::render_toast(frame, toast, theme);
+    }
+    RenderOutput {
+        cursor,
+        selection_frame,
+    }
+}
+
+#[allow(clippy::too_many_arguments)] // Shared render inputs stay explicit at the UI boundary.
 pub(crate) fn render_main_pane_with_cursor(
     frame: &mut Frame,
     area: ratatui::layout::Rect,
@@ -221,10 +278,10 @@ pub(crate) fn render_main_pane_with_cursor(
     scroll: &mut ScrollState,
     theme: &Theme,
     overlays: pane::main::MainPaneOverlays<'_>,
+    selection_frame: &mut SelectionFrame,
 ) -> Option<Position> {
     let pane::main::MainPaneOverlays {
         help_visible,
-        toast,
         mut input_page,
         mut settings,
         mut login,
@@ -282,7 +339,15 @@ pub(crate) fn render_main_pane_with_cursor(
         ])
         .split(page);
 
-        region::transcript::render(frame, chunks[0], state, scroll, theme, help_visible);
+        region::transcript::render(
+            frame,
+            chunks[0],
+            state,
+            scroll,
+            theme,
+            help_visible,
+            selection_frame,
+        );
         if approval_rows > 0 {
             if let Some(card) = approval {
                 render_approval(frame, chunks[1], card, theme);
@@ -326,7 +391,6 @@ pub(crate) fn render_main_pane_with_cursor(
                 chunks[6],
                 input,
                 theme,
-                toast,
                 state.config.user_input_padding as u16,
             )
         };
@@ -359,6 +423,7 @@ pub(crate) fn render_main_pane_with_cursor(
         theme,
         help_visible,
         bottom_stack,
+        selection_frame,
     );
     let mut cursor_anchor = None;
     let mut input_rect = None;
@@ -429,7 +494,6 @@ pub(crate) fn render_main_pane_with_cursor(
             rect,
             input,
             theme,
-            toast,
             state.config.user_input_padding as u16,
         );
         y = y.saturating_add(bottom_rows);

@@ -20,7 +20,7 @@ use e::runtime_ports::{
     TerminalLifecyclePort, UiActionPorts,
 };
 use e::terminal_runtime::TerminalOwner;
-use e_tui::ui::{render_with_cursor, TerminalSize};
+use e_tui::ui::TerminalSize;
 
 const DSH_SERVER_CLOSED_MESSAGE: &str = "dsh 服务器已关闭。";
 const INTERACTIVE_FRAME_INTERVAL: Duration = Duration::from_millis(16);
@@ -321,9 +321,14 @@ async fn execute_runtime_effects(
             }
             UiAction::WriteClipboard(text) => {
                 let lines = text.lines().count();
+                let (preview, truncated) = e_tui::clipboard_preview(&text, 6);
                 let result = ports.write_clipboard(text);
                 execution.completed.push(match result {
-                    Ok(()) => EffectResult::ClipboardWritten { lines },
+                    Ok(()) => EffectResult::ClipboardWritten {
+                        lines,
+                        preview,
+                        truncated,
+                    },
                     Err(error) => EffectResult::ClipboardFailed(error.to_string()),
                 });
             }
@@ -419,6 +424,7 @@ async fn run(
     let mut events = ProductionTerminalEvents::new();
     let mut runtime_ports = ProductionRuntimePorts;
     let mut scheduler = FrameScheduler::new(runtime_ports.now());
+    let mut committed_selection_frame = e_tui::SelectionFrame::default();
     let mut spinner_deadline: Option<Instant> = None;
     let mut frame_metrics = FrameMetrics::from_env();
     let mut pending_update_elapsed = Duration::ZERO;
@@ -430,7 +436,16 @@ async fn run(
         let mut pending_event = None;
         let mut first_inbound = None;
         let frame_deadline = scheduler.deadline();
-        let reveal_deadline = state_r.lock().unwrap().reveal_deadline();
+        let (reveal_deadline, notice_deadline) = {
+            let state = state_r.lock().unwrap();
+            (
+                state.reveal_deadline(),
+                state
+                    .interaction
+                    .notice
+                    .deadline(state.config.copy_toast_secs),
+            )
+        };
         let animation_deadline =
             e_tui::reveal::earliest_deadline(spinner_deadline, reveal_deadline);
         tokio::select! {
@@ -458,6 +473,17 @@ async fn run(
                 }
             }
             _ = wait_for_deadline(frame_deadline) => {}
+            _ = wait_for_deadline(notice_deadline) => {
+                let now = runtime_ports.now();
+                let expired = {
+                    let mut state = state_r.lock().unwrap();
+                    let duration = state.config.copy_toast_secs;
+                    state.interaction.notice.expire(duration, now)
+                };
+                if expired {
+                    scheduler.request(DirtyReason::Interactive, now);
+                }
+            }
             _ = wait_for_deadline(animation_deadline) => {
                 let now = Instant::now();
                 let mut state = state_r.lock().unwrap();
@@ -596,12 +622,14 @@ async fn run(
                 },
                 runtime_ports.now(),
                 &state_r,
+                &committed_selection_frame,
                 &mut e::runtime::TerminalUiState {
                     scroll: &mut interaction.scroll,
                     input: &mut interaction.input,
                     input_page: &mut interaction.input_page,
                     help_visible: &mut interaction.help_visible,
-                    copy_toast: &mut interaction.copy_toast,
+                    notice: &mut interaction.notice,
+                    mouse_selection: &mut interaction.mouse_selection,
                     approval: &mut interaction.approval,
                     question: &mut interaction.question,
                     queue: &mut interaction.queue,
@@ -615,10 +643,6 @@ async fn run(
                 execute_runtime_effects(effects, &tx_out, &mut scheduler, &mut runtime_ports).await;
             for result in execution.completed {
                 match result {
-                    EffectResult::ClipboardWritten { lines } => {
-                        state_r.lock().unwrap().interaction.copy_toast =
-                            Some((format!("已复制 {lines} 行"), runtime_ports.now()));
-                    }
                     EffectResult::ConfigReloaded {
                         config: loaded,
                         themes: loaded_themes,
@@ -636,7 +660,8 @@ async fn run(
                                 input: &mut interaction.input,
                                 input_page: &mut interaction.input_page,
                                 help_visible: &mut interaction.help_visible,
-                                copy_toast: &mut interaction.copy_toast,
+                                notice: &mut interaction.notice,
+                                mouse_selection: &mut interaction.mouse_selection,
                                 approval: &mut interaction.approval,
                                 question: &mut interaction.question,
                                 queue: &mut interaction.queue,
@@ -648,8 +673,9 @@ async fn run(
                         state_r.lock().unwrap().interaction = interaction;
                     }
                     other => {
-                        if RuntimeController::apply_effect_result(other, &state_r) {
-                            scheduler.request(DirtyReason::Content, runtime_ports.now());
+                        let now = runtime_ports.now();
+                        if RuntimeController::apply_effect_result(other, &state_r, now) {
+                            scheduler.request(DirtyReason::Content, now);
                         }
                     }
                 }
@@ -681,15 +707,19 @@ async fn run(
                 std::mem::take(&mut app.interaction)
             };
             let mut state = state_r.lock().unwrap();
-            let toast = interaction.copy_toast.as_ref().map(|(t, _)| t.as_str());
+            let notice_now = runtime_ports.now();
+            let notice = interaction
+                .notice
+                .visible_text(state.config.copy_toast_secs, notice_now);
             let first_frame = !first_draw_done;
             let _first_zone = if first_frame {
                 e::tracy_zone!("first frame")
             } else {
                 None
             };
+            let mut candidate_selection_frame = None;
             let transaction = terminal.draw(|frame| {
-                render_with_cursor(
+                let output = e_tui::ui::render_with_cursor_and_selection(
                     frame,
                     &mut state,
                     &interaction.input,
@@ -697,20 +727,38 @@ async fn run(
                     &theme,
                     e_tui::ui::RenderOverlays {
                         help_visible: interaction.help_visible,
-                        toast,
+                        toast: notice,
                         input_page: interaction.input_page.as_mut(),
                         settings: None,
                         login: None,
                         approval: interaction.approval.as_ref(),
                         queue: &interaction.queue,
                     },
-                )
+                    &interaction.mouse_selection,
+                    &committed_selection_frame,
+                );
+                candidate_selection_frame = Some(output.selection_frame);
+                output.cursor
             });
             let cache_work = state.render.transcript_cache.take_work_stats();
             let preview_work = state.preview.take_work_stats();
             drop(state);
             state_r.lock().unwrap().interaction = interaction;
             let transaction = transaction?;
+            let mut candidate_selection_frame =
+                candidate_selection_frame.expect("render always produces selection geometry");
+            let geometry_changed =
+                !candidate_selection_frame.same_geometry(&committed_selection_frame);
+            let epoch = if geometry_changed {
+                committed_selection_frame.epoch().wrapping_add(1).max(1)
+            } else {
+                committed_selection_frame.epoch().max(1)
+            };
+            candidate_selection_frame.set_epoch(epoch);
+            committed_selection_frame = candidate_selection_frame;
+            if geometry_changed {
+                state_r.lock().unwrap().interaction.mouse_selection.clear();
+            }
             scheduler.complete(Instant::now());
             let io = transaction.io;
             let report = frame_metrics.record(FrameSample {
@@ -759,6 +807,41 @@ mod tests {
 
     fn args<'a>(items: &'a [&'a str]) -> impl Iterator<Item = String> + 'a {
         items.iter().map(|s| s.to_string())
+    }
+
+    struct ClipboardPorts {
+        writes: Vec<String>,
+        result: Result<(), String>,
+        now: Instant,
+    }
+
+    impl UiActionPorts for ClipboardPorts {
+        fn load_config(&mut self) -> Result<(e::config::Config, Vec<e::theme::ThemeFile>), String> {
+            Err("not used".into())
+        }
+
+        fn persist_config(&mut self, _config: &e::config::Config) -> Result<(), String> {
+            Err("not used".into())
+        }
+
+        fn persist_session_id(&mut self, _session_id: String) {}
+
+        fn write_clipboard(&mut self, text: String) -> Result<(), String> {
+            self.writes.push(text);
+            self.result.clone()
+        }
+
+        fn resolve_preview(
+            &mut self,
+            _request: e_tui::PreviewRequest,
+        ) -> impl std::future::Future<Output = Result<e_tui::PreviewContent, String>> + Send
+        {
+            std::future::ready(Err("not used".into()))
+        }
+
+        fn now(&self) -> Instant {
+            self.now
+        }
     }
 
     #[test]
@@ -853,6 +936,48 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn clipboard_executor_reports_scripted_success_and_failure() {
+        let now = Instant::now();
+        let (transport, _receiver) = tokio::sync::mpsc::channel(1);
+        let mut scheduler = FrameScheduler::new(now);
+        let mut ports = ClipboardPorts {
+            writes: Vec::new(),
+            result: Ok(()),
+            now,
+        };
+        let success = execute_runtime_effects(
+            vec![UiAction::WriteClipboard("one\ntwo".into())],
+            &transport,
+            &mut scheduler,
+            &mut ports,
+        )
+        .await;
+        assert_eq!(ports.writes, ["one\ntwo"]);
+        assert!(matches!(
+            success.completed.as_slice(),
+            [EffectResult::ClipboardWritten {
+                lines: 2,
+                preview,
+                truncated: true,
+            }] if preview == "one tw"
+        ));
+
+        ports.result = Err("denied".into());
+        let failure = execute_runtime_effects(
+            vec![UiAction::WriteClipboard("blocked".into())],
+            &transport,
+            &mut scheduler,
+            &mut ports,
+        )
+        .await;
+        assert_eq!(ports.writes, ["one\ntwo", "blocked"]);
+        assert!(matches!(
+            failure.completed.as_slice(),
+            [EffectResult::ClipboardFailed(error)] if error == "denied"
+        ));
+    }
+
     #[test]
     fn scheduler_is_idle_after_due_frame_completes() {
         let now = Instant::now();
@@ -875,15 +1000,21 @@ mod tests {
     }
 
     #[test]
-    fn repeated_interaction_coalesces_at_one_deadline() {
+    fn selection_drag_burst_coalesces_at_one_interactive_deadline() {
         let now = Instant::now();
         let mut scheduler = FrameScheduler::new(now);
         scheduler.take_due(now);
         scheduler.complete(now);
         for millis in 1..10 {
+            let _event = e_tui::PointerEvent::PrimaryDrag {
+                column: millis,
+                row: 1,
+            };
+            // Terminal pointer input uses the same interactive request made by
+            // the production select branch before route application.
             scheduler.request(
                 DirtyReason::Interactive,
-                now + Duration::from_millis(millis),
+                now + Duration::from_millis(u64::from(millis)),
             );
         }
         assert_eq!(scheduler.deadline(), Some(now + INTERACTIVE_FRAME_INTERVAL));

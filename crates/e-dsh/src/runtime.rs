@@ -9,7 +9,9 @@ use std::{
     time::Instant,
 };
 
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind};
+use crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+};
 #[cfg(test)]
 use e_tui::AgentRequest;
 use e_tui::{
@@ -18,7 +20,7 @@ use e_tui::{
     input_page::{InputPageSession, PageEffect},
     login::LoginView,
     ui::{scroll_lines, scroll_page, transcript_view_height, ScrollState, TerminalSize},
-    AgentEvent,
+    AgentEvent, MouseSelection, NoticeState, PointerEvent, SelectionFrame,
 };
 pub use e_tui::{DrawPriority, EffectResult, UiAction};
 
@@ -50,7 +52,7 @@ pub struct TerminalFocus {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TerminalRoute {
-    MouseScroll { up: bool },
+    Pointer(PointerEvent),
     Paste { text: String },
     Help { dismiss: bool },
     OpenHelp,
@@ -67,10 +69,30 @@ pub enum TerminalRoute {
 pub fn route_terminal_event(event: Event, focus: TerminalFocus) -> TerminalRoute {
     match event {
         Event::Mouse(mouse) => match mouse.kind {
-            MouseEventKind::ScrollUp => TerminalRoute::MouseScroll { up: true },
-            MouseEventKind::ScrollDown => TerminalRoute::MouseScroll { up: false },
+            MouseEventKind::ScrollUp => TerminalRoute::Pointer(PointerEvent::Wheel { up: true }),
+            MouseEventKind::ScrollDown => TerminalRoute::Pointer(PointerEvent::Wheel { up: false }),
+            MouseEventKind::Down(MouseButton::Left) => {
+                TerminalRoute::Pointer(PointerEvent::PrimaryPress {
+                    column: mouse.column,
+                    row: mouse.row,
+                })
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                TerminalRoute::Pointer(PointerEvent::PrimaryDrag {
+                    column: mouse.column,
+                    row: mouse.row,
+                })
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                TerminalRoute::Pointer(PointerEvent::PrimaryRelease {
+                    column: mouse.column,
+                    row: mouse.row,
+                })
+            }
             _ => TerminalRoute::Ignore,
         },
+        Event::FocusLost | Event::Resize(_, _) => TerminalRoute::Pointer(PointerEvent::FocusLost),
+        Event::FocusGained => TerminalRoute::Ignore,
         Event::Paste(_) if focus.reading_view_open => TerminalRoute::Ignore,
         Event::Paste(text) => TerminalRoute::Paste { text },
         Event::Key(key) if key.kind == KeyEventKind::Release => TerminalRoute::Ignore,
@@ -94,7 +116,6 @@ pub fn route_terminal_event(event: Event, focus: TerminalFocus) -> TerminalRoute
         Event::Key(key) if focus.approval_open => TerminalRoute::Approval(key),
         Event::Key(key) if focus.reading_view_open => TerminalRoute::Reading(key),
         Event::Key(key) => TerminalRoute::Ordinary(key),
-        _ => TerminalRoute::Ignore,
     }
 }
 
@@ -147,7 +168,8 @@ pub struct TerminalUiState<'a> {
     pub input: &'a mut InputState,
     pub input_page: &'a mut Option<InputPageSession>,
     pub help_visible: &'a mut bool,
-    pub copy_toast: &'a mut Option<(String, Instant)>,
+    pub notice: &'a mut NoticeState,
+    pub mouse_selection: &'a mut MouseSelection,
     pub approval: &'a mut Option<ApprovalCard>,
     pub question: &'a mut Option<String>,
     pub queue: &'a mut Vec<String>,
@@ -168,13 +190,15 @@ impl RuntimeController {
     pub fn apply_terminal_route(
         route: TerminalRoute,
         size: TerminalSize,
-        _now: Instant,
+        now: Instant,
         state: &Arc<Mutex<AppState>>,
+        selection_frame: &SelectionFrame,
         ui: &mut TerminalUiState<'_>,
     ) -> Vec<UiAction> {
         let mut effects = Vec::new();
         match route {
-            route @ (TerminalRoute::MouseScroll { up } | TerminalRoute::TranscriptPage { up }) => {
+            route @ (TerminalRoute::Pointer(PointerEvent::Wheel { up })
+            | TerminalRoute::TranscriptPage { up }) => {
                 let page = matches!(route, TerminalRoute::TranscriptPage { .. });
                 let before = {
                     let mut app = state.lock().unwrap();
@@ -223,6 +247,16 @@ impl RuntimeController {
                     }));
                 }
             }
+            TerminalRoute::Pointer(pointer) => {
+                if !selection_frame.matches_viewport(size.width, size.height) {
+                    ui.mouse_selection.clear();
+                    return effects;
+                }
+                let update = ui.mouse_selection.handle(pointer, selection_frame);
+                if let Some(text) = update.copy {
+                    effects.push(UiAction::WriteClipboard(text));
+                }
+            }
             TerminalRoute::Paste { text } => {
                 if ui.input_page.as_mut().is_some_and(|page| page.paste(&text)) {
                     return effects;
@@ -234,8 +268,12 @@ impl RuntimeController {
                     *ui.help_visible = false;
                 }
             }
-            TerminalRoute::OpenHelp => *ui.help_visible = true,
+            TerminalRoute::OpenHelp => {
+                ui.mouse_selection.clear();
+                *ui.help_visible = true;
+            }
             TerminalRoute::InputPage(key) => {
+                ui.mouse_selection.clear();
                 effects.extend(Self::apply_input_page_key(
                     &key,
                     state,
@@ -250,13 +288,16 @@ impl RuntimeController {
                 ));
             }
             TerminalRoute::Approval(key) => {
+                ui.mouse_selection.clear();
                 effects.extend(Self::answer_approval(&key, ui.approval))
             }
             TerminalRoute::Reading(key) => {
+                ui.mouse_selection.clear();
                 effects.extend(Self::apply_reading_key(&key, size, state, ui));
             }
             TerminalRoute::Ordinary(key) => {
-                effects.extend(Self::apply_ordinary_key(key, size, state, ui));
+                ui.mouse_selection.clear();
+                effects.extend(Self::apply_ordinary_key(key, size, now, state, ui));
             }
             TerminalRoute::Ignore => {}
         }
@@ -347,6 +388,7 @@ impl RuntimeController {
     fn apply_ordinary_key(
         key: KeyEvent,
         size: TerminalSize,
+        now: Instant,
         state: &Arc<Mutex<AppState>>,
         ui: &mut TerminalUiState<'_>,
     ) -> Vec<UiAction> {
@@ -388,7 +430,7 @@ impl RuntimeController {
             };
             outcome.effects.extend(actions);
             if !entered {
-                *ui.copy_toast = Some(("没有可阅读的内容".into(), Instant::now()));
+                ui.notice.show("没有可阅读的内容", now);
             }
         }
         if let Some(line) = outcome.command {
@@ -428,13 +470,14 @@ impl RuntimeController {
                 };
                 let mut app = state.lock().unwrap();
                 if !app.enter_reading(ui.input, ui.scroll, viewport_height) {
-                    *ui.copy_toast = Some(("没有可阅读的内容".into(), Instant::now()));
+                    ui.notice.show("没有可阅读的内容", now);
                 }
                 outcome.effects.extend(app.take_actions());
             }
             if command.new_conversation {
                 *ui.scroll = ScrollState::default();
                 *ui.input_page = None;
+                ui.mouse_selection.clear();
             }
             if command.reload_config {
                 outcome.effects.push(UiAction::ReloadConfig);
@@ -489,7 +532,7 @@ impl RuntimeController {
                     .collect();
             }
             AgentEvent::EffectCompleted(result) => {
-                let dirty = Self::apply_effect_result(result, state);
+                let dirty = Self::apply_effect_result(result, state, Instant::now());
                 return dirty
                     .then(|| UiAction::RequestDraw(DrawPriority::Content))
                     .into_iter()
@@ -1024,11 +1067,26 @@ impl RuntimeController {
         state.push_system_message("已重载配置、主题与技能");
     }
 
-    pub fn apply_effect_result(result: EffectResult, state: &Mutex<AppState>) -> bool {
+    pub fn apply_effect_result(
+        result: EffectResult,
+        state: &Mutex<AppState>,
+        now: Instant,
+    ) -> bool {
         match result {
-            EffectResult::ConfigPersisted(Ok(()))
-            | EffectResult::ConfigReloaded { .. }
-            | EffectResult::ClipboardWritten { .. } => false,
+            EffectResult::ConfigPersisted(Ok(())) | EffectResult::ConfigReloaded { .. } => false,
+            EffectResult::ClipboardWritten {
+                lines,
+                preview,
+                truncated,
+            } => {
+                state
+                    .lock()
+                    .unwrap()
+                    .interaction
+                    .notice
+                    .show_clipboard(lines, &preview, truncated, now);
+                true
+            }
             EffectResult::ConfigPersisted(Err(error)) | EffectResult::ConfigReloadFailed(error) => {
                 state
                     .lock()
@@ -1366,6 +1424,249 @@ mod tests {
     }
 
     #[test]
+    fn terminal_router_routes_primary_pointer_and_focus_loss() {
+        let focus = TerminalFocus::default();
+        let mouse = crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 4,
+            row: 7,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert_eq!(
+            route_terminal_event(Event::Mouse(mouse), focus),
+            TerminalRoute::Pointer(PointerEvent::PrimaryPress { column: 4, row: 7 })
+        );
+        assert_eq!(
+            route_terminal_event(
+                Event::Mouse(crossterm::event::MouseEvent {
+                    kind: MouseEventKind::ScrollUp,
+                    column: 4,
+                    row: 7,
+                    modifiers: KeyModifiers::SHIFT,
+                }),
+                focus,
+            ),
+            TerminalRoute::Pointer(PointerEvent::Wheel { up: true })
+        );
+        assert_eq!(
+            route_terminal_event(Event::FocusLost, focus),
+            TerminalRoute::Pointer(PointerEvent::FocusLost)
+        );
+    }
+
+    #[test]
+    fn pointer_release_returns_clipboard_effect_without_holding_ui_state() {
+        let state = Arc::new(Mutex::new(AppState::default()));
+        let mut selection_frame = SelectionFrame::for_viewport(80, 24);
+        selection_frame.set_epoch(1);
+        selection_frame.push_text(e_tui::SelectionSurface::Transcript, 0, 0, 0, "alpha");
+        let mut scroll = ScrollState::default();
+        let mut input = InputState::new(&Config::default());
+        let mut input_page = None;
+        let mut help_visible = false;
+        let mut notice = NoticeState::default();
+        let mut mouse_selection = MouseSelection::default();
+        let mut approval = None;
+        let mut question = None;
+        let mut queue = Vec::new();
+        let mut config = Config::default();
+        let mut themes = Vec::new();
+        let mut theme = config.theme();
+        let mut ui = TerminalUiState {
+            scroll: &mut scroll,
+            input: &mut input,
+            input_page: &mut input_page,
+            help_visible: &mut help_visible,
+            notice: &mut notice,
+            mouse_selection: &mut mouse_selection,
+            approval: &mut approval,
+            question: &mut question,
+            queue: &mut queue,
+            config: &mut config,
+            themes: &mut themes,
+            theme: &mut theme,
+        };
+        let size = TerminalSize {
+            width: 80,
+            height: 24,
+        };
+        assert!(RuntimeController::apply_terminal_route(
+            TerminalRoute::Pointer(PointerEvent::PrimaryPress { column: 0, row: 0 }),
+            size,
+            Instant::now(),
+            &state,
+            &selection_frame,
+            &mut ui,
+        )
+        .is_empty());
+        assert!(matches!(
+            RuntimeController::apply_terminal_route(
+                TerminalRoute::Pointer(PointerEvent::PrimaryRelease { column: 2, row: 0 }),
+                size,
+                Instant::now(),
+                &state,
+                &selection_frame,
+                &mut ui,
+            )
+            .as_slice(),
+            [UiAction::WriteClipboard(text)] if text == "alp"
+        ));
+
+        RuntimeController::apply_terminal_route(
+            TerminalRoute::Pointer(PointerEvent::PrimaryPress { column: 0, row: 0 }),
+            size,
+            Instant::now(),
+            &state,
+            &selection_frame,
+            &mut ui,
+        );
+        RuntimeController::apply_terminal_route(
+            TerminalRoute::Pointer(PointerEvent::FocusLost),
+            size,
+            Instant::now(),
+            &state,
+            &selection_frame,
+            &mut ui,
+        );
+        assert!(RuntimeController::apply_terminal_route(
+            TerminalRoute::Pointer(PointerEvent::PrimaryRelease { column: 2, row: 0 }),
+            size,
+            Instant::now(),
+            &state,
+            &selection_frame,
+            &mut ui,
+        )
+        .is_empty());
+
+        RuntimeController::apply_terminal_route(
+            TerminalRoute::Pointer(PointerEvent::PrimaryPress { column: 1, row: 0 }),
+            size,
+            Instant::now(),
+            &state,
+            &selection_frame,
+            &mut ui,
+        );
+        assert!(RuntimeController::apply_terminal_route(
+            TerminalRoute::Pointer(PointerEvent::PrimaryRelease { column: 1, row: 0 }),
+            size,
+            Instant::now(),
+            &state,
+            &selection_frame,
+            &mut ui,
+        )
+        .is_empty());
+
+        RuntimeController::apply_terminal_route(
+            TerminalRoute::Pointer(PointerEvent::PrimaryPress { column: 0, row: 0 }),
+            size,
+            Instant::now(),
+            &state,
+            &selection_frame,
+            &mut ui,
+        );
+        assert!(RuntimeController::apply_terminal_route(
+            TerminalRoute::Pointer(PointerEvent::PrimaryRelease { column: 2, row: 0 }),
+            TerminalSize {
+                width: 81,
+                height: 24,
+            },
+            Instant::now(),
+            &state,
+            &selection_frame,
+            &mut ui,
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn reading_copy_remains_complete_after_partial_mouse_copy() {
+        let state = Arc::new(Mutex::new(AppState::default()));
+        let source = "complete canonical source";
+        let mut scroll = ScrollState::default();
+        let mut input = InputState::new(&Config::default());
+        {
+            let mut app = state.lock().unwrap();
+            app.transcript.append(
+                e_tui::display::DisplayItem::Block(e_tui::display::TranscriptBlock {
+                    id: e_tui::display::DisplayId::correlated("assistant", "copy-semantics"),
+                    unit: Some(1),
+                    content: source.into(),
+                    format: e_tui::display::TranscriptFormat::Plain,
+                    tone: e_tui::display::DisplayTone::Normal,
+                    copy_source: source.into(),
+                    streaming: false,
+                }),
+                None,
+            );
+            assert!(app.enter_reading(&input, &mut scroll, 20));
+        }
+        let mut selection_frame = SelectionFrame::for_viewport(80, 24);
+        selection_frame.set_epoch(1);
+        selection_frame.push_text(e_tui::SelectionSurface::Transcript, 0, 0, 0, "partial");
+        let mut input_page = None;
+        let mut help_visible = false;
+        let mut notice = NoticeState::default();
+        let mut mouse_selection = MouseSelection::default();
+        let mut approval = None;
+        let mut question = None;
+        let mut queue = Vec::new();
+        let mut config = Config::default();
+        let mut themes = Vec::new();
+        let mut theme = config.theme();
+        let mut ui = TerminalUiState {
+            scroll: &mut scroll,
+            input: &mut input,
+            input_page: &mut input_page,
+            help_visible: &mut help_visible,
+            notice: &mut notice,
+            mouse_selection: &mut mouse_selection,
+            approval: &mut approval,
+            question: &mut question,
+            queue: &mut queue,
+            config: &mut config,
+            themes: &mut themes,
+            theme: &mut theme,
+        };
+        let size = TerminalSize {
+            width: 80,
+            height: 24,
+        };
+        RuntimeController::apply_terminal_route(
+            TerminalRoute::Pointer(PointerEvent::PrimaryPress { column: 0, row: 0 }),
+            size,
+            Instant::now(),
+            &state,
+            &selection_frame,
+            &mut ui,
+        );
+        let visual = RuntimeController::apply_terminal_route(
+            TerminalRoute::Pointer(PointerEvent::PrimaryRelease { column: 2, row: 0 }),
+            size,
+            Instant::now(),
+            &state,
+            &selection_frame,
+            &mut ui,
+        );
+        assert!(matches!(
+            visual.as_slice(),
+            [UiAction::WriteClipboard(text)] if text == "par"
+        ));
+
+        let semantic = RuntimeController::apply_terminal_route(
+            TerminalRoute::Reading(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)),
+            size,
+            Instant::now(),
+            &state,
+            &selection_frame,
+            &mut ui,
+        );
+        assert!(matches!(
+            semantic.as_slice(),
+            [UiAction::WriteClipboard(text)] if text == source
+        ));
+    }
+
+    #[test]
     fn reading_route_preserves_draft_and_blocks_paste() {
         let reading = TerminalFocus {
             reading_view_open: true,
@@ -1406,7 +1707,8 @@ mod tests {
         input.cursor = input.buf.chars().count();
         let mut input_page = None;
         let mut help_visible = false;
-        let mut copy_toast = None;
+        let mut notice = NoticeState::default();
+        let mut mouse_selection = MouseSelection::default();
         let mut approval = None;
         let mut question = None;
         let mut queue = Vec::new();
@@ -1422,12 +1724,14 @@ mod tests {
             },
             Instant::now(),
             &state,
+            &SelectionFrame::default(),
             &mut TerminalUiState {
                 scroll: &mut scroll,
                 input: &mut input,
                 input_page: &mut input_page,
                 help_visible: &mut help_visible,
-                copy_toast: &mut copy_toast,
+                notice: &mut notice,
+                mouse_selection: &mut mouse_selection,
                 approval: &mut approval,
                 question: &mut question,
                 queue: &mut queue,
@@ -1450,12 +1754,14 @@ mod tests {
             },
             Instant::now(),
             &state,
+            &SelectionFrame::default(),
             &mut TerminalUiState {
                 scroll: &mut scroll,
                 input: &mut input,
                 input_page: &mut input_page,
                 help_visible: &mut help_visible,
-                copy_toast: &mut copy_toast,
+                notice: &mut notice,
+                mouse_selection: &mut mouse_selection,
                 approval: &mut approval,
                 question: &mut question,
                 queue: &mut queue,
@@ -1510,6 +1816,7 @@ mod tests {
         RuntimeController::apply_effect_result(
             EffectResult::ClipboardFailed("denied".into()),
             &state,
+            Instant::now(),
         );
         let state = state.lock().unwrap();
         assert!(matches!(
@@ -1523,6 +1830,30 @@ mod tests {
                     && block.content.contains("denied")
         ));
         assert!(!state.render.transcript_cache.valid);
+    }
+
+    #[test]
+    fn clipboard_success_uses_frontend_notice_state() {
+        let state = Mutex::new(AppState::default());
+        let now = Instant::now();
+        assert!(RuntimeController::apply_effect_result(
+            EffectResult::ClipboardWritten {
+                lines: 2,
+                preview: "one tw".into(),
+                truncated: true,
+            },
+            &state,
+            now,
+        ));
+        assert_eq!(
+            state
+                .lock()
+                .unwrap()
+                .interaction
+                .notice
+                .visible_text(2, now),
+            Some("已复制 2 行：one tw...")
+        );
     }
 
     #[test]
@@ -1541,7 +1872,8 @@ mod tests {
         let mut input = InputState::new(&Config::default());
         let mut input_page = None;
         let mut help_visible = false;
-        let mut copy_toast = None;
+        let mut notice = NoticeState::default();
+        let mut mouse_selection = MouseSelection::default();
         let mut approval = None;
         let mut question = None;
         let mut queue = Vec::new();
@@ -1557,7 +1889,8 @@ mod tests {
                 input: &mut input,
                 input_page: &mut input_page,
                 help_visible: &mut help_visible,
-                copy_toast: &mut copy_toast,
+                notice: &mut notice,
+                mouse_selection: &mut mouse_selection,
                 approval: &mut approval,
                 question: &mut question,
                 queue: &mut queue,

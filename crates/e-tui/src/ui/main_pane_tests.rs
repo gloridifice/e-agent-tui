@@ -1,14 +1,22 @@
-use ratatui::{backend::TestBackend, layout::Position, style::Color, Terminal};
+use ratatui::{
+    backend::TestBackend,
+    buffer::Buffer,
+    layout::Position,
+    style::{Color, Modifier},
+    Terminal,
+};
 
 use crate::{
     app::TuiApp,
     display::{CardRole, ContentCard, DisplayId, DisplayItem, DisplayTone},
     input::InputState,
+    mouse_selection::MouseSelection,
     preview::{
         PreviewContent, PreviewState, ToolMetrics, ToolPreview, ToolPreviewPrimary,
         ToolPreviewSecondary,
     },
     theme::Theme,
+    PointerEvent,
 };
 
 use super::*;
@@ -23,6 +31,66 @@ fn overlays() -> RenderOverlays<'static> {
         approval: None,
         queue: &[],
     }
+}
+
+fn find_text(buffer: &Buffer, needle: &str) -> Option<(u16, u16)> {
+    let area = *buffer.area();
+    let width = needle.chars().count() as u16;
+    for y in area.y..area.y.saturating_add(area.height) {
+        for x in area.x..area.x.saturating_add(area.width).saturating_sub(width) {
+            if needle
+                .chars()
+                .enumerate()
+                .all(|(offset, ch)| buffer[(x + offset as u16, y)].symbol() == ch.to_string())
+            {
+                return Some((x, y));
+            }
+        }
+    }
+    None
+}
+
+#[test]
+fn copy_toast_is_a_popup_and_does_not_replace_the_input_draft() {
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    let mut input = InputState::new(&state.config);
+    input.buf = "draft text".into();
+    input.cursor = input.buf.chars().count();
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+    let mut anchor = None;
+    terminal
+        .draw(|frame| {
+            anchor = render_with_cursor(
+                frame,
+                &mut state,
+                &input,
+                &mut scroll,
+                &theme,
+                RenderOverlays {
+                    toast: Some("已复制 2 行：测试内容..."),
+                    ..overlays()
+                },
+            );
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    assert!(find_text(buffer, "draft text").is_some());
+    assert!(anchor.is_some(), "toast must not hide the composer cursor");
+    let toast_y = (0..20u16)
+        .find(|&y| (0..80u16).any(|x| buffer[(x, y)].symbol() == "已"))
+        .expect("copy toast renders");
+    assert!(toast_y <= 2, "toast is a top popup, not input content");
+    let compact = (0..80u16)
+        .map(|x| buffer[(x, toast_y)].symbol())
+        .collect::<String>()
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>();
+    assert!(compact.contains("✓已复制2行：测试内容..."));
+    assert!((0..80u16).any(|x| buffer[(x, toast_y - 1)].symbol() == "─"));
 }
 
 #[test]
@@ -1713,4 +1781,258 @@ fn overlays_paint_queue_and_approval_accessories() {
         flat.contains("排队提示"),
         "queued prompt strip painted from overlays; screen:\n{text}"
     );
+}
+
+#[test]
+fn mouse_selection_highlights_transcript_wide_cells_over_reading_style() {
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    let source = "A界B";
+    state.transcript.append(
+        DisplayItem::Block(crate::display::TranscriptBlock {
+            id: DisplayId::correlated("assistant", "mouse-reading"),
+            unit: Some(71),
+            content: source.into(),
+            format: crate::display::TranscriptFormat::Plain,
+            tone: DisplayTone::Normal,
+            copy_source: source.into(),
+            streaming: false,
+        }),
+        None,
+    );
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(70, 14)).unwrap();
+
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+    assert!(state.enter_reading(&input, &mut scroll, 9));
+    let mut rendered = None;
+    terminal
+        .draw(|frame| {
+            rendered = Some(render_with_cursor_and_selection(
+                frame,
+                &mut state,
+                &input,
+                &mut scroll,
+                &theme,
+                overlays(),
+                &MouseSelection::default(),
+                &crate::SelectionFrame::default(),
+            ));
+        })
+        .unwrap();
+    let mut committed = rendered
+        .expect("render returns selection geometry")
+        .selection_frame;
+    committed.set_epoch(1);
+
+    let ((a_x, y), wide_x, b_x, baseline) = {
+        let buffer = terminal.backend().buffer();
+        let (a_x, y) = find_text(buffer, "A").expect("transcript text renders");
+        let wide_x = a_x + 1;
+        let b_x = a_x + 3;
+        assert_eq!(buffer[(wide_x, y)].symbol(), "界");
+        assert_eq!(buffer[(b_x, y)].symbol(), "B");
+        (
+            (a_x, y),
+            wide_x,
+            b_x,
+            (buffer[(wide_x, y)].fg, buffer[(wide_x, y)].bg),
+        )
+    };
+    let canonical = state.reading_copy_text().expect("Reading copy payload");
+    let mut selection = MouseSelection::default();
+    selection.handle(
+        PointerEvent::PrimaryPress {
+            column: a_x,
+            row: y,
+        },
+        &committed,
+    );
+    let copied = selection.handle(
+        PointerEvent::PrimaryRelease {
+            column: b_x,
+            row: y,
+        },
+        &committed,
+    );
+    assert_eq!(
+        copied.copy.as_deref(),
+        Some(source),
+        "coords=({a_x},{y})..({b_x},{y}), frame={committed:#?}"
+    );
+
+    terminal
+        .draw(|frame| {
+            render_with_cursor_and_selection(
+                frame,
+                &mut state,
+                &input,
+                &mut scroll,
+                &theme,
+                overlays(),
+                &selection,
+                &committed,
+            );
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    for x in [a_x, b_x] {
+        assert!(
+            buffer[(x, y)].modifier.contains(Modifier::REVERSED),
+            "selected boundary cell {x},{y} is reversed"
+        );
+    }
+    assert_eq!(buffer[(wide_x, y)].symbol(), "界");
+    assert_eq!(
+        buffer[(wide_x + 1, y)].symbol(),
+        " ",
+        "Ratatui keeps the second terminal cell covered by the selected wide glyph"
+    );
+    assert_eq!(buffer[(wide_x, y)].fg, baseline.0);
+    assert_eq!(buffer[(wide_x, y)].bg, baseline.1);
+    assert_eq!(
+        state.reading_copy_text().as_deref(),
+        Some(canonical.as_str()),
+        "mouse presentation does not alter Reading complete-source copy"
+    );
+}
+
+#[test]
+fn mouse_selection_keeps_preview_and_transcript_ranges_independent() {
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    state.transcript.append(
+        DisplayItem::Block(crate::display::TranscriptBlock {
+            id: DisplayId::correlated("assistant", "mouse-main"),
+            unit: Some(72),
+            content: "main text".into(),
+            format: crate::display::TranscriptFormat::Plain,
+            tone: DisplayTone::Normal,
+            copy_source: "main text".into(),
+            streaming: false,
+        }),
+        None,
+    );
+    state.preview.state = PreviewState::Ready(PreviewContent::Reasoning("preview text".into()));
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(120, 20)).unwrap();
+    let mut rendered = None;
+    terminal
+        .draw(|frame| {
+            rendered = Some(render_with_cursor_and_selection(
+                frame,
+                &mut state,
+                &input,
+                &mut scroll,
+                &theme,
+                overlays(),
+                &MouseSelection::default(),
+                &crate::SelectionFrame::default(),
+            ));
+        })
+        .unwrap();
+    let mut committed = rendered
+        .expect("render returns split-pane geometry")
+        .selection_frame;
+    committed.set_epoch(2);
+    state.render.transcript_cache.take_work_stats();
+    state.preview.take_work_stats();
+    let ((main_x, main_y), (preview_x, preview_y)) = {
+        let buffer = terminal.backend().buffer();
+        (
+            find_text(buffer, "main text").expect("transcript text renders"),
+            find_text(buffer, "preview text").expect("Preview text renders"),
+        )
+    };
+
+    let mut selection = MouseSelection::default();
+    selection.handle(
+        PointerEvent::PrimaryPress {
+            column: preview_x,
+            row: preview_y,
+        },
+        &committed,
+    );
+    let preview_copy = selection.handle(
+        PointerEvent::PrimaryRelease {
+            column: preview_x + 6,
+            row: preview_y,
+        },
+        &committed,
+    );
+    assert_eq!(preview_copy.copy.as_deref(), Some("preview"));
+    terminal
+        .draw(|frame| {
+            render_with_cursor_and_selection(
+                frame,
+                &mut state,
+                &input,
+                &mut scroll,
+                &theme,
+                overlays(),
+                &selection,
+                &committed,
+            );
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    assert!(buffer[(preview_x, preview_y)]
+        .modifier
+        .contains(Modifier::REVERSED));
+    assert!(!buffer[(main_x, main_y)]
+        .modifier
+        .contains(Modifier::REVERSED));
+
+    selection.handle(
+        PointerEvent::PrimaryPress {
+            column: main_x,
+            row: main_y,
+        },
+        &committed,
+    );
+    let copied = selection.handle(
+        PointerEvent::PrimaryRelease {
+            column: preview_x,
+            row: preview_y,
+        },
+        &committed,
+    );
+    assert_eq!(
+        copied.copy.as_deref(),
+        Some("main text"),
+        "cross-pane drag clamps to the starting Transcript surface"
+    );
+    terminal
+        .draw(|frame| {
+            render_with_cursor_and_selection(
+                frame,
+                &mut state,
+                &input,
+                &mut scroll,
+                &theme,
+                overlays(),
+                &selection,
+                &committed,
+            );
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    assert!(buffer[(main_x, main_y)]
+        .modifier
+        .contains(Modifier::REVERSED));
+    assert!(!buffer[(preview_x, preview_y)]
+        .modifier
+        .contains(Modifier::REVERSED));
+    let transcript_work = state.render.transcript_cache.take_work_stats();
+    let preview_work = state.preview.take_work_stats();
+    assert_eq!(transcript_work.rebuilds, 0);
+    assert_eq!(transcript_work.patches, 0);
+    assert_eq!(preview_work.rebuilds, 0);
+    assert_eq!(preview_work.patches, 0);
 }

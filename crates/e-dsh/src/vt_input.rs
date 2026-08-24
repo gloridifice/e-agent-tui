@@ -311,8 +311,16 @@ impl VtInputParser {
                 self.push_key(KeyCode::Tab, KeyModifiers::SHIFT);
                 true
             }
+            b'I' if params.is_empty() => {
+                self.out.push_back(Event::FocusGained);
+                true
+            }
+            b'O' if params.is_empty() => {
+                self.out.push_back(Event::FocusLost);
+                true
+            }
             b'~' => self.consume_csi_tilde(params),
-            b'M' | b'm' => self.consume_sgr_mouse(params),
+            b'M' | b'm' => self.consume_sgr_mouse(params, final_byte),
             b'u' => self.consume_csi_u(params),
             _ => false,
         }
@@ -385,32 +393,60 @@ impl VtInputParser {
         }
     }
 
-    /// SGR mouse: `ESC[<64;col;rowM` scrolls up, `ESC[<65;col;rowm` scrolls
-    /// down. The client only uses wheel scrolling.
-    fn consume_sgr_mouse(&mut self, params: &str) -> bool {
+    /// SGR reports carry 1-based terminal-cell coordinates; Crossterm events
+    /// are 0-based. Wheel, primary press, drag, and release are normalized
+    /// here; unsupported buttons are dropped.
+    fn consume_sgr_mouse(&mut self, params: &str, final_byte: u8) -> bool {
         let Some(rest) = params.strip_prefix('<') else {
             return false;
         };
         let mut parts = rest.split(';');
         let button = parts.next();
-        let column = parts
+        let Some(column) = parts
             .next()
             .and_then(|v| v.parse::<u16>().ok())
-            .unwrap_or(0);
-        let row = parts
+            .and_then(|value| value.checked_sub(1))
+        else {
+            return false;
+        };
+        let Some(row) = parts
             .next()
             .and_then(|v| v.parse::<u16>().ok())
-            .unwrap_or(0);
-        let kind = match button {
-            Some("64") => MouseEventKind::ScrollUp,
-            Some("65") => MouseEventKind::ScrollDown,
-            _ => return false,
+            .and_then(|value| value.checked_sub(1))
+        else {
+            return false;
+        };
+        let button = button.and_then(|value| value.parse::<u16>().ok());
+        let Some(button) = button else { return false };
+        let mut modifiers = KeyModifiers::NONE;
+        if button & 4 != 0 {
+            modifiers |= KeyModifiers::SHIFT;
+        }
+        if button & 8 != 0 {
+            modifiers |= KeyModifiers::ALT;
+        }
+        if button & 16 != 0 {
+            modifiers |= KeyModifiers::CONTROL;
+        }
+        let code = button & !(4 | 8 | 16);
+        let kind = if code == 64 {
+            MouseEventKind::ScrollUp
+        } else if code == 65 {
+            MouseEventKind::ScrollDown
+        } else if final_byte == b'm' && matches!(code & 3, 0 | 3) {
+            MouseEventKind::Up(crossterm::event::MouseButton::Left)
+        } else if code & 32 != 0 && code & 3 == 0 {
+            MouseEventKind::Drag(crossterm::event::MouseButton::Left)
+        } else if code & 3 == 0 {
+            MouseEventKind::Down(crossterm::event::MouseButton::Left)
+        } else {
+            return false;
         };
         self.out.push_back(Event::Mouse(MouseEvent {
             kind,
             column,
             row,
-            modifiers: KeyModifiers::NONE,
+            modifiers,
         }));
         true
     }
@@ -871,26 +907,56 @@ mod tests {
     }
 
     #[test]
-    fn sgr_mouse_scroll_is_parsed_and_other_buttons_ignored() {
+    fn sgr_mouse_scroll_and_primary_drag_are_parsed_across_chunks() {
         let mut parser = parser();
-        let events = feed_all(&mut parser, b"\x1b[<64;5;10M\x1b[<65;3;7m\x1b[<0;5;10M");
+        parser.feed(b"\x1b[<68;5;10M\x1b[<0;5");
+        parser.feed(b";10M\x1b[<32;6;10M\x1b[<0;6;10m\x1b[<81;3;7M\x1b[<2;1;1M\x1b[<0;0;1M");
+        let events = std::iter::from_fn(|| parser.pop()).collect::<Vec<_>>();
         assert_eq!(
             events,
             vec![
                 Event::Mouse(MouseEvent {
                     kind: MouseEventKind::ScrollUp,
+                    column: 4,
+                    row: 9,
+                    modifiers: KeyModifiers::SHIFT,
+                }),
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                    column: 4,
+                    row: 9,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Drag(crossterm::event::MouseButton::Left),
                     column: 5,
-                    row: 10,
+                    row: 9,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Up(crossterm::event::MouseButton::Left),
+                    column: 5,
+                    row: 9,
                     modifiers: KeyModifiers::NONE,
                 }),
                 Event::Mouse(MouseEvent {
                     kind: MouseEventKind::ScrollDown,
-                    column: 3,
-                    row: 7,
-                    modifiers: KeyModifiers::NONE,
+                    column: 2,
+                    row: 6,
+                    modifiers: KeyModifiers::CONTROL,
                 }),
             ]
         );
+    }
+
+    #[test]
+    fn focus_reports_are_parsed_without_reaching_the_composer() {
+        let mut parser = parser();
+        parser.feed(b"\x1b[");
+        parser.feed(b"I\x1b[O");
+        assert_eq!(parser.pop(), Some(Event::FocusGained));
+        assert_eq!(parser.pop(), Some(Event::FocusLost));
+        assert_eq!(parser.pop(), None);
     }
 
     #[test]

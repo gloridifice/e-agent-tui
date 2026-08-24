@@ -2,6 +2,8 @@
 
 use std::time::Instant;
 
+use unicode_segmentation::UnicodeSegmentation;
+
 use crate::{
     preview::{PreviewContent, PreviewKey, PreviewRequest, PreviewRequestId, PreviewRevision},
     Config, ThemeFile,
@@ -68,6 +70,23 @@ pub enum AgentRequest {
     Ping,
 }
 
+/// Produce a single-line, grapheme-safe preview for clipboard feedback.
+pub fn clipboard_preview(text: &str, limit: usize) -> (String, bool) {
+    let mut graphemes = text.graphemes(true);
+    let preview = graphemes
+        .by_ref()
+        .take(limit)
+        .map(|grapheme| {
+            if grapheme.chars().any(char::is_whitespace) {
+                " "
+            } else {
+                grapheme
+            }
+        })
+        .collect::<String>();
+    (preview, graphemes.next().is_some())
+}
+
 #[derive(Debug, Clone)]
 pub enum EffectResult {
     ConfigPersisted(Result<(), String>),
@@ -78,6 +97,8 @@ pub enum EffectResult {
     ConfigReloadFailed(String),
     ClipboardWritten {
         lines: usize,
+        preview: String,
+        truncated: bool,
     },
     ClipboardFailed(String),
     PreviewResolved {
@@ -183,6 +204,15 @@ mod tests {
         assert!(!dirty.content);
         assert!(dirty.animation);
         assert!(!dirty.is_clean());
+    }
+
+    #[test]
+    fn clipboard_preview_is_grapheme_safe_single_line_and_reports_truncation() {
+        assert_eq!(
+            clipboard_preview("A界🙂éZ\nmore", 6),
+            ("A界🙂éZ ".into(), true)
+        );
+        assert_eq!(clipboard_preview("short", 6), ("short".into(), false));
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use super::*;
 use crate::{
+    mouse_selection::{SelectionFrame, SelectionSurface},
     reveal::{apply_reveal, RevealSignature},
     ui::component::{card, text, working},
     wrap::stable_wrap_prefix_graphemes,
@@ -839,8 +840,18 @@ pub(super) fn render_transcript(
     scroll: &mut ScrollState,
     theme: &Theme,
     help_visible: bool,
+    selection_frame: &mut SelectionFrame,
 ) {
-    let _ = render_transcript_impl(frame, area, state, scroll, theme, help_visible, 0);
+    let _ = render_transcript_impl(
+        frame,
+        area,
+        state,
+        scroll,
+        theme,
+        help_visible,
+        0,
+        selection_frame,
+    );
 }
 
 /// Render transcript with the bottom stack (accessories + input + status +
@@ -848,6 +859,7 @@ pub(super) fn render_transcript(
 /// `bottom_rows` is the total height of the stack that follows the transcript.
 /// Returns the y offset (within `area`) where that stack begins, so the caller
 /// can draw it at the content-bottom position.
+#[allow(clippy::too_many_arguments)] // The caller owns the shared viewport contract.
 pub(super) fn render_transcript_combined(
     frame: &mut Frame,
     area: ratatui::layout::Rect,
@@ -856,10 +868,21 @@ pub(super) fn render_transcript_combined(
     theme: &Theme,
     help_visible: bool,
     bottom_rows: usize,
+    selection_frame: &mut SelectionFrame,
 ) -> usize {
-    render_transcript_impl(frame, area, state, scroll, theme, help_visible, bottom_rows)
+    render_transcript_impl(
+        frame,
+        area,
+        state,
+        scroll,
+        theme,
+        help_visible,
+        bottom_rows,
+        selection_frame,
+    )
 }
 
+#[allow(clippy::too_many_arguments)] // Internal implementation mirrors the public viewport contract.
 fn render_transcript_impl(
     frame: &mut Frame,
     area: ratatui::layout::Rect,
@@ -868,6 +891,7 @@ fn render_transcript_impl(
     theme: &Theme,
     help_visible: bool,
     bottom_rows: usize,
+    selection_frame: &mut SelectionFrame,
 ) -> usize {
     let screen_height = area.height as usize;
     let width = area.width as usize;
@@ -942,6 +966,7 @@ fn render_transcript_impl(
     let end = start.saturating_add(available).min(len);
     let (mut base_index, _) = state.render.transcript_cache.layout.locate(start);
     let mut display: Vec<Line<'static>> = Vec::with_capacity(available);
+    let visual_row_offset = usize::from(show_hint);
     let mut reading_rail_rows = Vec::new();
     while base_index < state.render.transcript_cache.lines.len() && display.len() < available {
         let base_start = state.render.transcript_cache.layout.prefix[base_index];
@@ -966,7 +991,18 @@ fn render_transcript_impl(
                 // A line-level Night background leaves explicit span-local
                 // backgrounds (inline code, diff chips) authoritative.
                 row = row.patch_style(Style::default().bg(theme.bg));
-                reading_rail_rows.push(display.len());
+                reading_rail_rows.push(display.len() + visual_row_offset);
+            }
+            if !help_visible {
+                super::selection::register_line(
+                    selection_frame,
+                    SelectionSurface::Transcript,
+                    global_row,
+                    area.x,
+                    area.y
+                        .saturating_add((display.len() + visual_row_offset) as u16),
+                    &row,
+                );
             }
             // Only an explicit row-level background makes a solid row.
             // Span backgrounds (notably inline-code chips) must stay local;

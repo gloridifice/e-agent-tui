@@ -6,7 +6,6 @@ pub(super) fn render_input(
     area: ratatui::layout::Rect,
     input: &InputState,
     theme: &Theme,
-    toast: Option<&str>,
     padding: u16,
 ) -> Option<Position> {
     let block = Block::default()
@@ -33,15 +32,6 @@ pub(super) fn render_input(
                 theme.input.hint.style(),
             ),
         ]);
-        frame.render_widget(Paragraph::new(Text::from(vec![line])), inner);
-        return None;
-    }
-
-    if let Some(toast_text) = toast {
-        let line = Line::from(Span::styled(
-            format!("❯ {toast_text}"),
-            theme.working_status.success.style(),
-        ));
         frame.render_widget(Paragraph::new(Text::from(vec![line])), inner);
         return None;
     }

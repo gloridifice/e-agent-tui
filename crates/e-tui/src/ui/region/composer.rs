@@ -10,8 +10,7 @@ pub(crate) fn render(
     area: Rect,
     input: &InputState,
     theme: &Theme,
-    toast: Option<&str>,
     horizontal_padding: u16,
 ) -> Option<Position> {
-    super::super::input::render_input(frame, area, input, theme, toast, horizontal_padding)
+    super::super::input::render_input(frame, area, input, theme, horizontal_padding)
 }

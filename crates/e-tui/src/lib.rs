@@ -23,6 +23,8 @@ pub mod input_page;
 pub mod interaction;
 pub mod login;
 pub mod mermaid;
+pub mod mouse_selection;
+pub mod notice;
 pub mod page_core;
 pub mod presentation;
 pub mod preview;
@@ -39,13 +41,17 @@ pub mod transcript_layout;
 pub mod ui;
 mod wrap;
 
-pub use action::{AgentRequest, DirtyState, DrawPriority, EffectResult, UiAction, UpdateResult};
+pub use action::{
+    clipboard_preview, AgentRequest, DirtyState, DrawPriority, EffectResult, UiAction, UpdateResult,
+};
 pub use agent::AgentEvent;
 pub use app::{NewConversationDraft, SessionModel, SessionStatus, TuiApp};
 pub use catalog::CatalogModel;
 pub use config::{Config, HexRgb, RevealRate, ThinkingDisplayMode};
-pub use event::InputEvent;
+pub use event::{InputEvent, PointerEvent};
 pub use interaction::{InteractionModel, ScrollState};
+pub use mouse_selection::{MouseSelection, SelectionFrame, SelectionSurface, SelectionUpdate};
+pub use notice::{NoticeState, COPY_NOTICE_MIN_SECS};
 pub use preview::{
     LineSelection, MutationHunk, PreviewCache, PreviewContent, PreviewKey, PreviewPaneState,
     PreviewPolicy, PreviewRef, PreviewRequest, PreviewRequestId, PreviewRevision, PreviewState,

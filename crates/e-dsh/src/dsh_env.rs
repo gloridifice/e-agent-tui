@@ -42,7 +42,7 @@ pub fn current_dsh_home() -> PathBuf {
     )
 }
 
-fn command_exists(cmd: &str) -> bool {
+pub(crate) fn command_exists(cmd: &str) -> bool {
     #[cfg(windows)]
     let out = Command::new("where").arg(cmd).output();
     #[cfg(not(windows))]

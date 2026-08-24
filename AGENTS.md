@@ -25,13 +25,14 @@ Full overview: [docs/README.md](docs/README.md).
 
 ## Common commands (Windows / PowerShell)
 
-The user-facing source install flow is documented in the README "Quick Start": install
+The user-facing source install flow is documented in the README "Quick Start": install pnpm and
 `@deepseek-ai/dsh` globally, use `cargo install --path crates/e-dsh --locked` to install `dshe.exe` into the
 Cargo bin directory, then run `dshe setup` (which embeds the bridge at build time and installs it into the
-dedicated `dshe` profile).
+dedicated `dshe` profile). Setup checks that pnpm is executable before modifying the profile.
 
 ```powershell
 # First install
+npm install --global pnpm
 npm install --global @deepseek-ai/dsh
 cargo install --path crates/e-dsh --locked
 # Embeds and installs the bridge into the dedicated dshe profile.

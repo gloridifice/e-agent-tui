@@ -823,15 +823,19 @@ disables it for diagnosis.
 ### 6.1 Source install path
 
 The README "Quick Start" is the current user-facing install entry: on Windows / PowerShell, first prepare Git,
-Node.js/npm, and Rust/Cargo, install `@deepseek-ai/dsh` globally, use `cargo install --path crates/e-dsh --locked` to
-install `dshe.exe` into the Cargo bin directory, then run `dshe setup`. The bridge runtime (package manifest,
+Node.js/npm, and Rust/Cargo, install pnpm and `@deepseek-ai/dsh` globally, use
+`cargo install --path crates/e-dsh --locked` to install `dshe.exe` into the Cargo bin directory, then run
+`dshe setup`. The bridge runtime (package manifest,
 canonical protocol contract, and every production `bridge/src/*.js` module) is embedded in `dshe.exe` at build
 time; `dshe setup` materializes it into the dedicated `dshe` profile, registers it idempotently, runs the
 equivalent of `dsh plugin --profile dshe install`, validates the result, and atomically records the successful
 bridge digest in `%DSH_HOME%\profiles\dshe\.dshe-setup.json`. When `DSH_HOME` is unset, empty, or whitespace-only,
 setup and the client both use `%USERPROFILE%\.dsh`, and the resolved value is passed to the DSH plugin child
-process. Setup only merges the bridge-owned registrations (`dependencies["dsh-tui-bridge"] = "workspace:*"`,
-the `packages/*` workspace entry, and the `tui-bridge` patch insert) and preserves unrelated profile
+process. Before modifying the profile, setup runs `pnpm --version` and stops with English installation guidance
+when pnpm is missing or unusable. Setup reports the resolved paths and each preparation, extraction, dependency
+installation, validation, and recording stage; installer stdio remains inherited. Setup only merges the
+bridge-owned registrations (`dependencies["dsh-tui-bridge"] = "workspace:*"`, the `packages/*` workspace entry,
+and the `tui-bridge` patch insert) and preserves unrelated profile
 configuration; malformed profile files are refused with an actionable error rather than rewritten. The
 `tools/mount-bridge.ps1` script remains a development-only shortcut for hot-syncing `bridge/` (and the `web`
 profile) without a client rebuild, but it is no longer a user prerequisite.

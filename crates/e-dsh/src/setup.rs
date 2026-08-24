@@ -13,6 +13,7 @@
 
 use std::fmt;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -492,8 +493,55 @@ fn install_embedded_bridge(profile: &Path) -> Result<(), SetupError> {
 }
 
 // ---------------------------------------------------------------------------
-// DSH plugin installation
+// Setup prerequisites and DSH plugin installation
 // ---------------------------------------------------------------------------
+
+fn pnpm_error(detail: &str) -> SetupError {
+    SetupError::new(format!(
+        "pnpm {detail}. Install or repair pnpm with `npm install --global pnpm`, verify it with `pnpm --version`, then run `dshe setup` again."
+    ))
+}
+
+/// Verify the pnpm executable before setup mutates the dedicated profile.
+fn require_pnpm() -> Result<String, SetupError> {
+    let available = crate::dsh_env::command_exists("pnpm");
+    require_pnpm_with(available, || {
+        #[cfg(windows)]
+        let output = Command::new("cmd")
+            .arg("/D")
+            .arg("/C")
+            .arg("pnpm")
+            .arg("--version")
+            .output()?;
+        #[cfg(not(windows))]
+        let output = Command::new("pnpm").arg("--version").output()?;
+        Ok((output.status.code(), output.stdout))
+    })
+}
+
+/// Prerequisite check with an injected process seam for deterministic tests.
+fn require_pnpm_with<F>(available: bool, run_version: F) -> Result<String, SetupError>
+where
+    F: FnOnce() -> std::io::Result<(Option<i32>, Vec<u8>)>,
+{
+    if !available {
+        return Err(pnpm_error(
+            "is required to set up the DSH bridge, but it was not found on PATH",
+        ));
+    }
+    let (exit, stdout) = run_version()
+        .map_err(|_| pnpm_error("was found on PATH but could not be executed successfully"))?;
+    if exit != Some(0) {
+        return Err(pnpm_error(
+            "was found on PATH but could not be executed successfully",
+        ));
+    }
+    let version = String::from_utf8_lossy(&stdout).trim().to_string();
+    if version.is_empty() {
+        return Err(pnpm_error("was found on PATH but did not report a version"));
+    }
+    Ok(version)
+}
 
 /// The argv for `dsh plugin --profile dshe install`, using the global `dsh`
 /// when available and the `npx` fallback otherwise. `None` when neither
@@ -522,6 +570,8 @@ fn run_plugin_install(home: &Path) -> Result<(), SetupError> {
     let Some(argv) = plugin_install_argv() else {
         return Err(missing_prerequisite());
     };
+    println!("      Running: {}", argv.join(" "));
+    let _ = std::io::stdout().flush();
     run_plugin_install_with(home, &argv, |argv, home| spawn_inherited(argv, home))
 }
 
@@ -613,12 +663,19 @@ where
     F: FnOnce(&Path) -> Result<(), SetupError>,
 {
     let profile = profile_dir(home);
+    println!("[2/6] Preparing the `dshe` profile...");
     ensure_profile_files(&profile)?;
+    println!("[3/6] Installing the embedded bridge...");
     install_embedded_bridge(&profile)?;
+    println!("[4/6] Installing plugin dependencies...");
+    let _ = std::io::stdout().flush();
     install(home)?;
+    println!("[5/6] Validating the installation...");
     validate_installed(&profile)?;
+    println!("[6/6] Recording the completed setup...");
     write_setup_record(&profile)?;
-    println!("`dshe setup` completed.");
+    println!();
+    println!("Setup completed successfully.");
     println!();
     println!("You can now run:");
     println!("  dshe");
@@ -631,6 +688,16 @@ where
 
 /// Run `dshe setup` against the current environment.
 pub fn run_setup(home: &Path) -> Result<(), SetupError> {
+    let profile = profile_dir(home);
+    println!("Setting up the DSH bridge...");
+    println!();
+    println!("DSH home: {}", home.display());
+    println!("Profile:  {}", profile.display());
+    println!();
+    println!("[1/6] Checking prerequisites...");
+    let pnpm_version = require_pnpm()?;
+    println!("      pnpm {pnpm_version}");
+    println!();
     run_setup_with(home, run_plugin_install)
 }
 
@@ -648,6 +715,20 @@ mod tests {
         let path = profile.join("package.json");
         fs::create_dir_all(profile).unwrap();
         fs::write(path, json).unwrap();
+    }
+
+    #[test]
+    fn pnpm_preflight_reports_version_and_actionable_failures() {
+        let version = require_pnpm_with(true, || Ok((Some(0), b"10.6.2\n".to_vec()))).unwrap();
+        assert_eq!(version, "10.6.2");
+
+        let missing = require_pnpm_with(false, || Ok((Some(0), Vec::new()))).unwrap_err();
+        assert!(missing.to_string().contains("not found on PATH"));
+        assert!(missing.to_string().contains("npm install --global pnpm"));
+
+        let broken = require_pnpm_with(true, || Ok((Some(1), Vec::new()))).unwrap_err();
+        assert!(broken.to_string().contains("could not be executed"));
+        assert!(broken.to_string().contains("pnpm --version"));
     }
 
     #[test]

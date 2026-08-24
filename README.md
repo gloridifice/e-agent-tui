@@ -14,9 +14,10 @@
 
 Before installing, make sure [Git](https://git-scm.com/), [Node.js](https://nodejs.org/) with npm, and [Rust](https://rustup.rs/) with Cargo are available.
 
-1. Install DeepSeek Harness: `npm install -g @deepseek-ai/dsh`
-2. Install `e`: `cargo install dshe`
-3. Run `dshe setup`
+1. Install pnpm: `npm install --global pnpm`
+2. Install DeepSeek Harness: `npm install --global @deepseek-ai/dsh`
+3. Install `e`: `cargo install dshe`
+4. Run `dshe setup`
 
 Then just run `dshe`, e will open dsh and e-tui.
 

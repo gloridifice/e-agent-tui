@@ -45,23 +45,23 @@ HostEvent 到 transcript mutation 的分类和关联 MUST 只通过 typed projec
 - **THEN** viewport 仅按实际新增 display rows 平移，用户当前看到的内容保持稳定
 
 ### Requirement: 增量缓存和复制语义不得退化
-Display 迁移 MUST 保持 streaming tail splice、活动 range patch、settle 最终色 patch、width/generation layout cache、可见窗口物化和原始 Markdown copy provenance。
+The display and Reading View migration MUST preserve streaming tail splice, activity range patches, final settle-color patches, width/generation layout cache, visible-window materialization, and original Markdown copy provenance.
 
 #### Scenario: Assistant 流式 chunk
-- **WHEN** 新 chunk 只扩展 transcript 尾部的 assistant block
-- **THEN** 缓存只标记并拼接 tail，不执行全量 transcript 重建
+- **WHEN** a new chunk only extends the transcript's final assistant Block
+- **THEN** the cache marks and splices only the tail without rebuilding the complete transcript
 
 #### Scenario: 活动动画
-- **WHEN** spinner 或 settle transition 更新活动状态颜色
-- **THEN** 缓存只 patch 对应 `DisplayId` 的 range，并在停止动画前提交精确最终颜色
+- **WHEN** a spinner or settle transition changes an activity color
+- **THEN** the cache patches only the matching `DisplayId` range and commits the exact final color before animation stops
 
 #### Scenario: 原子内容复制
-- **WHEN** copy selection 与表格、代码或 Mermaid 原子块相交
-- **THEN** 复制结果仍来自稳定 unit 的原始 Markdown，而不是渲染后的字符
+- **WHEN** Reading View copies a table, code, or Mermaid Block
+- **THEN** the result comes from the stable unit's original Markdown source rather than rendered terminal characters
 
 #### Scenario: Markdown 布局重新物化
-- **WHEN** assistant block 流式增长、终端宽度变化或展开状态改变
-- **THEN** `transcript_layout` 按稳定 `DisplayId` 复用该 block 的 unit-id 范围并重新生成 atomic/raw-line provenance，`TranscriptStore` 不保存 Ratatui `RenderLine`
+- **WHEN** an assistant Block streams, terminal width changes, pane width changes, or expansion state changes
+- **THEN** `transcript_layout` reuses the stable `DisplayId` unit-ID range and rematerializes atomic/raw-line provenance without storing Ratatui `RenderLine` values in the transcript store
 
 ### Requirement: 兼容层删除具有可验证完成条件
 Display 迁移只有在生产代码不再声明旧 transcript `Msg` enum、不再包含 compatibility reducer、且 UI 不再匹配事件专用旧变体时 SHALL 被视为完成。
@@ -69,3 +69,19 @@ Display 迁移只有在生产代码不再声明旧 transcript `Msg` enum、不�
 #### Scenario: 完成迁移检查
 - **WHEN** 执行架构与源码守卫测试
 - **THEN** 旧 `Msg` transcript 声明、`reduce_host_event` 兼容路径和旧变体 UI 分支均不存在，OpenSpec 清理任务才可保持完成状态
+
+### Requirement: Reading Document is an index over the single projection
+The Reading Document SHALL derive semantic Blocks, Items, copy payloads, and Preview references from the canonical display projection and shared layout provenance. It MUST NOT retain a second message timeline or independently replay HostEvents.
+
+#### Scenario: Projection replaces a surface
+- **WHEN** canonical projection removes old display nodes and inserts a replacement
+- **THEN** the Reading Document removes and inserts only the semantic units owned by those canonical nodes
+
+#### Scenario: Cross-page activity correlates
+- **WHEN** a tool lifecycle is completed from halves loaded across history pages
+- **THEN** canonical projection produces one final activity and Reading View observes one corresponding stable Block
+
+#### Scenario: Architecture guard scans transcript ownership
+- **WHEN** source guards inspect production transcript storage
+- **THEN** they find one public display path and no Reading-specific duplicate message store
+

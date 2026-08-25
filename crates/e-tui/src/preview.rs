@@ -2,6 +2,8 @@
 
 use std::{collections::HashMap, time::Instant};
 
+use ratatui::text::Line;
+
 use crate::reveal::LineRevealTrack;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,13 +34,16 @@ pub struct PreviewRequest {
     pub revision: PreviewRevision,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum PreviewContent {
     Link {
         label: Option<String>,
         url: String,
     },
-    Diff(String),
+    Diff {
+        path: Option<String>,
+        source: String,
+    },
     Lines {
         path: String,
         start: usize,
@@ -66,7 +71,7 @@ pub enum PreviewContent {
 }
 
 /// A 1-based inclusive line window. `end: None` is open-ended (through EOF).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LineSelection {
     pub start: usize,
     pub end: Option<usize>,
@@ -74,14 +79,14 @@ pub struct LineSelection {
 
 /// Settled command metrics: retained line count, truncation qualification, and
 /// wall-clock duration in milliseconds (None while still running or unknown).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct ToolMetrics {
     pub output_lines: usize,
     pub truncated: bool,
     pub duration_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ToolPreviewPrimary {
     Location {
         path: String,
@@ -101,14 +106,14 @@ pub enum ToolPreviewPrimary {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ToolPreviewSecondary {
     Terminal { output: String, truncated: bool },
 }
 
 /// Provider-neutral structured tool preview. Semantic content only: no Ratatui
 /// styles, no terminal-width wrapping, and no DSH-specific field names.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ToolPreview {
     pub name: String,
     pub primary: ToolPreviewPrimary,
@@ -118,7 +123,7 @@ pub struct ToolPreview {
 /// One event-supplied mutation fragment. `old`/`new` are the raw before/after
 /// texts; `anchor_line` records an insert's 0-based insertion line when the
 /// event supplied no before-image.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MutationHunk {
     pub path: Option<String>,
     pub old: Option<String>,
@@ -228,7 +233,22 @@ impl PreviewCache {
 pub struct PreviewWorkStats {
     pub rebuilds: u64,
     pub patches: u64,
+    pub layout_rebuilds: u64,
     pub materialized_rows: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PreviewLayoutKey {
+    pub owner: Option<(PreviewKey, PreviewRevision)>,
+    pub content_signature: u64,
+    pub width: usize,
+    pub theme_signature: u64,
+}
+
+#[derive(Debug, Default)]
+struct PreviewLayoutCache {
+    key: Option<PreviewLayoutKey>,
+    lines: Vec<Line<'static>>,
 }
 
 #[derive(Debug, Default)]
@@ -241,6 +261,7 @@ pub struct PreviewPaneState {
     pub cache: PreviewCache,
     /// Presentation-only wrapped-row cursor for the selected Ready target.
     pub reveal: Option<LineRevealTrack>,
+    layout: PreviewLayoutCache,
     next_request_id: u64,
     work: PreviewWorkStats,
 }
@@ -252,12 +273,16 @@ impl PreviewPaneState {
     pub fn select(&mut self, target: Option<PreviewTarget>) -> Option<PreviewRequest> {
         let identity_changed = self.target.as_ref().map(|target| target.id.as_str())
             != target.as_ref().map(|target| target.id.as_str());
+        let target_changed = self.target != target;
         if identity_changed {
             self.scroll = 0;
             self.reveal = None;
             self.work.rebuilds = self.work.rebuilds.saturating_add(1);
-        } else if self.target != target {
+        } else if target_changed {
             self.work.patches = self.work.patches.saturating_add(1);
+        }
+        if target_changed {
+            self.invalidate_layout();
         }
         self.target = target;
         let Some(target) = self.target.as_ref() else {
@@ -338,6 +363,20 @@ impl PreviewPaneState {
         self.reveal
             .as_mut()
             .is_some_and(|track| track.tick(now, lines_per_second))
+    }
+
+    pub(crate) fn cached_layout(&self, key: &PreviewLayoutKey) -> Option<Vec<Line<'static>>> {
+        (self.layout.key.as_ref() == Some(key)).then(|| self.layout.lines.clone())
+    }
+
+    pub(crate) fn store_layout(&mut self, key: PreviewLayoutKey, lines: Vec<Line<'static>>) {
+        self.layout.key = Some(key);
+        self.layout.lines = lines;
+        self.work.layout_rebuilds = self.work.layout_rebuilds.saturating_add(1);
+    }
+
+    pub fn invalidate_layout(&mut self) {
+        self.layout = PreviewLayoutCache::default();
     }
 
     pub fn record_materialized_rows(&mut self, rows: usize) {
@@ -441,6 +480,38 @@ mod tests {
             pane.state,
             PreviewState::Ready(PreviewContent::PlainText("old".into()))
         );
+    }
+
+    #[test]
+    fn revision_change_invalidates_only_materialized_preview_layout() {
+        let mut pane = PreviewPaneState::default();
+        pane.select(Some(PreviewTarget {
+            id: "a".into(),
+            reference: PreviewRef::Inline {
+                key: PreviewKey("a".into()),
+                revision: PreviewRevision(1),
+                content: PreviewContent::Markdown("one".into()),
+            },
+        }));
+        let key = PreviewLayoutKey {
+            owner: Some((PreviewKey("a".into()), PreviewRevision(1))),
+            content_signature: 0,
+            width: 40,
+            theme_signature: 7,
+        };
+        pane.store_layout(key.clone(), vec![Line::raw("cached")]);
+        assert!(pane.cached_layout(&key).is_some());
+
+        pane.select(Some(PreviewTarget {
+            id: "a".into(),
+            reference: PreviewRef::Inline {
+                key: PreviewKey("a".into()),
+                revision: PreviewRevision(2),
+                content: PreviewContent::Markdown("two".into()),
+            },
+        }));
+        assert!(pane.cached_layout(&key).is_none());
+        assert_eq!(pane.scroll, 0, "same identity keeps scroll anchor");
     }
 
     #[test]

@@ -36,6 +36,7 @@ pub mod render;
 pub mod render_state;
 pub mod reveal;
 pub mod settings;
+pub mod syntax;
 pub mod theme;
 pub mod transcript_layout;
 pub mod ui;

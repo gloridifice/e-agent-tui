@@ -14,6 +14,10 @@ coral = "#ffa07a"
 rose = "#f6b6c9"
 ember = "#e06b75"
 honey = "#f5d76e"
+added_bg = "#1e2d24"
+removed_bg = "#302023"
+added_accent = "#7ad88f"
+removed_accent = "#e06b75"
 
 [semantics.surface]
 base = { fg = "mist", bg = "night" }
@@ -52,6 +56,37 @@ mermaid_node = { fg = "mist" }
 mermaid_edge = { fg = "bark" }
 mermaid_edge_label = { fg = "blush" }
 mermaid_title = { fg = "coral", bold = true }
+
+[semantics.markdown_weak]
+text = { fg = "bark" }
+heading1 = { fg = "bark", bold = true }
+heading2 = { fg = "bark", bold = true }
+heading3 = { fg = "bark" }
+heading4 = { fg = "bark", italic = true }
+heading5 = { fg = "bark" }
+heading6 = { fg = "umber" }
+emphasis = { fg = "bark", italic = true }
+strong = { fg = "bark", bold = true }
+strikethrough = { fg = "umber" }
+inline_code = { fg = "bark", bg = "night" }
+link_text = { fg = "bark", bold = true }
+link_url = { fg = "bark", underline = true }
+image = { fg = "bark", italic = true }
+quote_marker = { fg = "umber" }
+rule = { fg = "umber" }
+code_text = { fg = "bark" }
+code_meta = { fg = "umber" }
+code_background = { fg = "bark", bg = "night" }
+table_border = { fg = "umber" }
+table_header = { fg = "bark", bold = true }
+list_marker = { fg = "umber" }
+task_checked = { fg = "bark" }
+task_unchecked = { fg = "umber" }
+mermaid_border = { fg = "umber" }
+mermaid_node = { fg = "bark" }
+mermaid_edge = { fg = "umber" }
+mermaid_edge_label = { fg = "bark" }
+mermaid_title = { fg = "bark", bold = true }
 
 [semantics.input]
 background = { fg = "mist", bg = "ash" }
@@ -98,3 +133,12 @@ selection = { fg = "night", bg = "mist" }
 accent = { fg = "coral" }
 selected_marker = { fg = "sage" }
 unselected_marker = { fg = "mist" }
+
+[semantics.diff]
+text = { fg = "mist" }
+added = { fg = "mist", bg = "added_bg" }
+removed = { fg = "mist", bg = "removed_bg" }
+added_accent = { fg = "added_accent" }
+removed_accent = { fg = "removed_accent" }
+context_accent = { fg = "bark" }
+separator = { fg = "umber" }

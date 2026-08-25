@@ -393,6 +393,9 @@ async fn run(
     app.interaction = e_tui::InteractionModel::new(&config);
     let state = Arc::new(std::sync::Mutex::new(app));
     let mut theme = theme;
+    // Syntect's embedded syntax dump has a measurable cold-start cost. Warm it
+    // off the render path and overlap that pure CPU work with bridge attach.
+    let syntax_warmup = std::thread::spawn(e_tui::syntax::warm_up);
 
     let max_frame_bytes =
         wire_frame_limit(std::env::var("DSHE_LEGACY_MAX_FRAME_MB").ok().as_deref());
@@ -415,6 +418,10 @@ async fn run(
     drop(_z);
     phases.mark("ws connect");
     phases.mark("hello sent");
+    syntax_warmup
+        .join()
+        .map_err(|_| anyhow::anyhow!("syntax asset warm-up panicked"))?;
+    phases.mark("syntax warm-up");
     let tx_out = bridge_io.outbound.clone();
     let state_r = Arc::clone(&state);
 

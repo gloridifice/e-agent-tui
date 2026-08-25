@@ -1603,6 +1603,7 @@ impl AppState {
             expanded: self.render.expanded.clone(),
             collapse_rows: self.config.atomic_collapse_rows,
             mermaid_enabled: self.config.mermaid_enabled,
+            markdown_strength: Default::default(),
             content_width: Some(self.render.transcript_cache.width),
         };
         let lines = {

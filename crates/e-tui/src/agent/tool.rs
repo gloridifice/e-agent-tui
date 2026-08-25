@@ -164,7 +164,10 @@ impl ToolReference {
             Self::Text { text } | Self::PlainText { text } => {
                 PreviewContent::PlainText(text.clone())
             }
-            Self::Diff { diff, .. } => PreviewContent::Diff(diff.clone()),
+            Self::Diff { path, diff } => PreviewContent::Diff {
+                path: path.clone(),
+                source: diff.clone(),
+            },
             Self::Hunks(hunks) => PreviewContent::Hunks(hunks.clone()),
             Self::Lines { path, start, lines } => PreviewContent::Lines {
                 path: path.clone(),
@@ -233,6 +236,21 @@ mod tests {
                 "file references must preview the path, never defer content: {preview:?}"
             );
         }
+    }
+
+    #[test]
+    fn diff_preview_preserves_path_for_syntax_selection() {
+        let content = ToolReference::Diff {
+            path: Some("src/main.rs".into()),
+            diff: "-old\n+new".into(),
+        }
+        .preview_content()
+        .expect("diff preview");
+        assert!(matches!(
+            content,
+            PreviewContent::Diff { path: Some(path), source }
+                if path == "src/main.rs" && source == "-old\n+new"
+        ));
     }
 
     #[test]

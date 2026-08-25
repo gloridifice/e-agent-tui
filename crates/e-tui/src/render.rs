@@ -61,6 +61,13 @@ impl BlockKind {
 
 const MAX_CELL_WIDTH: usize = 40;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MarkdownStrength {
+    #[default]
+    Normal,
+    Weak,
+}
+
 /// Per-render options (config-derived, design D28).
 #[derive(Debug, Clone)]
 pub struct RenderOptions {
@@ -70,6 +77,8 @@ pub struct RenderOptions {
     pub collapse_rows: usize,
     /// Whether mermaid fences render via WASM (D9); off = raw fence.
     pub mermaid_enabled: bool,
+    /// Semantic Markdown palette used by this materialization.
+    pub markdown_strength: MarkdownStrength,
     /// Optional display width of the surface these lines are painted into.
     /// When set, tables size their columns to fit it and wrap cell text
     /// inside the box, and list items pre-wrap with a hanging indent so
@@ -84,6 +93,7 @@ impl Default for RenderOptions {
             expanded: HashSet::new(),
             collapse_rows: 40,
             mermaid_enabled: true,
+            markdown_strength: MarkdownStrength::Normal,
             content_width: None,
         }
     }
@@ -99,6 +109,17 @@ pub fn render_markdown(
     options: &RenderOptions,
     units: &mut HashMap<u64, String>,
 ) -> Vec<RenderLine> {
+    // Keep the renderer's existing single `theme.markdown` access path while
+    // selecting the surface-specific semantic group once per materialization.
+    let mut selected_theme = *theme;
+    if options.markdown_strength == MarkdownStrength::Weak {
+        selected_theme.markdown = selected_theme.markdown_weak;
+        // Top-level bullets historically use the flat Coral alias. Weak
+        // Markdown has no extra role, so route that derived accent through its
+        // list-marker semantic instead of leaking a strong palette color.
+        selected_theme.coral = selected_theme.markdown_weak.list_marker.fg;
+    }
+    let theme = &selected_theme;
     let md_options = Options::ENABLE_TABLES
         | Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_TASKLISTS
@@ -865,13 +886,17 @@ fn render_code_block(
         fill: true,
     });
 
+    let highlighted = crate::syntax::highlight_lines(
+        content,
+        crate::syntax::SyntaxHint::Token(lang.unwrap_or_default()),
+        &theme.markdown,
+    );
     let collapsed = !options.expanded.contains(&unit) && content.len() > options.collapse_rows;
     let push_content = |i: usize, out: &mut Vec<RenderLine>| {
+        let mut spans = vec![Span::styled("  ", dim)];
+        spans.extend(highlighted[i].spans.clone());
         out.push(RenderLine {
-            line: Line::from(vec![
-                Span::styled("  ", dim),
-                Span::styled(content[i].to_string(), theme.markdown.code_text.style()),
-            ]),
+            line: Line::from(spans),
             unit,
             raw_line: Some(i + fence_offset),
             atomic: true,
@@ -1595,7 +1620,10 @@ mod tests {
             .flat_map(|r| r.line.spans.iter())
             .find(|s| s.content == "粗体")
             .expect("bold span rendered");
-        assert!(bold.style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(
+            bold.style.add_modifier.contains(Modifier::BOLD),
+            Theme::ferra().markdown.strong.bold
+        );
         let code = lines
             .iter()
             .flat_map(|r| r.line.spans.iter())
@@ -1708,7 +1736,21 @@ mod tests {
         // Glow-style header: `  rust · 1 行` (no frame).
         assert_eq!(lines[0].line.spans[1].content, "rust", "lang label");
         assert!(lines[0].fill, "header fills its background");
-        assert_eq!(lines[1].line.spans[1].content, "fn main() {}");
+        let content = lines[1]
+            .line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert_eq!(content, "  fn main() {}");
+        let keyword = lines[1]
+            .line
+            .spans
+            .iter()
+            .find(|span| span.content == "fn")
+            .expect("Rust keyword span");
+        assert_eq!(keyword.style.fg, Some(Theme::ferra().markdown.heading1.fg));
+        assert_eq!(keyword.style.bg, None, "token background stays transparent");
         assert!(lines[1].fill, "content fills its background");
         // The first content row maps to raw line 1 (line 0 is the fence).
         assert_eq!(lines[1].raw_line, Some(1));
@@ -1736,11 +1778,13 @@ mod tests {
         assert_eq!(span.content, " ", "h1 padded with a leading space");
         assert_eq!(span.style.bg, theme.markdown.heading1.bg);
         assert_eq!(span.style.fg, Some(theme.markdown.heading1.fg));
-        // h3 = link/blush without bold.
         let h3 = render("### 三级");
         let span = &h3[0].line.spans[0];
         assert_eq!(span.style.fg, Some(theme.markdown.heading3.fg));
-        assert!(!span.style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(
+            span.style.add_modifier.contains(Modifier::BOLD),
+            theme.markdown.heading3.bold
+        );
     }
 
     #[test]
@@ -1900,7 +1944,10 @@ mod tests {
                 .unwrap_or_else(|| panic!("span {text:?} present in {spans:?}"))
                 .style
         };
-        assert!(styled("bold").add_modifier.contains(Modifier::BOLD));
+        assert_eq!(
+            styled("bold").add_modifier.contains(Modifier::BOLD),
+            theme.markdown.strong.bold
+        );
         assert!(styled("em").add_modifier.contains(Modifier::ITALIC));
         assert_eq!(styled("label").fg, Some(theme.markdown.link_text.fg));
         assert_eq!(
@@ -2058,7 +2105,50 @@ mod tests {
             .iter()
             .find(|s| s.content == "bold")
             .expect("bold span");
-        assert!(bold.style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(
+            bold.style.add_modifier.contains(Modifier::BOLD),
+            Theme::ferra().markdown.strong.bold
+        );
+    }
+
+    #[test]
+    fn weak_markdown_routes_structure_and_code_through_weak_semantics() {
+        let theme = Theme::ferra();
+        let mut next = 0;
+        let mut units = HashMap::new();
+        let options = RenderOptions {
+            markdown_strength: MarkdownStrength::Weak,
+            ..Default::default()
+        };
+        let lines = render_markdown(
+            "## weak\n\n```rust\nfn main() {}\n```",
+            &theme,
+            &mut next,
+            &options,
+            &mut units,
+        );
+        let heading = lines
+            .iter()
+            .flat_map(|line| &line.line.spans)
+            .find(|span| span.content == "weak")
+            .expect("weak heading");
+        assert_eq!(heading.style.fg, Some(theme.markdown_weak.heading2.fg));
+        let keyword = lines
+            .iter()
+            .flat_map(|line| &line.line.spans)
+            .find(|span| span.content == "fn")
+            .expect("weak Rust keyword");
+        assert_eq!(keyword.style.fg, Some(theme.markdown_weak.heading1.fg));
+        assert_eq!(keyword.style.bg, None);
+        assert!(lines
+            .iter()
+            .filter(|line| line.atomic)
+            .all(|line| line.fill));
+        assert_eq!(
+            units.len(),
+            2,
+            "heading and code keep complete source units"
+        );
     }
 
     #[test]

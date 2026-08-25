@@ -15,7 +15,7 @@ use serde::Deserialize;
 const DEEPSEEK_E_SOURCE: &str = include_str!("../assets/themes/deepseek-e.toml");
 const FERRA_SOURCE: &str = include_str!("../assets/themes/ferra.toml");
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ThemeStyle {
     pub fg: Color,
     pub bg: Option<Color>,
@@ -83,7 +83,7 @@ macro_rules! style_group {
             $( $field: StyleRef, )+
         }
 
-        #[derive(Clone, Copy, Debug)]
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         pub struct $resolved {
             $( pub $field: ThemeStyle, )+
         }
@@ -174,17 +174,29 @@ style_group!(OverlayRef => OverlayTheme {
     unselected_marker,
 });
 
+style_group!(DiffRef => DiffTheme {
+    text,
+    added,
+    removed,
+    added_accent,
+    removed_accent,
+    context_accent,
+    separator,
+});
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SemanticsRef {
     surface: SurfaceRef,
     markdown: MarkdownRef,
+    markdown_weak: MarkdownRef,
     input: InputRef,
     working_status: WorkingStatusRef,
     log: LogRef,
     activity: ActivityRef,
     card: CardRef,
     overlay: OverlayRef,
+    diff: DiffRef,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -198,16 +210,18 @@ struct ThemeDocument {
 /// Fully resolved, render-time theme. The nested fields are the public semantic
 /// API. The flat color aliases remain temporarily for existing render helpers;
 /// each is derived from a semantic role rather than directly from a palette.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Theme {
     pub surface: SurfaceTheme,
     pub markdown: MarkdownTheme,
+    pub markdown_weak: MarkdownTheme,
     pub input: InputTheme,
     pub working_status: WorkingStatusTheme,
     pub log: LogTheme,
     pub activity: ActivityTheme,
     pub card: CardTheme,
     pub overlay: OverlayTheme,
+    pub diff: DiffTheme,
 
     // Compatibility aliases for render paths that combine semantic roles.
     pub bg: Color,
@@ -306,12 +320,14 @@ fn resolve_document(document: ThemeDocument) -> Result<ThemeFile, String> {
 
     let surface = document.semantics.surface.resolve(&colors)?;
     let markdown = document.semantics.markdown.resolve(&colors)?;
+    let markdown_weak = document.semantics.markdown_weak.resolve(&colors)?;
     let input = document.semantics.input.resolve(&colors)?;
     let working_status = document.semantics.working_status.resolve(&colors)?;
     let log = document.semantics.log.resolve(&colors)?;
     let activity = document.semantics.activity.resolve(&colors)?;
     let card = document.semantics.card.resolve(&colors)?;
     let overlay = document.semantics.overlay.resolve(&colors)?;
+    let diff = document.semantics.diff.resolve(&colors)?;
 
     // `fg` is the only required style property. Background-oriented roles
     // gracefully inherit when `bg` is omitted rather than making the schema
@@ -334,12 +350,14 @@ fn resolve_document(document: ThemeDocument) -> Result<ThemeFile, String> {
         coral: colors.get("coral").copied().unwrap_or(card.detail.fg),
         surface,
         markdown,
+        markdown_weak,
         input,
         working_status,
         log,
         activity,
         card,
         overlay,
+        diff,
     };
 
     Ok(ThemeFile {
@@ -403,14 +421,26 @@ mod tests {
         assert_eq!(ferra.theme.bg, Color::Rgb(0x2b, 0x29, 0x2d));
         assert_eq!(
             ferra.theme.markdown.heading2.fg,
-            Color::Rgb(0xb1, 0xb6, 0x95)
+            Color::Rgb(0xfe, 0xcd, 0xb2)
         );
         assert!(ferra.theme.markdown.heading2.bold);
         assert_eq!(
             ferra.theme.markdown.heading3.fg,
-            Color::Rgb(0xfe, 0xcd, 0xb2)
+            Color::Rgb(0xb1, 0xb6, 0x95)
         );
-        assert!(!ferra.theme.markdown.heading3.bold);
+        assert!(ferra.theme.markdown.heading3.bold);
+        assert_eq!(
+            ferra.theme.markdown_weak.text.fg,
+            Color::Rgb(0x6f, 0x5d, 0x63)
+        );
+        assert_eq!(
+            ferra.theme.markdown_weak.code_meta.fg,
+            Color::Rgb(0x4d, 0x42, 0x4b)
+        );
+        assert_eq!(
+            ferra.theme.markdown_weak.code_background.bg,
+            Some(Color::Rgb(0x2b, 0x29, 0x2d))
+        );
     }
 
     #[test]
@@ -423,7 +453,7 @@ mod tests {
             .expect("arbitrary palette key parses")
             .theme;
         assert_eq!(theme.bg, Color::Rgb(1, 2, 3));
-        assert!(!theme.markdown.heading3.bold);
+        assert!(theme.markdown.heading3.bold);
         assert!(!theme.markdown.heading3.italic);
         assert_eq!(theme.markdown.heading3.bg, None);
     }
@@ -432,8 +462,17 @@ mod tests {
     fn unknown_palette_reference_and_missing_semantic_are_rejected() {
         let unknown = FERRA_SOURCE.replacen("fg = \"mist\"", "fg = \"missing\"", 1);
         assert!(parse_theme(&unknown).is_none());
-        let missing = FERRA_SOURCE.replace("heading6 = { fg = \"bark\" }", "");
+        let missing = FERRA_SOURCE.replacen("heading6 = { fg = \"bark\" }", "", 1);
         assert!(parse_theme(&missing).is_none());
+        let missing_weak =
+            FERRA_SOURCE.replace("[semantics.markdown_weak]", "[ignored.markdown_weak]");
+        assert!(parse_theme(&missing_weak).is_none());
+        let illegal_weak = FERRA_SOURCE.replacen(
+            "[semantics.markdown_weak]",
+            "[semantics.markdown_weak]\nunknown = { fg = \"bark\" }",
+            1,
+        );
+        assert!(parse_theme(&illegal_weak).is_none());
     }
 
     #[test]

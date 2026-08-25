@@ -16,7 +16,7 @@ Terminal client for DeepSeek Harness (DSH) (project name **e**, executable **`ds
 - `bridge/` — Node.js (ESM) DSH **host-composition plugin** (one WS upgrade route `/dsh-tui`). Conventions:
   [docs/bridge.md](docs/bridge.md).
 - `crates/e-dsh/` — Rust DSH adapter and executable package (`e-dsh`, artifact `dshe.exe`; transitional library import name `e`).
-- `crates/e-tui/` — kernel-neutral frontend library package (`e-tui`), owning lifecycle state, projection, rendering, paced transcript/Preview text reveal, responsive Preview, Reading View, themes, and config values. Rust conventions: [docs/client.md](docs/client.md).
+- `crates/e-tui/` — kernel-neutral frontend library package (`e-tui`), owning lifecycle state, projection, rendering, semantic syntax highlighting, paced transcript/Preview text reveal, responsive Preview, Reading View, themes, and config values. Rust conventions: [docs/client.md](docs/client.md).
 
 The two processes communicate over JSON WebSocket; the machine-readable contract is
 `bridge/protocol-contract.json` (see [docs/protocol.md](docs/protocol.md)). Token auth lives at
@@ -71,6 +71,7 @@ node tools/probe-startup.mjs      # attach latency / snapshot size
 node tools/dump-snapshot.mjs      # capture a snapshot sample -> tools/cache/snapshot-sample.json
 cargo run --release --example timing_snapshot -- tools/cache/snapshot-sample.json
 cargo run --release --example timing_frames # 1002-message continuous scroll/stream/animation frame benchmark
+cargo run --release --example timing_syntax # syntax cold-start/cache/stream/diff benchmark
 cargo run --example smoke_snapshot -- tools/cache/snapshot-sample.json
 ```
 
@@ -141,3 +142,4 @@ Implementation conventions are documented per part and are the source of truth w
   are authoritative.
 - Under `DSH_TUI_TIMING=1`, per-stage startup timings print to stderr, for locating startup regressions.
 - Live assistant Markdown and selected Ready Preview content use presentation-only reveal sidecars; retain complete semantic/copy/cache content, exclude width-dependent fill padding from signatures, and preserve transcript suffix-splice behavior. Transcript admission must reuse UAX #14 wrapping and hold only the unstable trailing atom until a break, timeout, or settlement; Preview pacing applies after wrapping and counts display rows. Compose independent admission, content, and fade deadlines with the spinner clock rather than restoring a fixed ticker.
+- Syntax highlighting uses embedded `syntect` grammars through `tui-syntax-highlight`: transcript fences and diff bodies derive token foreground/modifiers from `semantics.markdown`, Preview Markdown uses required `semantics.markdown_weak`, and `semantics.diff` retains structural row colors. Keep highlighting bounded (256 KiB/2,000 rows/8 KiB per line), warm syntax assets before the frame loop, cache Preview styled layouts by target/revision/width/theme, and never read files or compute diffs in the client.

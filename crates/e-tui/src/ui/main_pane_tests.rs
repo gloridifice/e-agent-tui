@@ -1403,7 +1403,7 @@ fn preview_wraps_long_lines_to_the_pane_width() {
 }
 
 #[test]
-fn reasoning_preview_renders_markdown_with_forced_bark_foreground() {
+fn reasoning_preview_renders_with_weak_markdown_semantics() {
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();
     state.preview.fullscreen = true;
@@ -1428,8 +1428,8 @@ fn reasoning_preview_renders_markdown_with_forced_bark_foreground() {
     // Single centered row: top padding (20-1)/2 = 9, text starts at x=1.
     let bold = &terminal.backend().buffer()[(1, 9)];
     assert_eq!(
-        bold.fg, theme.surface.muted_text.fg,
-        "bold span foreground forced to Bark"
+        bold.fg, theme.markdown_weak.strong.fg,
+        "bold span uses weak Markdown"
     );
     assert!(
         bold.modifier.contains(ratatui::style::Modifier::BOLD),
@@ -1437,14 +1437,115 @@ fn reasoning_preview_renders_markdown_with_forced_bark_foreground() {
     );
     let code = &terminal.backend().buffer()[(13, 9)];
     assert_eq!(
-        code.fg, theme.surface.muted_text.fg,
-        "inline code foreground forced to Bark"
+        code.fg, theme.markdown_weak.inline_code.fg,
+        "inline code uses weak Markdown"
     );
     assert_eq!(
         code.bg,
-        theme.markdown.inline_code.bg.unwrap_or(Color::Reset),
-        "inline code chip background preserved"
+        theme.markdown_weak.inline_code.bg.unwrap_or(Color::Reset),
+        "weak inline code chip background preserved"
     );
+}
+
+#[test]
+fn preview_markdown_code_uses_weak_syntax_and_code_background() {
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    state.preview.fullscreen = true;
+    state.preview.state = PreviewState::Ready(PreviewContent::Markdown(
+        "```rust\nfn main() {}\n```".into(),
+    ));
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(70, 20)).unwrap();
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let (x, y) = find_text(buffer, "fn main").expect("highlighted code body");
+    assert_eq!(buffer[(x, y)].fg, theme.markdown_weak.heading1.fg);
+    assert_eq!(
+        buffer[(x, y)].bg,
+        theme
+            .markdown_weak
+            .code_background
+            .bg
+            .unwrap_or(Color::Reset)
+    );
+    assert!(buffer[(x, y)].modifier.contains(Modifier::BOLD));
+}
+
+#[test]
+fn preview_styled_layout_caches_syntax_until_width_or_theme_changes() {
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    state.preview.fullscreen = true;
+    state.preview.state = PreviewState::Ready(PreviewContent::Markdown(
+        "```rust\nfn main() {}\n```".into(),
+    ));
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let mut theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(70, 20)).unwrap();
+
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+    assert_eq!(state.preview.take_work_stats().layout_rebuilds, 1);
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+    assert_eq!(
+        state.preview.take_work_stats().layout_rebuilds,
+        0,
+        "unchanged redraw reuses styled rows"
+    );
+
+    let mut terminal = Terminal::new(TestBackend::new(72, 20)).unwrap();
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+    assert_eq!(state.preview.take_work_stats().layout_rebuilds, 1);
+
+    theme = Theme::deepseek_e();
+    state.config.resolved_theme = theme;
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+    assert_eq!(state.preview.take_work_stats().layout_rebuilds, 1);
+}
+
+#[test]
+fn diff_preview_composes_normal_syntax_with_added_and_removed_backgrounds() {
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    state.preview.fullscreen = true;
+    state.preview.state = PreviewState::Ready(PreviewContent::Diff {
+        path: Some("src/main.rs".into()),
+        source: "@@ -1 +1 @@\n-fn old() {}\n+fn new() {}".into(),
+    });
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(70, 20)).unwrap();
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let (old_x, old_y) = find_text(buffer, "fn old").expect("removed Rust row");
+    let (new_x, new_y) = find_text(buffer, "fn new").expect("added Rust row");
+    assert_eq!(buffer[(old_x, old_y)].fg, theme.markdown.heading1.fg);
+    assert_eq!(buffer[(old_x, old_y)].bg, theme.diff.removed.bg.unwrap());
+    assert_eq!(buffer[(new_x, new_y)].fg, theme.markdown.heading1.fg);
+    assert_eq!(buffer[(new_x, new_y)].bg, theme.diff.added.bg.unwrap());
+    let content = buffer
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(content.contains("│    1 │ fn old"));
+    assert!(content.contains("│    1 │ fn new"));
 }
 
 #[test]

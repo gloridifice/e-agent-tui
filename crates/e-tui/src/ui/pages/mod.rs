@@ -1,5 +1,6 @@
 //! Input Page renderers.
 
+mod effort;
 mod login;
 mod model;
 mod question;
@@ -7,6 +8,7 @@ mod resume;
 mod settings;
 mod theme;
 
+use effort::render_effort_page;
 pub(super) use login::render_login;
 use login::render_login_scrolled;
 use model::render_model_page;
@@ -62,6 +64,17 @@ pub(super) fn render_input_page(
                 frame,
                 area,
                 model,
+                &session.focus,
+                &mut session.viewport,
+                theme,
+            );
+            None
+        }
+        InputPage::Effort(effort) => {
+            render_effort_page(
+                frame,
+                area,
+                effort,
                 &session.focus,
                 &mut session.viewport,
                 theme,

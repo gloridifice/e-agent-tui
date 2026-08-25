@@ -12,7 +12,8 @@ pub use crate::page_core::{
 };
 use crate::{
     action::AgentRequest,
-    agent::{ModelProvider, SessionSummary},
+    agent::{ModelProvider, ModelSelection, ReasoningEffort, SessionSummary},
+    catalog::CatalogModel,
     config::Config,
     login::{LoginAction, LoginState, LoginView, Page as LoginPage, PROXY_SAVE_ROW},
     question::QuestionBatch,
@@ -296,7 +297,109 @@ impl ModelPage {
         let Some((provider, model)) = selection else {
             return PageOutcome::default();
         };
-        PageOutcome::send(AgentRequest::ModelSet { provider, model }, true)
+        PageOutcome::send(
+            AgentRequest::ModelSet {
+                provider,
+                model,
+                reasoning_effort: None,
+            },
+            true,
+        )
+    }
+}
+
+pub struct EffortPage {
+    pub efforts: Vec<ReasoningEffort>,
+    pub current: Option<ModelSelection>,
+    pub default_effort: Option<String>,
+    pub loading: bool,
+    pub unavailable: bool,
+}
+
+impl EffortPage {
+    pub fn loading() -> Self {
+        Self {
+            efforts: Vec::new(),
+            current: None,
+            default_effort: None,
+            loading: true,
+            unavailable: false,
+        }
+    }
+
+    /// Populate from the sole catalog owner: only the exact current route's
+    /// adapter-declared efforts become selectable. An absent route or empty
+    /// effort list becomes an unavailable state with no fake focus.
+    pub fn apply_catalog(&mut self, catalog: &CatalogModel) {
+        self.efforts.clear();
+        self.current = catalog.current_model.clone();
+        self.default_effort = None;
+        self.loading = false;
+        self.unavailable = true;
+        if let Some(reasoning) = catalog.current_model_reasoning() {
+            self.efforts = reasoning.efforts.clone();
+            self.default_effort = reasoning.default_effort.clone();
+            self.unavailable = self.efforts.is_empty();
+        }
+    }
+
+    fn effort_focus(id: &str) -> FocusId {
+        FocusId::new(format!("effort:{id}"))
+    }
+
+    pub fn rebuild_focus(&self, focus: &mut FocusState) {
+        // Capture whether this is a fresh open so a catalog refresh preserves
+        // the user's in-page navigation instead of snapping back to the
+        // preferred effort.
+        let was_empty = focus.current.is_none();
+        let mut nodes = Vec::new();
+        for (index, effort) in self.efforts.iter().enumerate() {
+            let mut node = FocusNode::new(Self::effort_focus(&effort.id));
+            node.up = index
+                .checked_sub(1)
+                .and_then(|i| self.efforts.get(i))
+                .map(|item| Self::effort_focus(&item.id));
+            node.down = self
+                .efforts
+                .get(index + 1)
+                .map(|item| Self::effort_focus(&item.id));
+            nodes.push(node);
+        }
+        focus.replace(nodes);
+        if was_empty {
+            let preferred = self
+                .current
+                .as_ref()
+                .and_then(|current| current.reasoning_effort.clone())
+                .or_else(|| self.default_effort.clone());
+            let target = preferred
+                .and_then(|id| self.efforts.iter().find(|effort| effort.id == id))
+                .or_else(|| self.efforts.first())
+                .map(|effort| Self::effort_focus(&effort.id));
+            if let Some(target) = target {
+                focus.set(target);
+            }
+        }
+    }
+
+    fn activate(&mut self, focus: &mut FocusState) -> PageOutcome {
+        let Some(id) = focus.current.as_ref().map(|id| id.0.clone()) else {
+            return PageOutcome::default();
+        };
+        let Some(effort_id) = id.strip_prefix("effort:") else {
+            return PageOutcome::default();
+        };
+        let Some(current) = self.current.as_ref() else {
+            return PageOutcome::default();
+        };
+        PageOutcome::send(
+            AgentRequest::ModelSet {
+                provider: current.provider.clone(),
+                model: current.model.clone(),
+                reasoning_effort: Some(effort_id.to_owned()),
+            },
+            true,
+        )
     }
 }
 
@@ -304,6 +407,7 @@ pub enum InputPage {
     Settings(SettingsState),
     Login(LoginState),
     Model(ModelPage),
+    Effort(EffortPage),
     Theme(ThemePage),
     Resume(ResumePage),
     Question(QuestionBatch),
@@ -330,6 +434,10 @@ impl InputPageSession {
 
     pub fn model() -> Self {
         Self::new(InputPage::Model(ModelPage::loading()))
+    }
+
+    pub fn effort() -> Self {
+        Self::new(InputPage::Effort(EffortPage::loading()))
     }
 
     pub fn resume() -> Self {
@@ -369,7 +477,7 @@ impl InputPageSession {
             InputPage::Login(login) => login.editing.is_some(),
             InputPage::Resume(_) => true,
             InputPage::Question(question) => question.is_free_text(),
-            InputPage::Model(_) | InputPage::Theme(_) => false,
+            InputPage::Model(_) | InputPage::Effort(_) | InputPage::Theme(_) => false,
         };
         if !editing {
             if let Some(direction) = direction_from_key(key) {
@@ -406,6 +514,15 @@ impl InputPageSession {
                     PageOutcome::close()
                 } else if key.code == KeyCode::Enter {
                     model.activate(&mut self.focus)
+                } else {
+                    PageOutcome::default()
+                }
+            }
+            InputPage::Effort(effort) => {
+                if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+                    PageOutcome::close()
+                } else if key.code == KeyCode::Enter {
+                    effort.activate(&mut self.focus)
                 } else {
                     PageOutcome::default()
                 }
@@ -529,6 +646,13 @@ impl InputPageSession {
         }
     }
 
+    pub fn apply_effort(&mut self, catalog: &CatalogModel) {
+        if let InputPage::Effort(effort) = &mut self.page {
+            effort.apply_catalog(catalog);
+            effort.rebuild_focus(&mut self.focus);
+        }
+    }
+
     pub fn paste(&mut self, text: &str) -> bool {
         match &mut self.page {
             InputPage::Settings(settings) => {
@@ -569,6 +693,10 @@ impl InputPageSession {
                 model.rebuild_focus(&mut self.focus);
                 return;
             }
+            InputPage::Effort(effort) => {
+                effort.rebuild_focus(&mut self.focus);
+                return;
+            }
             InputPage::Theme(theme) => {
                 let ids: Vec<FocusId> = theme
                     .themes
@@ -593,7 +721,7 @@ impl InputPageSession {
             InputPage::Login(login) => login_focus_targets(login)
                 .into_iter()
                 .find_map(|(id, pos)| (pos == login.pos).then_some(id)),
-            InputPage::Model(_) => self.focus.current.clone(),
+            InputPage::Model(_) | InputPage::Effort(_) => self.focus.current.clone(),
             InputPage::Theme(theme) => self
                 .focus
                 .current
@@ -640,7 +768,10 @@ impl InputPageSession {
                     question.sel = index;
                 }
             }
-            InputPage::Model(_) | InputPage::Theme(_) | InputPage::Resume(_) => {}
+            InputPage::Model(_)
+            | InputPage::Effort(_)
+            | InputPage::Theme(_)
+            | InputPage::Resume(_) => {}
         }
     }
 }
@@ -943,6 +1074,7 @@ mod tests {
                 id: model.into(),
                 name: model.into(),
                 description: None,
+                reasoning: None,
             }],
         };
         let mut page = ModelPage::loading();
@@ -1050,6 +1182,7 @@ mod tests {
                     id: "m".into(),
                     name: "Model".into(),
                     description: None,
+                    reasoning: None,
                 }],
             }],
             Some(("p".into(), "m".into())),
@@ -1060,8 +1193,98 @@ mod tests {
         assert!(outcome.close);
         assert!(matches!(
             outcome.effects.as_slice(),
-            [PageEffect::Send(AgentRequest::ModelSet { provider, model })]
-                if provider == "p" && model == "m"
+            [PageEffect::Send(AgentRequest::ModelSet {
+                provider,
+                model,
+                reasoning_effort: None,
+            })] if provider == "p" && model == "m"
+        ));
+    }
+
+    #[test]
+    fn effort_activation_sends_the_full_selection_and_closes() {
+        let mut session = InputPageSession::effort();
+        let catalog = CatalogModel {
+            current_model: Some(ModelSelection {
+                provider: "openai".into(),
+                model: "gpt".into(),
+                reasoning_effort: None,
+            }),
+            model_providers: vec![ModelProvider {
+                id: "openai".into(),
+                name: "OpenAI".into(),
+                models: vec![crate::agent::ModelDescriptor {
+                    id: "gpt".into(),
+                    name: "GPT".into(),
+                    description: None,
+                    reasoning: Some(crate::agent::ModelReasoning {
+                        // Default is deliberately NOT first so the pre-focus
+                        // assertion below cannot pass by coincidence.
+                        efforts: vec![
+                            ReasoningEffort {
+                                id: "low".into(),
+                                name: "Low".into(),
+                                description: None,
+                            },
+                            ReasoningEffort {
+                                id: "high".into(),
+                                name: "High".into(),
+                                description: None,
+                            },
+                        ],
+                        default_effort: Some("high".into()),
+                    }),
+                }],
+            }],
+            ..CatalogModel::default()
+        };
+        session.apply_effort(&catalog);
+        // The adapter default (not the first row) is pre-focused.
+        assert_eq!(
+            session.focus.current.as_ref().map(|id| id.0.as_str()),
+            Some("effort:high")
+        );
+        // Move up to the first row and submit it.
+        session.focus.move_in(crate::page_core::Direction::Up);
+        let mut config = Config::default();
+        let outcome = session.handle_key(&key(KeyCode::Enter), &mut config);
+        assert!(outcome.close);
+        assert!(matches!(
+            outcome.effects.as_slice(),
+            [PageEffect::Send(AgentRequest::ModelSet {
+                provider,
+                model,
+                reasoning_effort: Some(effort),
+            })] if provider == "openai" && model == "gpt" && effort == "low"
+        ));
+    }
+
+    #[test]
+    fn effort_page_has_no_fake_focus_when_unavailable() {
+        let mut session = InputPageSession::effort();
+        let catalog = CatalogModel {
+            current_model: Some(ModelSelection {
+                provider: "openai".into(),
+                model: "plain".into(),
+                reasoning_effort: None,
+            }),
+            model_providers: vec![ModelProvider {
+                id: "openai".into(),
+                name: "OpenAI".into(),
+                models: vec![crate::agent::ModelDescriptor {
+                    id: "plain".into(),
+                    name: "Plain".into(),
+                    description: None,
+                    reasoning: None,
+                }],
+            }],
+            ..CatalogModel::default()
+        };
+        session.apply_effort(&catalog);
+        assert!(session.focus.current.is_none());
+        assert!(matches!(
+            &session.page,
+            InputPage::Effort(page) if page.unavailable
         ));
     }
 

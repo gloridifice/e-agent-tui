@@ -1,24 +1,36 @@
-// /model layer: shape the provider/model catalog into the wire view the TUI
-// renders. Pure (test/model.test.js) — the async listing stays in index.js,
-// which queries `ctx.llm.listProviders()` + `ctx.llm.listModels(provider)`.
+// /model layer: shape the session model directory into the wire view the TUI
+// renders. Pure (test/model.test.js) — the async session.models read lives in
+// index.js/session-model.js, which query `apiProxy.sessions`.
+
+function shapeReasoning(reasoning) {
+  return {
+    efforts: (reasoning?.efforts ?? []).map((effort) => ({
+      id: effort.id,
+      name: effort.name ?? effort.id,
+      ...(effort.description !== undefined ? { description: effort.description } : {}),
+    })),
+    ...(reasoning?.defaultEffort !== undefined ? { defaultEffort: reasoning.defaultEffort } : {}),
+  }
+}
 
 /**
- * Project providers and their models into the `model` frame payload. Only
- * the fields the TUI needs cross the wire; the current selection rides along
- * so the picker can highlight it.
- * @param providers - `ctx.llm.listProviders()` entries ({id, name}).
- * @param modelLists - providerId → `ctx.llm.listModels(provider)` entries.
- * @param current - {provider, model} selection, or undefined.
+ * Project the `session.models` provider groups and the current selection into
+ * the `model` frame payload. Only the fields the TUI needs cross the wire; the
+ * current selection (including its optional reasoning effort) rides along so
+ * the picker and status bar can reflect it.
+ * @param groups - `session.models` `groups` entries ({id, name, models[]}).
+ * @param current - `{provider, model, reasoningEffort?}` selection, or undefined.
  */
-export function shapeModelFrame(providers, modelLists, current) {
+export function shapeModelFrame(groups, current) {
   return {
-    providers: (providers ?? []).map((p) => ({
-      id: p.id,
-      name: p.name ?? p.id,
-      models: (modelLists?.[p.id] ?? []).map((m) => ({
-        id: m.id,
-        name: m.name ?? m.id,
-        ...(m.description !== undefined ? { description: m.description } : {}),
+    providers: (groups ?? []).map((provider) => ({
+      id: provider.id,
+      name: provider.name ?? provider.id,
+      models: (provider.models ?? []).map((model) => ({
+        id: model.id,
+        name: model.name ?? model.id,
+        ...(model.description !== undefined ? { description: model.description } : {}),
+        ...(model.reasoning !== undefined ? { reasoning: shapeReasoning(model.reasoning) } : {}),
       })),
     })),
     ...(current !== undefined ? { current } : {}),

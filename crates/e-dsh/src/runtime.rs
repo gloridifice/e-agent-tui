@@ -787,6 +787,20 @@ impl RuntimeController {
                                 id: model.id.clone(),
                                 name: model.name.clone(),
                                 description: model.description.clone(),
+                                reasoning: model.reasoning.as_ref().map(|reasoning| {
+                                    e_tui::agent::ModelReasoning {
+                                        efforts: reasoning
+                                            .efforts
+                                            .iter()
+                                            .map(|effort| e_tui::agent::ReasoningEffort {
+                                                id: effort.id.clone(),
+                                                name: effort.name.clone(),
+                                                description: effort.description.clone(),
+                                            })
+                                            .collect(),
+                                        default_effort: reasoning.default_effort.clone(),
+                                    }
+                                }),
                             })
                             .collect(),
                     })
@@ -794,21 +808,25 @@ impl RuntimeController {
                 let selected = current
                     .clone()
                     .map(|current| (current.provider.clone(), current.model.clone()));
-                if let Some(page) = ui.input_page.as_mut() {
-                    page.apply_model(providers.clone(), selected);
-                }
+                let current_model = current
+                    .as_ref()
+                    .map(|current| e_tui::agent::ModelSelection {
+                        provider: current.provider.clone(),
+                        model: current.model.clone(),
+                        reasoning_effort: current.reasoning_effort.clone(),
+                    });
                 let mut app = state.lock().unwrap();
-                app.catalogs.model_providers = providers;
-                app.catalogs.current_model =
-                    current
-                        .as_ref()
-                        .map(|current| e_tui::agent::ModelSelection {
-                            provider: current.provider.clone(),
-                            model: current.model.clone(),
-                        });
+                app.catalogs.model_providers = providers.clone();
+                app.catalogs.current_model = current_model.clone();
+                let catalogs = app.catalogs.clone();
                 if let Some(current) = current {
                     app.session.provider = Some(current.provider.clone());
                     app.session.model = Some(current.model.clone());
+                }
+                drop(app);
+                if let Some(page) = ui.input_page.as_mut() {
+                    page.apply_model(providers, selected);
+                    page.apply_effort(&catalogs);
                 }
                 Vec::new()
             }

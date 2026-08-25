@@ -9,9 +9,9 @@ use e_tui::{
         },
         tool::{ActivityState, ToolActivity, ToolCapability, ToolItem, ToolReference},
         AgentEvent, AgentStatus, AttachedSession, CatalogEvent, CommandDescriptor,
-        CredentialProvider, InteractionEvent, ModelDescriptor, ModelProvider, ModelSelection,
-        Preset, ProxyRoute, Question, QuestionOption, SessionEvent, SessionSummary, Skill,
-        TimelineEvent,
+        CredentialProvider, InteractionEvent, ModelDescriptor, ModelProvider, ModelReasoning,
+        ModelSelection, Preset, ProxyRoute, Question, QuestionOption, ReasoningEffort,
+        SessionEvent, SessionSummary, Skill, TimelineEvent,
     },
     preview::{LineSelection, MutationHunk, ToolMetrics, ToolPreview, ToolPreviewPrimary},
 };
@@ -20,9 +20,9 @@ use serde_json::Value;
 use crate::protocol::{
     ClientMessage, CommandInfo, CommandInputInfo, HostContentBlock, HostEvent, HostEventKind,
     HostLifecycleOutcome, HostMessageSource, HostMutationHunk, HostSurfaceOp, ModelCurrent,
-    ModelInfo, ModelProviderInfo, PresetInfo, ProviderInfo, ProxyInfo, QuestionAnswer,
-    QuestionItem, QuestionOption as WireQuestionOption, ServerMessage, SessionInfo, SkillInfo,
-    TokenUsage as HostTokenUsage,
+    ModelInfo, ModelProviderInfo, ModelReasoningEffortInfo, ModelReasoningInfo, PresetInfo,
+    ProviderInfo, ProxyInfo, QuestionAnswer, QuestionItem, QuestionOption as WireQuestionOption,
+    ServerMessage, SessionInfo, SkillInfo, TokenUsage as HostTokenUsage,
 };
 
 pub fn normalize_server_message(message: ServerMessage) -> AgentEvent {
@@ -283,6 +283,18 @@ pub(crate) fn legacy_server_message(event: AgentEvent) -> Result<ServerMessage, 
                             id: model.id,
                             name: model.name,
                             description: model.description,
+                            reasoning: model.reasoning.map(|reasoning| ModelReasoningInfo {
+                                efforts: reasoning
+                                    .efforts
+                                    .into_iter()
+                                    .map(|effort| ModelReasoningEffortInfo {
+                                        id: effort.id,
+                                        name: effort.name,
+                                        description: effort.description,
+                                    })
+                                    .collect(),
+                                default_effort: reasoning.default_effort,
+                            }),
                         })
                         .collect(),
                 })
@@ -290,6 +302,7 @@ pub(crate) fn legacy_server_message(event: AgentEvent) -> Result<ServerMessage, 
             current: current.map(|current| ModelCurrent {
                 provider: current.provider,
                 model: current.model,
+                reasoning_effort: current.reasoning_effort,
             }),
         },
         AgentEvent::Interaction(InteractionEvent::CommandResult { id, outcome, text }) => {
@@ -393,7 +406,15 @@ pub fn agent_request_to_client(request: AgentRequest) -> ClientMessage {
         },
         AgentRequest::LoginProxyDelete { id } => ClientMessage::LoginProxyDelete { id },
         AgentRequest::ModelGet => ClientMessage::ModelGet,
-        AgentRequest::ModelSet { provider, model } => ClientMessage::ModelSet { provider, model },
+        AgentRequest::ModelSet {
+            provider,
+            model,
+            reasoning_effort,
+        } => ClientMessage::ModelSet {
+            provider,
+            model,
+            reasoning_effort,
+        },
         AgentRequest::Ping => ClientMessage::Ping,
     }
 }
@@ -438,7 +459,15 @@ pub fn client_message_to_agent_request(
         },
         ClientMessage::LoginProxyDelete { id } => AgentRequest::LoginProxyDelete { id },
         ClientMessage::ModelGet => AgentRequest::ModelGet,
-        ClientMessage::ModelSet { provider, model } => AgentRequest::ModelSet { provider, model },
+        ClientMessage::ModelSet {
+            provider,
+            model,
+            reasoning_effort,
+        } => AgentRequest::ModelSet {
+            provider,
+            model,
+            reasoning_effort,
+        },
         ClientMessage::Ping => AgentRequest::Ping,
     })
 }
@@ -1395,6 +1424,18 @@ fn normalize_model(model: ModelInfo) -> ModelDescriptor {
         id: model.id,
         name: model.name,
         description: model.description,
+        reasoning: model.reasoning.map(|reasoning| ModelReasoning {
+            efforts: reasoning
+                .efforts
+                .into_iter()
+                .map(|effort| ReasoningEffort {
+                    id: effort.id,
+                    name: effort.name,
+                    description: effort.description,
+                })
+                .collect(),
+            default_effort: reasoning.default_effort,
+        }),
     }
 }
 
@@ -1402,6 +1443,7 @@ fn normalize_model_selection(current: ModelCurrent) -> ModelSelection {
     ModelSelection {
         provider: current.provider,
         model: current.model,
+        reasoning_effort: current.reasoning_effort,
     }
 }
 

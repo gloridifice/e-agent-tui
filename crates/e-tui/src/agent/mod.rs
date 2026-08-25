@@ -106,6 +106,22 @@ pub struct ModelDescriptor {
     pub id: String,
     pub name: String,
     pub description: Option<String>,
+    pub reasoning: Option<ModelReasoning>,
+}
+
+/// Selectable reasoning metadata for one exact provider/model route.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelReasoning {
+    pub efforts: Vec<ReasoningEffort>,
+    pub default_effort: Option<String>,
+}
+
+/// One adapter-owned reasoning effort.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReasoningEffort {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,6 +135,7 @@ pub struct ModelProvider {
 pub struct ModelSelection {
     pub provider: String,
     pub model: String,
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

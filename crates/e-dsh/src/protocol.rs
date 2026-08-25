@@ -485,7 +485,7 @@ mod tests {
     #[test]
     fn model_frame_parses_and_serializes() {
         let msg = ServerMessage::from_wire(
-            r#"{"type":"model","providers":[{"id":"deepseek","name":"DeepSeek","models":[{"id":"deepseek-v4-pro","name":"DeepSeek V4 Pro","description":"flagship"},{"id":"deepseek-v4","name":"DeepSeek V4"}]}],"current":{"provider":"deepseek","model":"deepseek-v4"}}"#,
+            r#"{"type":"model","providers":[{"id":"deepseek","name":"DeepSeek","models":[{"id":"deepseek-v4-pro","name":"DeepSeek V4 Pro","description":"flagship","reasoning":{"efforts":[{"id":"low","name":"Low"},{"id":"high","name":"High"}],"defaultEffort":"low"}},{"id":"deepseek-v4","name":"DeepSeek V4"}]}],"current":{"provider":"deepseek","model":"deepseek-v4","reasoningEffort":"high"}}"#,
         )
         .expect("model parses");
         match msg {
@@ -496,20 +496,31 @@ mod tests {
                     providers[0].models[0].description.as_deref(),
                     Some("flagship")
                 );
+                let reasoning = providers[0].models[0]
+                    .reasoning
+                    .as_ref()
+                    .expect("reasoning");
+                assert_eq!(reasoning.efforts.len(), 2);
+                assert_eq!(reasoning.efforts[0].id, "low");
+                assert_eq!(reasoning.default_effort.as_deref(), Some("low"));
+                assert_eq!(providers[0].models[1].reasoning, None);
                 let cur = current.expect("current selection");
                 assert_eq!(cur.provider, "deepseek");
                 assert_eq!(cur.model, "deepseek-v4");
+                assert_eq!(cur.reasoning_effort.as_deref(), Some("high"));
             }
             other => panic!("wrong variant: {other:?}"),
         }
         let set = ClientMessage::ModelSet {
             provider: "deepseek".into(),
             model: "deepseek-v4-pro".into(),
+            reasoning_effort: Some("high".into()),
         };
         let v = serde_json::from_str::<serde_json::Value>(&set.to_wire().unwrap()).unwrap();
         assert_eq!(v["type"], "model-set");
         assert_eq!(v["provider"], "deepseek");
         assert_eq!(v["model"], "deepseek-v4-pro");
+        assert_eq!(v["reasoningEffort"], "high");
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&ClientMessage::ModelGet.to_wire().unwrap())
                 .unwrap()["type"],

@@ -114,13 +114,18 @@ Architecture conventions for the Node.js (ESM) DSH host-composition plugin.
   - Proxy: stored in `%DSH_HOME%\dsh-tui-proxies.json` (api key not sent back).
   Write failures return to the panel via the same `login` frame's `error`, not through the transcript error
   stream.
-- **/model (bridge)**: upstream `model-get` / `model-set{provider,model}`; downstream
-  `model{providers[{id,name,models[{id,name,description?}]}],current?}`. `sendModel` uses
-  `ctx.llm.listProviders()` + `ctx.llm.listModels(id)` (a provider without an adapter catalog returns an empty
-  list rather than failing the whole thing). On session create/resume, store that `{current,assembled}` pair via
-  `modelSelections.set(agent.id, selection)`; `model-set` changes `selection.current` (effective on the next
-  `system-prompt/assemble`) and also updates `agent.options`, then replies with a `model` frame to refresh the
-  client status bar.
+- **/model and /effort (bridge)**: upstream `model-get` / `model-set{provider,model,reasoningEffort?}`; downstream
+  `model{providers[{id,name,models[{id,name,description?,reasoning?}]}],current?}` where `current` is
+  `{provider,model,reasoningEffort?}` and `reasoning` is `{efforts[{id,name,description?}],defaultEffort?}`.
+  The catalog and the authoritative current selection come from the injected `apiProxy.sessions` via
+  `session-model.js` (`session.models` / `session.selectModel`), not `ctx.llm.listModels`; a provider without an
+  adapter catalog returns an empty group rather than failing the whole thing. On session create/resume the
+  bridge installs the `{current,assembled}` pair via `modelSelections.set(agent.id, selection)` and hydrates the
+  resumed session's own triple from `session.models` before `welcome`. `model-set` is async: `session.selectModel`
+  must succeed before the bridge mutates `selection.current` / `agent.options`, then it replies with a `model`
+  frame to refresh the status bar; a rejected effort/model mutates nothing and returns a `model-failed` error.
+  `/model` omits `reasoningEffort` (clearing the old model's effort); `/effort` sends the full triple. The model
+  frame is re-pushed on `llm/adapters-updated` and `settings/document-updated`.
 - **/skill (bridge)**: `/skill:<name>` or `/skill <name>` is intercepted by the bridge (`skill.js`'s
   `parseSkillCommand`). After each attach and `skills/change`, call `ctx.skills.list` by session cwd/scope and
   send only `invocation.userInvocable` `{name,description}` via the `skills` roster; the client starts fuzzy

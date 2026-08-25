@@ -1,17 +1,17 @@
 {
   "generatedFrom": "bridge/protocol-contract.json",
-  "protocolVersion": 5,
+  "protocolVersion": 6,
   "client": {
     "hello": {
       "minimal": {
         "type": "hello",
         "token": "contract-token",
-        "protocolVersion": 5
+        "protocolVersion": 6
       },
       "full": {
         "type": "hello",
         "token": "contract-token",
-        "protocolVersion": 5,
+        "protocolVersion": 6,
         "resumeSessionId": "session-1",
         "cwd": "C:\\workspace",
         "mode": "standard"
@@ -199,7 +199,8 @@
       "full": {
         "type": "model-set",
         "provider": "provider-1",
-        "model": "model-1"
+        "model": "model-1",
+        "reasoningEffort": "reasoningEffort-sample"
       }
     },
     "ping": {
@@ -222,7 +223,7 @@
         "type": "welcome",
         "sessionId": "session-1",
         "status": "idle",
-        "protocolVersion": 5,
+        "protocolVersion": 6,
         "maxFrameBytes": 16777216,
         "provider": "provider-1",
         "model": "model-1",
@@ -555,14 +556,25 @@
               {
                 "id": "id-1",
                 "name": "sample",
-                "description": "sample description"
+                "description": "sample description",
+                "reasoning": {
+                  "efforts": [
+                    {
+                      "id": "id-1",
+                      "name": "sample",
+                      "description": "sample description"
+                    }
+                  ],
+                  "defaultEffort": "defaultEffort-sample"
+                }
               }
             ]
           }
         ],
         "current": {
           "provider": "provider-1",
-          "model": "model-1"
+          "model": "model-1",
+          "reasoningEffort": "reasoningEffort-sample"
         }
       }
     },

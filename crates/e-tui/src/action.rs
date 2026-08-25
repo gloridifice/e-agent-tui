@@ -66,6 +66,7 @@ pub enum AgentRequest {
     ModelSet {
         provider: String,
         model: String,
+        reasoning_effort: Option<String>,
     },
     Ping,
 }

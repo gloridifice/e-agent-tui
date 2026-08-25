@@ -568,10 +568,11 @@ Clipboard and deferred Preview effects execute after the UI guard is released.
   the new session into that cwd's workspace ledger (consistent with host `session.create`'s two steps); when the
   client sends no cwd (older clients) it falls back to the current session header's cwd / `process.cwd()`. A bare
   `/new` takes `config.default_mode`; an explicit `/new <mode>` overrides once. Before the draft materializes,
-  `/resume` is usable, and so is `/model`: its provider/model catalog is session-independent, and a selection made
-  during the draft is applied to the materialized session through `/new`'s provider/model mirror. `/skill` and
-  integrated commands must not be misrouted to the old session. The bridge still keeps the older-client `/new`
-  handler and mounts the preset in `agents.create`'s `setup`.
+  `/resume` is usable, and so are `/model` and `/effort`: the provider/model catalog is session-independent, and a
+  selection made during the draft is applied to the materialized session through `/new`'s
+  provider/model/reasoningEffort mirror. `/skill` and integrated commands must not be misrouted to the old
+  session. The bridge still keeps the older-client `/new` handler and mounts the preset in `agents.create`'s
+  `setup`.
 - `/new <mode>`: create a new session by agent preset id (standard/code/minimal/cordis and user-built presets).
   The bridge sends a `presets` roster frame (id/name/description/order/broken) after each attach; the client pops
   up the mode prompt when typing `/new ` (with a trailing space) (same ↑↓/Tab/Enter/Esc semantics as command
@@ -580,9 +581,12 @@ Clipboard and deferred Preview effects execute after the UI guard is released.
 - **model selection**: every session the bridge creates/resumes first installs the public
   `@deepseek-ai/dsh-agent@0.1.0-rc.6` package-root `installModelSelection(agentCtx, selection) -> disposer` via the
   `bridge/src/model-selection.js` adapter in `setup`. It injects `variables.{provider,model}` in
-  `system-prompt/assemble`, and that assembly snapshot routes `agent/request`, avoiding a missing persona
-  `{{model}}` variable. `/new` mirrors the current session's provider/model, otherwise takes
-  `agentDefaultModel.currentSelection()`; adapter install and preset mount are two orthogonal steps, the former
+  `system-prompt/assemble`, and that assembly snapshot routes `agent/request` (including the optional
+  `reasoningEffort`), avoiding a missing persona `{{model}}` variable. The authoritative catalog and current
+  triple come from the injected `apiProxy.sessions` (`session.models`/`session.selectModel`, via
+  `bridge/src/session-model.js`), reconciled back into the installed selection; `/new` mirrors the current
+  session's provider/model/reasoningEffort, otherwise takes `agentDefaultModel.currentSelection()`; adapter
+  install and preset mount are two orthogonal steps, the former
   running first. The bridge maintains no local waterfall copy; `bridge/package.json` precisely declares the
   verified agent peer, and after a DSH upgrade you must run `npm run verify-dsh-upgrade`, which checks the
   contract, host/agent version/export, and the deployed copy's `/new`, cold resume, and `/model` assembly/request
@@ -688,11 +692,16 @@ font size (terminal side), clipboard backend (platform-decided), key rebinding (
   Enter on a model sends `model-set`. The green `●` only marks the currently applied model, and the Night
   background marks the current focus — the two must not be confused. During async catalog refresh, focus is kept
   by provider/model id; an empty catalog only shows an explanation and does not create a fake focus.
+- `/effort` is a single-column page listing only the exact current provider/model route's `reasoning.efforts` (in
+  the adapter's declared order); Enter sends the full `model-set{provider,model,reasoningEffort}` and closes. The
+  explicit `current.reasoningEffort` marks `●`; otherwise `reasoning.defaultEffort` is suffixed `（默认）`; with
+  neither, a `当前：Provider Default` note is shown and no option is pre-selected. An absent route or empty
+  efforts renders `当前模型未提供可选择的推理强度` and creates no fake focus.
 - `/theme` uses the theme name as the executable focus, with color swatches as decoration only; Enter applies and
   persists the theme. Both pages use the §4.7 common shell, no longer a centered floating window; over-small
   terminals use bounded clipping and produce no out-of-bounds region.
 
-## 5. Bridge and protocol (wire protocol v5)
+## 5. Bridge and protocol (wire protocol v6)
 
 ### 5.1 Endpoint and security
 

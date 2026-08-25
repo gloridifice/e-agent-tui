@@ -167,6 +167,16 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
             *context.input_page = Some(InputPageSession::model());
             outcome.outbound.push(ClientMessage::ModelGet);
         }
+        CommandAction::Effort => {
+            if reject_arguments(&context, name, raw_input) {
+                return outcome;
+            }
+            // The effort picker reads the exact current route's adapter-declared
+            // efforts from the same model catalog; the selected effort is applied
+            // to the materialized session (including a deferred `/new`).
+            *context.input_page = Some(InputPageSession::effort());
+            outcome.outbound.push(ClientMessage::ModelGet);
+        }
         CommandAction::Reload => {
             if reject_arguments(&context, name, raw_input) {
                 return outcome;

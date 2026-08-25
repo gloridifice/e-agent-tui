@@ -21,7 +21,7 @@ Before installing, make sure [Git](https://git-scm.com/), [Node.js](https://node
 
 Then just run `dshe`, e will open dsh and e-tui.
 
-On first launch, `dshe` starts its dedicated DSH service automatically. Use `/login` to configure an API key or proxy, and `/model` to select a provider and model. Wide terminals show a themed Preview pane; narrow terminals keep the main conversation usable.
+On first launch, `dshe` starts its dedicated DSH service automatically. Use `/login` to configure an API key or proxy, `/model` to select a provider and model, and `/effort` to change the reasoning effort. Wide terminals show a themed Preview pane; narrow terminals keep the main conversation usable.
 
 Key interactions:
 

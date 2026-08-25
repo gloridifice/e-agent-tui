@@ -209,8 +209,11 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
 - **Bottom layout and two-line status bar**: the fixed bottom row order is input bar or Input Page / gap /
   status line 1 / **session title line** (the `ui.rs::render` chunks array; the `+3` in the accessory budget
   formula matches it). Neither line sets a background color: line 1 is, left to right, the working indicator,
-  `SessionModel.current_mode`, the current model, and `CH<cache-hit %>`, where the model and CH entries are omitted
-  entirely when they have no value yet (no placeholder dash), and the right side is fixed `^h Help`; line 2's
+  `SessionModel.current_mode`, the current model, `CH<cache-hit %>`, and the reasoning-effort label
+  `Effort:<Label>` (after CH), where the model, CH, and effort entries are omitted entirely when they have no
+  value yet (no placeholder dash) — the effort entry is hidden unless the exact current route exposes reasoning
+  metadata, resolves `current.reasoningEffort` then `reasoning.defaultEffort` then `Default`, and never
+  invalidates the transcript cache. The right side is fixed `^h Help`; line 2's
   left side is `SessionModel.session_title` (shows `新会话` when empty) and the right side is the absolute
   `SessionModel.session_cwd` path, with the title truncated with `…` when too long so the path is preserved.
   mode's initial value comes from `welcome.mode` (most recent selection, else the creation header), then is
@@ -238,12 +241,13 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
   id/TranscriptStore; only the first plain input sends the atomic `new-input{mode,text}` to create and deliver.
   During the draft, old-session frames keep reducing but are not displayed, and the Preview pane is cleared and
   held empty (the draft page must not inherit the previous session's preview, and late old-session frames must
-  not repopulate it); on create failure restore the input; `/model` stays usable during the draft; the
-  provider/model catalog is session-independent and a selection made during the draft is applied to the
-  materialized session through `/new`'s provider/model mirror, while `/skill` and integrated commands must not be
+  not repopulate it); on create failure restore the input; `/model` and `/effort` stay usable during the draft;
+  the provider/model catalog is session-independent and a selection made during the draft is applied to the
+  materialized session through `/new`'s provider/model/reasoningEffort mirror, while `/skill` and integrated
+  commands must not be
   misrouted to the old session.
 - **Input Page controller** (`input_page.rs` + `settings.rs` + `login.rs`): the main loop holds a single
-  `Option<InputPageSession>` with the closed variant set Settings/Login/Model/Theme/Resume/Question; page keys only
+  `Option<InputPageSession>` with the closed variant set Settings/Login/Model/Effort/Theme/Resume/Question; page keys only
   return `PageOutcome`/`PageEffect`, and the caller saves or `.await`s sending only after releasing the page borrow
   and state lock. Browse-state arrow keys and `hjkl` share a stable focus graph, Enter executes; settings is the
   deliberate horizontal exception: `←`/`→` and `h`/`l` switch category pages directly, and its category strip

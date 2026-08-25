@@ -22,6 +22,7 @@ export function createClientDispatcher({
   questionSessions,
   sendModel,
   modelSelections,
+  sessionModel,
   createUserMessage,
 }) {
   let conn = null
@@ -226,17 +227,32 @@ export function createClientDispatcher({
     }
   }
 
-  function setModel(msg) {
+  async function setModel(msg) {
     const current = conn
     if (!current || typeof msg.provider !== 'string' || typeof msg.model !== 'string') return
-    const selection = modelSelections.get(current.agent.id)
-    if (selection) selection.current = { provider: msg.provider, model: msg.model }
+    const reasoningEffort = typeof msg.reasoningEffort === 'string' && msg.reasoningEffort !== ''
+      ? msg.reasoningEffort
+      : undefined
     try {
-      current.agent.options = { ...(current.agent.options ?? {}), provider: msg.provider, model: msg.model }
-    } catch {}
-    sendModel(ws, current.agent).catch((error) => {
+      const { selected } = await sessionModel.selectModel({
+        sessionId: current.agent.id,
+        provider: msg.provider,
+        model: msg.model,
+        ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+      })
+      // Only mutate on success so a rejected effort/model never leaves a stale
+      // selection that the next prompt assembly would use.
+      if (!conns.isCurrent(current, conn)) return
+      const selection = modelSelections.get(current.agent.id)
+      if (selection && selected) selection.current = { ...selected }
+      try {
+        current.agent.options = { ...(current.agent.options ?? {}), provider: selected.provider, model: selected.model }
+      } catch {}
+      await sendModel(ws, current.agent)
+    } catch (error) {
+      if (!conns.isCurrent(current, conn)) return
       send(ws, { type: 'error', code: 'model-failed', message: String(error?.message ?? error) })
-    })
+    }
   }
 
   function handle(data) {
@@ -297,7 +313,7 @@ export function createClientDispatcher({
           send(ws, { type: 'error', code: 'model-failed', message: String(error?.message ?? error) })
         })
         break
-      case 'model-set': setModel(msg); break
+      case 'model-set': void setModel(msg); break
       case 'interrupt':
         if (conn) {
           for (const commandAbort of conn.commandAborts ?? []) commandAbort.abort()

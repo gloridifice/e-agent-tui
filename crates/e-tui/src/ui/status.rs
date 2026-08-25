@@ -47,6 +47,13 @@ pub(super) fn render_status(
         left_spans.push(Span::styled(" ", dim));
         left_spans.push(Span::styled(format!("CH{rate}%"), dim));
     }
+    // Reasoning effort rides after the cache-hit rate, styled identically to
+    // the model and CH entries, and is omitted entirely when the current route
+    // exposes no reasoning metadata.
+    if let Some(label) = state.catalogs.effort_status_label() {
+        left_spans.push(Span::styled(" ", dim));
+        left_spans.push(Span::styled(label, dim));
+    }
     let left = Line::from(left_spans);
     let right =
         Line::from(Span::styled("^h Help", dim)).alignment(ratatui::layout::Alignment::Right);
@@ -153,6 +160,93 @@ mod tests {
         assert!(
             line.contains(r"D:\workspace\project"),
             "workspace path should stay visible while /new draft is pending: {line:?}"
+        );
+    }
+
+    #[test]
+    fn status_bar_renders_effort_after_the_model_with_the_same_dim_style() {
+        let mut state = TuiApp::default();
+        state.session.model = Some("gpt".into());
+        state.catalogs.current_model = Some(crate::agent::ModelSelection {
+            provider: "openai".into(),
+            model: "gpt".into(),
+            reasoning_effort: Some("high".into()),
+        });
+        state.catalogs.model_providers = vec![crate::agent::ModelProvider {
+            id: "openai".into(),
+            name: "OpenAI".into(),
+            models: vec![crate::agent::ModelDescriptor {
+                id: "gpt".into(),
+                name: "GPT".into(),
+                description: None,
+                reasoning: Some(crate::agent::ModelReasoning {
+                    efforts: vec![crate::agent::ReasoningEffort {
+                        id: "high".into(),
+                        name: "High".into(),
+                        description: None,
+                    }],
+                    default_effort: None,
+                }),
+            }],
+        }];
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 1)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_status(
+                    frame,
+                    frame.area(),
+                    &state,
+                    &ScrollState::default(),
+                    &Theme::ferra(),
+                )
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let line = (0..80)
+            .map(|x| buffer[(x, 0)].symbol().chars().next().unwrap_or(' '))
+            .collect::<String>();
+        let model_at = line.find("gpt").expect("model renders");
+        let effort_at = line
+            .find("Effort:High")
+            .expect("effort renders after the model");
+        assert!(
+            effort_at > model_at,
+            "effort must follow the model entry: {line:?}"
+        );
+    }
+
+    #[test]
+    fn status_bar_hides_effort_when_the_route_has_no_reasoning() {
+        let mut state = TuiApp::default();
+        state.session.model = Some("gpt".into());
+        state.catalogs.current_model = Some(crate::agent::ModelSelection {
+            provider: "openai".into(),
+            model: "gpt".into(),
+            reasoning_effort: None,
+        });
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 1)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_status(
+                    frame,
+                    frame.area(),
+                    &state,
+                    &ScrollState::default(),
+                    &Theme::ferra(),
+                )
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let line = (0..80)
+            .map(|x| buffer[(x, 0)].symbol().chars().next().unwrap_or(' '))
+            .collect::<String>();
+        assert!(
+            !line.contains("Effort"),
+            "no effort placeholder when reasoning is absent: {line:?}"
         );
     }
 }

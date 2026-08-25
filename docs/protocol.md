@@ -8,7 +8,7 @@ Do not edit capacities, rosters, or payload fields here by hand.
 
 | Field | Value |
 |---|---:|
-| Protocol version | 5 |
+| Protocol version | 6 |
 | Snapshot surface events | 600 |
 | History page events | 2000 |
 | Maximum normal frame | 16777216 bytes |
@@ -149,6 +149,7 @@ Do not edit capacities, rosters, or payload fields here by hand.
 |---|---|---|
 | required | `provider` | `string` |
 | required | `model` | `string` |
+| optional | `reasoningEffort` | `string` |
 
 ### `ping`
 
@@ -413,6 +414,22 @@ Array types use the `[]` suffix. `host-event` is the bounded typed event envelop
 | required | `id` | `string` |
 | required | `name` | `string` |
 | optional | `description` | `string` |
+| optional | `reasoning` | `ModelReasoningInfo` |
+
+### `ModelReasoningInfo`
+
+| Presence | Field | Type |
+|---|---|---|
+| required | `efforts` | `ModelReasoningEffortInfo[]` |
+| optional | `defaultEffort` | `string` |
+
+### `ModelReasoningEffortInfo`
+
+| Presence | Field | Type |
+|---|---|---|
+| required | `id` | `string` |
+| required | `name` | `string` |
+| optional | `description` | `string` |
 
 ### `ModelCurrent`
 
@@ -420,6 +437,7 @@ Array types use the `[]` suffix. `host-event` is the bounded typed event envelop
 |---|---|---|
 | required | `provider` | `string` |
 | required | `model` | `string` |
+| optional | `reasoningEffort` | `string` |
 
 ## Snapshot surface events
 

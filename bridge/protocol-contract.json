@@ -1,5 +1,5 @@
 {
-  "protocolVersion": 5,
+  "protocolVersion": 6,
   "limits": {
     "snapshotEvents": 600,
     "historyEvents": 2000,
@@ -193,6 +193,24 @@
         "name": "string"
       },
       "optional": {
+        "description": "string",
+        "reasoning": "ModelReasoningInfo"
+      }
+    },
+    "ModelReasoningInfo": {
+      "required": {
+        "efforts": "ModelReasoningEffortInfo[]"
+      },
+      "optional": {
+        "defaultEffort": "string"
+      }
+    },
+    "ModelReasoningEffortInfo": {
+      "required": {
+        "id": "string",
+        "name": "string"
+      },
+      "optional": {
         "description": "string"
       }
     },
@@ -201,7 +219,9 @@
         "provider": "string",
         "model": "string"
       },
-      "optional": {}
+      "optional": {
+        "reasoningEffort": "string"
+      }
     }
   },
   "messageShapes": {
@@ -312,7 +332,9 @@
           "provider": "string",
           "model": "string"
         },
-        "optional": {}
+        "optional": {
+          "reasoningEffort": "string"
+        }
       },
       "ping": {
         "required": {},

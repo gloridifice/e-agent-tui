@@ -43,6 +43,12 @@ function harness(options = {}) {
     questionSessions: options.questionSessions ?? new Map(),
     sendModel: options.sendModel ?? (async () => {}),
     modelSelections,
+    sessionModel: options.sessionModel ?? {
+      models: async () => ({ current: undefined, groups: [] }),
+      selectModel: async ({ provider, model, reasoningEffort }) => ({
+        selected: { provider, model, ...(reasoningEffort === undefined ? {} : { reasoningEffort }) },
+      }),
+    },
     createUserMessage: (message) => message,
   })
   return { dispatcher, frames, closes, followups, cancellations, conn, conns, modelSelections }
@@ -286,6 +292,49 @@ test('dispatcher model-set updates the next assembly selection and agent options
   assert.deepEqual(selection.current, { provider: 'after', model: 'new' })
   assert.deepEqual(h.conn.agent.options, { provider: 'after', model: 'new' })
   assert.deepEqual(refreshed, [h.conn.agent])
+})
+
+test('dispatcher model-set forwards reasoningEffort and rejects without mutating', async () => {
+  const selection = { current: { provider: 'openai', model: 'gpt' }, assembled: undefined }
+  const seen = []
+  const h = harness({
+    modelSelections: new Map([['a1', selection]]),
+    sessionModel: {
+      models: async () => ({ current: selection.current, groups: [] }),
+      selectModel: async (sel) => { seen.push(sel); const { sessionId: _sid, ...rest } = sel; return { selected: rest } },
+    },
+  })
+  h.dispatcher.handle(Buffer.from(JSON.stringify({
+    type: 'hello', token: 'secret', protocolVersion: 5,
+  })))
+  await new Promise((resolve) => setImmediate(resolve))
+  h.dispatcher.handle(Buffer.from(JSON.stringify({
+    type: 'model-set', provider: 'openai', model: 'gpt', reasoningEffort: 'high',
+  })))
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(seen.at(-1), { sessionId: 'a1', provider: 'openai', model: 'gpt', reasoningEffort: 'high' })
+  assert.deepEqual(selection.current, { provider: 'openai', model: 'gpt', reasoningEffort: 'high' })
+})
+
+test('dispatcher model-set leaves selection untouched when selectModel rejects', async () => {
+  const selection = { current: { provider: 'openai', model: 'gpt' }, assembled: undefined }
+  const h = harness({
+    modelSelections: new Map([['a1', selection]]),
+    sessionModel: {
+      models: async () => ({ current: selection.current, groups: [] }),
+      selectModel: async () => { throw new Error('model-unavailable: unsupported effort') },
+    },
+  })
+  h.dispatcher.handle(Buffer.from(JSON.stringify({
+    type: 'hello', token: 'secret', protocolVersion: 5,
+  })))
+  await new Promise((resolve) => setImmediate(resolve))
+  h.dispatcher.handle(Buffer.from(JSON.stringify({
+    type: 'model-set', provider: 'openai', model: 'gpt', reasoningEffort: 'bogus',
+  })))
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(selection.current, { provider: 'openai', model: 'gpt' })
+  assert.equal(h.frames.at(-1).code, 'model-failed')
 })
 
 test('dispatcher reports unknown integrated commands without creating model input', async () => {

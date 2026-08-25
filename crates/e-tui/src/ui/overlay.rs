@@ -39,7 +39,7 @@ pub(super) fn help_overlay(theme: &Theme) -> Vec<Line<'static>> {
         "输入 /：补全内置命令及当前会话自动接入的 DSH/插件命令   Tab/↑↓ 选择",
         "/settings 设置面板   /login 登录（API key/Proxy）   /new [模式] 新建会话   PgUp/PgDn/滚轮滚动消息",
         "鼠标: 左键拖选 Transcript/Preview 可见文本，松开复制；Ctrl+Y 阅读视图的 y 复制完整原文",
-        "/theme 切换主题   /model 选择模型   /reload 重载配置/主题/技能   /skill:<名称> 注入技能",
+        "/theme 切换主题   /model 选择模型   /effort 选择推理强度   /reload 重载配置/主题/技能   /skill:<名称> 注入技能",
         "Input Page: 方向键/hjkl 移动焦点（Settings ←→/hl 切页）   Enter 执行   Esc 返回；编辑时 hjkl 输入文字",
         "/resume 打开续接会话 Input Page（输入筛选、↑↓ 选择）/ /resume <会话ID> 直接切换",
         "审批: Y 允许 / n 拒绝   提问页: h/l/←→ 切换问题  j/k/↑↓ 切换选项  Space 选择/多选  Enter 下一题/提交",

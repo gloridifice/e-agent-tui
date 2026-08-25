@@ -11,6 +11,7 @@ export function createSessionService({
   ctx,
   modelSelections,
   modelSelection,
+  sessionModel,
   attach,
   detach,
   isCurrent = () => true,
@@ -66,9 +67,23 @@ export function createSessionService({
     const agentOptions = {}
     if (current?.options?.provider) agentOptions.provider = current.options.provider
     if (current?.options?.model) agentOptions.model = current.options.model
-    const mirror = current?.options?.provider !== undefined && current?.options?.model !== undefined
-      ? { provider: current.options.provider, model: current.options.model }
-      : undefined
+    // Inherit the previous session's complete selection (provider + model +
+    // reasoningEffort) so a deferred /new carries the effort through. The
+    // bridge mirror is authoritative for bridge-created sessions; a
+    // host-created live session has no mirror, so hydrate it from the
+    // authoritative per-session selection instead of the provider/model-only
+    // `agent.options` fallback, which would silently drop the effort.
+    const inherited = current?.id !== undefined ? modelSelections.get(current.id)?.current : undefined
+    let mirror = inherited
+      ?? (current?.options?.provider !== undefined && current?.options?.model !== undefined
+        ? { provider: current.options.provider, model: current.options.model }
+        : undefined)
+    if (inherited === undefined && mirror !== undefined && current?.id !== undefined && sessionModel) {
+      try {
+        const models = await sessionModel.models(current.id)
+        if (models?.current !== undefined) mirror = { ...models.current }
+      } catch {}
+    }
     const selection = {
       current: mirror ?? modelSelection.defaultSelection(ctx),
       assembled: undefined,
@@ -119,6 +134,15 @@ export function createSessionService({
           if (preset) await agentPresets.mount(agentCtx, preset.id)
         },
       })
+      // A resumed session's authoritative selection lives in its log, not in
+      // the deployment default. Hydrate it so the status bar and next prompt
+      // use the session's own provider/model/reasoningEffort triple.
+      if (sessionModel) {
+        try {
+          const models = await sessionModel.models(sessionId)
+          if (models?.current !== undefined) selection.current = { ...models.current }
+        } catch {}
+      }
       modelSelections.set(agent.id, selection)
       return agent
     } catch {

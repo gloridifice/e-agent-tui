@@ -30,6 +30,7 @@ import {
   sessionPresetOf,
 } from './compose.js'
 import { shapeModelFrame } from './model.js'
+import { createSessionModelAdapter } from './session-model.js'
 import {
   renderSkillContent,
   shapeSkillsFrame,
@@ -86,6 +87,7 @@ function apply(ctx, config = {}) {
    */
   const modelSelections = new Map()
   const modelSelection = createModelSelectionAdapter()
+  const sessionModel = createSessionModelAdapter(() => host.apiProxy())
 
   // ---- user questions (ask_user_question) ----
   // The host's web UI owns the single userQuestions provider slot, so the
@@ -142,28 +144,30 @@ function apply(ctx, config = {}) {
   }
 
   /**
-   * Push the model catalog (providers × models) plus the agent's current
-   * selection to one socket. Listing every provider's models is advisory
-   * (`ctx.llm.listModels` may throw for an adapter without a catalog); a
-   * failed provider is omitted rather than failing the whole frame.
+   * Push the model catalog (provider groups with reasoning metadata) plus the
+   * current selection to one socket. The catalog comes from the host-scoped
+   * `llm.models` (which does not install the Host's lazy per-session selection
+   * waterfall); the current selection comes from the bridge's installed
+   * model-selection pair — that is what the next prompt assembly actually
+   * routes — hydrated on resume and reconciled on every selectModel success.
+   * When the catalog API is unavailable, fall back to an empty catalog.
    */
   async function sendModel(ws, agent) {
-    const llm = host.llm()
-    const providers = llm?.listProviders?.() ?? []
-    const modelLists = {}
-    await Promise.all(providers.map(async (p) => {
-      try {
-        modelLists[p.id] = await llm.listModels(p.id)
-      } catch {
-        modelLists[p.id] = []
-      }
-    }))
-    const selection = modelSelections.get(agent.id)
-    const current = selection?.current
+    let groups = []
+    try {
+      const catalog = await sessionModel.catalogModels()
+      groups = catalog.groups ?? []
+    } catch (error) {
+      // A catalog read failure must not silently empty the /model and /effort
+      // pickers. Surface the same frame the dispatcher uses for an explicit
+      // /model so the client can explain why the picker is empty.
+      send(ws, { type: 'error', code: 'model-failed', message: String(error?.message ?? error) })
+    }
+    const current = modelSelections.get(agent.id)?.current
       ?? (agent.options?.provider !== undefined && agent.options?.model !== undefined
         ? { provider: agent.options.provider, model: agent.options.model }
         : undefined)
-    send(ws, { type: 'model', ...shapeModelFrame(providers, modelLists, current) })
+    send(ws, { type: 'model', ...shapeModelFrame(groups, current) })
   }
 
   // ---- snapshot / lazy history paging ----
@@ -254,6 +258,11 @@ function apply(ctx, config = {}) {
       MAX_FRAME_BYTES,
       modelSelections.get(agent.id)?.current,
     ))
+    // The authoritative current selection (including reasoning effort) is
+    // resolved per-session by `session.models`; push it right after welcome so
+    // the status bar reflects the session's own triple, not the deployment
+    // default used for a freshly resumed agent.
+    void sendModel(conn.ws, agent).catch(() => {})
     sendSnapshot(conn, send)
     // DSH/plugin commands are effective per agent (scoped definitions may
     // shadow globals), so discover them after every attach/session switch.
@@ -330,6 +339,7 @@ function apply(ctx, config = {}) {
     ctx,
     modelSelections,
     modelSelection,
+    sessionModel,
     attach,
     detach,
     isCurrent: (conn) => conns.has(conn),
@@ -354,6 +364,7 @@ function apply(ctx, config = {}) {
       questionSessions,
       sendModel,
       modelSelections,
+      sessionModel,
       createUserMessage,
     })
     ws.on('message', dispatcher.handle)
@@ -402,6 +413,16 @@ function apply(ctx, config = {}) {
     () => watchSkillChanges(ctx, conns, (conn) => { void sendSkills(conn) }),
     'dsh-tui: skill directory updates',
   )
+  // The model/effort catalog invalidates when adapters or settings change
+  // (the same owner events the web model selector listens to). Re-push the
+  // model frame to every attached connection so the status bar and /effort
+  // page reflect the new reasoning metadata without a manual /model.
+  const refreshModel = () => {
+    for (const conn of [...conns]) void sendModel(conn.ws, conn.agent).catch(() => {})
+  }
+  const offAdapters = ctx.on('llm/adapters-updated', refreshModel)
+  const offSettings = ctx.on('settings/document-updated', refreshModel)
+  ctx.effect(() => () => { offAdapters(); offSettings() }, 'dsh-tui: model catalog updates')
 
   ctx.effect(() => {
     const disposeRoute = ctx.webServer.registerUpgrade({

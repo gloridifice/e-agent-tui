@@ -74,8 +74,14 @@ pub enum ClientMessage {
     LoginProxyDelete { id: String },
     /// Request the provider/model catalog (for the `/model` picker).
     ModelGet,
-    /// Select the provider/model for the attached session.
-    ModelSet { provider: String, model: String },
+    /// Select the provider/model (and optional reasoning effort) for the
+    /// attached session.
+    ModelSet {
+        provider: String,
+        model: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reasoning_effort: Option<String>,
+    },
     /// Keepalive.
     Ping,
 }
@@ -347,6 +353,27 @@ pub struct ModelInfo {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<ModelReasoningInfo>,
+}
+
+/// Selectable reasoning metadata for one exact provider/model route.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelReasoningInfo {
+    pub efforts: Vec<ModelReasoningEffortInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_effort: Option<String>,
+}
+
+/// One adapter-owned reasoning effort.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelReasoningEffortInfo {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// The current provider/model selection.
@@ -355,6 +382,8 @@ pub struct ModelInfo {
 pub struct ModelCurrent {
     pub provider: String,
     pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
 }
 
 impl ClientMessage {

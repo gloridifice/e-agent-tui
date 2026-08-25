@@ -28,6 +28,7 @@ pub use e_tui::{DrawPriority, EffectResult, UiAction};
 use crate::model::Msg;
 use crate::{
     config::Config,
+    dsh_env::PROFILE_NAME,
     model::{AppState, ApprovalCard, QuestionBatch},
     protocol::{ClientMessage, ServerMessage, WIRE_PROTOCOL_VERSION},
     runtime_command::{self, LocalCommandContext},
@@ -182,7 +183,7 @@ pub struct RuntimeController;
 
 fn protocol_mismatch_fatal(detail: &str) -> String {
     format!(
-        "bridge protocol mismatch: {detail}. Update the client and bridge from the same checkout: remount with `tools\\mount-bridge.ps1 -Profile dshe`, run `dsh plugin --profile dshe install`, rebuild/reinstall `dshe`, and restart DSH"
+        "bridge protocol mismatch: {detail}. Update the client and bridge from the same checkout: remount with `tools\\mount-bridge.ps1 -Profile {PROFILE_NAME}`, run `dsh plugin --profile {PROFILE_NAME} install`, rebuild/reinstall `dshe`, and restart DSH"
     )
 }
 
@@ -1344,6 +1345,7 @@ mod tests {
             protocol.as_slice(),
             [UiAction::Fatal(reason)]
                 if reason.contains("protocol mismatch")
+                    && reason.contains("--profile e")
                     && reason.contains("mount")
                     && reason.contains("rebuild")
                     && reason.contains("restart DSH")

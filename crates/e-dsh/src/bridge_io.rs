@@ -8,7 +8,10 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_tungstenite::{connect_async_with_config, tungstenite::Message};
 
-use crate::protocol::{ClientMessage, ServerMessage, MAX_WIRE_FRAME_BYTES};
+use crate::{
+    dsh_env::PROFILE_NAME,
+    protocol::{ClientMessage, ServerMessage, MAX_WIRE_FRAME_BYTES},
+};
 
 pub struct BridgeIo {
     pub outbound: mpsc::Sender<ClientMessage>,
@@ -34,7 +37,7 @@ fn is_transient_connect_error(error: &tokio_tungstenite::tungstenite::Error) -> 
 /// Build the actionable message for a failed bridge connection.
 fn connection_error(url: &str, error: impl std::fmt::Display) -> anyhow::Error {
     anyhow!(
-        "cannot connect to the DSH bridge at {url}: {error}. The DSH service stopped or the `dsh-tui` route is unavailable. Run `dsh --profile dshe` to inspect startup output; if DSH runs, remount with `tools\\mount-bridge.ps1 -Profile dshe`, run `dsh plugin --profile dshe install`, and restart DSH"
+        "cannot connect to the DSH bridge at {url}: {error}. The DSH service stopped or the `dsh-tui` route is unavailable. Run `dsh --profile {PROFILE_NAME}` to inspect startup output; if DSH runs, remount with `tools\\mount-bridge.ps1 -Profile {PROFILE_NAME}`, run `dsh plugin --profile {PROFILE_NAME} install`, and restart DSH"
     )
 }
 
@@ -140,7 +143,7 @@ mod tests {
         );
         let message = error.to_string();
         assert!(message.contains("cannot connect to the DSH bridge"));
-        assert!(message.contains("dsh --profile dshe"));
+        assert!(message.contains("dsh --profile e"));
         assert!(message.contains("mount-bridge.ps1"));
     }
 }

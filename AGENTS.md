@@ -28,14 +28,14 @@ Full overview: [docs/README.md](docs/README.md).
 The user-facing source install flow is documented in the README "Quick Start": install pnpm and
 `@deepseek-ai/dsh` globally, use `cargo install --path crates/e-dsh --locked` to install `dshe.exe` into the
 Cargo bin directory, then run `dshe setup` (which embeds the bridge at build time and installs it into the
-dedicated `dshe` profile). Setup checks that pnpm is executable before modifying the profile.
+dedicated `e` profile). Setup checks that pnpm is executable before modifying the profile. On the first updated setup, it moves an existing `profiles\\dshe` directory to `profiles\\e` when `e` is absent; stop/restart DSH around that migration.
 
 ```powershell
 # First install
 npm install --global pnpm
 npm install --global @deepseek-ai/dsh
 cargo install --path crates/e-dsh --locked
-# Embeds and installs the bridge into the dedicated dshe profile.
+# Embeds and installs the bridge into the dedicated e profile.
 # When DSH_HOME is unset/empty, setup falls back to $HOME\.dsh.
 dshe setup
 # Force-stop only the project-managed DSH service and remove its stale `%DSH_HOME%\e.lock`.
@@ -50,10 +50,10 @@ cargo clippy --all-targets
 cargo test                               # full unit tests
 
 # Bridge sync (required after changing bridge/; takes effect after restarting dsh)
-# Rebuild the client + `dshe setup` to install the re-embedded bridge into the dshe profile.
+# Rebuild the client + `dshe setup` to install the re-embedded bridge into the e profile.
 # The mount script below remains the fastest dev path to hot-sync bridge/ without a rebuild
 # (also used for the `web` profile).
-.\tools\mount-bridge.ps1 -Profile web    # or -Profile dshe (the dshe launcher's dedicated profile)
+.\tools\mount-bridge.ps1 -Profile web    # or -Profile e (the dshe launcher's dedicated profile)
 # Equivalent manual command: robocopy bridge\src "$env:DSH_HOME\profiles\<p>\packages\dsh-tui-bridge\src" /MIR
 # The script must be compatible with Windows PowerShell 5.1: empty DSH_HOME falls back to $HOME\.dsh;
 # variable names are case-insensitive; Node JSON must be UTF-8 without BOM
@@ -62,7 +62,7 @@ cargo test                               # full unit tests
 cd bridge; npm test                      # = node --test --test-isolation=none "test/*.test.js"
 node tools/sync-protocol-contract.mjs --check
 # After a DSH upgrade or bridge change: mount + dsh plugin install (or rebuild + `dshe setup`), then run the full compatibility gate against the deployed copy
-$env:DSH_TUI_SMOKE_PROFILE = 'dshe'; cd bridge; npm run verify-dsh-upgrade
+$env:DSH_TUI_SMOKE_PROFILE = 'e'; cd bridge; npm run verify-dsh-upgrade
 
 # Integration debugging
 node tools/probe-online.mjs       # is the bridge online
@@ -133,7 +133,7 @@ Implementation conventions are documented per part and are the source of truth w
 ## Known issues
 
 - **Restart DSH to load a new bridge**: after changing `bridge/src`, rebuild the client and run `dshe setup`
-  (or re-mount with `.\tools\mount-bridge.ps1 -Profile <web|dshe>`, equivalent to robocopy) + user restarts dsh.
+  (or re-mount with `.\tools\mount-bridge.ps1 -Profile <web|e>`, equivalent to robocopy) + user restarts dsh.
   The old bridge's startup full disk read is ~14s; the new bridge's active-session path is <100ms.
 - The `dshe` binary embeds the bridge runtime and gates startup on a current `.dshe-setup.json` record; a
   missing/stale/damaged setup fails with English guidance to run `dshe setup` before the launcher runs.

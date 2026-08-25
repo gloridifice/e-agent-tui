@@ -51,6 +51,11 @@ pub fn profile_dir(home: &Path) -> PathBuf {
     home.join("profiles").join(PROFILE_NAME)
 }
 
+/// Legacy dedicated-profile location used by pre-rename `dshe` builds.
+fn legacy_profile_dir(home: &Path) -> PathBuf {
+    home.join("profiles").join("dshe")
+}
+
 fn packages_dir(profile: &Path) -> PathBuf {
     profile.join("packages")
 }
@@ -279,6 +284,35 @@ fn structure_valid(profile: &Path) -> bool {
 // ---------------------------------------------------------------------------
 // Profile provisioning
 // ---------------------------------------------------------------------------
+
+/// Move the pre-rename dedicated profile into the current profile location
+/// only when that location does not exist. A rename preserves arbitrary valid
+/// user dependencies, patches, packages, and lockfiles without trying to
+/// merge two independent profile trees.
+fn migrate_legacy_profile(home: &Path) -> Result<bool, SetupError> {
+    let profile = profile_dir(home);
+    if profile.exists() {
+        return Ok(false);
+    }
+    let legacy = legacy_profile_dir(home);
+    if !legacy.exists() {
+        return Ok(false);
+    }
+    if !legacy.is_dir() {
+        return Err(SetupError::new(format!(
+            "Cannot migrate the legacy DSH profile at {} because it is not a directory. Repair or remove it, then run `dshe setup` again.",
+            legacy.display()
+        )));
+    }
+    fs::rename(&legacy, &profile).map_err(|error| {
+        SetupError::new(format!(
+            "Cannot migrate the legacy DSH profile from {} to {}: {error}. Stop any DSH service using the profile, check filesystem permissions, then run `dshe setup` again.",
+            legacy.display(),
+            profile.display()
+        ))
+    })?;
+    Ok(true)
+}
 
 fn ensure_profile_files(profile: &Path) -> Result<(), SetupError> {
     fs::create_dir_all(profile).map_err(|error| write_error(profile, error))?;
@@ -543,7 +577,7 @@ where
     Ok(version)
 }
 
-/// The argv for `dsh plugin --profile dshe install`, using the global `dsh`
+/// The argv for `dsh plugin --profile e install`, using the global `dsh`
 /// when available and the `npx` fallback otherwise. `None` when neither
 /// executable is on PATH.
 fn plugin_install_argv() -> Option<Vec<String>> {
@@ -662,8 +696,13 @@ pub fn run_setup_with<F>(home: &Path, install: F) -> Result<(), SetupError>
 where
     F: FnOnce(&Path) -> Result<(), SetupError>,
 {
+    let migrated = migrate_legacy_profile(home)?;
     let profile = profile_dir(home);
-    println!("[2/6] Preparing the `dshe` profile...");
+    if migrated {
+        println!("[2/6] Migrated the legacy `dshe` profile to `{PROFILE_NAME}`...");
+    } else {
+        println!("[2/6] Preparing the `{PROFILE_NAME}` profile...");
+    }
     ensure_profile_files(&profile)?;
     println!("[3/6] Installing the embedded bridge...");
     install_embedded_bridge(&profile)?;
@@ -768,6 +807,7 @@ mod tests {
 
         let manifest = fs::read_to_string(profile.join("package.json")).unwrap();
         let value: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+        assert_eq!(value["name"], "dsh-profile-e");
         assert_eq!(value["dependencies"]["dsh-tui-bridge"], "workspace:*");
         assert_eq!(value["dependencies"]["dsh-win32"], DSH_WIN32_VERSION);
         assert_eq!(
@@ -789,12 +829,87 @@ mod tests {
     }
 
     #[test]
+    fn legacy_profile_migrates_and_preserves_unrelated_configuration() {
+        let home = temp_home("migrate-legacy");
+        let legacy = legacy_profile_dir(&home);
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(
+            legacy.join("package.json"),
+            r#"{"name":"dsh-profile-dshe","dependencies":{"extra-plugin":"1.0.0"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            legacy.join("cordis.patch.yml"),
+            "- insert:\n    - id: extra\n      name: extra-plugin\n",
+        )
+        .unwrap();
+
+        let profile = profile_dir(&home);
+        run_setup_with(&home, |_home| {
+            fs::create_dir_all(profile.join("node_modules").join(BRIDGE_PACKAGE)).unwrap();
+            Ok(())
+        })
+        .unwrap();
+
+        assert!(!legacy.exists());
+        let manifest = fs::read_to_string(profile.join("package.json")).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+        assert_eq!(value["dependencies"]["extra-plugin"], "1.0.0");
+        assert_eq!(value["dependencies"][BRIDGE_PACKAGE], "workspace:*");
+        assert!(fs::read_to_string(profile.join("cordis.patch.yml"))
+            .unwrap()
+            .contains("extra-plugin"));
+        assert_eq!(
+            read_setup_record(&setup_record_path(&profile))
+                .unwrap()
+                .profile,
+            PROFILE_NAME
+        );
+        remove_tree(&home);
+    }
+
+    #[test]
+    fn legacy_profile_is_untouched_when_current_profile_exists() {
+        let home = temp_home("keep-legacy");
+        let legacy = legacy_profile_dir(&home);
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(legacy.join("keep.txt"), "legacy").unwrap();
+        let profile = profile_dir(&home);
+        fs::create_dir_all(&profile).unwrap();
+
+        run_setup_with(&home, |_home| {
+            fs::create_dir_all(profile.join("node_modules").join(BRIDGE_PACKAGE)).unwrap();
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(legacy.join("keep.txt")).unwrap(),
+            "legacy"
+        );
+        assert!(profile.join("package.json").is_file());
+        remove_tree(&home);
+    }
+
+    #[test]
+    fn invalid_legacy_profile_path_has_actionable_error() {
+        let home = temp_home("invalid-legacy");
+        fs::create_dir_all(home.join("profiles")).unwrap();
+        fs::write(legacy_profile_dir(&home), "not a directory").unwrap();
+
+        let error = migrate_legacy_profile(&home).unwrap_err().to_string();
+        assert!(error.contains("not a directory"), "{error}");
+        assert!(error.contains("dshe setup"), "{error}");
+        remove_tree(&home);
+    }
+
+    #[test]
     fn existing_manifest_preserves_unrelated_fields() {
         let home = temp_home("preserve-manifest");
         let profile = profile_dir(&home);
         write_manifest(
             &profile,
-            r#"{"name":"dsh-profile-dshe","private":true,"dependencies":{"dsh-win32":"0.13.0","extra-plugin":"1.0.0"},"dsh":{"profile":{"bundles":["@deepseek-ai/dsh-base","@deepseek-ai/dsh-web-app","dsh-win32"]}}}"#,
+            r#"{"name":"dsh-profile-e","private":true,"dependencies":{"dsh-win32":"0.13.0","extra-plugin":"1.0.0"},"dsh":{"profile":{"bundles":["@deepseek-ai/dsh-base","@deepseek-ai/dsh-web-app","dsh-win32"]}}}"#,
         );
         ensure_package_json(&profile).unwrap();
 
@@ -804,7 +919,7 @@ mod tests {
         assert_eq!(value["dependencies"]["dsh-tui-bridge"], "workspace:*");
         assert_eq!(value["dependencies"]["extra-plugin"], "1.0.0");
         assert_eq!(value["dependencies"]["dsh-win32"], "0.13.0");
-        assert_eq!(value["name"], "dsh-profile-dshe");
+        assert_eq!(value["name"], "dsh-profile-e");
         remove_tree(&home);
     }
 
@@ -919,7 +1034,7 @@ mod tests {
         let profile = profile_dir(&home);
         let error = run_setup_with(&home, |_home| {
             Err(SetupError::new(
-                "DSH bridge installation failed: `dsh plugin --profile dshe install` exited with exit code 1. Review the package-manager output above, fix the reported issue, then run `dshe setup` again.",
+                "DSH bridge installation failed: `dsh plugin --profile e install` exited with exit code 1. Review the package-manager output above, fix the reported issue, then run `dshe setup` again.",
             ))
         })
         .unwrap_err();
@@ -1046,7 +1161,7 @@ mod tests {
             "dsh".to_string(),
             "plugin".to_string(),
             "--profile".to_string(),
-            "dshe".to_string(),
+            "e".to_string(),
             "install".to_string(),
         ]
     }
@@ -1058,7 +1173,7 @@ mod tests {
         };
         assert_eq!(
             &argv[argv.len() - 4..],
-            ["plugin", "--profile", "dshe", "install"]
+            ["plugin", "--profile", "e", "install"]
         );
         assert!(argv[0] == "dsh" || (argv[0] == "npx" && argv.len() >= 3 && argv[1] == "-y"));
     }
@@ -1125,7 +1240,7 @@ mod tests {
         let home = temp_home("manifest-noop");
         let profile = profile_dir(&home);
         let original =
-            "{\"name\":\"dsh-profile-dshe\",\"dependencies\":{\"dsh-tui-bridge\":\"workspace:*\"}}\n";
+            "{\"name\":\"dsh-profile-e\",\"dependencies\":{\"dsh-tui-bridge\":\"workspace:*\"}}\n";
         write_manifest(&profile, original);
         ensure_package_json(&profile).unwrap();
         assert_eq!(

@@ -8,7 +8,7 @@
  * same-socket session swap.
  *
  * Usage: node tools/test-new-swap.mjs
- * Optional: DSH_TUI_SMOKE_PROFILE=dshe node tools/test-new-swap.mjs
+ * Optional: DSH_TUI_SMOKE_PROFILE=e node tools/test-new-swap.mjs
  */
 import { createServer } from 'node:http'
 import { readFileSync } from 'node:fs'

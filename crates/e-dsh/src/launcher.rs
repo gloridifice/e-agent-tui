@@ -1,11 +1,11 @@
-//! `dshe` launcher: probe for a running DSH bridge, spawn `dsh --profile dshe`
+//! `dshe` launcher: probe for a running DSH bridge, spawn `dsh --profile e`
 //! when absent (global `dsh` first, `npx @deepseek-ai/dsh` fallback), and shut
 //! the spawned service down when the last attached TUI exits.
 //!
 //! Startup modes:
-//!   1. `dshe` (no running dsh) → spawn `dsh --profile dshe`, run the TUI, and
+//!   1. `dshe` (no running dsh) → spawn `dsh --profile e`, run the TUI, and
 //!      kill the spawned service when the last TUI closes.
-//!   2. `dsh --profile dshe` → the user starts dsh themselves; a later `dshe`
+//!   2. `dsh --profile e` → the user starts dsh themselves; a later `dshe`
 //!      bridges to it.
 //!   3. dsh already running (any profile) → `dshe` bridges and never touches
 //!      the existing service.
@@ -148,7 +148,7 @@ impl LauncherPorts for ProductionLauncherPorts {
 /// DSH home (the bridge token and the instance lock live here), matching the
 /// bridge's own `dshHome()` resolution. Empty or whitespace-only `DSH_HOME`
 /// values fall back to the platform default just like an unset variable.
-pub use crate::dsh_env::{current_dsh_home as dsh_home, dsh_command};
+pub use crate::dsh_env::{current_dsh_home as dsh_home, dsh_command, PROFILE_NAME};
 
 // ---------- URL / probe (pure) ----------
 
@@ -518,7 +518,7 @@ impl<P: LauncherPorts> LauncherCoordinator<P> {
         }
 
         let argv = dsh_command().ok_or_else(|| LauncherError::Spawn {
-            command: "dsh --profile dshe".to_string(),
+            command: format!("dsh --profile {PROFILE_NAME}"),
             message: "neither `dsh` nor `npx` is available on PATH".to_string(),
         })?;
         let command = argv.join(" ");
@@ -901,7 +901,7 @@ mod tests {
     }
 
     #[test]
-    fn dsh_command_uses_the_dedicated_dshe_profile() {
+    fn dsh_command_uses_the_dedicated_e_profile() {
         let Some(command) = dsh_command() else {
             return; // dsh/npx unavailable in this environment.
         };

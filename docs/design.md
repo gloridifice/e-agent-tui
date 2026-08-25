@@ -7,7 +7,7 @@
 > v0.5 changes (v0.1.0 milestone): project renamed **e** (executable **`dshe`**); config moved to
 > `%APPDATA%\dshe\config.toml`, theme directory `%APPDATA%\dshe\themes\` (default **ferra**, plus built-in
 > deepseek-e); added `/theme` `/model` `/reload` `/skill:<name>`; the `dshe` launcher auto-spawns
-> `dsh --profile dshe` (or npx) / bridges to an already-running dsh; uses the dedicated `dshe` profile to avoid
+> `dsh --profile e` (or npx) / bridges to an already-running dsh; uses the dedicated `e` profile to avoid
 > conflicts with DSH's own or the user's existing `tui` profile. The Windows service started by `dshe` terminates
 > the `cmd /C` shim's full process tree with `taskkill /T` both on startup-timeout cleanup and when the last TUI
 > closes, to avoid orphan Node processes; reaping wait is bounded, and on close failure a zero-instance lock is
@@ -827,16 +827,19 @@ Node.js/npm, and Rust/Cargo, install pnpm and `@deepseek-ai/dsh` globally, use
 `cargo install --path crates/e-dsh --locked` to install `dshe.exe` into the Cargo bin directory, then run
 `dshe setup`. The bridge runtime (package manifest,
 canonical protocol contract, and every production `bridge/src/*.js` module) is embedded in `dshe.exe` at build
-time; `dshe setup` materializes it into the dedicated `dshe` profile, registers it idempotently, runs the
-equivalent of `dsh plugin --profile dshe install`, validates the result, and atomically records the successful
-bridge digest in `%DSH_HOME%\profiles\dshe\.dshe-setup.json`. When `DSH_HOME` is unset, empty, or whitespace-only,
+time; `dshe setup` materializes it into the dedicated `e` profile, registers it idempotently, runs the
+equivalent of `dsh plugin --profile e install`, validates the result, and atomically records the successful
+bridge digest in `%DSH_HOME%\profiles\e\.dshe-setup.json`. When `DSH_HOME` is unset, empty, or whitespace-only,
 setup and the client both use `%USERPROFILE%\.dsh`, and the resolved value is passed to the DSH plugin child
 process. Before modifying the profile, setup runs `pnpm --version` and stops with English installation guidance
 when pnpm is missing or unusable. Setup reports the resolved paths and each preparation, extraction, dependency
 installation, validation, and recording stage; installer stdio remains inherited. Setup only merges the
 bridge-owned registrations (`dependencies["dsh-tui-bridge"] = "workspace:*"`, the `packages/*` workspace entry,
 and the `tui-bridge` patch insert) and preserves unrelated profile
-configuration; malformed profile files are refused with an actionable error rather than rewritten. The
+configuration; malformed profile files are refused with an actionable error rather than rewritten. When the
+current `%DSH_HOME%\profiles\e` directory is absent but the legacy `profiles\dshe` directory exists, setup renames
+that complete directory first, preserving custom dependencies and patch entries; when both exist it leaves the
+legacy directory untouched. Stop any running DSH service before migration or restart it after setup. The
 `tools/mount-bridge.ps1` script remains a development-only shortcut for hot-syncing `bridge/` (and the `web`
 profile) without a client rebuild, but it is no longer a user prerequisite.
 

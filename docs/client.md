@@ -275,7 +275,7 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
   Built-in `deepseek-e`/`ferra` sources are in `crates/e-tui/assets/themes/`, embedded via `include_str!` and parsed by
   the same parser as user files, and copied without overwrite to `%APPDATA%\dshe\themes\`; a valid same-named user
   file wins, and an illegal old file must not shadow the embedded fallback. `launcher.rs`: `probe(url)` TCP probe
-  → if no dsh, spawn `dsh --profile dshe` (`dsh` or `npx @deepseek-ai/dsh`) → `%DSH_HOME%\e.lock` counts
+  → if no dsh, spawn `dsh --profile e` (`dsh` or `npx @deepseek-ai/dsh`) → `%DSH_HOME%\e.lock` counts
   "close dsh when the last tui closes"; on Windows the child handle points at the `cmd /C` shim, and both normal
   shutdown and startup-timeout cleanup must `taskkill /T` the whole process tree — never only `Child::kill`,
   which leaves orphan Node processes; child reaping must be bounded, and on terminate failure keep an
@@ -289,7 +289,7 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
   — never continue to token
   read/WebSocket connect and expose a raw connection-refused error. The WebSocket upgrade retries only transient I/O
   races briefly. `release` returns `true` only when it actually shut down a managed service, and after the main
-  program exits the alternate screen it prints `dsh 服务器已关闭。`. The launcher must use the dedicated `dshe`
+  program exits the alternate screen it prints `dsh 服务器已关闭。`. The launcher must use the dedicated `e`
   profile and must not reuse DSH's own / user's existing `tui` profile (whose terminal UI grabs stdio and does not
   provide the `webServer` the bridge depends on). Hello-terminal bridge errors (`protocol-newer`, `bad-token`,
   `hello-failed`) must become actionable fatal client errors before the following WebSocket close can overwrite them

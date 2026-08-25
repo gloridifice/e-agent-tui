@@ -1,11 +1,11 @@
 # mount-bridge.ps1 — link dsh-tui-bridge into a DSH profile, creating the
 # profile skeleton first when it does not exist (used for both the `web`
-# profile and the `dshe` launcher's dedicated `dshe` profile).
+# profile and the `dshe` launcher's dedicated `e` profile).
 #
 # Idempotent: safe to rerun. Requires write access to $DSH_HOME.
 param(
     [string]$DshHome = $env:DSH_HOME,
-    [string]$Profile = 'dshe'
+    [string]$Profile = 'e'
 )
 
 $ErrorActionPreference = 'Stop'

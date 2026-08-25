@@ -241,7 +241,7 @@ async fn run_tui(url: String, resume_session_id: Option<String>) -> anyhow::Resu
     e::setup::require_ready(&home).map_err(|error| anyhow::anyhow!("{error}"))?;
 
     // Launcher preamble: ensure a DSH bridge is listening at `url`, spawning
-    // `dsh --profile dshe` when none is (global dsh, else npx). `dsh_session`
+    // `dsh --profile e` when none is (global dsh, else npx). `dsh_session`
     // records whether this process owns the spawned service so `release`
     // below can shut it down when the last TUI closes.
     let mut dsh_session = e::launcher::acquire(&url, &home)?;

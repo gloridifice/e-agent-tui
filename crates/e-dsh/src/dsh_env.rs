@@ -7,8 +7,8 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-/// The dedicated profile `dshe` uses for its bridge and launcher.
-pub const PROFILE_NAME: &str = "dshe";
+/// The dedicated DSH profile used for the bridge and launcher.
+pub const PROFILE_NAME: &str = "e";
 
 /// Resolve the DSH home directory from raw environment values.
 ///
@@ -64,7 +64,7 @@ pub fn dsh_launcher_argv() -> Option<Vec<String>> {
     }
 }
 
-/// The argv that boots the dedicated `dshe` profile, or `None` when DSH is
+/// The argv that boots the dedicated `e` profile, or `None` when DSH is
 /// not installed.
 pub fn dsh_command() -> Option<Vec<String>> {
     let mut argv = dsh_launcher_argv()?;

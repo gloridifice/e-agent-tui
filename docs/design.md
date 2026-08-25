@@ -428,7 +428,10 @@ The ferra palette comes from the casperstorm/ferra README:
   the input loop.
 - Input keys are fixed `Enter` send, `Shift+Enter` insert newline; `↑↓` move between input lines keeping the
   character column, and only switch to the previous/next history prompt when the cursor is already on the top/
-  bottom line; `Ctrl+R` search history, `Tab` complete. `PageUp`/`PageDown` page by the currently visible
+  bottom line; `Ctrl+R` search history, `Tab` complete. `Ctrl+Backspace`/`Ctrl+W` (Windows) and
+  `Alt/Option+Backspace` (macOS) delete the word before the cursor together with the whitespace around it — paste blocks are atomic
+  units, scans stop at their boundaries, and CJK ideographs/kana delete one Unicode grapheme per press.
+  `PageUp`/`PageDown` page by the currently visible
   transcript height, and the mouse wheel moves 3 lines per notch; both always scroll the message stream even when
   an Input Page is open. `Ctrl+H` is a global help key handled before page dispatch, and modified `hjkl` do not
   participate in page focus navigation.
@@ -469,6 +472,7 @@ aborts both those command signals and any active agent turn.
 |----|------|------|
 | Enter | send input-bar message | single/multi-line consistent |
 | Shift+Enter | input newline | |
+| Ctrl+Backspace / Ctrl+W / Alt+Backspace | delete the word before the cursor (with surrounding whitespace) | Windows Terminal encodes Ctrl+Backspace as Ctrl+W; paste blocks are atomic; CJK one grapheme per press; Alt covers macOS Option+Backspace |
 | ↑ / ↓ | move between input lines; switch prompts at boundary | keep character column |
 | Ctrl+R | reverse history search | |
 | Tab | command completion | |

@@ -10,9 +10,9 @@
 //! terminal instead delivers the raw VT byte stream to byte readers — the same
 //! stream Unix terminals produce. This module parses that stream into crossterm
 //! [`Event`]s, including [`Event::Paste`], following the proven design of the
-//! pi terminal client: byte-level sequence buffering, plus sampling of the
-//! physical modifier keys on Windows so that Shift/Ctrl+Enter survive even
-//! though the terminal cannot encode them in the raw bytes.
+//! pi terminal client: byte-level sequence buffering, plus reader-time
+//! physical-key snapshots on Windows so Shift/Ctrl+Enter and Ctrl+Backspace
+//! survive even though legacy raw bytes do not encode them unambiguously.
 //!
 //! The parser is a pure state machine over bytes: feed it chunks (reads may
 //! split sequences arbitrarily) and drain [`Event`]s. Incomplete escape
@@ -23,12 +23,17 @@ use std::{collections::VecDeque, time::Duration};
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 
-/// Physical modifier state sampled at parse time (Windows `GetAsyncKeyState`).
+/// Native terminal context sampled by the Windows raw-input source.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NativeMods {
     pub shift: bool,
     pub ctrl: bool,
     pub alt: bool,
+    /// Physical Backspace state captured when the reader receives the byte.
+    /// Windows Terminal encodes Ctrl+Backspace as ETB (`0x17`) and Ctrl+H as
+    /// BS (`0x08`), so this snapshot is what separates a real Backspace origin
+    /// from the plain control character before the async handoff.
+    pub back: bool,
 }
 
 /// How long to wait after a lone `ESC` before treating it as the Escape key
@@ -63,6 +68,10 @@ pub struct VtInputParser {
     in_paste: bool,
     out: VecDeque<Event>,
     native_mods: Box<dyn Fn() -> NativeMods + Send>,
+    /// Snapshot attached to the byte chunk currently being drained. Production
+    /// input supplies it from the blocking reader thread; the callback remains
+    /// as a deterministic fallback for parser tests and timeout paths.
+    feed_mods: Option<NativeMods>,
 }
 
 impl VtInputParser {
@@ -72,13 +81,40 @@ impl VtInputParser {
             in_paste: false,
             out: VecDeque::new(),
             native_mods,
+            feed_mods: None,
         }
     }
 
     /// Feed a raw byte chunk; reads may split sequences anywhere.
     pub fn feed(&mut self, bytes: &[u8]) {
+        self.feed_inner(bytes, None);
+    }
+
+    /// Feed bytes together with the physical state captured by the blocking
+    /// reader immediately after the read completed.
+    pub fn feed_with_native_mods(&mut self, bytes: &[u8], mods: NativeMods) {
+        self.feed_inner(bytes, Some(mods));
+    }
+
+    fn feed_inner(&mut self, bytes: &[u8], mods: Option<NativeMods>) {
+        self.feed_mods = mods;
         self.buf.extend_from_slice(bytes);
         self.drain();
+        self.feed_mods = None;
+    }
+
+    fn current_native_mods(&self) -> NativeMods {
+        self.feed_mods.unwrap_or_else(|| (self.native_mods)())
+    }
+
+    /// The physical snapshot is sampled after the read returns, so `back`
+    /// reflects the most recently pressed key. It is only trustworthy for the
+    /// final byte of the current chunk: a coalesced chunk (e.g. a plain
+    /// Backspace followed by Ctrl+Backspace in one read) would otherwise let
+    /// the later key's state promote the earlier plain Backspace. Control
+    /// bytes never wait across feeds, so `buf.len() == 1` means "last byte".
+    fn back_trusted(&self, mods: NativeMods) -> bool {
+        mods.back && self.buf.len() == 1
     }
 
     /// Take the next parsed event, if any.
@@ -144,10 +180,18 @@ impl VtInputParser {
                 self.consume_control(byte);
                 continue;
             } else if byte == 0x7f {
-                self.out.push_back(Event::Key(KeyEvent::new(
-                    KeyCode::Backspace,
-                    KeyModifiers::NONE,
-                )));
+                // DEL is normally plain Backspace, but terminals differ on
+                // Ctrl+Backspace. Trust only the physical state attached by
+                // the reader thread, never a delayed async-loop sample, and
+                // only for the final byte of the chunk.
+                let mods = self.current_native_mods();
+                let modifiers = if mods.ctrl && self.back_trusted(mods) {
+                    KeyModifiers::CONTROL
+                } else {
+                    KeyModifiers::NONE
+                };
+                self.out
+                    .push_back(Event::Key(KeyEvent::new(KeyCode::Backspace, modifiers)));
                 self.buf.remove(0);
                 continue;
             } else {
@@ -165,15 +209,29 @@ impl VtInputParser {
             // Windows terminals send Enter as CR; some terminals use LF.
             0x0d | 0x0a => self.enter_event(),
             0x09 => KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
-            // BS is ambiguous on a VT byte stream. ConHost can emit it for
-            // plain Backspace, while Ctrl+H produces the same byte. Physical
-            // Ctrl state is enough to preserve both composer deletion and the
-            // global help binding.
+            // Raw BS is Ctrl+H on this terminal family. Only an explicit
+            // physical Backspace snapshot turns it into Ctrl+Backspace, which
+            // covers terminals that do encode Ctrl+Backspace as BS.
             0x08 => {
-                if (self.native_mods)().ctrl {
+                let mods = self.current_native_mods();
+                if mods.ctrl && self.back_trusted(mods) {
+                    KeyEvent::new(KeyCode::Backspace, KeyModifiers::CONTROL)
+                } else if mods.ctrl {
                     KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL)
                 } else {
                     KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)
+                }
+            }
+            // Windows Terminal sends ETB for Ctrl+Backspace, matching the Unix
+            // Ctrl+W "delete previous word" convention. A physical Backspace
+            // snapshot identifies the Ctrl+Backspace origin; otherwise this
+            // stays Ctrl+W, which the composer also treats as delete-word.
+            0x17 => {
+                let mods = self.current_native_mods();
+                if self.back_trusted(mods) {
+                    KeyEvent::new(KeyCode::Backspace, KeyModifiers::CONTROL)
+                } else {
+                    KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL)
                 }
             }
             0x00 => KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL),
@@ -196,7 +254,7 @@ impl VtInputParser {
     /// Enter can carry Shift/Ctrl/Alt even though the terminal only sends `\r`:
     /// sample the physical modifier state (pi's Windows heuristic).
     fn enter_event(&mut self) -> KeyEvent {
-        let mods = (self.native_mods)();
+        let mods = self.current_native_mods();
         let modifiers = if mods.shift {
             KeyModifiers::SHIFT
         } else if mods.ctrl {
@@ -655,21 +713,184 @@ mod tests {
         );
     }
 
+    /// The observed Windows Terminal byte table, captured with
+    /// `cargo run -p e-dsh --example input_probe`. These four rows are the
+    /// ground truth this parser must reproduce.
     #[test]
-    fn raw_bs_distinguishes_plain_backspace_from_ctrl_h() {
+    fn windows_terminal_backspace_byte_table() {
+        // Backspace -> DEL, no physical Ctrl.
         let mut plain = parser();
+        plain.feed_with_native_mods(
+            b"\x7f",
+            NativeMods {
+                back: true,
+                ..NativeMods::default()
+            },
+        );
         assert_eq!(
-            feed_all(&mut plain, b"\x08"),
-            vec![key(KeyCode::Backspace, KeyModifiers::NONE)]
+            plain.pop(),
+            Some(key(KeyCode::Backspace, KeyModifiers::NONE))
         );
 
-        let mut ctrl = mods_parser(NativeMods {
+        // Ctrl+Backspace -> ETB, with Ctrl and Backspace both held.
+        let mut ctrl_backspace = parser();
+        ctrl_backspace.feed_with_native_mods(
+            b"\x17",
+            NativeMods {
+                ctrl: true,
+                back: true,
+                ..NativeMods::default()
+            },
+        );
+        assert_eq!(
+            ctrl_backspace.pop(),
+            Some(key(KeyCode::Backspace, KeyModifiers::CONTROL))
+        );
+
+        // Ctrl+H -> BS, with Ctrl held but no physical Backspace. The help
+        // binding depends on this staying Ctrl+H.
+        let mut ctrl_h = parser();
+        ctrl_h.feed_with_native_mods(
+            b"\x08",
+            NativeMods {
+                ctrl: true,
+                ..NativeMods::default()
+            },
+        );
+        assert_eq!(
+            ctrl_h.pop(),
+            Some(key(KeyCode::Char('h'), KeyModifiers::CONTROL))
+        );
+
+        // Alt+Backspace -> ESC DEL.
+        let mut alt = parser();
+        alt.feed_with_native_mods(
+            b"\x1b\x7f",
+            NativeMods {
+                alt: true,
+                back: true,
+                ..NativeMods::default()
+            },
+        );
+        assert_eq!(alt.pop(), Some(key(KeyCode::Backspace, KeyModifiers::ALT)));
+    }
+
+    /// ETB without a physical Backspace is a genuine Ctrl+W, which the
+    /// composer also treats as delete-word.
+    #[test]
+    fn etb_without_backspace_snapshot_stays_ctrl_w() {
+        let mut parser = parser();
+        parser.feed_with_native_mods(
+            b"\x17",
+            NativeMods {
+                ctrl: true,
+                ..NativeMods::default()
+            },
+        );
+        assert_eq!(
+            parser.pop(),
+            Some(key(KeyCode::Char('w'), KeyModifiers::CONTROL))
+        );
+    }
+
+    /// A coalesced chunk must not let a later Ctrl+Backspace promote an earlier
+    /// plain Backspace: only the final byte may use the physical Backspace
+    /// snapshot (sampled after the read returned).
+    #[test]
+    fn coalesced_chunk_does_not_promote_earlier_backspace() {
+        let mut parser = parser();
+        parser.feed_with_native_mods(
+            b"\x7f\x17",
+            NativeMods {
+                ctrl: true,
+                back: true,
+                ..NativeMods::default()
+            },
+        );
+        assert_eq!(
+            parser.pop(),
+            Some(key(KeyCode::Backspace, KeyModifiers::NONE))
+        );
+        assert_eq!(
+            parser.pop(),
+            Some(key(KeyCode::Backspace, KeyModifiers::CONTROL))
+        );
+    }
+
+    #[test]
+    fn raw_bs_without_ctrl_is_plain_backspace() {
+        let mut legacy = parser();
+        assert_eq!(
+            feed_all(&mut legacy, b"\x08"),
+            vec![key(KeyCode::Backspace, KeyModifiers::NONE)]
+        );
+    }
+
+    #[test]
+    fn raw_del_ignores_ctrl_without_a_backspace_snapshot() {
+        // Ctrl alone must never transform DEL into Ctrl+Backspace.
+        let mut parser = mods_parser(NativeMods {
             ctrl: true,
             ..NativeMods::default()
         });
         assert_eq!(
-            feed_all(&mut ctrl, b"\x08"),
-            vec![key(KeyCode::Char('h'), KeyModifiers::CONTROL)]
+            feed_all(&mut parser, b"\x7f"),
+            vec![key(KeyCode::Backspace, KeyModifiers::NONE)]
+        );
+    }
+
+    #[test]
+    fn reader_time_snapshot_disambiguates_raw_backspace_and_ctrl_h() {
+        let mut del = parser();
+        del.feed_with_native_mods(
+            b"\x7f",
+            NativeMods {
+                ctrl: true,
+                back: true,
+                ..NativeMods::default()
+            },
+        );
+        assert_eq!(
+            del.pop(),
+            Some(key(KeyCode::Backspace, KeyModifiers::CONTROL))
+        );
+
+        let mut bs = parser();
+        bs.feed_with_native_mods(
+            b"\x08",
+            NativeMods {
+                ctrl: true,
+                back: true,
+                ..NativeMods::default()
+            },
+        );
+        assert_eq!(
+            bs.pop(),
+            Some(key(KeyCode::Backspace, KeyModifiers::CONTROL))
+        );
+
+        let mut ctrl_h = parser();
+        ctrl_h.feed_with_native_mods(
+            b"\x08",
+            NativeMods {
+                ctrl: true,
+                ..NativeMods::default()
+            },
+        );
+        assert_eq!(
+            ctrl_h.pop(),
+            Some(key(KeyCode::Char('h'), KeyModifiers::CONTROL))
+        );
+    }
+
+    #[test]
+    fn escape_then_del_is_alt_backspace() {
+        // macOS Option+Backspace arrives as ESC DEL on the Unix path; the
+        // Windows raw stream can carry the same encoding.
+        let mut parser = parser();
+        assert_eq!(
+            feed_all(&mut parser, b"\x1b\x7f"),
+            vec![key(KeyCode::Backspace, KeyModifiers::ALT)]
         );
     }
 
@@ -797,7 +1018,7 @@ mod tests {
         let mut parser = parser();
         let events = feed_all(
             &mut parser,
-            b"\x1b[27;1;27~\x1b[27;2;13~\x1b[27;3;13~\x1b[27;5;13~\x1b[27;2;9~\x1b[27;5;97~",
+            b"\x1b[27;1;27~\x1b[27;2;13~\x1b[27;3;13~\x1b[27;5;13~\x1b[27;2;9~\x1b[27;5;97~\x1b[27;5;127~",
         );
         assert_eq!(
             events,
@@ -808,6 +1029,7 @@ mod tests {
                 key(KeyCode::Enter, KeyModifiers::CONTROL),
                 key(KeyCode::Tab, KeyModifiers::SHIFT),
                 key(KeyCode::Char('a'), KeyModifiers::CONTROL),
+                key(KeyCode::Backspace, KeyModifiers::CONTROL),
             ]
         );
     }
@@ -817,7 +1039,7 @@ mod tests {
         let mut parser = parser();
         let events = feed_all(
             &mut parser,
-            b"\x1b[27u\x1b[13;2u\x1b[13;3u\x1b[13;5u\x1b[9;5u",
+            b"\x1b[27u\x1b[13;2u\x1b[13;3u\x1b[13;5u\x1b[9;5u\x1b[127;5u",
         );
         assert_eq!(
             events,
@@ -827,6 +1049,7 @@ mod tests {
                 key(KeyCode::Enter, KeyModifiers::ALT),
                 key(KeyCode::Enter, KeyModifiers::CONTROL),
                 key(KeyCode::Tab, KeyModifiers::CONTROL),
+                key(KeyCode::Backspace, KeyModifiers::CONTROL),
             ]
         );
     }

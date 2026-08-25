@@ -9,6 +9,8 @@
 use std::ops::Range;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use unicode_script::{Script, UnicodeScript};
+use unicode_segmentation::UnicodeSegmentation;
 
 #[cfg(test)]
 use crate::agent::CommandDescriptor;
@@ -216,6 +218,71 @@ pub enum InputAction {
 /// input.
 fn char_to_byte(s: &str, idx: usize) -> usize {
     s.char_indices().nth(idx).map(|(i, _)| i).unwrap_or(s.len())
+}
+
+/// Han ideographs and kana carry no space separation, so each grapheme is
+/// its own word-deletion unit (VS Code behavior); Hangul uses spaces and
+/// stays a regular word run. Script_Extensions covers halfwidth and extended
+/// kana without maintaining scalar ranges by hand.
+fn is_cjk_ish(grapheme: &str) -> bool {
+    grapheme.chars().any(|c| {
+        c.script_extension()
+            .iter()
+            .any(|script| matches!(script, Script::Han | Script::Hiragana | Script::Katakana))
+    })
+}
+
+/// Word-deletion class: 0 word graphemes (letters, digits, `_`), 1 symbols,
+/// 2 whitespace. A unit is a run of one non-whitespace class.
+fn word_class(grapheme: &str) -> u8 {
+    if grapheme.chars().all(char::is_whitespace) {
+        2
+    } else if grapheme
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_alphanumeric() || c == '_')
+    {
+        0
+    } else {
+        1
+    }
+}
+
+/// Start index (char) of the grapheme-safe word-deletion unit ending at
+/// `end`, where the preceding grapheme is already known to be non-whitespace.
+fn word_unit_start(text: &str, end: usize) -> usize {
+    let byte_end = char_to_byte(text, end);
+    let mut char_start = 0;
+    let units: Vec<(usize, u8, bool)> = text[..byte_end]
+        .graphemes(true)
+        .map(|grapheme| {
+            let unit = (char_start, word_class(grapheme), is_cjk_ish(grapheme));
+            char_start += grapheme.chars().count();
+            unit
+        })
+        .collect();
+    let &(mut start, class, cjk) = units
+        .last()
+        .expect("word_unit_start requires a non-empty prefix");
+    if cjk {
+        return start;
+    }
+    for &(candidate, candidate_class, candidate_cjk) in units[..units.len() - 1].iter().rev() {
+        if candidate_cjk || candidate_class != class {
+            break;
+        }
+        start = candidate;
+    }
+    start
+}
+
+/// Back up over whitespace without crossing `barrier` (a preceding paste-block
+/// boundary). Returns the index of the first non-whitespace char, or `barrier`.
+fn back_over_whitespace(chars: &[char], mut idx: usize, barrier: usize) -> usize {
+    while idx > barrier && chars[idx - 1].is_whitespace() {
+        idx -= 1;
+    }
+    idx
 }
 
 /// Built-in-only matching helper kept for callers/tests that do not own a
@@ -515,6 +582,13 @@ impl InputState {
                 }
                 InputAction::None
             }
+            // Ctrl+W is the Unix delete-previous-word convention and is the
+            // byte Windows Terminal emits for Ctrl+Backspace, so honor it here
+            // even when the physical-key snapshot could not confirm the origin.
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.delete_word_back();
+                InputAction::None
+            }
             KeyCode::Char(c) => {
                 if key.modifiers.contains(KeyModifiers::ALT) {
                     // Alt+Enter toggles multiline.
@@ -526,6 +600,16 @@ impl InputState {
                     return InputAction::None;
                 }
                 self.insert_char(c);
+                InputAction::None
+            }
+            // Ctrl+Backspace/Ctrl+W (Windows) and Alt/Option+Backspace
+            // (macOS) delete the word before the cursor.
+            KeyCode::Backspace
+                if key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                self.delete_word_back();
                 InputAction::None
             }
             KeyCode::Backspace => {
@@ -749,6 +833,15 @@ impl InputState {
         self.paste_blocks.iter().find(|block| block.end == cursor)
     }
 
+    fn preceding_block_end(&self, cursor: usize) -> usize {
+        self.paste_blocks
+            .iter()
+            .map(|block| block.end)
+            .filter(|&end| end <= cursor)
+            .max()
+            .unwrap_or(0)
+    }
+
     fn remove_range(&mut self, start: usize, end: usize) {
         debug_assert!(start < end);
         let byte_start = char_to_byte(&self.buf, start);
@@ -766,6 +859,47 @@ impl InputState {
             }
         }
         self.cursor = start;
+    }
+
+    /// Ctrl+Backspace / Ctrl+W / Alt+Backspace: delete the word before the cursor
+    /// together with the whitespace around it (Windows textbox style, so
+    /// repeated presses clear the bar without leaving stray spaces). Paste
+    /// blocks are atomic units; CJK ideographs and kana delete one grapheme
+    /// at a time because they carry no spaces.
+    fn delete_word_back(&mut self) {
+        let end = self.cursor;
+        if end == 0 {
+            return;
+        }
+        let chars: Vec<char> = self.buf.chars().collect();
+        // Check the cursor boundary before inspecting content: trailing
+        // whitespace may belong to the atomic paste block itself.
+        let unit_start = if let Some(block) = self.block_ending_at(end) {
+            block.start
+        } else {
+            let trailing_barrier = self.preceding_block_end(end);
+            // Whitespace directly before the cursor goes with the word, but
+            // the scan may reach, never enter, a preceding paste block.
+            let start = back_over_whitespace(&chars, end, trailing_barrier);
+            // A paste block ending at the word start is the unit; otherwise
+            // the ordinary word scan stops at the nearest block boundary.
+            match self.block_ending_at(start) {
+                Some(block) => block.start,
+                None => {
+                    if start == 0 {
+                        // Only whitespace before the cursor.
+                        self.remove_range(0, end);
+                        return;
+                    }
+                    word_unit_start(&self.buf, start).max(trailing_barrier)
+                }
+            }
+        };
+        // The whitespace between the unit and whatever precedes it goes too,
+        // without crossing into a previous atomic block that ends in space.
+        let leading_barrier = self.preceding_block_end(unit_start);
+        let final_start = back_over_whitespace(&chars, unit_start, leading_barrier);
+        self.remove_range(final_start, end);
     }
 
     /// Move to the previous visual input line while preserving the character
@@ -1594,6 +1728,195 @@ mod tests {
         s.handle_key(&key(KeyCode::Left), true);
         s.handle_key(&key(KeyCode::Delete), true);
         assert_eq!(s.buf, "abcd");
+        assert!(s.paste_blocks.is_empty());
+    }
+
+    /// Ctrl+Backspace/Ctrl+W deletes the word before the cursor together with the
+    /// whitespace between it and the cursor (Windows textbox style).
+    #[test]
+    fn ctrl_backspace_deletes_word_with_whitespace() {
+        let ctrl_bs = KeyEvent::new(KeyCode::Backspace, KeyModifiers::CONTROL);
+        let mut s = state();
+        for c in "hello world".chars() {
+            s.handle_key(&key(KeyCode::Char(c)), true);
+        }
+        s.handle_key(&ctrl_bs, true);
+        assert_eq!(s.buf, "hello");
+        assert_eq!(s.cursor, 5);
+        // A second press clears the bar without leaving stray spaces.
+        s.handle_key(&ctrl_bs, true);
+        assert_eq!(s.buf, "");
+        // Multiple spaces collapse in one press.
+        let mut s = state();
+        for c in "a   b".chars() {
+            s.handle_key(&key(KeyCode::Char(c)), true);
+        }
+        s.handle_key(&ctrl_bs, true);
+        assert_eq!(s.buf, "a");
+        // Trailing whitespace takes the word before it with it.
+        let mut s = state();
+        for c in "a   ".chars() {
+            s.handle_key(&key(KeyCode::Char(c)), true);
+        }
+        s.handle_key(&ctrl_bs, true);
+        assert_eq!(s.buf, "");
+        // Mid-word deletes only the part before the cursor.
+        let mut s = state();
+        for c in "hello".chars() {
+            s.handle_key(&key(KeyCode::Char(c)), true);
+        }
+        s.handle_key(&key(KeyCode::Left), true);
+        s.handle_key(&key(KeyCode::Left), true);
+        s.handle_key(&ctrl_bs, true);
+        assert_eq!(s.buf, "lo");
+        assert_eq!(s.cursor, 0);
+    }
+
+    /// CJK ideographs and kana delete one grapheme per press; Latin runs stay
+    /// whole words; symbol runs are their own unit.
+    #[test]
+    fn ctrl_backspace_word_units() {
+        let ctrl_bs = KeyEvent::new(KeyCode::Backspace, KeyModifiers::CONTROL);
+        // CJK: one grapheme per press.
+        let mut s = state();
+        for c in "你好世界".chars() {
+            s.handle_key(&key(KeyCode::Char(c)), true);
+        }
+        s.handle_key(&ctrl_bs, true);
+        assert_eq!(s.buf, "你好世");
+        // Mixed: the CJK grapheme is its own unit, then the Latin word.
+        let mut s = state();
+        for c in "hello你好".chars() {
+            s.handle_key(&key(KeyCode::Char(c)), true);
+        }
+        s.handle_key(&ctrl_bs, true);
+        assert_eq!(s.buf, "hello你");
+        s.handle_key(&ctrl_bs, true);
+        assert_eq!(s.buf, "hello");
+        // snake_case is one word (underscore is a word character).
+        let mut s = state();
+        for c in "foo_bar".chars() {
+            s.handle_key(&key(KeyCode::Char(c)), true);
+        }
+        s.handle_key(&ctrl_bs, true);
+        assert_eq!(s.buf, "");
+        // A symbol run is one unit; its separating space goes with it.
+        let mut s = state();
+        for c in "foo ...".chars() {
+            s.handle_key(&key(KeyCode::Char(c)), true);
+        }
+        s.handle_key(&ctrl_bs, true);
+        assert_eq!(s.buf, "foo");
+        // Combining marks remain attached to their base word.
+        let mut s = state();
+        for c in "cafe\u{301}".chars() {
+            s.handle_key(&key(KeyCode::Char(c)), true);
+        }
+        s.handle_key(&ctrl_bs, true);
+        assert_eq!(s.buf, "");
+        // Script_Extensions recognizes halfwidth kana outside the old ranges.
+        let mut s = state();
+        for c in "ｶﾅ".chars() {
+            s.handle_key(&key(KeyCode::Char(c)), true);
+        }
+        s.handle_key(&ctrl_bs, true);
+        assert_eq!(s.buf, "ｶ");
+        // Supplementary kana and current Han extensions use the same property
+        // path instead of depending on manually updated scalar ranges.
+        let mut s = state();
+        for c in "\u{1aff0}\u{1aff1}".chars() {
+            s.handle_key(&key(KeyCode::Char(c)), true);
+        }
+        s.handle_key(&ctrl_bs, true);
+        assert_eq!(s.buf, "\u{1aff0}");
+        let mut s = state();
+        for c in "\u{2ebf0}\u{2ebf1}".chars() {
+            s.handle_key(&key(KeyCode::Char(c)), true);
+        }
+        s.handle_key(&ctrl_bs, true);
+        assert_eq!(s.buf, "\u{2ebf0}");
+    }
+
+    /// Alt/Option+Backspace (the macOS delete-word gesture) shares the
+    /// Ctrl+Backspace path.
+    #[test]
+    fn alt_backspace_deletes_word() {
+        let mut s = state();
+        for c in "hello world".chars() {
+            s.handle_key(&key(KeyCode::Char(c)), true);
+        }
+        s.handle_key(&KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT), true);
+        assert_eq!(s.buf, "hello");
+    }
+
+    /// Windows Terminal sends Ctrl+W's byte for Ctrl+Backspace, so Ctrl+W
+    /// shares the delete-word path.
+    #[test]
+    fn ctrl_w_deletes_word() {
+        let mut s = state();
+        for c in "hello world".chars() {
+            s.handle_key(&key(KeyCode::Char(c)), true);
+        }
+        s.handle_key(
+            &KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
+            true,
+        );
+        assert_eq!(s.buf, "hello");
+        // Plain 'w' still types normally.
+        s.handle_key(&key(KeyCode::Char('w')), true);
+        assert_eq!(s.buf, "hellow");
+    }
+
+    /// Ctrl+Backspace treats a paste block as one atomic word unit.
+    #[test]
+    fn ctrl_backspace_deletes_paste_block_whole() {
+        let ctrl_bs = KeyEvent::new(KeyCode::Backspace, KeyModifiers::CONTROL);
+        let mut s = state();
+        s.paste_placeholder_chars = 5;
+        for c in "ab".chars() {
+            s.handle_key(&key(KeyCode::Char(c)), true);
+        }
+        s.paste("123456");
+        for c in "cd".chars() {
+            s.handle_key(&key(KeyCode::Char(c)), true);
+        }
+        // "cd" goes first as an ordinary word.
+        s.handle_key(&ctrl_bs, true);
+        assert_eq!(s.buf, "ab123456");
+        assert_eq!(s.paste_blocks.len(), 1);
+        // The block is the next unit and is removed whole.
+        s.handle_key(&ctrl_bs, true);
+        assert_eq!(s.buf, "ab");
+        assert!(s.paste_blocks.is_empty());
+        assert_eq!(s.cursor, 2);
+        // Whitespace after a block goes with the block.
+        let mut s = state();
+        s.paste_placeholder_chars = 5;
+        s.paste("123456");
+        s.handle_key(&key(KeyCode::Char(' ')), true);
+        s.handle_key(&ctrl_bs, true);
+        assert_eq!(s.buf, "");
+        assert!(s.paste_blocks.is_empty());
+        // Whitespace inside the block cannot let the scan partially enter it.
+        let mut s = state();
+        s.paste_placeholder_chars = 5;
+        s.paste("foo bar ");
+        s.handle_key(&ctrl_bs, true);
+        assert_eq!(s.buf, "");
+        assert!(s.paste_blocks.is_empty());
+        // A following typed word is deleted without consuming trailing
+        // whitespace that belongs to the preceding block.
+        let mut s = state();
+        s.paste_placeholder_chars = 5;
+        s.paste("123456 ");
+        for c in "word".chars() {
+            s.handle_key(&key(KeyCode::Char(c)), true);
+        }
+        s.handle_key(&ctrl_bs, true);
+        assert_eq!(s.buf, "123456 ");
+        assert_eq!(s.paste_blocks, vec![PasteBlock { start: 0, end: 7 }]);
+        s.handle_key(&ctrl_bs, true);
+        assert_eq!(s.buf, "");
         assert!(s.paste_blocks.is_empty());
     }
 

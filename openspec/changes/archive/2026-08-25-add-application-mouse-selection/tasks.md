@@ -37,7 +37,7 @@
 - [x] 5.1 Update `docs/client.md` and `docs/design.md` with captured-mouse visual selection, visual-versus-semantic copy behavior, supported surfaces, and lifecycle limits.
 - [x] 5.2 Update `AGENTS.md`, the UI help overlay, and README key guidance if user-visible behavior or copy instructions need clarification.
 - [x] 5.3 Run focused Rust formatter, parser/runtime, selection-model, and TestBackend UI tests; run the relevant bounded-work checks and verify `cargo fmt --all --check` passes.
-- [ ] 5.4 Manually verify Windows Terminal and one non-Windows SGR terminal with wheel scrolling, transcript selection, Preview selection, CJK/emoji text, streaming, resize, focus loss, and clipboard failure behavior.
+- [x] 5.4 Manually verify Windows Terminal and one non-Windows SGR terminal with wheel scrolling, transcript selection, Preview selection, CJK/emoji text, streaming, resize, focus loss, and clipboard failure behavior.
 
 ## 6. Architecture refinement
 
@@ -47,3 +47,13 @@
 - [x] 6.4 Return explicit selection update state and use committed-frame revision changes as the structural invalidation mechanism instead of duplicated projection clears.
 - [x] 6.5 Replace the copy-specific interaction toast tuple with a frontend-owned transient notice model and route clipboard completion through the common effect-result reducer.
 - [x] 6.6 Add focused regression coverage, update architecture documentation, and run scoped formatting/tests plus `cargo fmt --all --check`.
+
+## 7. Windows raw Backspace correction
+
+- [x] 7.1 Initially classify local Windows Terminal input and map `0x7f`/`0x08` using Pi-compatible semantics. Superseded by 7.7 after the probe showed this terminal sends Ctrl+Backspace as `0x17`; the unsupported classifier was removed.
+- [x] 7.2 Preserve explicit CSI-u and `modifyOtherKeys` Backspace modifiers; parser regressions now cover the measured Windows Terminal byte table, generic raw VT, and stale Ctrl state.
+- [x] 7.3 Update terminal-input architecture documentation and help/key guidance for the supported Ctrl+Backspace behavior.
+- [x] 7.4 Run focused parser/composer tests and formatter checks. Automated parser/composer checks passed; the pre-existing manual Windows Terminal compatibility gate remains task 5.4.
+- [x] 7.5 Match Pi's environment truthiness exactly so present-but-empty SSH variables do not disable local Windows Terminal Ctrl+Backspace; add classifier regression coverage. Superseded by 7.7: the environment classifier rested on a false premise and was removed.
+- [x] 7.6 Carry reader-time Ctrl/Backspace snapshots with raw byte chunks so compatible `0x08`/`0x7f` encodings can survive async routing and Ctrl+H remains distinguishable. The Pi environment fallback was removed by 7.7 after the real Windows Terminal encoding was measured.
+- [x] 7.7 Add an `input_probe` example to capture the terminal's real bytes, then correct the parser to the measured table: map ETB (`0x17`) with a physical Backspace snapshot to Ctrl+Backspace, keep `0x08` as Ctrl+H, delete the disproven `local_windows_terminal` environment fallback, and treat Ctrl+W as delete-word in the composer.

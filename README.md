@@ -27,7 +27,7 @@ Key interactions:
 
 - `Ctrl+Y`: enter Reading View; `j`/`k` select Blocks, `l` enters Item navigation, `y` copies the complete Block source, and `Esc` returns/exits.
 - `Ctrl+P`: toggle full-screen Preview on narrow terminals.
-- `Shift+Enter`: insert a newline; `Enter`: send.
+- `Shift+Enter`: insert a newline; `Enter`: send; `Ctrl+Backspace`/`Ctrl+W` (or `Option+Backspace` on macOS): delete the word before the cursor.
 - `Ctrl+H`: help; `Ctrl+N`: resume session; `PageUp`/`PageDown` or wheel: transcript scrolling; drag visible Transcript/Preview text to copy it.
 
 If PowerShell cannot find `dshe`, add `%USERPROFILE%\.cargo\bin` to `PATH`.

@@ -122,6 +122,29 @@ The client SHALL normalize primary-button press, button-motion drag, release, wh
 - **WHEN** the session switches, a client-side new-session draft activates, history prepend shifts transcript rows, the Preview target is replaced, or an opaque overlay opens
 - **THEN** any selection whose logical surface identity or composited surface is no longer stable is cleared before paint or copy
 
+### Requirement: Windows raw Backspace preserves word deletion
+The Windows raw-input reader SHALL attach its immediate physical modifier/Backspace snapshot to each byte chunk before asynchronous event routing. Raw `0x17` received with physical Backspace held SHALL emit Ctrl+Backspace, and otherwise SHALL emit Ctrl+W. Raw `0x08` or `0x7f` received with Ctrl and physical Backspace held SHALL emit Ctrl+Backspace. Raw `0x08` received with Ctrl held but physical Backspace not held SHALL emit Ctrl+H. Raw `0x7f` without a matching physical Backspace snapshot SHALL emit ordinary Backspace. The composer SHALL treat Ctrl+W as delete-previous-word so word deletion survives an inconclusive physical snapshot. Explicit Kitty CSI-u and xterm `modifyOtherKeys` Backspace sequences SHALL preserve their encoded modifiers on every terminal.
+
+#### Scenario: Windows Terminal sends Ctrl+Backspace as ETB
+- **WHEN** the blocking reader receives raw `0x17` and immediately observes Ctrl plus physical Backspace
+- **THEN** the attached snapshot survives the async handoff, the parser emits Ctrl+Backspace, and the composer deletes the preceding word
+
+#### Scenario: Ctrl+W remains delete-word without Backspace evidence
+- **WHEN** the parser receives raw `0x17` without a physical Backspace snapshot
+- **THEN** it emits Ctrl+W and the composer still deletes the preceding word
+
+#### Scenario: Terminal encodes Ctrl+Backspace as BS or DEL
+- **WHEN** the blocking reader receives raw `0x08` or `0x7f` and immediately observes Ctrl plus physical Backspace
+- **THEN** the parser emits Ctrl+Backspace
+
+#### Scenario: Raw Ctrl+H remains distinguishable
+- **WHEN** the reader receives raw `0x08` while Ctrl is held and physical Backspace is not held
+- **THEN** the parser emits Ctrl+H and the help overlay binding keeps working
+
+#### Scenario: Legacy raw-VT terminal sends BS
+- **WHEN** the parser receives raw `0x08` without Ctrl and without a physical Backspace snapshot
+- **THEN** it emits ordinary Backspace rather than inferring a modifier from a delayed asynchronous key-state sample
+
 ### Requirement: Selection work remains bounded and incremental
 The client SHALL build selection metadata only for selectable rows materialized in the visible frame. Pointer updates and selection painting SHALL NOT flatten the complete transcript, replay events, rebuild Reading documents, invalidate semantic Preview state, or structurally invalidate the transcript cache. The feature SHALL add no fixed polling or animation ticker.
 

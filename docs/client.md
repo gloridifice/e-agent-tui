@@ -93,10 +93,16 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
   budget. On Windows, crossterm's record-based event source never emits `Event::Paste`, so
   `ProductionTerminalEvents` (`runtime_ports.rs`) reads the raw VT byte stream instead: `TerminalOwner` enables
   `ENABLE_VIRTUAL_TERMINAL_INPUT` only after ratatui/crossterm terminal construction (that setup clears an earlier
-  flag), a reader thread forwards stdin bytes, and `vt_input.rs` parses them into
-  crossterm events (bracketed paste, navigation, SGR mouse scroll, Alt prefixes) with `win_input.rs` sampling the
-  physical Shift/Ctrl/Alt keys so `\r` Enter keeps its modifiers and raw BS can distinguish plain Backspace from
-  Ctrl+H. Escape/partial-sequence deadlines are stored on `WindowsRawInput`, not in one cancellable
+  flag), a reader thread forwards stdin byte chunks together with an immediate physical Shift/Ctrl/Alt/Backspace
+  snapshot, and `vt_input.rs` parses them into crossterm events (bracketed paste, navigation, SGR mouse scroll, Alt
+  prefixes). Windows Terminal's measured byte table is Backspace `0x7f`, **Ctrl+Backspace `0x17` (ETB)**, Ctrl+H
+  `0x08`, Alt+Backspace `0x1b 0x7f`; re-measure with `cargo run -p e-dsh --example input_probe` before changing
+  Backspace handling instead of assuming an encoding. The snapshot recovers `\r` Enter modifiers and identifies a
+  real Backspace origin before the reader-to-async handoff can make `VK_BACK` stale: `0x17` with physical Backspace
+  becomes Ctrl+Backspace and otherwise stays Ctrl+W, `0x08` stays Ctrl+H when Ctrl is held without physical
+  Backspace so the help binding keeps working, and `0x08`/`0x7f` gain a Ctrl modifier only on terminals that do
+  report both. Kitty CSI-u and `modifyOtherKeys` preserve their encoded modifiers. Escape/partial-sequence deadlines
+  are stored on `WindowsRawInput`, not in one cancellable
   `next_event()` future; otherwise frame or bridge wakeups can restart the timeout forever and swallow Esc. Keep
   that raw-input path between the stream and the router, or pasted `\r` line endings commit/send the message at
   every newline. The terminal is initialized/restored at a single point via
@@ -133,8 +139,15 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
   ranges): each renders as one Rose `[N text pasted]` placeholder between ordinary editable text, ←/→ skip a
   whole block, Backspace/Delete remove the whole block, Up/Down map the cursor through the placeholder
   (snapping into a block to its start), Enter sends the full expanded content verbatim, and history-browsing
-  drafts keep their blocks. External text restoration (`restore_text`) cannot infer paste identity and yields
-  plain text. The suggestion popup never opens while a paste block exists (a fill would destroy the block).
+  drafts keep their blocks. `Ctrl+Backspace`/`Ctrl+W` (Windows) and `Alt/Option+Backspace` (macOS) delete the
+  word before the cursor together with the whitespace around it (Windows textbox style). Ctrl+W shares this path
+  because Windows Terminal encodes Ctrl+Backspace as that byte and the snapshot cannot always prove the origin.
+  A paste block is one
+  atomic unit, both whitespace scans stop at block boundaries, Han ideographs and kana delete one Unicode
+  grapheme per press (identified through Unicode Script_Extensions, including halfwidth/extended kana), and
+  letters/digits/`_` grapheme runs and symbol runs are single units. External text restoration (`restore_text`)
+  cannot infer paste identity and yields plain text. The suggestion popup never opens while a paste block exists
+  (a fill would destroy the block).
   `↑/↓` move between input lines by character column first, and only switch to the previous/next history prompt
   at the first/last line boundary; `PageUp`/`PageDown` page by the currently visible transcript height, and the
   mouse wheel moves 3 lines per notch (always operating on the transcript even when an Input Page is open).

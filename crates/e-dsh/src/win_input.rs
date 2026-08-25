@@ -6,9 +6,11 @@
 //! stream from stdin, feeding it through [`VtInputParser`] so the rest of the
 //! client receives normal crossterm events plus real paste events.
 //!
-//! The reader runs on a dedicated blocking thread and forwards byte chunks
-//! over a channel; sequence reassembly, UTF-8 decoding, and the Escape-key
-//! timeout live in the parser, which runs on the async main loop.
+//! Windows Terminal encodes Ctrl+Backspace as ETB (`0x17`) and Ctrl+H as BS
+//! (`0x08`), so the reader runs on a dedicated blocking thread and forwards
+//! byte chunks plus their immediate physical-key snapshot over a channel;
+//! sequence reassembly, UTF-8 decoding, and the Escape-key timeout live in the
+//! parser, which runs on the async main loop.
 
 use std::io::Read;
 
@@ -17,8 +19,14 @@ use tokio::time::Instant;
 
 use crate::vt_input::{NativeMods, Pending, VtInputParser, ESCAPE_TIMEOUT, SEQUENCE_TIMEOUT};
 
+#[derive(Debug)]
+struct InputChunk {
+    bytes: Vec<u8>,
+    mods: NativeMods,
+}
+
 pub struct WindowsRawInput {
-    rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    rx: tokio::sync::mpsc::UnboundedReceiver<InputChunk>,
     parser: VtInputParser,
     /// Kept on the source rather than inside one `next_event` future: the main
     /// loop selects this future against bridge/frame deadlines and may cancel
@@ -38,7 +46,13 @@ impl WindowsRawInput {
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
-                        if tx.send(buf[..n].to_vec()).is_err() {
+                        // Capture key state before the byte crosses into the
+                        // async loop; Ctrl/Backspace may be released by then.
+                        let chunk = InputChunk {
+                            bytes: buf[..n].to_vec(),
+                            mods: native_mods(),
+                        };
+                        if tx.send(chunk).is_err() {
                             break;
                         }
                     }
@@ -83,11 +97,11 @@ impl WindowsRawInput {
             tokio::select! {
                 chunk = self.rx.recv() => {
                     match chunk {
-                        Some(bytes) => {
+                        Some(chunk) => {
                             // Receiving another fragment restarts the timeout
                             // for the now-current partial sequence.
                             self.pending_deadline = None;
-                            self.parser.feed(&bytes);
+                            self.parser.feed_with_native_mods(&chunk.bytes, chunk.mods);
                         }
                         None => return None,
                     }
@@ -107,11 +121,11 @@ impl Default for WindowsRawInput {
     }
 }
 
-/// Sample the physical modifier keys (pi's native Shift+Enter heuristic):
-/// a terminal sends `\r` for Enter regardless of modifiers, so the client
-/// asks the OS whether Shift/Ctrl/Alt are actually held.
+/// Sample physical modifiers immediately after the blocking read. This
+/// recovers Enter's unencoded modifiers and disambiguates raw Backspace before
+/// the reader-to-async handoff can observe released keys.
 fn native_mods() -> NativeMods {
-    use winapi::um::winuser::{GetAsyncKeyState, VK_CONTROL, VK_MENU, VK_SHIFT};
+    use winapi::um::winuser::{GetAsyncKeyState, VK_BACK, VK_CONTROL, VK_MENU, VK_SHIFT};
     fn down(key: i32) -> bool {
         unsafe { (GetAsyncKeyState(key) as u16) & 0x8000 != 0 }
     }
@@ -119,6 +133,7 @@ fn native_mods() -> NativeMods {
         shift: down(VK_SHIFT),
         ctrl: down(VK_CONTROL),
         alt: down(VK_MENU),
+        back: down(VK_BACK),
     }
 }
 
@@ -153,7 +168,7 @@ mod tests {
     use super::*;
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
-    fn with_rx(rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>) -> WindowsRawInput {
+    fn with_rx(rx: tokio::sync::mpsc::UnboundedReceiver<InputChunk>) -> WindowsRawInput {
         WindowsRawInput {
             rx,
             parser: VtInputParser::new(Box::new(|| NativeMods::default())),
@@ -165,16 +180,60 @@ mod tests {
     async fn byte_chunks_become_events() {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let mut input = with_rx(rx);
-        tx.send(b"\x1b[200~a\r\nb\x1b[201~".to_vec()).unwrap();
+        tx.send(InputChunk {
+            bytes: b"\x1b[200~a\r\nb\x1b[201~".to_vec(),
+            mods: NativeMods::default(),
+        })
+        .unwrap();
         let event = input.next_event().await.unwrap().unwrap();
         assert_eq!(event, Event::Paste("a\nb".into()));
+    }
+
+    /// The real Windows Terminal Ctrl+Backspace encoding, end to end: ETB
+    /// bytes plus the reader-time snapshot must delete a whole word.
+    #[tokio::test]
+    async fn reader_snapshot_preserves_ctrl_backspace_for_etb() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut input = with_rx(rx);
+        tx.send(InputChunk {
+            bytes: b"\x17".to_vec(),
+            mods: NativeMods {
+                ctrl: true,
+                back: true,
+                ..NativeMods::default()
+            },
+        })
+        .unwrap();
+
+        let event = input.next_event().await.unwrap().unwrap();
+        assert_eq!(
+            event,
+            Event::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::CONTROL))
+        );
+
+        let Event::Key(key) = event else {
+            panic!("raw Ctrl+Backspace must become a key event");
+        };
+        let mut composer = e_tui::input::InputState::new(&e_tui::Config::default());
+        for character in "hello world".chars() {
+            composer.handle_key(
+                &KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE),
+                true,
+            );
+        }
+        composer.handle_key(&key, true);
+        assert_eq!(composer.buf, "hello");
     }
 
     #[tokio::test]
     async fn escape_key_is_flushed_by_timeout() {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let mut input = with_rx(rx);
-        tx.send(b"\x1b".to_vec()).unwrap();
+        tx.send(InputChunk {
+            bytes: b"\x1b".to_vec(),
+            mods: NativeMods::default(),
+        })
+        .unwrap();
         let event = input.next_event().await.unwrap().unwrap();
         assert_eq!(
             event,
@@ -225,7 +284,11 @@ mod tests {
     async fn truncated_sequence_then_close_ends_stream() {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let mut input = with_rx(rx);
-        tx.send(b"\x1b[1;".to_vec()).unwrap();
+        tx.send(InputChunk {
+            bytes: b"\x1b[1;".to_vec(),
+            mods: NativeMods::default(),
+        })
+        .unwrap();
         drop(tx);
         assert!(input.next_event().await.is_none());
     }

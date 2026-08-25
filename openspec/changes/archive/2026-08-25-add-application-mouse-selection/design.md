@@ -119,13 +119,21 @@ Terminal focus reporting will be enabled and restored symmetrically. Focus loss 
 
 The initial change retains the existing Crossterm mouse-capture command rather than replacing terminal negotiation with custom private-mode sequences. Button-motion-only tracking can be evaluated separately if all-motion event volume becomes measurable.
 
-### 9. Preserve event-driven and incremental performance
+### 9. Normalize raw Backspace before asynchronous event routing
+
+Windows Terminal's measured raw-VT byte table (captured with `cargo run -p e-dsh --example input_probe`) is: Backspace → `0x7f`, **Ctrl+Backspace → `0x17` (ETB, the Unix Ctrl+W delete-word convention)**, Ctrl+H → `0x08`, Alt+Backspace → `0x1b 0x7f`. An earlier assumption that Ctrl+Backspace arrives as `0x08` was wrong and produced fixes on branches the key never reached; treat this table as the ground truth and re-measure with the probe before changing Backspace handling again.
+
+Because the same control bytes have other legitimate meanings, the blocking reader captures Shift/Ctrl/Alt/Backspace immediately after each successful read and sends that snapshot atomically with the byte chunk; sampling `VK_BACK` after the async handoff is unreliable because the key may already be released. `0x17` with physical Backspace becomes Ctrl+Backspace, otherwise it stays Ctrl+W. `0x08` stays Ctrl+H when Ctrl is held without physical Backspace, which keeps the help binding working, and only becomes Ctrl+Backspace when a terminal does report both. `0x7f` needs the same physical Backspace evidence to gain a Ctrl modifier. Explicit Kitty CSI-u and xterm `modifyOtherKeys` sequences retain their declared modifiers on every terminal.
+
+The snapshot cannot cover every timing, so the composer independently treats Ctrl+W as delete-word. That is the standard Unix binding, is unbound elsewhere in this client, and makes word deletion work even when the physical-key evidence is inconclusive. Parser tests inject the chunk snapshot deterministically.
+
+### 10. Preserve event-driven and incremental performance
 
 Each pointer event mutates only selection state and requests the already-existing interactive frame class. Drag bursts are coalesced by the frame scheduler. Building a `SelectionFrame` is proportional to visible rows and columns, not transcript length. Selection painting touches only selected visible cells and must not invalidate `TranscriptRenderCache`, `MarkdownLayoutRegistry`, Reading layout, or Preview semantic caches.
 
 No timer is required for the first version because edge auto-scroll is out of scope. A later auto-scroll feature must contribute an explicit deadline to the scheduler rather than adding a fixed ticker.
 
-### 10. Model selection as a reducer over an immutable committed frame
+### 11. Model selection as a reducer over an immutable committed frame
 
 The committed selectable frame is an ephemeral terminal-transaction artifact, not durable semantic or render-cache state. The runner owns the last successfully committed `SelectionFrame`; rendering returns a candidate frame through a local render result, and the runner replaces the committed value only after terminal submission succeeds. `RenderState` therefore does not contain committed or pending selection frames.
 

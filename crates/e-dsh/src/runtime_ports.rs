@@ -105,6 +105,7 @@ pub trait UiActionPorts {
     fn load_config(&mut self) -> Result<(Config, Vec<ThemeFile>), String>;
     fn persist_config(&mut self, config: &Config) -> Result<(), String>;
     fn persist_session_id(&mut self, session_id: String);
+    fn read_clipboard(&mut self) -> Result<String, String>;
     fn write_clipboard(&mut self, text: String) -> Result<(), String>;
     fn resolve_preview(
         &mut self,
@@ -132,6 +133,12 @@ impl UiActionPorts for ProductionRuntimePorts {
         let mut state = StateFile::load();
         state.last_session_id = Some(session_id);
         state.save();
+    }
+
+    fn read_clipboard(&mut self) -> Result<String, String> {
+        arboard::Clipboard::new()
+            .and_then(|mut clipboard| clipboard.get_text())
+            .map_err(|error| error.to_string())
     }
 
     fn write_clipboard(&mut self, text: String) -> Result<(), String> {
@@ -220,8 +227,10 @@ pub struct ScriptedRuntimePorts {
     pub loaded_config: Option<(Config, Vec<ThemeFile>)>,
     pub persisted_configs: usize,
     pub session_ids: Vec<String>,
+    pub clipboard_reads: usize,
     pub clipboard_writes: Vec<String>,
     pub config_result: Result<(), String>,
+    pub clipboard_read_result: Result<String, String>,
     pub clipboard_result: Result<(), String>,
     pub preview_results: std::collections::VecDeque<Result<PreviewContent, String>>,
     pub preview_requests: Vec<PreviewRequest>,
@@ -235,8 +244,10 @@ impl ScriptedRuntimePorts {
             loaded_config: None,
             persisted_configs: 0,
             session_ids: Vec::new(),
+            clipboard_reads: 0,
             clipboard_writes: Vec::new(),
             config_result: Ok(()),
+            clipboard_read_result: Ok(String::new()),
             clipboard_result: Ok(()),
             preview_results: std::collections::VecDeque::new(),
             preview_requests: Vec::new(),
@@ -260,6 +271,11 @@ impl UiActionPorts for ScriptedRuntimePorts {
 
     fn persist_session_id(&mut self, session_id: String) {
         self.session_ids.push(session_id);
+    }
+
+    fn read_clipboard(&mut self) -> Result<String, String> {
+        self.clipboard_reads += 1;
+        self.clipboard_read_result.clone()
     }
 
     fn write_clipboard(&mut self, text: String) -> Result<(), String> {

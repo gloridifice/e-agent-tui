@@ -51,6 +51,32 @@ fn find_text(buffer: &Buffer, needle: &str) -> Option<(u16, u16)> {
 }
 
 #[test]
+fn help_overlay_advertises_application_paste_shortcut() {
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    terminal
+        .draw(|frame| {
+            render_with_cursor(
+                frame,
+                &mut state,
+                &input,
+                &mut scroll,
+                &theme,
+                RenderOverlays {
+                    help_visible: true,
+                    ..overlays()
+                },
+            );
+        })
+        .unwrap();
+    assert!(find_text(terminal.backend().buffer(), "Ctrl+V").is_some());
+}
+
+#[test]
 fn copy_toast_is_a_popup_and_does_not_replace_the_input_draft() {
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();

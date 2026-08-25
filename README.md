@@ -12,40 +12,44 @@
 
 > Windows and PowerShell are currently the primary supported environment.
 
-Before installing, make sure [Git](https://git-scm.com/), [Node.js](https://nodejs.org/) with npm, and [Rust](https://rustup.rs/) with Cargo are available.
+Before installing, make sure [Git](https://git-scm.com/), [Node.js](https://nodejs.org/) with npm, and [Rust](https://rustup.rs/) with Cargo are available. And:
 
-1. Install pnpm: `npm install -g pnpm`
-2. Install DeepSeek Harness: `npm install -g @deepseek-ai/dsh`
+- Install pnpm: `npm install -g pnpm`
+- Install DeepSeek Harness: `npm install -g @deepseek-ai/dsh`
 
-Then install and run `e` by:
+Then install and setup `e` by:
 
 ```bash
 cargo install dshe
-dshe setup
+dshe setup 
+```
+
+Run `e`:
+
+```bash
 dshe
 ```
 
-Use `Ctrl+h` for help (key binding, etc.). On first launch, `dshe` starts its dedicated DSH service automatically. Use `/login` to configure an API key or proxy, `/model` to select a provider and model, and `/effort` to change the reasoning effort. Wide terminals show a themed Preview pane; narrow terminals keep the main conversation usable.
+On first launch, `dshe` starts its dedicated DSH service automatically. Use `/login` to configure an API key or proxy, `/model` to select a provider and model, and `/effort` to change the reasoning effort. Wide terminals show a themed Preview pane; narrow terminals keep the main conversation usable.
 
 ### Build Yourself
 
 To build without installing:
 
-```powershell
+```bash
 git clone https://github.com/gloridifice/e.git
 cd e
-cargo build --release
+cargo dev # alias of `cargo install --path crates/e-dsh`
 ```
 
-The executable is written to `target\release\dshe.exe`. The DSH bridge is still required; install it once with:
-
-```powershell
+```bash
 dshe setup
+dshe
 ```
 
 For a profiling build, enable the optional Tracy integration:
 
-```powershell
+```bash
 cargo build --release --features tracy
 ```
 

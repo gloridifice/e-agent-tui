@@ -157,7 +157,12 @@ pub fn handle_text_editor(editor: &mut TextEditor, key: &KeyEvent) -> TextEditRe
             editor.buf.pop();
             TextEditResult::Continue
         }
-        KeyCode::Char(character) if !character.is_ascii_control() => {
+        KeyCode::Char(character)
+            if !character.is_ascii_control()
+                && !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER) =>
+        {
             editor.buf.push(character);
             TextEditResult::Continue
         }
@@ -252,6 +257,24 @@ mod tests {
             );
         }
         assert_eq!(editor.buf, "hjkl");
+    }
+
+    #[test]
+    fn text_editor_does_not_insert_modified_shortcut_letters() {
+        let mut editor = TextEditor {
+            buf: String::new(),
+            secret: true,
+        };
+        assert_eq!(
+            handle_text_editor(
+                &mut editor,
+                &KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+            ),
+            TextEditResult::Continue
+        );
+        assert!(editor.buf.is_empty());
+        handle_text_editor(&mut editor, &key(KeyCode::Char('v')));
+        assert_eq!(editor.buf, "v");
     }
 
     #[test]

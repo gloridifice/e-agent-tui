@@ -55,6 +55,7 @@ pub struct TerminalFocus {
 pub enum TerminalRoute {
     Pointer(PointerEvent),
     Paste { text: String },
+    ReadClipboard,
     Help { dismiss: bool },
     OpenHelp,
     TranscriptPage { up: bool },
@@ -97,6 +98,10 @@ pub fn route_terminal_event(event: Event, focus: TerminalFocus) -> TerminalRoute
         Event::Paste(_) if focus.reading_view_open => TerminalRoute::Ignore,
         Event::Paste(text) => TerminalRoute::Paste { text },
         Event::Key(key) if key.kind == KeyEventKind::Release => TerminalRoute::Ignore,
+        Event::Key(key) if is_clipboard_paste_shortcut(&key) && focus.reading_view_open => {
+            TerminalRoute::Ignore
+        }
+        Event::Key(key) if is_clipboard_paste_shortcut(&key) => TerminalRoute::ReadClipboard,
         Event::Key(key) if focus.help_visible => TerminalRoute::Help {
             dismiss: matches!(
                 key.code,
@@ -125,6 +130,26 @@ pub fn route_terminal_event(event: Event, focus: TerminalFocus) -> TerminalRoute
 pub enum ControllerAction {
     OpenPage(InputPageSession),
     ClosePage,
+}
+
+fn is_clipboard_paste_shortcut(key: &KeyEvent) -> bool {
+    key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('v' | 'V'))
+}
+
+fn paste_text(
+    input: &mut InputState,
+    input_page: &mut Option<InputPageSession>,
+    text: &str,
+) -> bool {
+    if text.is_empty() {
+        return false;
+    }
+    if let Some(page) = input_page {
+        page.paste(text)
+    } else {
+        input.paste(text);
+        true
+    }
 }
 
 fn agent_action(message: ClientMessage) -> UiAction {
@@ -259,11 +284,9 @@ impl RuntimeController {
                 }
             }
             TerminalRoute::Paste { text } => {
-                if ui.input_page.as_mut().is_some_and(|page| page.paste(&text)) {
-                    return effects;
-                }
-                ui.input.paste(&text);
+                paste_text(ui.input, ui.input_page, &text);
             }
+            TerminalRoute::ReadClipboard => effects.push(UiAction::ReadClipboard),
             TerminalRoute::Help { dismiss } => {
                 if dismiss {
                     *ui.help_visible = false;
@@ -1093,6 +1116,19 @@ impl RuntimeController {
     ) -> bool {
         match result {
             EffectResult::ConfigPersisted(Ok(())) | EffectResult::ConfigReloaded { .. } => false,
+            EffectResult::ClipboardRead(Ok(text)) => {
+                let text = e_tui::input::normalize_paste_text(&text);
+                let mut app = state.lock().unwrap();
+                let interaction = &mut app.interaction;
+                paste_text(&mut interaction.input, &mut interaction.input_page, &text)
+            }
+            EffectResult::ClipboardRead(Err(error)) => {
+                state
+                    .lock()
+                    .unwrap()
+                    .push_error_message(format!("剪贴板读取失败: {error}"));
+                true
+            }
             EffectResult::ClipboardWritten {
                 lines,
                 preview,
@@ -1700,6 +1736,40 @@ mod tests {
             route_terminal_event(Event::Paste("draft".into()), reading),
             TerminalRoute::Ignore
         );
+        assert_eq!(
+            route_terminal_event(
+                Event::Key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL)),
+                reading,
+            ),
+            TerminalRoute::Ignore
+        );
+    }
+
+    #[test]
+    fn ctrl_v_requests_application_clipboard_read() {
+        let ctrl_v = Event::Key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL));
+        assert_eq!(
+            route_terminal_event(ctrl_v, TerminalFocus::default()),
+            TerminalRoute::ReadClipboard
+        );
+        let ctrl_shift_v = Event::Key(KeyEvent::new(
+            KeyCode::Char('V'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ));
+        assert_eq!(
+            route_terminal_event(ctrl_shift_v, TerminalFocus::default()),
+            TerminalRoute::ReadClipboard
+        );
+    }
+
+    #[test]
+    fn non_editing_input_page_does_not_paste_into_hidden_composer() {
+        let mut input = InputState::new(&Config::default());
+        input.buf = "preserved draft".into();
+        input.cursor = input.buf.chars().count();
+        let mut page = Some(InputPageSession::model());
+        assert!(!paste_text(&mut input, &mut page, "hidden mutation"));
+        assert_eq!(input.buf, "preserved draft");
     }
 
     #[test]
@@ -1827,6 +1897,63 @@ mod tests {
         assert!(page.is_some());
         RuntimeController::apply_action(ControllerAction::ClosePage, &mut page);
         assert!(page.is_none());
+    }
+
+    #[test]
+    fn clipboard_read_pastes_into_the_active_api_key_editor() {
+        let mut config = Config::default();
+        let mut page = InputPageSession::login();
+        page.handle_key(
+            &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut config,
+        );
+        page.apply_login(LoginView {
+            providers: vec![e_tui::agent::CredentialProvider {
+                id: "deepseek".into(),
+                name: "DeepSeek".into(),
+                api_key_configured: false,
+                api_key_writable: true,
+                api_key_source: None,
+                api_key_hint: None,
+            }],
+            ..LoginView::default()
+        });
+        page.handle_key(
+            &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut config,
+        );
+
+        let state = Mutex::new(AppState::default());
+        state.lock().unwrap().interaction.input_page = Some(page);
+        assert!(RuntimeController::apply_effect_result(
+            EffectResult::ClipboardRead(Ok("sk-one\r\nsk-two".into())),
+            &state,
+            Instant::now(),
+        ));
+        let state = state.lock().unwrap();
+        let page = state.interaction.input_page.as_ref().unwrap();
+        assert!(matches!(
+            &page.page,
+            e_tui::input_page::InputPage::Login(login)
+                if login.editing.as_deref() == Some("sk-one\nsk-two")
+        ));
+        assert!(state.interaction.input.buf.is_empty());
+    }
+
+    #[test]
+    fn clipboard_read_failure_becomes_visible_without_changing_input() {
+        let state = Mutex::new(AppState::default());
+        RuntimeController::apply_effect_result(
+            EffectResult::ClipboardRead(Err("denied".into())),
+            &state,
+            Instant::now(),
+        );
+        let state = state.lock().unwrap();
+        assert!(state.interaction.input.buf.is_empty());
+        assert!(matches!(
+            state.msgs.last(),
+            Some(Msg::Error { text }) if text.contains("剪贴板读取失败") && text.contains("denied")
+        ));
     }
 
     #[test]

@@ -96,6 +96,7 @@ pub enum EffectResult {
         themes: Vec<ThemeFile>,
     },
     ConfigReloadFailed(String),
+    ClipboardRead(Result<String, String>),
     ClipboardWritten {
         lines: usize,
         preview: String,
@@ -124,6 +125,7 @@ pub enum UiAction {
     PersistConfig(Config),
     ReloadConfig,
     PersistSessionId(String),
+    ReadClipboard,
     WriteClipboard(String),
     RequestDraw(DrawPriority),
     Quit,

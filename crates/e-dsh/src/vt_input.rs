@@ -619,20 +619,7 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 /// Windows clipboards and terminals deliver `\r\n` (or lone `\r`) line
 /// endings; the composer's internal newline is `\n`.
 fn normalize_paste(bytes: &[u8]) -> String {
-    let text = String::from_utf8_lossy(bytes);
-    let mut normalized = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\r' {
-            if chars.peek() == Some(&'\n') {
-                chars.next();
-            }
-            normalized.push('\n');
-        } else {
-            normalized.push(c);
-        }
-    }
-    normalized
+    e_tui::input::normalize_paste_text(&String::from_utf8_lossy(bytes))
 }
 
 #[cfg(test)]

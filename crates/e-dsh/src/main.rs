@@ -319,6 +319,11 @@ async fn execute_runtime_effects(
             UiAction::PersistSessionId(session_id) => {
                 ports.persist_session_id(session_id);
             }
+            UiAction::ReadClipboard => {
+                execution
+                    .completed
+                    .push(EffectResult::ClipboardRead(ports.read_clipboard()));
+            }
             UiAction::WriteClipboard(text) => {
                 let lines = text.lines().count();
                 let (preview, truncated) = e_tui::clipboard_preview(&text, 6);
@@ -817,6 +822,8 @@ mod tests {
     }
 
     struct ClipboardPorts {
+        reads: usize,
+        read_result: Result<String, String>,
         writes: Vec<String>,
         result: Result<(), String>,
         now: Instant,
@@ -832,6 +839,11 @@ mod tests {
         }
 
         fn persist_session_id(&mut self, _session_id: String) {}
+
+        fn read_clipboard(&mut self) -> Result<String, String> {
+            self.reads += 1;
+            self.read_result.clone()
+        }
 
         fn write_clipboard(&mut self, text: String) -> Result<(), String> {
             self.writes.push(text);
@@ -949,10 +961,25 @@ mod tests {
         let (transport, _receiver) = tokio::sync::mpsc::channel(1);
         let mut scheduler = FrameScheduler::new(now);
         let mut ports = ClipboardPorts {
+            reads: 0,
+            read_result: Ok("api-key".into()),
             writes: Vec::new(),
             result: Ok(()),
             now,
         };
+        let read = execute_runtime_effects(
+            vec![UiAction::ReadClipboard],
+            &transport,
+            &mut scheduler,
+            &mut ports,
+        )
+        .await;
+        assert_eq!(ports.reads, 1);
+        assert!(matches!(
+            read.completed.as_slice(),
+            [EffectResult::ClipboardRead(Ok(text))] if text == "api-key"
+        ));
+
         let success = execute_runtime_effects(
             vec![UiAction::WriteClipboard("one\ntwo".into())],
             &transport,

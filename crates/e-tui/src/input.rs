@@ -108,6 +108,24 @@ pub enum SuggestionKind {
     Skills,
 }
 
+/// Normalize terminal and system-clipboard line endings to the frontend's
+/// internal newline representation.
+pub fn normalize_paste_text(text: &str) -> String {
+    let mut normalized = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(character) = chars.next() {
+        if character == '\r' {
+            if chars.peek() == Some(&'\n') {
+                chars.next();
+            }
+            normalized.push('\n');
+        } else {
+            normalized.push(character);
+        }
+    }
+    normalized
+}
+
 impl InputState {
     pub fn new(config: &Config) -> Self {
         Self {
@@ -1132,6 +1150,11 @@ mod tests {
     fn state() -> InputState {
         let config = Config::default();
         InputState::new(&config)
+    }
+
+    #[test]
+    fn paste_text_normalizes_windows_line_endings() {
+        assert_eq!(normalize_paste_text("a\r\nb\rc\n"), "a\nb\nc\n");
     }
 
     #[test]

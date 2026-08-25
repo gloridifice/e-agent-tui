@@ -95,7 +95,12 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
   `ENABLE_VIRTUAL_TERMINAL_INPUT` only after ratatui/crossterm terminal construction (that setup clears an earlier
   flag), a reader thread forwards stdin byte chunks together with an immediate physical Shift/Ctrl/Alt/Backspace
   snapshot, and `vt_input.rs` parses them into crossterm events (bracketed paste, navigation, SGR mouse scroll, Alt
-  prefixes). Windows Terminal's measured byte table is Backspace `0x7f`, **Ctrl+Backspace `0x17` (ETB)**, Ctrl+H
+  prefixes). Terminals that consume `Ctrl+V` still deliver bracketed paste; terminals that pass it through produce
+  a modified key, which the router turns into `UiAction::ReadClipboard`. The `e-dsh` clipboard port reads through
+  `arboard`, completion reuses the same active-editor/composer paste path, and both sources normalize CRLF/lone CR
+  through `e-tui::input::normalize_paste_text`. Reading View suppresses both paste forms, and a non-editing Input
+  Page must not mutate the preserved composer draft behind it. Windows Terminal's measured byte table is Backspace
+  `0x7f`, **Ctrl+Backspace `0x17` (ETB)**, Ctrl+H
   `0x08`, Alt+Backspace `0x1b 0x7f`; re-measure with `cargo run -p e-dsh --example input_probe` before changing
   Backspace handling instead of assuming an encoding. The snapshot recovers `\r` Enter modifiers and identifies a
   real Backspace origin before the reader-to-async handoff can make `VK_BACK` stale: `0x17` with physical Backspace
@@ -117,7 +122,7 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
   `valid/tail_dirty/dirty_messages`, history display-row anchor, and copy provenance.
 - **Runtime controller / lock discipline**: `runtime.rs::RuntimeController` receives typed `RuntimeInput`,
   consumes `ControllerAction` inside a single scoped guard, and hands only complete-payload `RuntimeEffect`s
-  to the `main.rs` executor; `runtime_ports.rs` provides transport, terminal, config/state, clipboard, and
+  to the `main.rs` executor; `runtime_ports.rs` provides transport, terminal, config/state, clipboard read/write, and
   clock production/scripted ports. The executor must not borrow UI state or silently ignore effects; do not
   restore a fixed ticker. In Rust 2021, `if let`/`match` scrutinee temporaries live until the end of the whole
   expression; never write `state_r.lock()` directly into a scrutinee and then re-lock or `.await` in a branch,
@@ -134,8 +139,11 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
   in `e-dsh`.
 - **Input interaction and character boundaries**: `InputState.cursor` is a **character index**;
   `String::insert/remove` and slicing need byte indices — use `char_to_byte()` (`input.rs`); CJK has regression
-  tests; cursor x uses `unicode_width`. Plain input is fixed: `Enter` sends, `Shift+Enter` inserts a newline;
-  over-threshold pastes become **independent atomic paste blocks** (`InputState.paste_blocks`, raw-buffer char
+  tests; cursor x uses `unicode_width`. Plain input is fixed: `Enter` sends, `Shift+Enter` inserts a newline, and
+  `Ctrl+V` requests an application clipboard read when the terminal does not already translate it into bracketed
+  paste. Input Pages accept either paste source only in their active text editor; modified shortcut letters are not
+  inserted as literal text. Over-threshold composer pastes become **independent atomic paste blocks**
+  (`InputState.paste_blocks`, raw-buffer char
   ranges): each renders as one Rose `[N text pasted]` placeholder between ordinary editable text, ←/→ skip a
   whole block, Backspace/Delete remove the whole block, Up/Down map the cursor through the placeholder
   (snapping into a block to its start), Enter sends the full expanded content verbatim, and history-browsing
@@ -171,8 +179,8 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
   `Clear`, with the shared shell fixed at 1 row top/bottom and 2 columns left/right padding. Within the Ash shell,
   settings paints the full category strip and right-side value pane with the base (Night) surface; the strip is
   display-only, while value edit focus on the Night pane uses the panel (Ash) surface for contrast.
-- **Reading View and copy semantics**: `Ctrl+Y` enters Reading View (the `Ctrl+V` candidate failed the
-  supported-terminal paste gate); `Ctrl+P` toggles full-screen Preview on narrow terminals. Block mode uses
+- **Reading View and copy semantics**: `Ctrl+Y` enters Reading View (`Ctrl+V` remains reserved for paste);
+  `Ctrl+P` toggles full-screen Preview on narrow terminals. Block mode uses
   `j`/`k`, `l`, `y`, and `Esc`; Item mode uses spatial `h`/`j`/`k`/`l`, with `Esc` returning to Block mode. `y`
   always copies the complete owning Block from `ReadingCopyPayload`, never clipped terminal cells. Mouse drag
   copies only the selected visible rendered range and is intentionally separate from this complete-source

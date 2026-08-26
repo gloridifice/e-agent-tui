@@ -159,9 +159,12 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
   `↑/↓` move between input lines by character column first, and only switch to the previous/next history prompt
   at the first/last line boundary; `PageUp`/`PageDown` page by the currently visible transcript height, and the
   mouse wheel moves 3 lines per notch (always operating on the transcript even when an Input Page is open).
-  Captured primary-button drags select only visible Transcript or Preview text in the surface where the drag
-  starts, use display-cell/grapheme boundaries, and copy rendered visual rows on release; this partial visual copy
-  is distinct from Reading View `y`, which copies the complete owning source Block. The pure selection reducer
+  A primary-button press on the pane separator is captured by resize before selectable-content hit testing;
+  captured separator drags update only transient geometry, clear any existing selection, and remain resize-owned
+  when they cross Transcript or Preview cells. Other primary-button drags select only visible Transcript or Preview
+  text in the surface where the drag starts, use display-cell/grapheme boundaries, and copy rendered visual rows on
+  release; this partial visual copy is distinct from Reading View `y`, which copies the complete owning source Block.
+  The pure selection reducer
   reads only the immutable runner-owned committed visible frame; frame revision or viewport mismatch rejects stale
   paint/copy after resize, session/draft/history/Preview identity changes, while focus loss and new primary press
   are explicit cancellation transitions. Ratatui line collection and reverse-video painting stay in
@@ -180,7 +183,8 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
   settings paints the full category strip and right-side value pane with the base (Night) surface; the strip is
   display-only, while value edit focus on the Night pane uses the panel (Ash) surface for contrast.
 - **Reading View and copy semantics**: `Ctrl+Y` enters Reading View (`Ctrl+V` remains reserved for paste);
-  `Ctrl+P` toggles full-screen Preview on narrow terminals. Block mode uses
+  `Ctrl+P` toggles the existing full-screen Preview fallback when the responsive split is too narrow; Preview-only
+  presentation has no pane separator. Block mode uses
   `j`/`k`, `l`, `y`, and `Esc`; Item mode uses spatial `h`/`j`/`k`/`l`, with `Esc` returning to Block mode. `y`
   always copies the complete owning Block from `ReadingCopyPayload`, never clipped terminal cells. Mouse drag
   copies only the selected visible rendered range and is intentionally separate from this complete-source
@@ -228,7 +232,26 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
   file-group merge/settlement scans skip it.
 - **Tracy/timing** (`profile.rs`): instrument with `e::tracy_zone!("literal")` (a macro that safely no-ops when
   no client is present); use `PhaseTimers` for stage timing. Zone names must be string literals.
-- **Responsive Screen and Preview**: at wide widths the Screen uses `main_width = min(floor(0.6 * W), main_pane_width)` when that leaves the measured 40-column main minimum and 32-column Preview minimum. Otherwise it renders main-only, with `Ctrl+P` selecting full-screen Preview. Normal mode follows the latest semantic Block; Reading View follows Item then Block. Preview has independent scroll, visible-row materialization, one shared semantic cache, request-id/key/revision stale-result checks, a width/theme-aware styled-layout cache, and a selected-target reveal sidecar that never enters semantic cache keys or invalidates the transcript. Stable redraw/reveal/scroll frames reuse styled syntax rows; key/revision, width, or theme-style changes rematerialize only Preview layout while preserving the semantic reveal frontier. The remaining `e-dsh::preview_resolver` deferred path is retained for legacy file/line references and returns an event completion without holding a UI lock.
+- **Responsive Screen, Preview, and pane resizing**: the Screen derives message width from the committed
+  `message_pane_percent` basis-point setting (default 60%, inclusive range 25.00%–100.00%) at the current terminal
+  width. Preview remains beside it only when its raw rectangle is at least 19 columns: one separator column, one
+  post-separator gap, 16 usable content columns, and one right margin. Otherwise normal mode is main-only with a
+  short Bark-equivalent grip in the right margin, while the existing `Ctrl+P` fallback occupies the full screen
+  without a grip. Main content uses one ordinary horizontal edge column; Main-only mode additionally reserves the
+  collapsed grip geometry. Split Preview uses the separator plus one gap on the left and one margin on the right.
+  A separator press captures the primary-button gesture before text selection; pending width is transient, clamps
+  the message pane at 25%, collapses Preview below the 19-column rectangle threshold, and restores a 19-column
+  Preview rectangle with 16 usable content columns on the first leftward movement from the collapsed margin grip.
+  Drag frames paint only margin-inset Bark placeholder boxes, a full-height thin guide, and a thick grip; they do
+  not render real panes, Reading geometry, selection, toasts, or transcript/Preview cache work. Release commits and
+  persists the percentage once; focus loss or terminal resize cancels without changing it, so a temporary
+  responsive collapse reopens when the terminal grows. Normal mode follows the latest semantic Block; Reading View follows Item then Block. Preview
+  has independent scroll, visible-row materialization, one shared semantic cache, request-id/key/revision stale-result
+  checks, a width/theme-aware styled-layout cache, and a selected-target reveal sidecar that never enters semantic
+  cache keys or invalidates the transcript. Stable redraw/reveal/scroll frames reuse styled syntax rows; key/revision,
+  width, or theme-style changes rematerialize only Preview layout while preserving the semantic reveal frontier. The
+  remaining `e-dsh::preview_resolver` deferred path is retained for legacy file/line references and returns an event
+  completion without holding a UI lock.
 - **Structured tool Preview**: known tool calls carry a provider-neutral `PreviewContent::Tool` seed built at the DSH adapter boundary (the renderer never inspects DSH tool names or argument keys). The layout is a `theme.activity.label` tool-name header, the primary content on the next row with no blank row between, then — only when secondary content exists — one blank row and the secondary. read/view show a workspace-relative `path[:lines]` location (`start-end` for a window, `start-` for open-ended, `N` for a single line); create shows its path; filesystem search shows a quoted query and an optional `at "path"` row; command/bash/pwsh (Preview name `bash`/`pwsh`, or `cmd`/`powershell`/`sh`/`shell` when that is the tool name; `command` is the fallback) show a Coral `$` + Mist command row and a Bark `lines N, duration X.Xs` metrics row; unsupported tools show bounded pretty JSON under the original tool name. A command's settled `tool/result` enriches the same `tool:<call-id>` target with final line count/duration and a Bark/Umber two-tone terminal secondary (ANSI-colored runs map to Bark, uncolored runs to Umber, bold/italic preserved, every other control stripped via a `vte`-backed component). read/view/create/search/generic results stay primary-only. edit/replace/insert render event-supplied mutation fragments (DSH edit `meta.diffs`, str-replace `old_str/new_str`, addition-only insert) as removed/added rows — the client never reads a file or computes a diff. It may classify event-authored unified rows and coordinates, preserve an optional event path, and highlight old/new logical code streams independently. Diff syntax foregrounds use normal Markdown semantics; added/removed backgrounds, accents, gutters, and separators remain under `semantics.diff`. Injected context (`CardRole::Context`) previews as `MutedMarkdown`, distinct from `Reasoning`; both render through the structured `markdown_weak` hierarchy rather than a post-render forced foreground.
 - **Rendering layers**: production rendering lives in `e-tui` and points downward as `Screen -> Pane -> Region -> Component`. The main pane retains the characterized transcript/composer/status style; Preview reuses theme semantics without changing main-pane tokens. Terminal setup, restoration, synchronized output, and frame scheduling stay in `e-dsh`.
 - **Bottom layout and two-line status bar**: the fixed bottom row order is input bar or Input Page / gap /
@@ -297,16 +320,24 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
   `from_user_toml` first recursively `overlay_known`s user values onto the embedded TOML as the schema, then
   strictly deserializes exactly once: old files inherit missing fields, deprecated unknown keys are ignored,
   malformed/known-type errors fall back safely; `Config::default()` must not re-derive from Rust field literals.
-  `Config.theme` stores the theme name; `main_pane_width` defaults to 120 columns and is constrained by the measured pane minimums; rendering does zero disk reads. Themes are two-layer TOML: an open
+  `Config.theme` stores the theme name; `message_pane_percent` is the sole persisted pane-width authority, defaults
+  to 60.00%, and is validated to 25.00%–100.00%; pane columns are derived from the current terminal width.
+  `user_input_padding` defaults to one column so user cards and the composer match the one-column Main page edge,
+  while an explicit Settings value remains supported. The
+  obsolete `main_pane_width` key is ignored by the known-key overlay rather than migrated without a terminal width;
+  rendering does zero disk reads. Themes are two-layer TOML: an open
   `[colors]` allows arbitrary color names, and fixed `[semantics.*]` (surface/markdown/markdown_weak/diff/input/
   working_status/log/activity/card/overlay) link semantic styles to color names; each style requires only `fg`,
   with `bg`/`bold`/`italic`/`underline` optional; unknown references, missing fixed fields, or illegal hex reject the
-  whole file. `markdown_weak` has exactly the `markdown` role set and is required: older custom themes must add it
+  whole file. An optional `padding` field on a style adds backgrounded spaces on both sides of that element: a
+  scalar (`padding = 1`) sets both sides, or a table (`padding = { left = 2, right = 1 }`) sets each side
+  independently. Padding defaults to zero when omitted and is opt-in per element: inline code consumes it, while
+  code blocks and Mermaid ignore `code_background.padding` and keep their own fixed layout. `markdown_weak` has exactly the `markdown` role set and is required: older custom themes must add it
   or the existing whole-theme fallback applies.
   Built-in `deepseek-e`/`ferra` sources are in `crates/e-tui/assets/themes/`, embedded via `include_str!` and parsed by
   the same parser as user files, and copied without overwrite to `%APPDATA%\dshe\themes\`; a valid same-named user
   file wins, and an illegal old file must not shadow the embedded fallback. `launcher.rs`: `probe(url)` TCP probe
-  → if no dsh, spawn `dsh --profile e` (`dsh` or `npx @deepseek-ai/dsh`) → `%DSH_HOME%\e.lock` counts
+  → if no dsh, spawn `dsh --profile e --no-open` (`dsh` or `npx @deepseek-ai/dsh`) → `%DSH_HOME%\e.lock` counts
   "close dsh when the last tui closes"; on Windows the child handle points at the `cmd /C` shim, and both normal
   shutdown and startup-timeout cleanup must `taskkill /T` the whole process tree — never only `Child::kill`,
   which leaves orphan Node processes; child reaping must be bounded, and on terminate failure keep an

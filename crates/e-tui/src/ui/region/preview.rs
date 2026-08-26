@@ -29,8 +29,12 @@ pub fn render(
     config: &Config,
     theme: &Theme,
     selection_frame: &mut SelectionFrame,
+    left_padding: u16,
+    right_padding: u16,
 ) {
-    let inner_width = usize::from(area.width).saturating_sub(2).max(1);
+    let inner_width = usize::from(area.width)
+        .saturating_sub(usize::from(left_padding.saturating_add(right_padding)))
+        .max(1);
     let lines = match &preview.state {
         PreviewState::Empty => vec![Line::styled("No preview", theme.surface.muted_text.style())],
         PreviewState::Loading { .. } => vec![Line::styled(
@@ -98,7 +102,7 @@ pub fn render(
             selection_frame,
             SelectionSurface::Preview,
             start + index,
-            area.x.saturating_add(1),
+            area.x.saturating_add(left_padding),
             area.y.saturating_add((top_padding + index) as u16),
             line,
         );
@@ -107,7 +111,12 @@ pub fn render(
     centered.extend(std::iter::repeat_n(Line::raw(""), top_padding));
     centered.extend(lines);
     frame.render_widget(
-        Paragraph::new(centered).block(Block::default().padding(Padding::horizontal(1))),
+        Paragraph::new(centered).block(Block::default().padding(Padding::new(
+            left_padding,
+            right_padding,
+            0,
+            0,
+        ))),
         area,
     );
 }

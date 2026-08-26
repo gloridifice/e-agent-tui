@@ -196,7 +196,7 @@ Build the minimum semantic Block index needed to select the newest transcript Bl
 
 Keep the composer and both status rows active in the main pane. The Preview pane uses the remaining width and full height.
 
-The extraction characterization suite establishes 40 columns as the minimum usable effective main-pane width; Preview retains its specified 32-column minimum. The keybinding audit reserves the otherwise unclaimed `Ctrl+P` for the narrow full-screen Preview toggle. These values are frontend constants and must remain covered by responsive Screen tests.
+The responsive layout derives the message pane from the persisted `message_pane_percent` setting (25.00%–100.00%, default 60.00%); Preview retains a 19-column raw rectangle when it is shown beside the message pane, providing 16 usable content columns after the separator, one-column gap, and right margin. Main content keeps one ordinary horizontal edge column, while Main-only mode reserves the collapsed grip geometry. Below that threshold the normal view keeps a right-margin separator grip, while the keybinding audit reserves the otherwise unclaimed `Ctrl+P` for the full-screen Preview fallback. These values are frontend constants and must remain covered by responsive Screen tests.
 
 Add inline Preview support first. Deferred resolution can wait until the selection and rendering path is stable.
 

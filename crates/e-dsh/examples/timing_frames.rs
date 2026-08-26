@@ -185,6 +185,7 @@ fn run(width: u16, height: u16) -> anyhow::Result<()> {
                 login: None,
                 approval: None,
                 queue: &[],
+                pane_resize: Default::default(),
             },
         );
     })?;
@@ -238,6 +239,7 @@ fn run(width: u16, height: u16) -> anyhow::Result<()> {
                     login: None,
                     approval: None,
                     queue: &[],
+                    pane_resize: Default::default(),
                 },
             );
         })?;

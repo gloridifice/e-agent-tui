@@ -30,7 +30,17 @@ fn overlays() -> RenderOverlays<'static> {
         login: None,
         approval: None,
         queue: &[],
+        pane_resize: Default::default(),
     }
+}
+
+fn force_message_only(state: &mut TuiApp) {
+    state.config.message_pane_percent = crate::PaneWidthPercent::from_basis_points(10_000).unwrap();
+}
+
+fn force_preview_only(state: &mut TuiApp) {
+    force_message_only(state);
+    state.preview.fullscreen = true;
 }
 
 fn find_text(buffer: &Buffer, needle: &str) -> Option<(u16, u16)> {
@@ -192,8 +202,8 @@ fn input_bar_paste_block_renders_placeholder_between_editable_text() {
 
 #[test]
 fn input_bar_box_grows_with_wrapped_rows_and_keeps_cursor_visible() {
-    // 80 cols → split main 48 / preview 32 → page width 40 → inner 36 with
-    // the default 2-column gutter. 200 chars wrap to 6 rows, so the box must
+    // 80 cols → split main 48 / preview 32 → page width 46 → inner 44 with
+    // the default 1-column gutter. 200 chars wrap to 5 rows, so the box must
     // grow to the 5-row cap and the wrap window must follow the cursor: the
     // last five wrapped rows are visible and the IME anchor stays inside the
     // text area (previously the box stayed 3 rows tall, only the first chunk
@@ -220,13 +230,13 @@ fn input_bar_box_grows_with_wrapped_rows_and_keeps_cursor_visible() {
     };
     // Box = 5 text rows + 2 padding = 7 rows at the bottom: y 14..20
     // (bottom stack: 7 + 1 gap + 1 status + 1 title = 10).
-    assert_eq!(&row(15)[6..42], "x".repeat(36), "visible row 1");
-    assert_eq!(&row(16)[6..42], "x".repeat(36), "visible row 2");
-    assert_eq!(&row(17)[6..42], "x".repeat(36), "visible row 3");
-    assert_eq!(&row(18)[6..42], "x".repeat(36), "visible row 4");
+    assert_eq!(&row(15)[2..46], "x".repeat(44), "visible row 1");
+    assert_eq!(&row(16)[2..46], "x".repeat(44), "visible row 2");
+    assert_eq!(&row(17)[2..46], "x".repeat(44), "visible row 3");
+    assert_eq!(&row(18)[2..46], "x".repeat(44), "visible row 4");
     assert_eq!(
-        &row(19)[6..26],
-        "x".repeat(20),
+        &row(19)[2..26],
+        "x".repeat(24),
         "cursor row shows the tail chunk"
     );
     assert_eq!(row(20).trim(), "", "bottom padding row of the box");
@@ -250,7 +260,8 @@ fn input_bar_box_grows_with_wrapped_rows_and_keeps_cursor_visible() {
 
 #[test]
 fn input_bar_full_final_row_keeps_cursor_out_of_bottom_padding() {
-    // 180 chars fill exactly 5 rows at inner 36. The synthetic cursor space
+    // 180 chars fill four rows plus a four-character tail at inner 44. The
+    // synthetic cursor space
     // after the final character must stay on the last text row (in the box's
     // right gutter), not wrap into the bottom padding row.
     let mut state = TuiApp::default();
@@ -273,13 +284,18 @@ fn input_bar_full_final_row_keeps_cursor_out_of_bottom_padding() {
             .map(|x| buffer[(x, y)].symbol().chars().next().unwrap_or(' '))
             .collect::<String>()
     };
-    for y in 15..20 {
-        assert_eq!(&row(y)[6..42], "x".repeat(36), "full text row {y}");
+    for y in 15..19 {
+        assert_eq!(&row(y)[2..46], "x".repeat(44), "full text row {y}");
     }
-    assert_eq!(row(20).trim(), "", "bottom padding row stays blank");
-    assert_eq!(anchor, Some(Position::new(42, 19)));
     assert_eq!(
-        buffer[(42, 19)].bg,
+        &row(19)[2..6],
+        "xxxx",
+        "tail row stays inside the text area"
+    );
+    assert_eq!(row(20).trim(), "", "bottom padding row stays blank");
+    assert_eq!(anchor, Some(Position::new(6, 19)));
+    assert_eq!(
+        buffer[(6, 19)].bg,
         theme
             .input
             .cursor
@@ -314,13 +330,13 @@ fn input_bar_multiline_wrapped_rows_keep_cursor_row_in_box() {
             .map(|x| buffer[(x, y)].symbol().chars().next().unwrap_or(' '))
             .collect::<String>()
     };
-    assert_eq!(&row(15)[6..42], "y".repeat(36), "visible row 1");
-    assert_eq!(&row(16)[6..42], "y".repeat(36), "visible row 2");
-    assert_eq!(&row(17)[6..42], "y".repeat(36), "visible row 3");
-    assert_eq!(&row(18)[6..42], "y".repeat(36), "visible row 4");
+    assert_eq!(&row(15)[2..46], "y".repeat(44), "visible row 1");
+    assert_eq!(&row(16)[2..46], "y".repeat(44), "visible row 2");
+    assert_eq!(&row(17)[2..46], "y".repeat(44), "visible row 3");
+    assert_eq!(&row(18)[2..46], "y".repeat(44), "visible row 4");
     assert_eq!(
-        &row(19)[6..26],
-        "y".repeat(20),
+        &row(19)[2..26],
+        "y".repeat(24),
         "cursor row shows the tail chunk"
     );
     assert_eq!(
@@ -332,7 +348,7 @@ fn input_bar_multiline_wrapped_rows_keep_cursor_row_in_box() {
 
 #[test]
 fn input_bar_fits_all_wrapped_rows_when_they_fit_the_box() {
-    // 100 chars -> 3 wrapped rows at inner 36 -> the content still fits inside
+    // 100 chars -> 3 wrapped rows at inner 44 -> the content still fits inside
     // the 5-row cap, so the whole content is visible from the top; the cursor
     // row is the last one.
     let mut state = TuiApp::default();
@@ -355,10 +371,10 @@ fn input_bar_fits_all_wrapped_rows_when_they_fit_the_box() {
             .map(|x| buffer[(x, y)].symbol().chars().next().unwrap_or(' '))
             .collect::<String>()
     };
-    assert_eq!(&row(17)[6..42], "z".repeat(36), "row 1 from the top");
-    assert_eq!(&row(18)[6..42], "z".repeat(36), "row 2 from the top");
-    assert_eq!(&row(19)[6..34], "z".repeat(28), "row 3 from the top");
-    assert_eq!(anchor, Some(Position::new(34, 19)));
+    assert_eq!(&row(17)[2..46], "z".repeat(44), "row 1 from the top");
+    assert_eq!(&row(18)[2..46], "z".repeat(44), "row 2 from the top");
+    assert_eq!(&row(19)[2..14], "z".repeat(12), "row 3 from the top");
+    assert_eq!(anchor, Some(Position::new(14, 19)));
 }
 
 #[test]
@@ -384,7 +400,7 @@ fn input_box_rows_follow_wrapped_content() {
 
 #[test]
 fn input_bar_word_wrap_keeps_cursor_anchored_after_consumed_space() {
-    // 7 `aaaa` words fill the 36-column input content width; the following
+    // 9 `aaaa` words fit in the 44-column input content width; the following
     // separator is consumed by the greedy break, so the cursor sitting on
     // that separator must render at the end of the previous wrapped row.
     let mut state = TuiApp::default();
@@ -408,18 +424,18 @@ fn input_bar_word_wrap_keeps_cursor_anchored_after_consumed_space() {
             .collect::<String>()
     };
     assert_eq!(
-        &row(18)[6..40],
-        "aaaa aaaa aaaa aaaa aaaa aaaa aaaa",
-        "first wrapped row keeps the seven fitting words"
+        &row(18)[2..46],
+        "aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa",
+        "first wrapped row keeps the nine fitting words"
     );
     assert_eq!(
-        &row(19)[6..20],
-        "aaaa aaaa aaaa",
+        &row(19)[2..6],
+        "aaaa",
         "second wrapped row starts with the next whole word"
     );
     assert_eq!(
         anchor,
-        Some(Position::new(40, 18)),
+        Some(Position::new(36, 18)),
         "IME anchor sits after the first wrapped row at the consumed space"
     );
 }
@@ -441,7 +457,7 @@ fn extracted_main_pane_preserves_status_spacing_and_hidden_cursor() {
         })
         .unwrap();
 
-    assert_eq!(anchor, Some(Position::new(6, 35)));
+    assert_eq!(anchor, Some(Position::new(2, 35)));
     assert_eq!(terminal.get_cursor_position().unwrap(), Position::new(0, 0));
     let buffer = terminal.backend().buffer();
     let row = |y| {
@@ -454,7 +470,7 @@ fn extracted_main_pane_preserves_status_spacing_and_hidden_cursor() {
     assert!(main_row(38).contains("• standard"));
     assert!(main_row(38).contains("^h Help"));
     assert!(main_row(39).contains("refactor bridge"));
-    assert_eq!(buffer[(4, 38)].bg, Color::Reset);
+    assert_eq!(buffer[(1, 38)].bg, Color::Reset);
 }
 
 #[test]
@@ -697,6 +713,7 @@ fn code_block_fill_padding_does_not_change_reveal_work_on_resize() {
 fn extracted_main_pane_keeps_card_background_and_copy_provenance() {
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();
+    force_message_only(&mut state);
     let source = "wrapped user content that remains verbatim".to_string();
     state.render.units.insert(7, source.clone());
     state.transcript.append(
@@ -728,6 +745,7 @@ fn extracted_main_pane_keeps_card_background_and_copy_provenance() {
     let content_cells = (0..12)
         .flat_map(|y| (0..40).map(move |x| (x, y)))
         .filter(|(x, y)| buffer[(*x, *y)].symbol() != " ")
+        .filter(|(x, y)| buffer[(*x, *y)].symbol() != "│")
         .filter(|(x, y)| *y < 6 && *x >= 4)
         .collect::<Vec<_>>();
     assert!(!content_cells.is_empty());
@@ -743,6 +761,7 @@ fn extracted_main_pane_keeps_card_background_and_copy_provenance() {
 fn context_injection_renders_as_plain_text_capped_at_two_lines() {
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();
+    force_message_only(&mut state);
     let source = "x".repeat(200);
     state.render.units.insert(7, source.clone());
     state.transcript.append(
@@ -778,27 +797,27 @@ fn context_injection_renders_as_plain_text_capped_at_two_lines() {
     // Plain text (no card shell background): the first row starts with the
     // `提示词注入` label in the activity label tone (umber in ferra) and the
     // content in the activity detail tone (bark), with no background fill.
-    assert_eq!(label(4), '提', "label glyph starts the first row");
-    assert_eq!(label(6), '示', "label glyph on the first row");
-    assert_eq!(label(8), '词', "label glyph on the first row");
-    assert_eq!(label(10), '注', "label glyph on the first row");
-    assert_eq!(label(12), '入', "label glyph on the first row");
+    assert_eq!(label(1), '提', "label glyph starts the first row");
+    assert_eq!(label(3), '示', "label glyph on the first row");
+    assert_eq!(label(5), '词', "label glyph on the first row");
+    assert_eq!(label(7), '注', "label glyph on the first row");
+    assert_eq!(label(9), '入', "label glyph on the first row");
     assert_eq!(
-        buffer[(4, 0)].fg,
+        buffer[(1, 0)].fg,
         theme.activity.label.fg,
         "label uses the activity label tone (umber)"
     );
     assert_eq!(
-        buffer[(15, 0)].fg,
+        buffer[(12, 0)].fg,
         theme.activity.detail.fg,
         "content uses the activity detail tone (bark)"
     );
-    assert_eq!(buffer[(4, 0)].bg, Color::Reset, "no card background");
-    assert_eq!(buffer[(15, 0)].bg, Color::Reset, "no card background");
+    assert_eq!(buffer[(1, 0)].bg, Color::Reset, "no card background");
+    assert_eq!(buffer[(12, 0)].bg, Color::Reset, "no card background");
     // Capped at two wrapped rows with an explicit ellipsis marker on row 2.
     assert_eq!(
         row_text(1).trim(),
-        format!("{}…", "x".repeat(31)),
+        format!("{}…", "x".repeat(35)),
         "second row ends with the ellipsis marker"
     );
     assert!(row_text(2).trim().is_empty(), "gap row after the message");
@@ -812,6 +831,7 @@ fn context_injection_renders_as_plain_text_capped_at_two_lines() {
 fn context_injection_short_content_fits_on_one_row() {
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();
+    force_message_only(&mut state);
     let source = "short context".to_string();
     state.transcript.append(
         DisplayItem::Card(ContentCard {
@@ -843,16 +863,16 @@ fn context_injection_short_content_fits_on_one_row() {
     };
     // Each CJK glyph occupies two cells, so compare per-cell glyphs and the
     // plain-ASCII content tail rather than a single raw substring.
-    assert_eq!(buffer[(4, 0)].symbol(), "提");
-    assert_eq!(buffer[(6, 0)].symbol(), "示");
-    assert_eq!(buffer[(8, 0)].symbol(), "词");
-    assert_eq!(buffer[(10, 0)].symbol(), "注");
-    assert_eq!(buffer[(12, 0)].symbol(), "入");
+    assert_eq!(buffer[(1, 0)].symbol(), "提");
+    assert_eq!(buffer[(3, 0)].symbol(), "示");
+    assert_eq!(buffer[(5, 0)].symbol(), "词");
+    assert_eq!(buffer[(7, 0)].symbol(), "注");
+    assert_eq!(buffer[(9, 0)].symbol(), "入");
     assert!(row_text(0).contains("short context"));
     assert!(row_text(1).trim().is_empty(), "one row then the gap");
-    assert_eq!(buffer[(4, 0)].fg, theme.activity.label.fg);
-    assert_eq!(buffer[(15, 0)].fg, theme.activity.detail.fg);
-    assert_eq!(buffer[(4, 0)].bg, Color::Reset, "no card background");
+    assert_eq!(buffer[(1, 0)].fg, theme.activity.label.fg);
+    assert_eq!(buffer[(12, 0)].fg, theme.activity.detail.fg);
+    assert_eq!(buffer[(1, 0)].bg, Color::Reset, "no card background");
 }
 
 #[test]
@@ -902,6 +922,35 @@ fn wide_screen_renders_preview_without_changing_main_provenance() {
     assert!(provenance_layout_rows(&state)
         .iter()
         .any(|row| row.unit == unit));
+}
+
+#[test]
+fn split_preview_keeps_a_blank_column_after_the_separator() {
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    state.preview.state = PreviewState::Ready(PreviewContent::PlainText("preview".into()));
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+
+    let buffer = terminal.backend().buffer();
+    let (text_x, text_y) = find_text(buffer, "preview").expect("Preview text renders");
+    assert_eq!(text_x, 74, "split Preview leaves one blank cell after x=72");
+    assert_eq!(
+        buffer[(72, text_y)].symbol(),
+        "│",
+        "separator remains at x=72"
+    );
+    assert_eq!(buffer[(73, text_y)].symbol(), " ", "separator gap is blank");
+    assert_eq!(
+        buffer[(119, text_y)].symbol(),
+        " ",
+        "Preview keeps one right margin"
+    );
 }
 
 #[test]
@@ -991,7 +1040,7 @@ fn preview_skips_markdown_answers_and_shows_reasoning_text() {
     // initially blended from the configured background.
     let buffer = terminal.backend().buffer();
     assert_eq!(
-        buffer[(73, 14)].fg,
+        buffer[(74, 14)].fg,
         crate::reveal::blend_rgb(
             state.config.background_color.color(),
             theme.surface.muted_text.fg,
@@ -1005,7 +1054,7 @@ fn preview_skips_markdown_answers_and_shows_reasoning_text() {
 fn tool_preview_renders_header_primary_and_secondary_with_ferra_semantics() {
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();
-    state.preview.fullscreen = true;
+    force_preview_only(&mut state);
     state.preview.policy = crate::preview::PreviewPolicy::FollowReadingCursor;
     state.preview.state = PreviewState::Ready(PreviewContent::Tool(ToolPreview {
         name: "bash".into(),
@@ -1068,7 +1117,7 @@ fn tool_preview_renders_header_primary_and_secondary_with_ferra_semantics() {
 fn selected_tool_preview_reveals_one_wrapped_row_per_tick_without_touching_transcript_cache() {
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();
-    state.preview.fullscreen = true;
+    force_preview_only(&mut state);
     state.preview.policy = crate::preview::PreviewPolicy::FollowReadingCursor;
     state.render.transcript_cache.valid = true;
     state.preview.select(Some(crate::preview::PreviewTarget {
@@ -1157,7 +1206,7 @@ fn selected_tool_preview_reveals_one_wrapped_row_per_tick_without_touching_trans
 fn narrow_fullscreen_preview_renders_loading_and_error_states() {
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();
-    state.preview.fullscreen = true;
+    force_preview_only(&mut state);
     state.preview.policy = crate::preview::PreviewPolicy::FollowReadingCursor;
     state.preview.state = PreviewState::Loading {
         request_id: crate::preview::PreviewRequestId(1),
@@ -1342,7 +1391,7 @@ fn reading_item_highlight_is_local_and_preview_takes_precedence() {
 #[test]
 fn preview_content_kinds_materialize_visible_rows_only() {
     let mut state = TuiApp::default();
-    state.preview.fullscreen = true;
+    force_preview_only(&mut state);
     state.preview.policy = crate::preview::PreviewPolicy::FollowReadingCursor;
     state.preview.scroll = 20;
     state.preview.state = PreviewState::Ready(PreviewContent::Lines {
@@ -1372,7 +1421,7 @@ fn preview_content_kinds_materialize_visible_rows_only() {
 fn preview_follow_anchor_keeps_latest_content_visible_when_overflowing() {
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();
-    state.preview.fullscreen = true;
+    force_preview_only(&mut state);
     state.preview.policy = crate::preview::PreviewPolicy::FollowLatestBlock;
     // More rows than the pane can show; scroll == 0 means follow-the-latest,
     // so streaming reasoning must stay bottom-anchored instead of showing the
@@ -1407,7 +1456,7 @@ fn preview_follow_anchor_keeps_latest_content_visible_when_overflowing() {
 fn preview_wraps_long_lines_to_the_pane_width() {
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();
-    state.preview.fullscreen = true;
+    force_preview_only(&mut state);
     // A single 200-char line far exceeds the 68-column padded content width;
     // it must wrap into multiple rows instead of truncating at the pane edge.
     state.preview.state = PreviewState::Ready(PreviewContent::PlainText("a".repeat(200)));
@@ -1432,7 +1481,7 @@ fn preview_wraps_long_lines_to_the_pane_width() {
 fn reasoning_preview_renders_with_weak_markdown_semantics() {
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();
-    state.preview.fullscreen = true;
+    force_preview_only(&mut state);
     state.preview.state =
         PreviewState::Ready(PreviewContent::Reasoning("**bold** *italic* `code`".into()));
     let input = InputState::new(&state.config);
@@ -1477,7 +1526,7 @@ fn reasoning_preview_renders_with_weak_markdown_semantics() {
 fn preview_markdown_code_uses_weak_syntax_and_code_background() {
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();
-    state.preview.fullscreen = true;
+    force_preview_only(&mut state);
     state.preview.state = PreviewState::Ready(PreviewContent::Markdown(
         "```rust\nfn main() {}\n```".into(),
     ));
@@ -1506,7 +1555,7 @@ fn preview_markdown_code_uses_weak_syntax_and_code_background() {
 fn preview_styled_layout_caches_syntax_until_width_or_theme_changes() {
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();
-    state.preview.fullscreen = true;
+    force_preview_only(&mut state);
     state.preview.state = PreviewState::Ready(PreviewContent::Markdown(
         "```rust\nfn main() {}\n```".into(),
     ));
@@ -1546,7 +1595,7 @@ fn preview_styled_layout_caches_syntax_until_width_or_theme_changes() {
 fn diff_preview_composes_normal_syntax_with_added_and_removed_backgrounds() {
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();
-    state.preview.fullscreen = true;
+    force_preview_only(&mut state);
     state.preview.state = PreviewState::Ready(PreviewContent::Diff {
         path: Some("src/main.rs".into()),
         source: "@@ -1 +1 @@\n-fn old() {}\n+fn new() {}".into(),
@@ -1675,7 +1724,7 @@ fn cjk_markdown_block_wraps_at_ideograph_boundaries() {
     let input = InputState::new(&state.config);
     let mut scroll = ScrollState::default();
     let theme = Theme::ferra();
-    let mut terminal = Terminal::new(TestBackend::new(24, 12)).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(20, 12)).unwrap();
     terminal
         .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
         .unwrap();
@@ -1687,7 +1736,7 @@ fn cjk_markdown_block_wraps_at_ideograph_boundaries() {
     let buffer = terminal.backend().buffer();
     let text_rows = (0..12u16)
         .map(|y| {
-            (0..24u16)
+            (0..20u16)
                 .map(|x| buffer[(x, y)].symbol())
                 .filter(|symbol| !symbol.is_empty() && *symbol != " ")
                 .collect::<String>()
@@ -1721,6 +1770,7 @@ fn cjk_markdown_block_wraps_at_ideograph_boundaries() {
 fn list_item_inline_code_paints_its_chip() {
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();
+    force_message_only(&mut state);
     let source = "1. run `cargo fmt` now";
     state.transcript.append(
         DisplayItem::Block(crate::display::TranscriptBlock {
@@ -1786,6 +1836,7 @@ fn list_item_inline_code_paints_its_chip() {
 fn wrapped_markdown_quote_rows_keep_the_painted_gutter() {
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();
+    force_message_only(&mut state);
     let source = "> alpha bravo charlie delta echo foxtrot golf hotel india";
     state.transcript.append(
         DisplayItem::Block(crate::display::TranscriptBlock {
@@ -1885,6 +1936,7 @@ fn overlays_paint_queue_and_approval_accessories() {
                     login: None,
                     approval: Some(&card),
                     queue: &queue,
+                    pane_resize: Default::default(),
                 },
             );
         })
@@ -2162,4 +2214,143 @@ fn mouse_selection_keeps_preview_and_transcript_ranges_independent() {
     assert_eq!(transcript_work.patches, 0);
     assert_eq!(preview_work.rebuilds, 0);
     assert_eq!(preview_work.patches, 0);
+}
+
+#[test]
+fn pane_separator_is_bark_short_grip_in_normal_mode() {
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(120, 20)).unwrap();
+    terminal
+        .draw(|frame| {
+            render(frame, &mut state, &input, &mut scroll, &theme, overlays());
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let separator_x = 72;
+    assert_eq!(buffer[(separator_x, 10)].symbol(), "│");
+    assert_eq!(buffer[(separator_x, 10)].fg, theme.surface.muted_text.fg);
+    assert_eq!(buffer[(separator_x, 0)].symbol(), " ");
+}
+
+#[test]
+fn pane_separator_drag_paints_only_bounded_bark_placeholders() {
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    state.transcript.append(
+        DisplayItem::Block(crate::display::TranscriptBlock {
+            id: DisplayId::correlated("assistant", "resize-release"),
+            unit: None,
+            content: "restored content".into(),
+            format: crate::display::TranscriptFormat::Plain,
+            tone: DisplayTone::Normal,
+            copy_source: "restored content".into(),
+            streaming: false,
+        }),
+        None,
+    );
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut resize = crate::interaction::PaneResizeState::default();
+    resize.begin(72, state.config.message_pane_percent, false);
+    resize.update(54, 120);
+    let mut terminal = Terminal::new(TestBackend::new(120, 20)).unwrap();
+    terminal
+        .draw(|frame| {
+            render_with_cursor_and_selection(
+                frame,
+                &mut state,
+                &input,
+                &mut scroll,
+                &theme,
+                RenderOverlays {
+                    pane_resize: resize,
+                    ..overlays()
+                },
+                &MouseSelection::default(),
+                &crate::SelectionFrame::default(),
+            );
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let bark = theme.surface.muted_text.fg;
+    assert_eq!(
+        buffer[(2, 1)].bg,
+        bark,
+        "message placeholder has its margin"
+    );
+    assert_eq!(
+        buffer[(56, 1)].bg,
+        bark,
+        "preview placeholder has its margin"
+    );
+    assert_eq!(buffer[(54, 0)].symbol(), "│", "drag guide is full height");
+    assert_eq!(buffer[(54, 10)].symbol(), "┃", "drag grip is thicker");
+    assert!(buffer.content().iter().any(|cell| cell.symbol() == "消"));
+    assert!(buffer.content().iter().any(|cell| cell.symbol() == "预"));
+    assert!(find_text(buffer, "padding =").is_none());
+
+    let transcript_work = state.render.transcript_cache.take_work_stats();
+    let preview_work = state.preview.take_work_stats();
+    assert_eq!(transcript_work.rebuilds, 0);
+    assert_eq!(transcript_work.patches, 0);
+    assert_eq!(preview_work.rebuilds, 0);
+    assert_eq!(preview_work.patches, 0);
+    assert_eq!(preview_work.materialized_rows, 0);
+
+    let committed = resize.finish().expect("the test drag is still captured");
+    state.config.message_pane_percent = committed.pending_percent;
+    terminal
+        .draw(|frame| {
+            render(frame, &mut state, &input, &mut scroll, &theme, overlays());
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    assert!(find_text(buffer, "消息栏").is_none());
+    assert!(find_text(buffer, "restored content").is_some());
+    let transcript_work = state.render.transcript_cache.take_work_stats();
+    let preview_work = state.preview.take_work_stats();
+    assert!(transcript_work.rebuilds <= 1);
+    assert!(transcript_work.patches <= 1);
+    assert!(preview_work.rebuilds <= 1);
+    assert!(preview_work.patches <= 1);
+    assert!(preview_work.materialized_rows <= 1);
+}
+
+#[test]
+fn collapsed_separator_drag_paints_one_message_placeholder() {
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut resize = crate::interaction::PaneResizeState::default();
+    resize.begin(118, state.config.message_pane_percent, true);
+    resize.update(118, 120);
+    let mut terminal = Terminal::new(TestBackend::new(120, 20)).unwrap();
+    terminal
+        .draw(|frame| {
+            render(
+                frame,
+                &mut state,
+                &input,
+                &mut scroll,
+                &theme,
+                RenderOverlays {
+                    pane_resize: resize,
+                    ..overlays()
+                },
+            );
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    assert_eq!(buffer[(2, 1)].bg, theme.surface.muted_text.fg);
+    assert_eq!(buffer[(118, 0)].symbol(), "│");
+    assert_eq!(buffer[(118, 10)].symbol(), "┃");
+    assert!(buffer.content().iter().any(|cell| cell.symbol() == "消"));
+    assert!(!buffer.content().iter().any(|cell| cell.symbol() == "预"));
 }

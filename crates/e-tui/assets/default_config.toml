@@ -31,12 +31,12 @@ thinking_lines = 2
 show_timestamps = false
 mermaid_enabled = true
 # Maximum visible Unicode graphemes per second in assistant messages.
-message_chars_per_second = 300
+message_chars_per_second = 120
 # Maximum wrapped Preview display rows per second.
-preview_lines_per_second = 60
-user_input_padding = 2
-# Preferred total main-pane width in wide two-pane mode.
-main_pane_width = 120
+preview_lines_per_second = 30
+user_input_padding = 1
+# Committed message-pane share in wide two-pane mode (25.00..=100.00%).
+message_pane_percent = 60.0
 # 0 = unlimited (terminal width minus side margins).
 page_max_width = 0
 # Horizontal alignment of the capped content page: center | left | right.

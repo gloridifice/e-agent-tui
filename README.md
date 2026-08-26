@@ -30,7 +30,7 @@ Run `e`:
 dshe
 ```
 
-On first launch, `dshe` starts its dedicated DSH service automatically. Use `/login` to configure an API key or proxy, `/model` to select a provider and model, and `/effort` to change the reasoning effort. Wide terminals show a themed Preview pane; narrow terminals keep the main conversation usable.
+On first launch, `dshe` starts its dedicated DSH service automatically. Use `/login` to configure an API key or proxy, `/model` to select a provider and model, and `/effort` to change the reasoning effort. Wide terminals show a themed Preview pane; drag the Bark-colored separator to resize it. Preview collapses below 16 columns, while narrow terminals keep the main conversation usable.
 
 ### Build Yourself
 
@@ -59,7 +59,7 @@ cargo build --release --features tracy
 - `Ctrl+Y`: enter Reading View; `j`/`k` select Blocks, `l` enters Item navigation, `y` copies the complete Block source, and `Esc` returns/exits.
 - `Ctrl+P`: toggle full-screen Preview on narrow terminals.
 - `Shift+Enter`: insert a newline; `Enter`: send; `Ctrl+Backspace`/`Ctrl+W` (or `Option+Backspace` on macOS): delete the word before the cursor.
-- `Ctrl+H`: help; `Ctrl+N`: resume session; `PageUp`/`PageDown` or wheel: transcript scrolling; drag visible Transcript/Preview text to copy it.
+- `Ctrl+H`: help; `Ctrl+N`: resume session; `PageUp`/`PageDown` or wheel: transcript scrolling; drag the pane separator to resize, or drag visible Transcript/Preview text to copy it.
 
 If PowerShell cannot find `dshe`, add `%USERPROFILE%\.cargo\bin` to `PATH`.
 

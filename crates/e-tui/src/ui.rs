@@ -136,15 +136,16 @@ fn bottom_area_rows(
 /// path uses this so keyboard/mouse paging stays aligned with the rendered
 /// input bar height, which grows with wrapped rows.
 pub fn input_bar_width(area_width: u16, state: &TuiApp) -> u16 {
-    let main = match screen::layout(
+    let (main, reserve_collapsed_separator) = match screen::layout(
         ratatui::layout::Rect::new(0, 0, area_width, 0),
-        state.config.main_pane_width,
+        state.config.message_pane_percent,
         state.preview.fullscreen,
     ) {
-        screen::ScreenLayout::MainOnly(main) | screen::ScreenLayout::Split { main, .. } => main,
+        screen::ScreenLayout::MainOnly(main) => (main, true),
+        screen::ScreenLayout::Split { main, .. } => (main, false),
         screen::ScreenLayout::PreviewOnly(_) => return area_width,
     };
-    screen::main_page_rect(main, state).width
+    screen::main_page_rect(main, state, reserve_collapsed_separator).width
 }
 
 /// Terminal dimensions shared by the render path and the runtime scroll/input
@@ -243,7 +244,8 @@ pub fn render_with_cursor_and_selection(
     selection: &MouseSelection,
     committed_selection_frame: &SelectionFrame,
 ) -> RenderOutput {
-    let toast = overlays.toast;
+    let resizing = overlays.pane_resize.is_active();
+    let toast = (!resizing).then_some(overlays.toast).flatten();
     let area = frame.area();
     let mut selection_frame = SelectionFrame::for_viewport(area.width, area.height);
     let cursor = screen::render_with_cursor(
@@ -257,7 +259,7 @@ pub fn render_with_cursor_and_selection(
     );
     // Never paint a range from stale coordinates onto a newly composed frame.
     // The runner publishes the new geometry only after terminal submission.
-    if selection_frame.same_geometry(committed_selection_frame) {
+    if !resizing && selection_frame.same_geometry(committed_selection_frame) {
         selection::paint(committed_selection_frame, selection, frame.buffer_mut());
     }
     if let Some(toast) = toast {
@@ -279,6 +281,7 @@ pub(crate) fn render_main_pane_with_cursor(
     theme: &Theme,
     overlays: pane::main::MainPaneOverlays<'_>,
     selection_frame: &mut SelectionFrame,
+    reserve_collapsed_separator: bool,
 ) -> Option<Position> {
     let pane::main::MainPaneOverlays {
         help_visible,
@@ -288,12 +291,13 @@ pub(crate) fn render_main_pane_with_cursor(
         approval,
         queue,
     } = overlays;
-    // Page: fixed side margins, capped at the configured max width and
-    // horizontally aligned (居中/左对齐/右对齐); text wraps within this
+    // Page: one-column ordinary side margins (or the collapsed grip reserve),
+    // capped at the configured max width and horizontally aligned
+    // (居中/左对齐/右对齐); text wraps within this
     // content width. Resolved by `screen::main_page_rect` — the single owner
     // of the margin/cap/align policy — so rendering and the runtime scroll
     // path always see the same width.
-    let page = screen::main_page_rect(area, state);
+    let page = screen::main_page_rect(area, state, reserve_collapsed_separator);
     let input_page_open = input_page.is_some() || settings.is_some() || login.is_some();
     let drafting = state.session.new_conversation.is_some();
     // Input Pages replace the input bar and take two thirds of the page height

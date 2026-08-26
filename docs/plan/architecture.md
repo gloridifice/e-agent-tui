@@ -437,7 +437,7 @@ preview_width = W - main_width
 
 The transcript page is left-aligned inside the main pane in Reading View. The Preview pane receives all remaining columns.
 
-A minimum usable Preview width and the narrow-terminal fallback must be finalized before implementation. The recommended fallback is to keep at least 32 columns for Preview and use a full-screen Preview toggle when the terminal cannot fit both panes. This is a layout policy, not a change to Preview selection semantics.
+The implemented layout stores the message-pane share as `message_pane_percent` (25.00%–100.00%, default 60.00%) and derives columns from the current terminal width. Preview remains beside the message pane only when its raw rectangle has at least 19 columns: a separator column, a one-column gap, 16 usable content columns, and a one-column right margin. Otherwise the normal view keeps a right-margin separator grip and the full-screen Preview toggle remains available. Main content uses one ordinary horizontal edge column, with collapsed grip geometry reserved in Main-only mode. This is a layout policy, not a change to Preview selection semantics.
 
 ## Markdown and provenance pipeline
 

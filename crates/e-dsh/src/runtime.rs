@@ -20,9 +20,10 @@ use e_tui::{
     input_page::{InputPageSession, PageEffect},
     login::LoginView,
     ui::{scroll_lines, scroll_page, transcript_view_height, ScrollState, TerminalSize},
-    AgentEvent, MouseSelection, NoticeState, PointerEvent, SelectionFrame,
+    AgentEvent, MouseSelection, NoticeState, PaneResizeState, PointerEvent, SelectionFrame,
 };
 pub use e_tui::{DrawPriority, EffectResult, UiAction};
+use ratatui::layout::Rect;
 
 #[cfg(test)]
 use crate::model::Msg;
@@ -196,6 +197,7 @@ pub struct TerminalUiState<'a> {
     pub help_visible: &'a mut bool,
     pub notice: &'a mut NoticeState,
     pub mouse_selection: &'a mut MouseSelection,
+    pub pane_resize: &'a mut PaneResizeState,
     pub approval: &'a mut Option<ApprovalCard>,
     pub question: &'a mut Option<String>,
     pub queue: &'a mut Vec<String>,
@@ -274,6 +276,64 @@ impl RuntimeController {
                 }
             }
             TerminalRoute::Pointer(pointer) => {
+                let area = Rect::new(0, 0, size.width, size.height);
+                let preview_fullscreen = state.lock().unwrap().preview.fullscreen;
+                let separator_hit = matches!(
+                    pointer,
+                    PointerEvent::PrimaryPress { column, .. }
+                        if e_tui::ui::screen::separator_hit(
+                            area,
+                            ui.config.message_pane_percent,
+                            preview_fullscreen,
+                            column,
+                        )
+                );
+
+                if separator_hit {
+                    ui.mouse_selection.clear();
+                    let collapsed = matches!(
+                        e_tui::ui::screen::layout(
+                            area,
+                            ui.config.message_pane_percent,
+                            preview_fullscreen,
+                        ),
+                        e_tui::ui::screen::ScreenLayout::MainOnly(_)
+                    );
+                    ui.pane_resize.begin(
+                        match pointer {
+                            PointerEvent::PrimaryPress { column, .. } => column,
+                            _ => unreachable!("separator hit only matches primary press"),
+                        },
+                        ui.config.message_pane_percent,
+                        collapsed,
+                    );
+                    return effects;
+                }
+
+                if ui.pane_resize.is_active() {
+                    match pointer {
+                        PointerEvent::PrimaryDrag { column, .. } => {
+                            ui.pane_resize.update(column, size.width);
+                            ui.mouse_selection.clear();
+                        }
+                        PointerEvent::PrimaryRelease { .. } => {
+                            if let Some(drag) = ui.pane_resize.finish() {
+                                ui.config.message_pane_percent = drag.pending_percent;
+                                state.lock().unwrap().config.message_pane_percent =
+                                    drag.pending_percent;
+                                effects.push(UiAction::PersistConfig(ui.config.clone()));
+                            }
+                            ui.mouse_selection.clear();
+                        }
+                        PointerEvent::FocusLost => {
+                            ui.pane_resize.cancel();
+                            ui.mouse_selection.clear();
+                        }
+                        _ => {}
+                    }
+                    return effects;
+                }
+
                 if !selection_frame.matches_viewport(size.width, size.height) {
                     ui.mouse_selection.clear();
                     return effects;
@@ -1522,6 +1582,7 @@ mod tests {
         let mut help_visible = false;
         let mut notice = NoticeState::default();
         let mut mouse_selection = MouseSelection::default();
+        let mut pane_resize = PaneResizeState::default();
         let mut approval = None;
         let mut question = None;
         let mut queue = Vec::new();
@@ -1535,6 +1596,7 @@ mod tests {
             help_visible: &mut help_visible,
             notice: &mut notice,
             mouse_selection: &mut mouse_selection,
+            pane_resize: &mut pane_resize,
             approval: &mut approval,
             question: &mut question,
             queue: &mut queue,
@@ -1635,6 +1697,256 @@ mod tests {
     }
 
     #[test]
+    fn pane_separator_captures_drag_before_selection_and_persists_on_release() {
+        let state = Arc::new(Mutex::new(AppState::default()));
+        let mut selection_frame = SelectionFrame::for_viewport(120, 24);
+        selection_frame.set_epoch(1);
+        selection_frame.push_text(e_tui::SelectionSurface::Transcript, 0, 0, 0, "alpha");
+        let mut scroll = ScrollState::default();
+        let mut input = InputState::new(&Config::default());
+        let mut input_page = None;
+        let mut help_visible = false;
+        let mut notice = NoticeState::default();
+        let mut mouse_selection = MouseSelection::default();
+        let mut pane_resize = PaneResizeState::default();
+        let mut approval = None;
+        let mut question = None;
+        let mut queue = Vec::new();
+        let mut config = Config::default();
+        let original_percent = config.message_pane_percent;
+        let mut themes = Vec::new();
+        let mut theme = config.theme();
+        let mut ui = TerminalUiState {
+            scroll: &mut scroll,
+            input: &mut input,
+            input_page: &mut input_page,
+            help_visible: &mut help_visible,
+            notice: &mut notice,
+            mouse_selection: &mut mouse_selection,
+            pane_resize: &mut pane_resize,
+            approval: &mut approval,
+            question: &mut question,
+            queue: &mut queue,
+            config: &mut config,
+            themes: &mut themes,
+            theme: &mut theme,
+        };
+        let size = TerminalSize {
+            width: 120,
+            height: 24,
+        };
+
+        assert!(RuntimeController::apply_terminal_route(
+            TerminalRoute::Pointer(PointerEvent::PrimaryPress { column: 72, row: 8 }),
+            size,
+            Instant::now(),
+            &state,
+            &selection_frame,
+            &mut ui,
+        )
+        .is_empty());
+        assert!(ui.pane_resize.is_active());
+        assert_eq!(*ui.mouse_selection, MouseSelection::default());
+
+        assert!(RuntimeController::apply_terminal_route(
+            TerminalRoute::Pointer(PointerEvent::PrimaryDrag {
+                column: 100,
+                row: 8
+            }),
+            size,
+            Instant::now(),
+            &state,
+            &selection_frame,
+            &mut ui,
+        )
+        .is_empty());
+        assert!(ui.pane_resize.is_active());
+        assert_eq!(ui.config.message_pane_percent, original_percent);
+
+        let effects = RuntimeController::apply_terminal_route(
+            TerminalRoute::Pointer(PointerEvent::PrimaryRelease {
+                column: 100,
+                row: 8,
+            }),
+            size,
+            Instant::now(),
+            &state,
+            &selection_frame,
+            &mut ui,
+        );
+        assert!(matches!(
+            effects.as_slice(),
+            [UiAction::PersistConfig(config)]
+                if config.message_pane_percent.columns(120) == 100
+        ));
+        assert!(!ui.pane_resize.is_active());
+        assert_eq!(ui.config.message_pane_percent.columns(120), 100);
+        assert_eq!(
+            state
+                .lock()
+                .unwrap()
+                .config
+                .message_pane_percent
+                .columns(120),
+            100
+        );
+    }
+
+    #[test]
+    fn pane_separator_resize_and_focus_loss_do_not_commit_pending_width() {
+        let state = Arc::new(Mutex::new(AppState::default()));
+        let mut selection_frame = SelectionFrame::for_viewport(120, 24);
+        selection_frame.set_epoch(1);
+        let mut scroll = ScrollState::default();
+        let mut input = InputState::new(&Config::default());
+        let mut input_page = None;
+        let mut help_visible = false;
+        let mut notice = NoticeState::default();
+        let mut mouse_selection = MouseSelection::default();
+        let mut pane_resize = PaneResizeState::default();
+        let mut approval = None;
+        let mut question = None;
+        let mut queue = Vec::new();
+        let mut config = Config::default();
+        let original_percent = config.message_pane_percent;
+        let mut themes = Vec::new();
+        let mut theme = config.theme();
+        let mut ui = TerminalUiState {
+            scroll: &mut scroll,
+            input: &mut input,
+            input_page: &mut input_page,
+            help_visible: &mut help_visible,
+            notice: &mut notice,
+            mouse_selection: &mut mouse_selection,
+            pane_resize: &mut pane_resize,
+            approval: &mut approval,
+            question: &mut question,
+            queue: &mut queue,
+            config: &mut config,
+            themes: &mut themes,
+            theme: &mut theme,
+        };
+        let size = TerminalSize {
+            width: 120,
+            height: 24,
+        };
+        let now = Instant::now();
+
+        RuntimeController::apply_terminal_route(
+            TerminalRoute::Pointer(PointerEvent::PrimaryPress { column: 72, row: 8 }),
+            size,
+            now,
+            &state,
+            &selection_frame,
+            &mut ui,
+        );
+        RuntimeController::apply_terminal_route(
+            TerminalRoute::Pointer(PointerEvent::PrimaryDrag {
+                column: 100,
+                row: 8,
+            }),
+            size,
+            now,
+            &state,
+            &selection_frame,
+            &mut ui,
+        );
+        assert!(RuntimeController::apply_terminal_route(
+            TerminalRoute::Pointer(PointerEvent::FocusLost),
+            size,
+            now,
+            &state,
+            &selection_frame,
+            &mut ui,
+        )
+        .is_empty());
+        assert!(!ui.pane_resize.is_active());
+        assert_eq!(ui.config.message_pane_percent, original_percent);
+        assert_eq!(
+            state.lock().unwrap().config.message_pane_percent,
+            original_percent
+        );
+
+        RuntimeController::apply_terminal_route(
+            TerminalRoute::Pointer(PointerEvent::PrimaryPress { column: 72, row: 8 }),
+            size,
+            now,
+            &state,
+            &selection_frame,
+            &mut ui,
+        );
+        assert!(RuntimeController::apply_terminal_route(
+            TerminalRoute::Pointer(PointerEvent::FocusLost),
+            TerminalSize {
+                width: 121,
+                height: 24,
+            },
+            now,
+            &state,
+            &selection_frame,
+            &mut ui,
+        )
+        .is_empty());
+        assert!(!ui.pane_resize.is_active());
+        assert_eq!(ui.config.message_pane_percent, original_percent);
+    }
+
+    #[test]
+    fn preview_only_does_not_capture_the_right_edge_as_a_separator() {
+        let state = Arc::new(Mutex::new(AppState::default()));
+        state.lock().unwrap().preview.fullscreen = true;
+        let mut selection_frame = SelectionFrame::for_viewport(120, 24);
+        selection_frame.set_epoch(1);
+        selection_frame.push_text(e_tui::SelectionSurface::Preview, 0, 0, 0, "preview");
+        let mut scroll = ScrollState::default();
+        let mut input = InputState::new(&Config::default());
+        let mut input_page = None;
+        let mut help_visible = false;
+        let mut notice = NoticeState::default();
+        let mut mouse_selection = MouseSelection::default();
+        let mut pane_resize = PaneResizeState::default();
+        let mut approval = None;
+        let mut question = None;
+        let mut queue = Vec::new();
+        let mut config = Config::default();
+        config.message_pane_percent = e_tui::PaneWidthPercent::from_basis_points(10_000).unwrap();
+        let mut themes = Vec::new();
+        let mut theme = config.theme();
+        let mut ui = TerminalUiState {
+            scroll: &mut scroll,
+            input: &mut input,
+            input_page: &mut input_page,
+            help_visible: &mut help_visible,
+            notice: &mut notice,
+            mouse_selection: &mut mouse_selection,
+            pane_resize: &mut pane_resize,
+            approval: &mut approval,
+            question: &mut question,
+            queue: &mut queue,
+            config: &mut config,
+            themes: &mut themes,
+            theme: &mut theme,
+        };
+        let size = TerminalSize {
+            width: 120,
+            height: 24,
+        };
+        let effects = RuntimeController::apply_terminal_route(
+            TerminalRoute::Pointer(PointerEvent::PrimaryPress {
+                column: 118,
+                row: 8,
+            }),
+            size,
+            Instant::now(),
+            &state,
+            &selection_frame,
+            &mut ui,
+        );
+        assert!(effects.is_empty());
+        assert!(!ui.pane_resize.is_active());
+    }
+
+    #[test]
     fn reading_copy_remains_complete_after_partial_mouse_copy() {
         let state = Arc::new(Mutex::new(AppState::default()));
         let source = "complete canonical source";
@@ -1663,6 +1975,7 @@ mod tests {
         let mut help_visible = false;
         let mut notice = NoticeState::default();
         let mut mouse_selection = MouseSelection::default();
+        let mut pane_resize = PaneResizeState::default();
         let mut approval = None;
         let mut question = None;
         let mut queue = Vec::new();
@@ -1676,6 +1989,7 @@ mod tests {
             help_visible: &mut help_visible,
             notice: &mut notice,
             mouse_selection: &mut mouse_selection,
+            pane_resize: &mut pane_resize,
             approval: &mut approval,
             question: &mut question,
             queue: &mut queue,
@@ -1799,6 +2113,7 @@ mod tests {
         let mut help_visible = false;
         let mut notice = NoticeState::default();
         let mut mouse_selection = MouseSelection::default();
+        let mut pane_resize = PaneResizeState::default();
         let mut approval = None;
         let mut question = None;
         let mut queue = Vec::new();
@@ -1822,6 +2137,7 @@ mod tests {
                 help_visible: &mut help_visible,
                 notice: &mut notice,
                 mouse_selection: &mut mouse_selection,
+                pane_resize: &mut pane_resize,
                 approval: &mut approval,
                 question: &mut question,
                 queue: &mut queue,
@@ -1852,6 +2168,7 @@ mod tests {
                 help_visible: &mut help_visible,
                 notice: &mut notice,
                 mouse_selection: &mut mouse_selection,
+                pane_resize: &mut pane_resize,
                 approval: &mut approval,
                 question: &mut question,
                 queue: &mut queue,
@@ -2021,6 +2338,7 @@ mod tests {
         let mut help_visible = false;
         let mut notice = NoticeState::default();
         let mut mouse_selection = MouseSelection::default();
+        let mut pane_resize = PaneResizeState::default();
         let mut approval = None;
         let mut question = None;
         let mut queue = Vec::new();
@@ -2038,6 +2356,7 @@ mod tests {
                 help_visible: &mut help_visible,
                 notice: &mut notice,
                 mouse_selection: &mut mouse_selection,
+                pane_resize: &mut pane_resize,
                 approval: &mut approval,
                 question: &mut question,
                 queue: &mut queue,

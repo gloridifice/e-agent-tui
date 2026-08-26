@@ -160,6 +160,143 @@ impl<'de> Deserialize<'de> for RevealRate {
     }
 }
 
+/// A persisted message-pane width represented as percentage basis points.
+///
+/// The public TOML value is a percentage such as `60.0`; storing hundredths
+/// internally keeps layout arithmetic deterministic while retaining useful
+/// precision on wide terminals. Values are limited to 25.00% through 100.00%.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PaneWidthPercent(u16);
+
+impl PaneWidthPercent {
+    pub const MIN_BASIS_POINTS: u16 = 2_500;
+    pub const MAX_BASIS_POINTS: u16 = 10_000;
+    pub const DEFAULT_BASIS_POINTS: u16 = 6_000;
+
+    pub const fn from_basis_points(value: u16) -> Option<Self> {
+        if value >= Self::MIN_BASIS_POINTS && value <= Self::MAX_BASIS_POINTS {
+            Some(Self(value))
+        } else {
+            None
+        }
+    }
+
+    pub fn from_percent(value: f64) -> Result<Self, String> {
+        if !value.is_finite() {
+            return Err("message pane percentage must be finite".into());
+        }
+        let basis_points = value * 100.0;
+        let rounded = basis_points.round();
+        if (basis_points - rounded).abs() > 1e-7 {
+            return Err("message pane percentage supports at most two decimals".into());
+        }
+        let basis_points = rounded as i64;
+        if !(i64::from(Self::MIN_BASIS_POINTS)..=i64::from(Self::MAX_BASIS_POINTS))
+            .contains(&basis_points)
+        {
+            return Err("message pane percentage must be between 25 and 100".into());
+        }
+        Ok(Self(basis_points as u16))
+    }
+
+    pub const fn basis_points(self) -> u16 {
+        self.0
+    }
+
+    pub fn as_percent(self) -> f64 {
+        f64::from(self.0) / 100.0
+    }
+
+    pub fn display(self) -> String {
+        format!("{:.2}%", self.as_percent())
+    }
+
+    /// Convert this percentage to a terminal-column count using nearest-cell
+    /// rounding. The result is always within `0..=total_columns`.
+    pub fn columns(self, total_columns: u16) -> u16 {
+        let total = u32::from(total_columns);
+        ((total * u32::from(self.0) + 5_000) / 10_000).min(total) as u16
+    }
+
+    /// Convert a committed terminal-column position back to the closest
+    /// representable percentage, clamped to the message-pane minimum.
+    pub fn from_columns(columns: u16, total_columns: u16) -> Self {
+        if total_columns == 0 {
+            return Self::from_basis_points(Self::MIN_BASIS_POINTS)
+                .expect("percentage minimum is valid");
+        }
+        let columns = columns.min(total_columns);
+        let basis_points = ((u32::from(columns) * 10_000 + u32::from(total_columns) / 2)
+            / u32::from(total_columns))
+        .clamp(
+            u32::from(Self::MIN_BASIS_POINTS),
+            u32::from(Self::MAX_BASIS_POINTS),
+        ) as u16;
+        Self::from_basis_points(basis_points).expect("clamped percentage is valid")
+    }
+}
+
+impl Default for PaneWidthPercent {
+    fn default() -> Self {
+        Self::from_basis_points(Self::DEFAULT_BASIS_POINTS).expect("default percentage is valid")
+    }
+}
+
+impl fmt::Display for PaneWidthPercent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{:.2}%", self.as_percent())
+    }
+}
+
+impl Serialize for PaneWidthPercent {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_f64(self.as_percent())
+    }
+}
+
+struct PaneWidthPercentVisitor;
+
+impl<'de> de::Visitor<'de> for PaneWidthPercentVisitor {
+    type Value = PaneWidthPercent;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a message pane percentage from 25.00 to 100.00")
+    }
+
+    fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        PaneWidthPercent::from_percent(value).map_err(E::custom)
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.visit_f64(value as f64)
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.visit_f64(value as f64)
+    }
+}
+
+impl<'de> Deserialize<'de> for PaneWidthPercent {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_any(PaneWidthPercentVisitor)
+    }
+}
+
 // ---------- full config ----------
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -208,9 +345,10 @@ pub struct Config {
     /// Horizontal gutter (in columns) of user message blocks and the input
     /// box — live-editable via /settings.
     pub user_input_padding: usize,
-    /// Preferred total main-pane width in wide two-pane mode. The Screen
-    /// still enforces measured minimums for both panes.
-    pub main_pane_width: usize,
+    /// Persisted message-pane share. Pane columns are derived from the
+    /// current terminal width; Preview may collapse responsively below its
+    /// minimum without changing this committed percentage.
+    pub message_pane_percent: PaneWidthPercent,
     /// Maximum page width in columns (0 = unlimited, use the terminal width
     /// minus the side margins). The content area is capped at this width;
     /// longer text wraps.
@@ -338,12 +476,15 @@ mod tests {
             30,
             "the Preview row reveal default is contractual"
         );
+        assert_eq!(config.user_input_padding, 1);
+        assert_eq!(config.user_input_padding, direct.user_input_padding);
         assert_eq!(config.default_mode, direct.default_mode.as_str());
         assert_eq!(
             config.paste_placeholder_chars,
             direct.paste_placeholder_chars
         );
-        assert_eq!(config.main_pane_width, direct.main_pane_width);
+        assert_eq!(config.message_pane_percent, direct.message_pane_percent);
+        assert_eq!(config.message_pane_percent, PaneWidthPercent::default());
         assert_eq!(config.page_max_width, direct.page_max_width);
         assert_eq!(config.page_align, direct.page_align.as_str());
         assert_eq!(config.thinking_display, direct.thinking_display.as_str());
@@ -379,6 +520,49 @@ mod tests {
         assert_eq!(config.thinking_display, "compact");
         assert_eq!(config.thinking_lines, 2);
         assert_eq!(config.resolved_theme.user, Theme::ferra().user);
+    }
+
+    #[test]
+    fn pane_width_percent_uses_basis_points_and_rounds_columns_consistently() {
+        let percent = PaneWidthPercent::from_percent(61.25).unwrap();
+        assert_eq!(percent.basis_points(), 6_125);
+        assert_eq!(percent.columns(800), 490);
+        assert_eq!(PaneWidthPercent::from_columns(490, 800), percent);
+        assert_eq!(
+            PaneWidthPercent::from_columns(0, 800),
+            PaneWidthPercent::from_basis_points(2_500).unwrap()
+        );
+        assert_eq!(
+            PaneWidthPercent::from_columns(800, 800),
+            PaneWidthPercent::from_basis_points(10_000).unwrap()
+        );
+        assert!(PaneWidthPercent::from_percent(24.99).is_err());
+        assert!(PaneWidthPercent::from_percent(100.01).is_err());
+        assert!(PaneWidthPercent::from_percent(61.251).is_err());
+    }
+
+    #[test]
+    fn pane_width_percent_round_trips_as_a_percentage_value() {
+        let config = Config::from_user_toml("message_pane_percent = 61.25").unwrap();
+        assert_eq!(config.message_pane_percent.display(), "61.25%");
+        let persisted = toml::to_string(&config).unwrap();
+        assert!(persisted.contains("message_pane_percent = 61.25"));
+    }
+
+    #[test]
+    fn obsolete_absolute_pane_width_is_ignored() {
+        let config = Config::from_user_toml("main_pane_width = 240").unwrap();
+        assert_eq!(config.message_pane_percent, PaneWidthPercent::default());
+        assert!(toml::to_string(&config)
+            .unwrap()
+            .contains("message_pane_percent = 60.0"));
+    }
+
+    #[test]
+    fn pane_width_percent_rejects_invalid_values() {
+        assert!(Config::from_user_toml("message_pane_percent = 24.99").is_err());
+        assert!(Config::from_user_toml("message_pane_percent = 100.01").is_err());
+        assert!(Config::from_user_toml("message_pane_percent = \"wide\"").is_err());
     }
 
     #[test]

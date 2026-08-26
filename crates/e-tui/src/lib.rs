@@ -48,9 +48,13 @@ pub use action::{
 pub use agent::AgentEvent;
 pub use app::{NewConversationDraft, SessionModel, SessionStatus, TuiApp};
 pub use catalog::CatalogModel;
-pub use config::{Config, HexRgb, RevealRate, ThinkingDisplayMode};
+pub use config::{Config, HexRgb, PaneWidthPercent, RevealRate, ThinkingDisplayMode};
 pub use event::{InputEvent, PointerEvent};
-pub use interaction::{InteractionModel, ScrollState};
+pub use interaction::{
+    InteractionModel, PaneResizeDrag, PaneResizeState, ScrollState, MIN_PREVIEW_COLUMNS,
+    MIN_PREVIEW_PANE_WIDTH, PREVIEW_RIGHT_MARGIN_COLUMNS, PREVIEW_SEPARATOR_COLUMNS,
+    PREVIEW_SEPARATOR_GAP_COLUMNS,
+};
 pub use mouse_selection::{MouseSelection, SelectionFrame, SelectionSurface, SelectionUpdate};
 pub use notice::{NoticeState, COPY_NOTICE_MIN_SECS};
 pub use preview::{

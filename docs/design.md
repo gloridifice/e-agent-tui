@@ -7,7 +7,7 @@
 > v0.5 changes (v0.1.0 milestone): project renamed **e** (executable **`dshe`**); config moved to
 > `%APPDATA%\dshe\config.toml`, theme directory `%APPDATA%\dshe\themes\` (default **ferra**, plus built-in
 > deepseek-e); added `/theme` `/model` `/reload` `/skill:<name>`; the `dshe` launcher auto-spawns
-> `dsh --profile e` (or npx) / bridges to an already-running dsh; uses the dedicated `e` profile to avoid
+> `dsh --profile e --no-open` (or npx) / bridges to an already-running dsh; uses the dedicated `e` profile to avoid
 > conflicts with DSH's own or the user's existing `tui` profile. The Windows service started by `dshe` terminates
 > the `cmd /C` shim's full process tree with `taskkill /T` both on startup-timeout cleanup and when the last TUI
 > closes, to avoid orphan Node processes; reaping wait is bounded, and on close failure a zero-instance lock is
@@ -57,6 +57,7 @@
 | D29 | Not editable in TUI | connection parameters (startup flag), font size (terminal side), clipboard backend (platform), key rebinding (v2), syntax highlighting theme (phase two) |
 | D30 | Send key semantics | fixed `Enter` send, `Shift+Enter` newline; the legacy `enter_sends` config only keeps deserialization compatibility and no longer changes interaction |
 | D31 | Paced text reveal | live assistant Markdown paints stable admitted text at most 120 graphemes/s; selected Ready Preview paints wrapped display rows at 30 rows/s by default; new content fades from configurable `background_color` through one static `[0.217, 0.53]` profile |
+| D32 | Draggable pane split | `message_pane_percent` is the validated 25.00%–100.00% persisted authority (default 60%); Preview collapses below a 19-column split rectangle so 16 content columns remain after the separator/gap/right margin, pane-level horizontal margins are one column, separator gestures capture before text selection, and active drags render only Bark placeholders until release |
 
 ## 1. Goals and shape
 
@@ -207,7 +208,7 @@ semantics.
 #### 3.3.1 User messages
 
 - Show user input text verbatim, **no markdown parsing**; prefix `❯` Coral.
-- Message block is top/bottom margin rows + text area, horizontal padding (gutter, default 2 columns) applied to
+- Message block is top/bottom margin rows + text area, horizontal padding (gutter, default 1 column) applied to
   **every line** — when over-wide text wraps to the page width, continuation lines keep the same gutter.
 - Over-long pasted content is still sent as-is; the display layer handles it per the §4.1 placeholder rule.
 
@@ -324,6 +325,9 @@ Theme TOML has two layers:
 2. `[semantics.*]` is the fixed semantic schema, containing `surface`, `markdown`, `input` (including the status
    bar), `working_status`, `log`, `activity`, `card`, `overlay`. Each fixed role is a style object with only `fg`
    required; `bg`, `bold`, `italic`, `underline` optional; color values reference user color names in `[colors]`.
+   An optional `padding` field adds backgrounded spaces on the left and right of an element: a scalar applies to
+   both sides, while a table sets each side independently. Padding is opt-in (omission means zero) and only the
+   renderers that consult it apply it — inline code respects it, while code blocks and Mermaid ignore it.
 
 ```toml
 [colors]
@@ -332,7 +336,8 @@ blush = "#fecdb2"
 
 [semantics.markdown]
 heading3 = { fg = "blush" }
-inline_code = { fg = "blush", bg = "night" }
+inline_code = { fg = "blush", bg = "night", padding = 1 }
+inline_code_spaced = { fg = "blush", bg = "night", padding = { left = 2, right = 1 } }
 ```
 
 A missing fixed semantic field, an unknown semantic field, a reference to a nonexistent color name, or an illegal
@@ -457,7 +462,7 @@ by compatibility depth:
    `command{line}`; the bridge calls `commands.execute` and shows the direct UI outcome as System/Error via
    `command-result`; unknown commands error out and never degrade into a model user message.
 
-DSH 0.1.0-rc.6's public [`CommandDescriptor`](https://deepseek-harness.github.io/deepseek-harness/en/reference/subsystems/commands)
+DSH 0.1.1-rc.2's public [`CommandDescriptor`](https://deepseek-harness.github.io/deepseek-harness/en/reference/subsystems/commands)
 only has name, description, and optional `input.hint` (free-form text), with no typed argument completion schema.
 Therefore integrated commands all support **command-name completion** and show the argument hint; argument
 candidate completion is only available for items promoted to built-in optimized commands. Command execution is
@@ -480,7 +485,7 @@ aborts both those command signals and any active agent turn.
 | Ctrl+L | redraw | |
 | PgUp / PgDn | page by currently visible transcript height | scrolling up pauses auto-follow |
 | Wheel | scroll the message stream 3 lines per notch | still only scrolls the stream when an Input Page is open |
-| Primary mouse drag | select visible Transcript or Preview text and copy on release | visual rendered-range copy; drag stays in its starting surface |
+| Primary mouse drag | resize the pane separator or select visible Transcript/Preview text | separator grip captures first; resize crosses panes without copying, other drags copy the starting surface on release |
 | Esc | interrupt an active turn/direct command; otherwise Input Page back/close or close popup | owning surface takes precedence |
 | Arrows / hjkl (Input Page) | move the single focus; in settings, `←`/`→` and `h`/`l` switch category pages | in text-edit state hjkl is text; settings category strip is not focusable |
 | Enter (folded card) | expand/collapse tool result | focus navigation v2 |
@@ -488,7 +493,31 @@ aborts both those command signals and any active agent turn.
 | /settings | settings panel (§4.7) | save immediately |
 | ? / Ctrl+H | help overlay | |
 | **Ctrl+Y** | **enter Reading View** | D12; `Ctrl+V` failed the universal paste-delivery gate |
-| **Ctrl+P** | **toggle full-screen Preview on narrow terminals** | wide terminals keep Preview visible |
+| **Ctrl+P** | **toggle full-screen Preview on narrow terminals** | Preview-only mode has no separator; wide terminals keep the responsive Preview visible |
+
+### 4.2.1 Draggable pane separator and responsive Preview (D32)
+
+The Screen derives the message rectangle from the committed `message_pane_percent` basis-point value on every
+terminal size; it never stores a column count. The value defaults to 60.00% and is clamped to 25.00%–100.00%.
+The remaining rectangle becomes Preview only when it is at least 19 columns wide: one separator column, one
+blank column after the separator, 16 usable content columns, and one right margin. Otherwise normal mode remains
+main-only and draws a short Bark-equivalent grip inside the right margin. The explicit `Ctrl+P` Preview-only
+fallback occupies the full Screen and deliberately has no separator. Main page content uses one ordinary column on
+both edges; Main-only mode reserves the collapsed grip, its one-column gap, and the right edge column.
+
+A primary-button press in the grip hit area clears existing selection and captures the whole gesture before the
+committed selection frame is consulted. Drag reports update only `PaneResizeState`: the message pane cannot go below
+25%, an expanded drag entering the sub-19 Preview rectangle range shows a collapsed pending 100% message share, and
+the first leftward movement from a collapsed grip restores a 19-column Preview rectangle with 16 usable content
+columns before continuing to grow it. Captured movement remains resize-owned when it crosses selectable Transcript
+or Preview cells; wheel scrolling and ordinary selection remain unchanged outside the grip.
+
+While captured, Screen paints only the base surface, one or two margin-inset Bark boxes with pending ratio labels,
+a full-height thin guide, and a thick center grip. It does not call transcript/Preview panes, Reading geometry,
+selection painting, or toast rendering, and these frames perform no transcript or Preview cache/materialization work.
+Release applies the final percentage to runtime and application Config and returns the existing `PersistConfig`
+action once. The runner performs persistence after releasing UI state; focus loss or terminal resize cancels without
+saving, so a temporary responsive collapse preserves the percentage and reopens when the terminal grows.
 
 ### 4.3 Reading View and semantic copy (D10/D11/D12)
 
@@ -583,7 +612,7 @@ Clipboard and deferred Preview effects execute after the UI guard is released.
   prompts, fuzzy matching by id/display-name prefix-substring-subsequence, broken presets not sent). Unknown modes
   error with the available ids listed.
 - **model selection**: every session the bridge creates/resumes first installs the public
-  `@deepseek-ai/dsh-agent@0.1.0-rc.6` package-root `installModelSelection(agentCtx, selection) -> disposer` via the
+  `@deepseek-ai/dsh-agent@0.1.1-rc.2` package-root `installModelSelection(agentCtx, selection) -> disposer` via the
   `bridge/src/model-selection.js` adapter in `setup`. It injects `variables.{provider,model}` in
   `system-prompt/assemble`, and that assembly snapshot routes `agent/request` (including the optional
   `reasoningEffort`), avoiding a missing persona `{{model}}` variable. The authoritative catalog and current
@@ -651,6 +680,7 @@ Clipboard and deferred Preview effects execute after the UI guard is released.
 | Appearance | theme (choose from `%APPDATA%\dshe\themes\*.toml`; palette and semantic mapping edited in two-layer TOML) | enum | ferra |
 | Appearance | plain-color mode (NO_COLOR; pacing remains, fade interpolation is omitted) | boolean | off |
 | Appearance | text-fade background reference (`#RRGGBB`) | text | `#000000` |
+| Appearance | message-pane width percentage | numeric (25.00%–100.00%) | 60.00% |
 | Behavior | remember last session | boolean | **off** (new process creates a new session by default) |
 | Behavior | default mode (preset used by bare `/new` and new-process session creation, from the bridge `presets` roster; a stale config value is still shown/selectable, bridge falls back to standard) | enum | standard |
 | Behavior | paste placeholder threshold | numeric chars | 1000 |

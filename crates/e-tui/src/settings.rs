@@ -5,7 +5,7 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::{
-    config::{Config, HexRgb, RevealRate},
+    config::{Config, HexRgb, PaneWidthPercent, RevealRate},
     page_core::{handle_text_editor, TextEditResult, TextEditor},
 };
 
@@ -92,13 +92,16 @@ pub static ITEMS: &[ItemDef] = &[
     },
     ItemDef {
         category: 0,
-        label: "主窗格宽度",
-        desc: "宽屏双栏时主窗格的首选总宽度（列）",
+        label: "消息栏宽度比例",
+        desc: "宽屏双栏时消息栏占终端宽度的比例（25.00%-100.00%）",
         kind: ItemKind::Input,
-        get: |c| c.main_pane_width.to_string(),
+        get: |c| c.message_pane_percent.display(),
         apply: |c, v| {
-            if let Ok(n) = v.parse::<usize>() {
-                c.main_pane_width = n.clamp(40, 500);
+            let value = v.trim().trim_end_matches('%').trim();
+            if let Ok(percent) = value.parse::<f64>() {
+                if let Ok(percent) = PaneWidthPercent::from_percent(percent) {
+                    c.message_pane_percent = percent;
+                }
             }
         },
     },
@@ -691,6 +694,10 @@ mod tests {
         assert_eq!(config.background_color.to_string(), "#1a2b3c");
         confirm(&mut state, &mut config, 0, "淡入背景颜色", "black");
         assert_eq!(config.background_color.to_string(), "#1a2b3c");
+        confirm(&mut state, &mut config, 0, "消息栏宽度比例", "61.25");
+        assert_eq!(config.message_pane_percent.display(), "61.25%");
+        confirm(&mut state, &mut config, 0, "消息栏宽度比例", "24.99");
+        assert_eq!(config.message_pane_percent.display(), "61.25%");
 
         confirm(&mut state, &mut config, 2, "消息文字速度", "1024");
         assert_eq!(config.message_chars_per_second.get(), 1024);

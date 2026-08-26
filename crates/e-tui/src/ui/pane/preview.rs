@@ -11,6 +11,17 @@ pub fn render(
     config: &Config,
     theme: &Theme,
     selection_frame: &mut SelectionFrame,
+    left_padding: u16,
+    right_padding: u16,
 ) {
-    super::super::region::preview::render(frame, area, preview, config, theme, selection_frame);
+    super::super::region::preview::render(
+        frame,
+        area,
+        preview,
+        config,
+        theme,
+        selection_frame,
+        left_padding,
+        right_padding,
+    );
 }

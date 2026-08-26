@@ -28,6 +28,7 @@ fn overlays() -> RenderOverlays<'static> {
         login: None,
         approval: None,
         queue: &[],
+        pane_resize: Default::default(),
     }
 }
 

@@ -27,6 +27,7 @@ pub(crate) fn render_with_cursor(
     theme: &Theme,
     overlays: MainPaneOverlays<'_>,
     selection_frame: &mut SelectionFrame,
+    reserve_collapsed_separator: bool,
 ) -> Option<Position> {
     super::super::render_main_pane_with_cursor(
         frame,
@@ -37,5 +38,6 @@ pub(crate) fn render_with_cursor(
         theme,
         overlays,
         selection_frame,
+        reserve_collapsed_separator,
     )
 }

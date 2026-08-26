@@ -767,6 +767,7 @@ mod tests {
                         login: None,
                         approval: None,
                         queue: &[],
+                        pane_resize: Default::default(),
                     },
                 );
             })

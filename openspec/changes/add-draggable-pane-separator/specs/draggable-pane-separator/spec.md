@@ -38,6 +38,18 @@ A primary-button press within the separator grip hit area SHALL start a captured
 - **WHEN** focus loss or terminal resize occurs before primary-button release
 - **THEN** the pending resize is cancelled, no percentage is persisted, and a later unmatched release does not commit it
 
+### Requirement: Separator presentation uses theme semantic backgrounds
+
+The idle grip, full-height drag guide, and drag placeholder boxes SHALL use the active theme's `separator.bar`, `separator.line`, and `separator.placeholder` semantic styles respectively. If a custom theme omits one of these backgrounds, rendering SHALL inherit the resolved themed base surface; it SHALL NOT use a hard-coded palette color.
+
+#### Scenario: Theme supplies separator backgrounds
+- **WHEN** the active theme defines backgrounds for the separator semantic roles
+- **THEN** idle grip, drag guide, and placeholder cells use those configured backgrounds
+
+#### Scenario: Theme omits a separator background
+- **WHEN** a valid custom theme leaves a separator role's background unset
+- **THEN** that role inherits the theme's resolved base surface without introducing a fixed color
+
 ### Requirement: Drag frames use placeholder pane presentation
 While pane resize is active, the Screen SHALL hide real message and Preview content and SHALL render the base surface, one or two margin-inset Bark placeholder boxes following the pending split, a full-height thin Bark guide, and a thicker central grip. Releasing or cancelling the gesture SHALL remove the placeholder presentation and restore normal pane content.
 

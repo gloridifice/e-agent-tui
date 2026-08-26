@@ -54,6 +54,8 @@ Pane-level geometry uses one-column margins as the common visual rule. The Main 
 
 The default `user_input_padding` is one column, matching the Main page edge and the Preview content gap. The setting remains user-editable for compatibility, so an explicit user value is not forcibly rewritten.
 
+The separator renderer consumes `theme.separator.bar`, `theme.separator.line`, and `theme.separator.placeholder` as complete semantic styles. Their configured backgrounds are applied to the corresponding cells; when a custom theme omits a background, the fallback is the resolved themed base surface rather than a literal palette color.
+
 ### Capture separator gestures before text selection
 
 On primary press, the runtime first checks the small separator grip hit area. A hit starts pane resize, clears any mouse selection, and captures subsequent primary drag/release reports in `PaneResizeState`, even when the pointer leaves the original grip. All other primary gestures continue through the committed visible-frame selection reducer unchanged. Wheel events retain transcript scrolling.

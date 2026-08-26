@@ -114,6 +114,7 @@ pub fn render_markdown(
     let mut selected_theme = *theme;
     if options.markdown_strength == MarkdownStrength::Weak {
         selected_theme.markdown = selected_theme.markdown_weak;
+        selected_theme.code = selected_theme.code_weak;
         // Top-level bullets historically use the flat Coral alias. Weak
         // Markdown has no extra role, so route that derived accent through its
         // list-marker semantic instead of leaking a strong palette color.
@@ -431,10 +432,7 @@ fn render_block(
         BlockKind::Html => {
             for (i, line) in raw.lines().enumerate() {
                 out.push(RenderLine {
-                    line: Line::from(Span::styled(
-                        line.to_string(),
-                        theme.markdown.code_meta.style(),
-                    )),
+                    line: Line::from(Span::styled(line.to_string(), theme.code.meta.style())),
                     unit,
                     raw_line: Some(i),
                     atomic: false,
@@ -761,7 +759,7 @@ fn render_mermaid_block(
     } else {
         raw_lines.join("\n")
     };
-    let dim = theme.markdown.code_meta.style();
+    let dim = theme.code.meta.style();
     // Glow-style header: `  mermaid · N 行` on the filled block.
     out.push(RenderLine {
         line: Line::from(vec![
@@ -838,7 +836,7 @@ fn render_mermaid_block(
                     Span::styled("  ", dim),
                     Span::styled(
                         format!("(mermaid 渲染失败: {error})"),
-                        theme.markdown.code_meta.style(),
+                        theme.code.meta.style(),
                     ),
                 ]),
                 unit,
@@ -850,7 +848,7 @@ fn render_mermaid_block(
                 out.push(RenderLine {
                     line: Line::from(vec![
                         Span::styled("  ", dim),
-                        Span::styled((*line).to_string(), theme.markdown.code_text.style()),
+                        Span::styled((*line).to_string(), theme.code.text.style()),
                     ]),
                     unit,
                     raw_line: Some(i + 1),
@@ -882,7 +880,7 @@ fn render_code_block(
     } else {
         (&raw_lines[..], 0)
     };
-    let dim = theme.markdown.code_meta.style();
+    let dim = theme.code.meta.style();
     // Glow-style header: `  lang · N 行` — no frame.
     out.push(RenderLine {
         line: Line::from(vec![
@@ -899,7 +897,7 @@ fn render_code_block(
     let highlighted = crate::syntax::highlight_lines(
         content,
         crate::syntax::SyntaxHint::Token(lang.unwrap_or_default()),
-        &theme.markdown,
+        &theme.code,
     );
     let collapsed = !options.expanded.contains(&unit) && content.len() > options.collapse_rows;
     let push_content = |i: usize, out: &mut Vec<RenderLine>| {
@@ -935,7 +933,7 @@ fn collapse_hint_row(unit: u64, theme: &Theme, hidden: usize) -> RenderLine {
     RenderLine {
         line: Line::from(Span::styled(
             format!("  … 收起 {hidden} 行 [Enter 展开]"),
-            theme.markdown.code_meta.style(),
+            theme.code.meta.style(),
         )),
         unit,
         raw_line: None,
@@ -950,7 +948,7 @@ fn collapse_hint_row(unit: u64, theme: &Theme, hidden: usize) -> RenderLine {
 /// a glamour margin blank at the message end).
 fn block_bottom_pad(unit: u64, theme: &Theme, out: &mut Vec<RenderLine>) {
     out.push(RenderLine {
-        line: Line::from(Span::styled(" ", theme.markdown.code_background.style())),
+        line: Line::from(Span::styled(" ", theme.markdown.code_block_bg.style())),
         unit,
         raw_line: None,
         atomic: true,
@@ -1759,7 +1757,7 @@ mod tests {
             .iter()
             .find(|span| span.content == "fn")
             .expect("Rust keyword span");
-        assert_eq!(keyword.style.fg, Some(Theme::ferra().markdown.heading1.fg));
+        assert_eq!(keyword.style.fg, Some(Theme::ferra().code.keyword.fg));
         assert_eq!(keyword.style.bg, None, "token background stays transparent");
         assert!(lines[1].fill, "content fills its background");
         // The first content row maps to raw line 1 (line 0 is the fence).
@@ -2202,7 +2200,7 @@ mod tests {
             .flat_map(|line| &line.line.spans)
             .find(|span| span.content == "fn")
             .expect("weak Rust keyword");
-        assert_eq!(keyword.style.fg, Some(theme.markdown_weak.heading1.fg));
+        assert_eq!(keyword.style.fg, Some(theme.code_weak.keyword.fg));
         assert_eq!(keyword.style.bg, None);
         assert!(lines
             .iter()

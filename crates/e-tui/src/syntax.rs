@@ -19,7 +19,7 @@ use syntect::{
 };
 use tui_syntax_highlight::Highlighter;
 
-use crate::theme::{MarkdownTheme, ThemeStyle};
+use crate::theme::{CodeTheme, ThemeStyle};
 
 /// Match the existing bounded deferred Preview budget.
 pub const MAX_HIGHLIGHT_BYTES: usize = 256 * 1024;
@@ -54,9 +54,9 @@ pub fn warm_up() {
 pub fn highlight_lines(
     lines: &[&str],
     hint: SyntaxHint<'_>,
-    markdown: &MarkdownTheme,
+    code: &CodeTheme,
 ) -> Vec<Line<'static>> {
-    let fallback = || plain_lines(lines, markdown.code_text);
+    let fallback = || plain_lines(lines, code.text);
     if exceeds_limits(lines) {
         return fallback();
     }
@@ -66,7 +66,7 @@ pub fn highlight_lines(
     };
 
     let _zone = crate::tracy_zone!("syntax highlight");
-    let highlighter = Highlighter::new(syntect_theme(markdown)).line_numbers(false);
+    let highlighter = Highlighter::new(syntect_theme(code)).line_numbers(false);
     match highlighter.highlight_lines(lines.iter().copied(), syntax, syntax_set) {
         Ok(text) if text.lines.len() == lines.len() => text.lines,
         _ => fallback(),
@@ -78,10 +78,10 @@ pub fn highlight_lines(
 pub fn highlight_source(
     source: &str,
     hint: SyntaxHint<'_>,
-    markdown: &MarkdownTheme,
+    code: &CodeTheme,
 ) -> Vec<Line<'static>> {
     let lines = source.lines().collect::<Vec<_>>();
-    highlight_lines(&lines, hint, markdown)
+    highlight_lines(&lines, hint, code)
 }
 
 fn plain_lines(lines: &[&str], style: ThemeStyle) -> Vec<Line<'static>> {
@@ -140,12 +140,12 @@ fn normalize_token(token: &str) -> &str {
     }
 }
 
-fn syntect_theme(markdown: &MarkdownTheme) -> SyntectTheme {
+fn syntect_theme(code: &CodeTheme) -> SyntectTheme {
     SyntectTheme {
-        name: Some("dshe-semantic-markdown".into()),
+        name: Some("dshe-semantic-code".into()),
         author: None,
         settings: ThemeSettings {
-            foreground: Some(syntect_color(markdown.code_text.fg)),
+            foreground: Some(syntect_color(code.text.fg)),
             // Alpha 1 is tui-syntax-highlight's transparent/no-color marker.
             background: Some(SyntectColor {
                 r: 0,
@@ -156,27 +156,27 @@ fn syntect_theme(markdown: &MarkdownTheme) -> SyntectTheme {
             ..ThemeSettings::default()
         },
         scopes: vec![
-            theme_item("comment", markdown.code_meta),
-            theme_item("keyword, storage", markdown.heading1),
+            theme_item("comment", code.comment),
+            theme_item("keyword, storage", code.keyword),
             theme_item(
                 "entity.name.type, entity.name.class, entity.name.struct, entity.name.enum, support.type, storage.type - storage.type.function",
-                markdown.heading2,
+                code.r#type,
             ),
             theme_item(
                 "entity.name.function, support.function, variable.function, entity.name.function.preprocessor",
-                markdown.link_text,
+                code.function,
             ),
-            theme_item("string", markdown.emphasis),
-            theme_item("constant", markdown.inline_code),
+            theme_item("string", code.string),
+            theme_item("constant", code.constant),
             theme_item(
                 "entity.other.attribute-name, meta.annotation, storage.type.annotation, variable.annotation",
-                markdown.heading4,
+                code.attribute,
             ),
             theme_item(
                 "constant.character.escape, punctuation.section.interpolation, meta.interpolation",
-                markdown.link_url,
+                code.escape,
             ),
-            theme_item("invalid", markdown.strikethrough),
+            theme_item("invalid", code.invalid),
         ],
     }
 }
@@ -248,19 +248,19 @@ mod tests {
     fn rust_uses_normal_and_weak_semantic_colors_without_token_backgrounds() {
         let theme = crate::theme::Theme::ferra();
         let source = ["fn main() {", "    let message = \"hello\";", "}"];
-        let normal = highlight_lines(&source, SyntaxHint::Token("rust"), &theme.markdown);
-        let weak = highlight_lines(&source, SyntaxHint::Token("rs"), &theme.markdown_weak);
+        let normal = highlight_lines(&source, SyntaxHint::Token("rust"), &theme.code);
+        let weak = highlight_lines(&source, SyntaxHint::Token("rs"), &theme.code_weak);
 
         let normal_keyword = span_for(&normal, "fn");
         let weak_keyword = span_for(&weak, "fn");
-        assert_eq!(normal_keyword.style.fg, Some(theme.markdown.heading1.fg));
-        assert_eq!(weak_keyword.style.fg, Some(theme.markdown_weak.heading1.fg));
+        assert_eq!(normal_keyword.style.fg, Some(theme.code.keyword.fg));
+        assert_eq!(weak_keyword.style.fg, Some(theme.code_weak.keyword.fg));
         assert!(normal_keyword.style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(normal_keyword.style.bg, None);
         assert_eq!(weak_keyword.style.bg, None);
 
         let normal_string = span_for(&normal, "hello");
-        assert_eq!(normal_string.style.fg, Some(theme.markdown.emphasis.fg));
+        assert_eq!(normal_string.style.fg, Some(theme.code.string.fg));
         assert!(normal_string.style.add_modifier.contains(Modifier::ITALIC));
     }
 
@@ -270,35 +270,29 @@ mod tests {
         let js = highlight_lines(
             &["if (answer) console.log(answer);"],
             SyntaxHint::Token("js title=demo"),
-            &theme.markdown,
+            &theme.code,
         );
         let rust = highlight_lines(
             &["pub struct Demo;"],
             SyntaxHint::Path("src/demo.rs"),
-            &theme.markdown,
+            &theme.code,
         );
-        assert_eq!(
-            span_for(&js, "if").style.fg,
-            Some(theme.markdown.heading1.fg)
-        );
-        assert_eq!(
-            span_for(&rust, "Demo").style.fg,
-            Some(theme.markdown.heading2.fg)
-        );
+        assert_eq!(span_for(&js, "if").style.fg, Some(theme.code.keyword.fg));
+        assert_eq!(span_for(&rust, "Demo").style.fg, Some(theme.code.r#type.fg));
     }
 
     #[test]
-    fn unknown_and_oversized_inputs_fall_back_to_code_text() {
+    fn unknown_and_oversized_inputs_fall_back_to_code_text_role() {
         let theme = crate::theme::Theme::ferra();
         let unknown = highlight_lines(
             &["mystery token"],
             SyntaxHint::Token("not-a-language"),
-            &theme.markdown,
+            &theme.code,
         );
-        assert_eq!(unknown[0].spans[0].style, theme.markdown.code_text.style());
+        assert_eq!(unknown[0].spans[0].style, theme.code.text.style());
 
         let long = "x".repeat(MAX_HIGHLIGHT_LINE_BYTES + 1);
-        let limited = highlight_lines(&[long.as_str()], SyntaxHint::Token("rust"), &theme.markdown);
-        assert_eq!(limited[0].spans[0].style, theme.markdown.code_text.style());
+        let limited = highlight_lines(&[long.as_str()], SyntaxHint::Token("rust"), &theme.code);
+        assert_eq!(limited[0].spans[0].style, theme.code.text.style());
     }
 }

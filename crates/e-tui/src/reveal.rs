@@ -763,7 +763,7 @@ mod tests {
         let highlighted = crate::syntax::highlight_lines(
             &["fn main() {}"],
             crate::syntax::SyntaxHint::Token("rust"),
-            &theme.markdown,
+            &theme.code,
         );
         let line = crate::ui::component::diff::styled_line(
             &theme,
@@ -781,7 +781,7 @@ mod tests {
             .iter()
             .find(|span| span.content == "fn")
             .expect("revealed syntax keyword");
-        assert_ne!(keyword.style.fg, Some(theme.markdown.heading1.fg));
+        assert_ne!(keyword.style.fg, Some(theme.code.keyword.fg));
         assert_eq!(keyword.style.bg, theme.diff.added.bg);
         assert!(keyword.style.add_modifier.contains(Modifier::BOLD));
     }

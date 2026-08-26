@@ -343,7 +343,7 @@ fn markdown_block_semantic_lines(block: &TranscriptBlock, state: &TuiApp) -> Vec
         .map(|render_line| {
             let mut line = render_line.line.clone();
             if render_line.fill {
-                line = line.patch_style(theme.markdown.code_background.style());
+                line = line.patch_style(theme.markdown.code_block_bg.style());
             }
             line
         })
@@ -397,7 +397,7 @@ fn pad_visible_markdown_fill_lines(
     let Some(layout) = state.render.markdown_layout.lines(&block.id) else {
         return;
     };
-    let fill_style = state.theme().markdown.code_background.style();
+    let fill_style = state.theme().markdown.code_block_bg.style();
     for (line, render_line) in lines.iter_mut().zip(layout) {
         if render_line.fill {
             let width = line.width();

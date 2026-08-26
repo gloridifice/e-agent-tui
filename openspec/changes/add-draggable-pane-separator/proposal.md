@@ -9,6 +9,7 @@ The fixed responsive split cannot be adjusted to the user's terminal, content, o
 - Enforce a 25% minimum message-pane share.
 - Collapse Preview when its split rectangle would be narrower than 19 terminal columns (one separator column, one post-separator gap, 16 usable content columns, and one right margin); dragging that grip left restores the 16-column content area and continues resizing.
 - Unify pane-level horizontal margins to one column: the Main page has one column on each ordinary edge, split Preview has one post-separator gap and one right margin, and the default user-message/input padding is one column.
+- Use the theme's separator semantic backgrounds for the idle grip, drag guide, and placeholder boxes; never substitute a hard-coded palette fill.
 - Render only inexpensive, margin-inset Bark placeholder boxes, a full-height Bark guide, and a thicker grip while dragging; restore and reflow real pane content once on release.
 - Give separator gestures priority over application-owned text selection while preserving existing mouse capture, wheel scrolling, Reading View, and narrow full-screen Preview behavior.
 - **BREAKING**: replace the persisted absolute-column `main_pane_width` preference with a percentage-based message-pane preference; old absolute values are ignored and inherit the new 60% default because they cannot be migrated without a terminal width.

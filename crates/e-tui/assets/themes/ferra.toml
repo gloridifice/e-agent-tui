@@ -41,9 +41,7 @@ link_url = { fg = "coral", underline = true }
 image = { fg = "blush", italic = true }
 quote_marker = { fg = "bark" }
 rule = { fg = "bark" }
-code_text = { fg = "mist" }
-code_meta = { fg = "bark" }
-code_background = { fg = "mist", bg = "night" }
+code_block_bg = { fg = "mist", bg = "night" }
 table_border = { fg = "bark" }
 table_header = { fg = "mist", bold = true }
 list_marker = { fg = "bark" }
@@ -72,9 +70,7 @@ link_url = { fg = "bark", underline = true }
 image = { fg = "bark", italic = true }
 quote_marker = { fg = "umber" }
 rule = { fg = "umber" }
-code_text = { fg = "bark" }
-code_meta = { fg = "umber" }
-code_background = { fg = "bark", bg = "night" }
+code_block_bg = { fg = "bark", bg = "night" }
 table_border = { fg = "umber" }
 table_header = { fg = "bark", bold = true }
 list_marker = { fg = "umber" }
@@ -85,6 +81,32 @@ mermaid_node = { fg = "bark" }
 mermaid_edge = { fg = "umber" }
 mermaid_edge_label = { fg = "bark" }
 mermaid_title = { fg = "bark", bold = true }
+
+[semantics.code]
+text = { fg = "mist" }
+comment = { fg = "bark" }
+keyword = { fg = "coral" }
+type = { fg = "blush" }
+function = { fg = "coral" }
+string = { fg = "sage" }
+constant = { fg = "rose" }
+attribute = { fg = "rose", italic = true }
+escape = { fg = "coral" }
+invalid = { fg = "mist" }
+meta = { fg = "bark" }
+
+[semantics.code_weak]
+text = { fg = "bark" }
+comment = { fg = "umber" }
+keyword = { fg = "bark" }
+type = { fg = "bark" }
+function = { fg = "bark" }
+string = { fg = "bark" }
+constant = { fg = "bark" }
+attribute = { fg = "bark", italic = true }
+escape = { fg = "bark" }
+invalid = { fg = "umber" }
+meta = { fg = "umber" }
 
 [semantics.input]
 background = { fg = "mist", bg = "ash" }
@@ -142,6 +164,6 @@ context_accent = { fg = "bark" }
 separator = { fg = "umber" }
 
 [semantics.separator]
-bar = { fg = "bark", bg = "night" }
-line = { fg = "bark", bg = "night" }
-placeholder = { fg = "night", bg = "bark" }
+bar = { fg = "bark" }
+line = { fg = "umber" }
+placeholder = { fg = "sage", bg = "night" }

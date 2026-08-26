@@ -3,7 +3,7 @@
 
 use ratatui::{
     layout::{Alignment, Position, Rect},
-    style::Style,
+    style::Color,
     widgets::{Block, Paragraph},
     Frame,
 };
@@ -123,12 +123,12 @@ fn render_placeholder_box(
         return;
     };
     let placeholder = theme.separator.placeholder;
-    let fill = placeholder.bg.unwrap_or(theme.surface.muted_text.fg);
-    frame.render_widget(Block::default().style(Style::default().bg(fill)), area);
+    let placeholder_style = placeholder.style();
+    frame.render_widget(Block::default().style(placeholder_style), area);
     frame.render_widget(
         Paragraph::new(label.to_string())
             .alignment(Alignment::Center)
-            .style(Style::default().fg(placeholder.fg)),
+            .style(placeholder_style),
         area,
     );
 }
@@ -139,8 +139,8 @@ fn paint_separator(frame: &mut Frame, area: Rect, column: u16, theme: &Theme, dr
     }
     let bar = theme.separator.bar;
     let line = theme.separator.line;
-    let bar_bg = bar.bg.unwrap_or(theme.bg);
-    let line_bg = line.bg.unwrap_or(theme.bg);
+    let bar_bg = bar.bg.unwrap_or(Color::Reset);
+    let line_bg = line.bg.unwrap_or(Color::Reset);
     let center = area.y + area.height / 2;
     let buffer = frame.buffer_mut();
     if dragging {
@@ -169,7 +169,7 @@ fn render_resize_placeholder(
     theme: &Theme,
 ) -> Option<Position> {
     let drag = resize.drag()?;
-    frame.render_widget(Block::default().style(Style::default().bg(theme.bg)), area);
+    frame.render_widget(Block::default().style(theme.surface.base.style()), area);
 
     let display_percent = if drag.pending_collapsed {
         PaneWidthPercent::from_basis_points(PaneWidthPercent::MAX_BASIS_POINTS)

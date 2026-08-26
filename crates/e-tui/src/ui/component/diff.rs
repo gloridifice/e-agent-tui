@@ -359,8 +359,8 @@ fn render_hunk(hunk: ClassifiedHunk, theme: &Theme, width: usize) -> Vec<Line<'s
         })
         .collect::<Vec<_>>();
     let hint = syntax_hint(hunk.path.as_deref());
-    let old = syntax::highlight_lines(&old_source, hint, &theme.markdown);
-    let new = syntax::highlight_lines(&new_source, hint, &theme.markdown);
+    let old = syntax::highlight_lines(&old_source, hint, &theme.code);
+    let new = syntax::highlight_lines(&new_source, hint, &theme.code);
     let mut old_index = 0usize;
     let mut new_index = 0usize;
     let mut lines = Vec::new();
@@ -369,7 +369,7 @@ fn render_hunk(hunk: ClassifiedHunk, theme: &Theme, width: usize) -> Vec<Line<'s
             theme,
             DiffKind::Context,
             None,
-            vec![Span::styled(header, theme.markdown.code_meta.style())],
+            vec![Span::styled(header, theme.code.meta.style())],
             width,
         ));
     }
@@ -379,7 +379,7 @@ fn render_hunk(hunk: ClassifiedHunk, theme: &Theme, width: usize) -> Vec<Line<'s
                 theme,
                 DiffKind::Context,
                 None,
-                vec![Span::styled(meta, theme.markdown.code_meta.style())],
+                vec![Span::styled(meta, theme.code.meta.style())],
                 width,
             )),
             ClassifiedRow::Body {
@@ -428,7 +428,7 @@ pub fn unified(
                 theme,
                 DiffKind::Context,
                 None,
-                vec![Span::styled(meta, theme.markdown.code_meta.style())],
+                vec![Span::styled(meta, theme.code.meta.style())],
                 width,
             )],
             ClassifiedBlock::Hunk(hunk) => render_hunk(hunk, theme, width),
@@ -463,10 +463,10 @@ mod tests {
     #[test]
     fn styled_body_keeps_foreground_and_modifiers_under_diff_background() {
         let theme = Theme::ferra();
-        let syntax = Span::styled("fn", theme.markdown.heading1.style());
+        let syntax = Span::styled("fn", theme.code.keyword.style());
         let line = styled_line(&theme, DiffKind::Added, Some(1), vec![syntax], 24);
         let body = &line.spans[6];
-        assert_eq!(body.style.fg, Some(theme.markdown.heading1.fg));
+        assert_eq!(body.style.fg, Some(theme.code.keyword.fg));
         assert!(body.style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(body.style.bg, theme.diff.added.bg);
         assert_eq!(concat(&line).width(), 24);
@@ -484,8 +484,8 @@ mod tests {
     fn overflow_preserves_span_style_and_grapheme_boundaries() {
         let theme = Theme::ferra();
         let body = vec![
-            Span::styled("fn ", theme.markdown.heading1.style()),
-            Span::styled("👩‍💻界界界界界", theme.markdown.emphasis.style()),
+            Span::styled("fn ", theme.code.keyword.style()),
+            Span::styled("👩‍💻界界界界界", theme.code.string.style()),
         ];
         let line = styled_line(&theme, DiffKind::Removed, Some(9), body, 18);
         let text = concat(&line);
@@ -511,7 +511,7 @@ mod tests {
                 .iter()
                 .find(|span| span.content == "fn")
                 .expect("Rust keyword");
-            assert_eq!(keyword.style.fg, Some(theme.markdown.heading1.fg));
+            assert_eq!(keyword.style.fg, Some(theme.code.keyword.fg));
         }
     }
 

@@ -43,3 +43,9 @@
 - [x] 7.2 Apply the inset policy to `ui::screen`, Main page geometry, drag placeholders, Preview wrapping/cache widths, Paragraph padding, and Preview selection registration; default `user_input_padding` to one column.
 - [x] 7.3 Add TestBackend and pure geometry regressions for the blank column after the separator, Preview content origin, one-column Main margins, collapsed grip reservation, and exactly-16 usable Preview content.
 - [x] 7.4 Synchronize English project documentation and run the scoped UI/config/interaction tests, formatting, diff checks, and OpenSpec validation.
+
+## 8. Theme-driven Separator Backgrounds
+
+- [x] 8.1 Route idle grip, drag guide, and placeholder fills through the corresponding `theme.separator` semantic styles, with themed base-surface fallback only when a role omits `bg`.
+- [x] 8.2 Restore explicit built-in theme separator backgrounds and add TestBackend/theme regressions proving custom separator backgrounds are rendered.
+- [x] 8.3 Synchronize English theme documentation and run scoped theme/separator tests, formatting, diff checks, and OpenSpec validation.

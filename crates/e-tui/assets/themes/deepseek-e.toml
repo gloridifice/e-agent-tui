@@ -45,9 +45,7 @@ link_url = { fg = "link", underline = true }
 image = { fg = "link", italic = true }
 quote_marker = { fg = "muted" }
 rule = { fg = "muted" }
-code_text = { fg = "text" }
-code_meta = { fg = "muted" }
-code_background = { fg = "text", bg = "midnight" }
+code_block_bg = { fg = "text", bg = "midnight" }
 table_border = { fg = "muted" }
 table_header = { fg = "text", bold = true }
 list_marker = { fg = "muted" }
@@ -76,9 +74,7 @@ link_url = { fg = "bark", underline = true }
 image = { fg = "bark", italic = true }
 quote_marker = { fg = "umber" }
 rule = { fg = "umber" }
-code_text = { fg = "bark" }
-code_meta = { fg = "umber" }
-code_background = { fg = "bark", bg = "night" }
+code_block_bg = { fg = "bark", bg = "night" }
 table_border = { fg = "umber" }
 table_header = { fg = "bark", bold = true }
 list_marker = { fg = "umber" }
@@ -89,6 +85,32 @@ mermaid_node = { fg = "bark" }
 mermaid_edge = { fg = "umber" }
 mermaid_edge_label = { fg = "bark" }
 mermaid_title = { fg = "bark", bold = true }
+
+[semantics.code]
+text = { fg = "text" }
+comment = { fg = "muted" }
+keyword = { fg = "midnight", bold = true }
+type = { fg = "success", bold = true }
+function = { fg = "emphasis", bold = true }
+string = { fg = "emphasis", italic = true }
+constant = { fg = "emphasis" }
+attribute = { fg = "emphasis", italic = true }
+escape = { fg = "link", underline = true }
+invalid = { fg = "text" }
+meta = { fg = "muted" }
+
+[semantics.code_weak]
+text = { fg = "bark" }
+comment = { fg = "umber" }
+keyword = { fg = "bark", bold = true }
+type = { fg = "bark", bold = true }
+function = { fg = "bark", bold = true }
+string = { fg = "bark", italic = true }
+constant = { fg = "bark" }
+attribute = { fg = "bark", italic = true }
+escape = { fg = "bark", underline = true }
+invalid = { fg = "umber" }
+meta = { fg = "umber" }
 
 [semantics.input]
 background = { fg = "text", bg = "panel" }

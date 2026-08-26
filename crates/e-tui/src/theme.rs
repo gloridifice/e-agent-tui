@@ -198,9 +198,7 @@ style_group!(MarkdownRef => MarkdownTheme {
     image,
     quote_marker,
     rule,
-    code_text,
-    code_meta,
-    code_background,
+    code_block_bg,
     table_border,
     table_header,
     list_marker,
@@ -211,6 +209,26 @@ style_group!(MarkdownRef => MarkdownTheme {
     mermaid_edge,
     mermaid_edge_label,
     mermaid_title,
+});
+
+// Dedicated code-coloring semantic group. The token roles below map onto
+// syntect scope families (see `syntax.rs`) and transfer only
+// foreground/bold/italic/underline; backgrounds stay at the block level
+// (`markdown.code_block_bg`) or the diff level (`semantics.diff`). `text` is
+// the syntax default/plain fallback foreground and `meta` colors the
+// `lang · N 行` header and diff metadata rows.
+style_group!(CodeRef => CodeTheme {
+    text,
+    comment,
+    keyword,
+    r#type,
+    function,
+    string,
+    constant,
+    attribute,
+    escape,
+    invalid,
+    meta,
 });
 
 style_group!(InputRef => InputTheme {
@@ -274,6 +292,8 @@ struct SemanticsRef {
     surface: SurfaceRef,
     markdown: MarkdownRef,
     markdown_weak: MarkdownRef,
+    code: CodeRef,
+    code_weak: CodeRef,
     input: InputRef,
     working_status: WorkingStatusRef,
     log: LogRef,
@@ -300,6 +320,8 @@ pub struct Theme {
     pub surface: SurfaceTheme,
     pub markdown: MarkdownTheme,
     pub markdown_weak: MarkdownTheme,
+    pub code: CodeTheme,
+    pub code_weak: CodeTheme,
     pub input: InputTheme,
     pub working_status: WorkingStatusTheme,
     pub log: LogTheme,
@@ -407,6 +429,8 @@ fn resolve_document(document: ThemeDocument) -> Result<ThemeFile, String> {
     let surface = document.semantics.surface.resolve(&colors)?;
     let markdown = document.semantics.markdown.resolve(&colors)?;
     let markdown_weak = document.semantics.markdown_weak.resolve(&colors)?;
+    let code = document.semantics.code.resolve(&colors)?;
+    let code_weak = document.semantics.code_weak.resolve(&colors)?;
     let input = document.semantics.input.resolve(&colors)?;
     let working_status = document.semantics.working_status.resolve(&colors)?;
     let log = document.semantics.log.resolve(&colors)?;
@@ -438,6 +462,8 @@ fn resolve_document(document: ThemeDocument) -> Result<ThemeFile, String> {
         surface,
         markdown,
         markdown_weak,
+        code,
+        code_weak,
         input,
         working_status,
         log,
@@ -521,30 +547,24 @@ mod tests {
             ferra.theme.markdown_weak.text.fg,
             Color::Rgb(0x6f, 0x5d, 0x63)
         );
+        assert_eq!(ferra.theme.code_weak.meta.fg, Color::Rgb(0x4d, 0x42, 0x4b));
         assert_eq!(
-            ferra.theme.markdown_weak.code_meta.fg,
-            Color::Rgb(0x4d, 0x42, 0x4b)
-        );
-        assert_eq!(
-            ferra.theme.markdown_weak.code_background.bg,
+            ferra.theme.markdown_weak.code_block_bg.bg,
             Some(Color::Rgb(0x2b, 0x29, 0x2d))
         );
-        // Pane separator semantics: grip and drag line use bark on the base
-        // background; the placeholder box inverts them (night text on bark).
-        assert_eq!(
-            ferra.theme.separator.bar.fg,
-            Color::Rgb(0x6f, 0x5d, 0x63)
-        );
-        assert_eq!(
-            ferra.theme.separator.line.fg,
-            Color::Rgb(0x6f, 0x5d, 0x63)
-        );
+        assert_eq!(ferra.theme.code.keyword.fg, Color::Rgb(0xff, 0xa0, 0x7a));
+        // Pane separator semantics: the idle grip and drag guide use their
+        // configured foreground/background; the placeholder box uses its own
+        // configured text/fill pair.
+        assert_eq!(ferra.theme.separator.bar.fg, Color::Rgb(0x6f, 0x5d, 0x63));
+        assert_eq!(ferra.theme.separator.line.fg, Color::Rgb(0x4d, 0x42, 0x4b));
         assert_eq!(ferra.theme.separator.bar.bg, Some(ferra.theme.bg));
-        assert_eq!(ferra.theme.separator.placeholder.fg, ferra.theme.bg);
+        assert_eq!(ferra.theme.separator.line.bg, Some(ferra.theme.bg));
         assert_eq!(
-            ferra.theme.separator.placeholder.bg,
-            Some(Color::Rgb(0x6f, 0x5d, 0x63))
+            ferra.theme.separator.placeholder.fg,
+            Color::Rgb(0xb1, 0xb6, 0x95)
         );
+        assert_eq!(ferra.theme.separator.placeholder.bg, Some(ferra.theme.bg));
     }
 
     #[test]
@@ -577,6 +597,11 @@ mod tests {
             1,
         );
         assert!(parse_theme(&illegal_weak).is_none());
+        let missing_code = FERRA_SOURCE.replace("[semantics.code]", "[ignored.code]");
+        assert!(parse_theme(&missing_code).is_none());
+        let missing_code_weak =
+            FERRA_SOURCE.replace("[semantics.code_weak]", "[ignored.code_weak]");
+        assert!(parse_theme(&missing_code_weak).is_none());
     }
 
     #[test]
@@ -597,10 +622,7 @@ mod tests {
 
         let separate: std::collections::BTreeMap<String, Padding> =
             toml::from_str("padding = { left = 2, right = 3 }").unwrap();
-        assert_eq!(
-            separate["padding"],
-            Padding::Separate { left: 2, right: 3 }
-        );
+        assert_eq!(separate["padding"], Padding::Separate { left: 2, right: 3 });
     }
 
     #[test]
@@ -617,15 +639,15 @@ mod tests {
         type PaddingMap = std::collections::BTreeMap<String, Padding>;
 
         // Unknown field in the table form must be rejected (strict table).
-        assert!(toml::from_str::<PaddingMap>("padding = { left = 1, right = 1, bogus = 1 }").is_err());
+        assert!(
+            toml::from_str::<PaddingMap>("padding = { left = 1, right = 1, bogus = 1 }").is_err()
+        );
         // Missing a required table field is rejected.
         assert!(toml::from_str::<PaddingMap>("padding = { left = 1 }").is_err());
         // Out-of-range values are rejected at resolve time (`validate()`), not
         // at deserialization.
         assert!(Padding::All(65).validate().is_err());
-        assert!(Padding::Separate { left: 1, right: 65 }
-            .validate()
-            .is_err());
+        assert!(Padding::Separate { left: 1, right: 65 }.validate().is_err());
     }
 
     #[test]

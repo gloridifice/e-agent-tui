@@ -1523,7 +1523,7 @@ fn reasoning_preview_renders_with_weak_markdown_semantics() {
 }
 
 #[test]
-fn preview_markdown_code_uses_weak_syntax_and_code_background() {
+fn preview_markdown_code_uses_weak_syntax_and_code_block_bg() {
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();
     force_preview_only(&mut state);
@@ -1539,14 +1539,10 @@ fn preview_markdown_code_uses_weak_syntax_and_code_background() {
         .unwrap();
     let buffer = terminal.backend().buffer();
     let (x, y) = find_text(buffer, "fn main").expect("highlighted code body");
-    assert_eq!(buffer[(x, y)].fg, theme.markdown_weak.heading1.fg);
+    assert_eq!(buffer[(x, y)].fg, theme.code_weak.keyword.fg);
     assert_eq!(
         buffer[(x, y)].bg,
-        theme
-            .markdown_weak
-            .code_background
-            .bg
-            .unwrap_or(Color::Reset)
+        theme.markdown_weak.code_block_bg.bg.unwrap_or(Color::Reset)
     );
     assert!(buffer[(x, y)].modifier.contains(Modifier::BOLD));
 }
@@ -1610,9 +1606,9 @@ fn diff_preview_composes_normal_syntax_with_added_and_removed_backgrounds() {
     let buffer = terminal.backend().buffer();
     let (old_x, old_y) = find_text(buffer, "fn old").expect("removed Rust row");
     let (new_x, new_y) = find_text(buffer, "fn new").expect("added Rust row");
-    assert_eq!(buffer[(old_x, old_y)].fg, theme.markdown.heading1.fg);
+    assert_eq!(buffer[(old_x, old_y)].fg, theme.code.keyword.fg);
     assert_eq!(buffer[(old_x, old_y)].bg, theme.diff.removed.bg.unwrap());
-    assert_eq!(buffer[(new_x, new_y)].fg, theme.markdown.heading1.fg);
+    assert_eq!(buffer[(new_x, new_y)].fg, theme.code.keyword.fg);
     assert_eq!(buffer[(new_x, new_y)].bg, theme.diff.added.bg.unwrap());
     let content = buffer
         .content()
@@ -2217,12 +2213,13 @@ fn mouse_selection_keeps_preview_and_transcript_ranges_independent() {
 }
 
 #[test]
-fn pane_separator_is_bark_short_grip_in_normal_mode() {
+fn pane_separator_uses_the_theme_background_in_normal_mode() {
     let mut state = TuiApp::default();
-    state.config.resolved_theme = Theme::ferra();
+    let mut theme = Theme::ferra();
+    theme.separator.bar.bg = Some(Color::Rgb(1, 2, 3));
+    state.config.resolved_theme = theme;
     let input = InputState::new(&state.config);
     let mut scroll = ScrollState::default();
-    let theme = Theme::ferra();
     let mut terminal = Terminal::new(TestBackend::new(120, 20)).unwrap();
     terminal
         .draw(|frame| {
@@ -2232,12 +2229,13 @@ fn pane_separator_is_bark_short_grip_in_normal_mode() {
     let buffer = terminal.backend().buffer();
     let separator_x = 72;
     assert_eq!(buffer[(separator_x, 10)].symbol(), "│");
-    assert_eq!(buffer[(separator_x, 10)].fg, theme.surface.muted_text.fg);
+    assert_eq!(buffer[(separator_x, 10)].fg, theme.separator.bar.fg);
+    assert_eq!(buffer[(separator_x, 10)].bg, Color::Rgb(1, 2, 3));
     assert_eq!(buffer[(separator_x, 0)].symbol(), " ");
 }
 
 #[test]
-fn pane_separator_drag_paints_only_bounded_bark_placeholders() {
+fn pane_separator_drag_paints_only_bounded_theme_placeholders() {
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();
     state.transcript.append(
@@ -2277,19 +2275,43 @@ fn pane_separator_drag_paints_only_bounded_bark_placeholders() {
         })
         .unwrap();
     let buffer = terminal.backend().buffer();
-    let bark = theme.surface.muted_text.fg;
+    let placeholder_bg = theme
+        .separator
+        .placeholder
+        .bg
+        .expect("Ferra placeholder defines its background");
+    let line_bg = theme
+        .separator
+        .line
+        .bg
+        .expect("Ferra line defines its background");
+    let bar_bg = theme
+        .separator
+        .bar
+        .bg
+        .expect("Ferra bar defines its background");
     assert_eq!(
         buffer[(2, 1)].bg,
-        bark,
-        "message placeholder has its margin"
+        placeholder_bg,
+        "message placeholder has its themed margin fill"
     );
     assert_eq!(
         buffer[(56, 1)].bg,
-        bark,
-        "preview placeholder has its margin"
+        placeholder_bg,
+        "preview placeholder has its themed margin fill"
     );
     assert_eq!(buffer[(54, 0)].symbol(), "│", "drag guide is full height");
+    assert_eq!(
+        buffer[(54, 0)].bg,
+        line_bg,
+        "drag guide uses the theme background"
+    );
     assert_eq!(buffer[(54, 10)].symbol(), "┃", "drag grip is thicker");
+    assert_eq!(
+        buffer[(54, 10)].bg,
+        bar_bg,
+        "drag grip uses the theme background"
+    );
     assert!(buffer.content().iter().any(|cell| cell.symbol() == "消"));
     assert!(buffer.content().iter().any(|cell| cell.symbol() == "预"));
     assert!(find_text(buffer, "padding =").is_none());
@@ -2322,7 +2344,7 @@ fn pane_separator_drag_paints_only_bounded_bark_placeholders() {
 }
 
 #[test]
-fn collapsed_separator_drag_paints_one_message_placeholder() {
+fn collapsed_separator_drag_paints_one_theme_message_placeholder() {
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();
     let input = InputState::new(&state.config);
@@ -2348,9 +2370,24 @@ fn collapsed_separator_drag_paints_one_message_placeholder() {
         })
         .unwrap();
     let buffer = terminal.backend().buffer();
-    assert_eq!(buffer[(2, 1)].bg, theme.surface.muted_text.fg);
+    assert_eq!(
+        buffer[(2, 1)].bg,
+        theme
+            .separator
+            .placeholder
+            .bg
+            .expect("Ferra placeholder background")
+    );
     assert_eq!(buffer[(118, 0)].symbol(), "│");
+    assert_eq!(
+        buffer[(118, 0)].bg,
+        theme.separator.line.bg.expect("Ferra line background")
+    );
     assert_eq!(buffer[(118, 10)].symbol(), "┃");
+    assert_eq!(
+        buffer[(118, 10)].bg,
+        theme.separator.bar.bg.expect("Ferra bar background")
+    );
     assert!(buffer.content().iter().any(|cell| cell.symbol() == "消"));
     assert!(!buffer.content().iter().any(|cell| cell.symbol() == "预"));
 }

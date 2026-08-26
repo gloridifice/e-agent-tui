@@ -161,14 +161,11 @@ fn content_lines(content: &PreviewContent, theme: &Theme, width: usize) -> Vec<L
             diff::unified(source, path.as_deref(), theme, width)
         }
         PreviewContent::Lines { path, start, lines } => {
-            std::iter::once(Line::styled(path.clone(), theme.markdown.code_meta.style()))
+            std::iter::once(Line::styled(path.clone(), theme.code.meta.style()))
                 .chain(lines.iter().enumerate().map(|(index, line)| {
                     Line::from(vec![
-                        Span::styled(
-                            format!("{:>4} ", start + index),
-                            theme.markdown.code_meta.style(),
-                        ),
-                        Span::styled(line.clone(), theme.markdown.code_text.style()),
+                        Span::styled(format!("{:>4} ", start + index), theme.code.meta.style()),
+                        Span::styled(line.clone(), theme.code.text.style()),
                     ])
                 }))
                 .collect()
@@ -185,7 +182,7 @@ fn content_lines(content: &PreviewContent, theme: &Theme, width: usize) -> Vec<L
         .collect(),
         PreviewContent::Command(command) => vec![Line::from(vec![
             Span::styled("$ ", theme.input.prompt.style()),
-            Span::styled(command.clone(), theme.markdown.code_text.style()),
+            Span::styled(command.clone(), theme.code.text.style()),
         ])],
         PreviewContent::Path(path) => {
             vec![Line::styled(path.clone(), theme.markdown.link_url.style())]
@@ -224,7 +221,7 @@ fn weak_markdown_lines(source: &str, theme: &Theme, width: usize) -> Vec<Line<'s
             if render_line.fill {
                 render_line
                     .line
-                    .patch_style(theme.markdown_weak.code_background.style())
+                    .patch_style(theme.markdown_weak.code_block_bg.style())
             } else {
                 render_line.line
             }
@@ -338,12 +335,12 @@ fn hunk_lines(
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     if let Some(path) = &hunk.path {
-        lines.push(Line::styled(path.clone(), theme.markdown.code_meta.style()));
+        lines.push(Line::styled(path.clone(), theme.code.meta.style()));
     }
     if let Some(anchor) = hunk.anchor_line {
         lines.push(Line::styled(
             format!("@ line {anchor}"),
-            theme.markdown.code_meta.style(),
+            theme.code.meta.style(),
         ));
     }
     // Old and new fragments are separate logical syntax streams so multiline
@@ -360,8 +357,8 @@ fn hunk_lines(
         .new
         .as_deref()
         .map_or_else(Vec::new, |source| source.lines().collect::<Vec<_>>());
-    let old = syntax::highlight_lines(&old_source, hint, &theme.markdown);
-    let new = syntax::highlight_lines(&new_source, hint, &theme.markdown);
+    let old = syntax::highlight_lines(&old_source, hint, &theme.code);
+    let new = syntax::highlight_lines(&new_source, hint, &theme.code);
     for (offset, highlighted) in old.into_iter().enumerate() {
         lines.push(diff::styled_line(
             theme,

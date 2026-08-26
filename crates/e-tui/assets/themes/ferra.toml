@@ -14,10 +14,8 @@ coral = "#ffa07a"
 rose = "#f6b6c9"
 ember = "#e06b75"
 honey = "#f5d76e"
-added_bg = "#1e2d24"
-removed_bg = "#302023"
-added_accent = "#7ad88f"
-removed_accent = "#e06b75"
+added_bg = "#373a38"
+removed_bg = "#413036"
 
 [semantics.surface]
 base = { fg = "mist", bg = "night" }
@@ -37,7 +35,7 @@ heading6 = { fg = "bark" }
 emphasis = { fg = "mist", italic = true }
 strong = { fg = "blush" }
 strikethrough = { fg = "mist" }
-inline_code = { fg = "rose", bg = "night" }
+inline_code = { fg = "rose" }
 link_text = { fg = "coral", bold = true }
 link_url = { fg = "coral", underline = true }
 image = { fg = "blush", italic = true }
@@ -68,7 +66,7 @@ heading6 = { fg = "umber" }
 emphasis = { fg = "bark", italic = true }
 strong = { fg = "bark", bold = true }
 strikethrough = { fg = "umber" }
-inline_code = { fg = "bark", bg = "night" }
+inline_code = { fg = "bark", bg = "night", padding = 1 }
 link_text = { fg = "bark", bold = true }
 link_url = { fg = "bark", underline = true }
 image = { fg = "bark", italic = true }
@@ -138,7 +136,12 @@ unselected_marker = { fg = "mist" }
 text = { fg = "mist" }
 added = { fg = "mist", bg = "added_bg" }
 removed = { fg = "mist", bg = "removed_bg" }
-added_accent = { fg = "added_accent" }
-removed_accent = { fg = "removed_accent" }
+added_accent = { fg = "sage" }
+removed_accent = { fg = "ember" }
 context_accent = { fg = "bark" }
 separator = { fg = "umber" }
+
+[semantics.separator]
+bar = { fg = "bark", bg = "night" }
+line = { fg = "bark", bg = "night" }
+placeholder = { fg = "night", bg = "bark" }

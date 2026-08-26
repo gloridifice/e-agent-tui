@@ -567,11 +567,21 @@ impl<'a> InlineBuilder<'a> {
             Event::Text(text) => self.push_text(text),
             Event::Code(code) => {
                 // Inline code owns an independent semantic foreground/background.
-                let code_style = self.theme.markdown.inline_code.style();
+                // Padding is configurable per side via the theme's inline_code
+                // semantic style; it renders as backgrounded spaces so the chip
+                // reads as a padded block.
+                let inline = self.theme.markdown.inline_code;
+                let code_style = inline.style();
+                let left = inline.padding.left();
+                let right = inline.padding.right();
                 let line = self.lines.last_mut().unwrap();
-                line.push_span(Span::styled(" ", code_style));
+                if left > 0 {
+                    line.push_span(Span::styled(" ".repeat(left), code_style));
+                }
                 line.push_span(Span::styled(code.to_string(), code_style));
-                line.push_span(Span::styled(" ", code_style));
+                if right > 0 {
+                    line.push_span(Span::styled(" ".repeat(right), code_style));
+                }
             }
             Event::Html(html) | Event::InlineHtml(html) => self.push_text(html),
             Event::SoftBreak => match self.soft_break {
@@ -1838,6 +1848,60 @@ mod tests {
             suffix.style.bg, None,
             "source whitespace after inline code must not inherit chip bg"
         );
+    }
+
+    #[test]
+    fn inline_code_respects_configured_padding_each_side() {
+        let mut theme = Theme::ferra();
+        theme.markdown.inline_code.padding = crate::theme::Padding::Separate { left: 2, right: 3 };
+        let mut next = 0;
+        let mut units = HashMap::new();
+        let options = RenderOptions {
+            collapse_rows: 40,
+            ..Default::default()
+        };
+        let lines = render_markdown("a `code` b", &theme, &mut next, &options, &mut units);
+        let spans = &lines[0].line.spans;
+
+        let code_style = theme.markdown.inline_code.style();
+        // Spans: "a " (plain), "  " left pad, "code", "   " right pad, " b".
+        let left_pad = spans
+            .iter()
+            .find(|s| s.content == "  " && s.style.bg == theme.markdown.inline_code.bg)
+            .expect("left padding span");
+        let right_pad = spans
+            .iter()
+            .find(|s| s.content == "   " && s.style.bg == theme.markdown.inline_code.bg)
+            .expect("right padding span");
+        assert_eq!(left_pad.style, code_style);
+        assert_eq!(right_pad.style, code_style);
+        let suffix = spans.last().expect("plain suffix").content.clone();
+        assert_eq!(suffix, " b");
+        assert_eq!(
+            spans.last().unwrap().style.bg,
+            None,
+            "source separator must not inherit chip bg"
+        );
+    }
+
+    #[test]
+    fn inline_code_zero_padding_emits_no_backgrounded_spaces() {
+        let mut theme = Theme::ferra();
+        theme.markdown.inline_code.padding = crate::theme::Padding::All(0);
+        let mut next = 0;
+        let mut units = HashMap::new();
+        let options = RenderOptions {
+            collapse_rows: 40,
+            ..Default::default()
+        };
+        let lines = render_markdown("a `code` b", &theme, &mut next, &options, &mut units);
+        let text: String = lines[0]
+            .line
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+        assert_eq!(text, "a code b", "no padding spaces when padding is zero");
     }
 
     #[test]

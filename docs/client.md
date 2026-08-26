@@ -327,7 +327,7 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-ds
   obsolete `main_pane_width` key is ignored by the known-key overlay rather than migrated without a terminal width;
   rendering does zero disk reads. Themes are two-layer TOML: an open
   `[colors]` allows arbitrary color names, and fixed `[semantics.*]` (surface/markdown/markdown_weak/diff/input/
-  working_status/log/activity/card/overlay) link semantic styles to color names; each style requires only `fg`,
+  working_status/log/activity/card/overlay/separator) link semantic styles to color names; each style requires only `fg`,
   with `bg`/`bold`/`italic`/`underline` optional; unknown references, missing fixed fields, or illegal hex reject the
   whole file. An optional `padding` field on a style adds backgrounded spaces on both sides of that element: a
   scalar (`padding = 1`) sets both sides, or a table (`padding = { left = 2, right = 1 }`) sets each side

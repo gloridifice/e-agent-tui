@@ -16,12 +16,84 @@ const DEEPSEEK_E_SOURCE: &str = include_str!("../assets/themes/deepseek-e.toml")
 const FERRA_SOURCE: &str = include_str!("../assets/themes/ferra.toml");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Padding {
+    All(u16),
+    Separate { left: u16, right: u16 },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SeparatePadding {
+    left: u16,
+    right: u16,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum PaddingWire {
+    All(u16),
+    Separate(SeparatePadding),
+}
+
+impl<'de> Deserialize<'de> for Padding {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(match PaddingWire::deserialize(deserializer)? {
+            PaddingWire::All(value) => Self::All(value),
+            PaddingWire::Separate(SeparatePadding { left, right }) => {
+                Self::Separate { left, right }
+            }
+        })
+    }
+}
+
+impl Default for Padding {
+    fn default() -> Self {
+        Self::All(0)
+    }
+}
+
+impl Padding {
+    pub const MAX: u16 = 64;
+
+    pub fn left(self) -> usize {
+        match self {
+            Self::All(value) => usize::from(value),
+            Self::Separate { left, .. } => usize::from(left),
+        }
+    }
+
+    pub fn right(self) -> usize {
+        match self {
+            Self::All(value) => usize::from(value),
+            Self::Separate { right, .. } => usize::from(right),
+        }
+    }
+
+    fn validate(self) -> Result<Self, String> {
+        let exceeds = |value| value > Self::MAX;
+        match self {
+            Self::All(value) if exceeds(value) => {
+                Err(format!("padding must be between 0 and {}", Self::MAX))
+            }
+            Self::Separate { left, right } if exceeds(left) || exceeds(right) => {
+                Err(format!("padding must be between 0 and {}", Self::MAX))
+            }
+            padding => Ok(padding),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ThemeStyle {
     pub fg: Color,
     pub bg: Option<Color>,
     pub bold: bool,
     pub italic: bool,
     pub underline: bool,
+    pub padding: Padding,
 }
 
 impl ThemeStyle {
@@ -55,6 +127,8 @@ struct StyleRef {
     italic: bool,
     #[serde(default)]
     underline: bool,
+    #[serde(default)]
+    padding: Padding,
 }
 
 impl StyleRef {
@@ -71,6 +145,7 @@ impl StyleRef {
             bold: self.bold,
             italic: self.italic,
             underline: self.underline,
+            padding: self.padding.validate()?,
         })
     }
 }
@@ -184,6 +259,15 @@ style_group!(DiffRef => DiffTheme {
     separator,
 });
 
+// Pane-separator drag affordances: the idle grip (`bar`), the full-height
+// guide drawn while dragging (`line`), and the margin-inset placeholder boxes
+// shown during a drag (`placeholder`, text foreground + fill background).
+style_group!(SeparatorRef => SeparatorTheme {
+    bar,
+    line,
+    placeholder,
+});
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SemanticsRef {
@@ -197,6 +281,7 @@ struct SemanticsRef {
     card: CardRef,
     overlay: OverlayRef,
     diff: DiffRef,
+    separator: SeparatorRef,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -222,6 +307,7 @@ pub struct Theme {
     pub card: CardTheme,
     pub overlay: OverlayTheme,
     pub diff: DiffTheme,
+    pub separator: SeparatorTheme,
 
     // Compatibility aliases for render paths that combine semantic roles.
     pub bg: Color,
@@ -328,6 +414,7 @@ fn resolve_document(document: ThemeDocument) -> Result<ThemeFile, String> {
     let card = document.semantics.card.resolve(&colors)?;
     let overlay = document.semantics.overlay.resolve(&colors)?;
     let diff = document.semantics.diff.resolve(&colors)?;
+    let separator = document.semantics.separator.resolve(&colors)?;
 
     // `fg` is the only required style property. Background-oriented roles
     // gracefully inherit when `bg` is omitted rather than making the schema
@@ -358,6 +445,7 @@ fn resolve_document(document: ThemeDocument) -> Result<ThemeFile, String> {
         card,
         overlay,
         diff,
+        separator,
     };
 
     Ok(ThemeFile {
@@ -441,6 +529,22 @@ mod tests {
             ferra.theme.markdown_weak.code_background.bg,
             Some(Color::Rgb(0x2b, 0x29, 0x2d))
         );
+        // Pane separator semantics: grip and drag line use bark on the base
+        // background; the placeholder box inverts them (night text on bark).
+        assert_eq!(
+            ferra.theme.separator.bar.fg,
+            Color::Rgb(0x6f, 0x5d, 0x63)
+        );
+        assert_eq!(
+            ferra.theme.separator.line.fg,
+            Color::Rgb(0x6f, 0x5d, 0x63)
+        );
+        assert_eq!(ferra.theme.separator.bar.bg, Some(ferra.theme.bg));
+        assert_eq!(ferra.theme.separator.placeholder.fg, ferra.theme.bg);
+        assert_eq!(
+            ferra.theme.separator.placeholder.bg,
+            Some(Color::Rgb(0x6f, 0x5d, 0x63))
+        );
     }
 
     #[test]
@@ -473,6 +577,55 @@ mod tests {
             1,
         );
         assert!(parse_theme(&illegal_weak).is_none());
+    }
+
+    #[test]
+    fn missing_separator_group_is_rejected() {
+        let missing = FERRA_SOURCE.replace("[semantics.separator]", "[ignored.separator]");
+        assert!(parse_theme(&missing).is_none());
+    }
+
+    #[test]
+    fn padding_accepts_scalar_and_separate_tables() {
+        // `Padding`'s wire format is theme-file independent: deserialize it
+        // from a TOML value directly instead of string-replacing a line inside
+        // an embedded theme, which breaks whenever the built-in theme sources
+        // change.
+        let scalar: std::collections::BTreeMap<String, Padding> =
+            toml::from_str("padding = 1").unwrap();
+        assert_eq!(scalar["padding"], Padding::All(1));
+
+        let separate: std::collections::BTreeMap<String, Padding> =
+            toml::from_str("padding = { left = 2, right = 3 }").unwrap();
+        assert_eq!(
+            separate["padding"],
+            Padding::Separate { left: 2, right: 3 }
+        );
+    }
+
+    #[test]
+    fn padding_defaults_to_zero_when_omitted() {
+        // `StyleRef.padding` is `#[serde(default)]` and resolves through
+        // `Padding::default()`; both are theme-file independent.
+        assert_eq!(Padding::default(), Padding::All(0));
+        let omitted: StyleRef = toml::from_str("fg = \"rose\"").unwrap();
+        assert_eq!(omitted.padding, Padding::All(0));
+    }
+
+    #[test]
+    fn padding_rejects_invalid_and_unknown_fields() {
+        type PaddingMap = std::collections::BTreeMap<String, Padding>;
+
+        // Unknown field in the table form must be rejected (strict table).
+        assert!(toml::from_str::<PaddingMap>("padding = { left = 1, right = 1, bogus = 1 }").is_err());
+        // Missing a required table field is rejected.
+        assert!(toml::from_str::<PaddingMap>("padding = { left = 1 }").is_err());
+        // Out-of-range values are rejected at resolve time (`validate()`), not
+        // at deserialization.
+        assert!(Padding::All(65).validate().is_err());
+        assert!(Padding::Separate { left: 1, right: 65 }
+            .validate()
+            .is_err());
     }
 
     #[test]

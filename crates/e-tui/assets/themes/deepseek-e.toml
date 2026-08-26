@@ -39,7 +39,7 @@ heading6 = { fg = "muted" }
 emphasis = { fg = "emphasis", italic = true }
 strong = { fg = "emphasis", bold = true }
 strikethrough = { fg = "text" }
-inline_code = { fg = "emphasis", bg = "midnight" }
+inline_code = { fg = "emphasis", bg = "midnight", padding = 1 }
 link_text = { fg = "emphasis", bold = true }
 link_url = { fg = "link", underline = true }
 image = { fg = "link", italic = true }
@@ -70,7 +70,7 @@ heading6 = { fg = "umber" }
 emphasis = { fg = "bark", italic = true }
 strong = { fg = "bark", bold = true }
 strikethrough = { fg = "umber" }
-inline_code = { fg = "bark", bg = "night" }
+inline_code = { fg = "bark", bg = "night", padding = 1 }
 link_text = { fg = "bark", bold = true }
 link_url = { fg = "bark", underline = true }
 image = { fg = "bark", italic = true }
@@ -144,3 +144,8 @@ added_accent = { fg = "added_accent" }
 removed_accent = { fg = "removed_accent" }
 context_accent = { fg = "bark" }
 separator = { fg = "umber" }
+
+[semantics.separator]
+bar = { fg = "muted", bg = "midnight" }
+line = { fg = "muted", bg = "midnight" }
+placeholder = { fg = "midnight", bg = "muted" }

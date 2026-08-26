@@ -322,12 +322,15 @@ Theme TOML has two layers:
 
 1. `[colors]` is an open palette — key names are entirely up to the theme author, values must be 6-digit hex;
    the runtime does not depend on fixed names like `night`, `ok`.
-2. `[semantics.*]` is the fixed semantic schema, containing `surface`, `markdown`, `input` (including the status
-   bar), `working_status`, `log`, `activity`, `card`, `overlay`. Each fixed role is a style object with only `fg`
+2. `[semantics.*]` is the fixed semantic schema, containing `surface`, `markdown`, `markdown_weak`, `input` (including the status
+   bar), `working_status`, `log`, `activity`, `card`, `overlay`, `diff`, `separator`. Each fixed role is a style object with only `fg`
    required; `bg`, `bold`, `italic`, `underline` optional; color values reference user color names in `[colors]`.
    An optional `padding` field adds backgrounded spaces on the left and right of an element: a scalar applies to
    both sides, while a table sets each side independently. Padding is opt-in (omission means zero) and only the
    renderers that consult it apply it — inline code respects it, while code blocks and Mermaid ignore it.
+   The `separator` group owns the pane-separator drag affordances: `bar` colors the idle grip, `line` the
+   full-height guide shown while dragging, and `placeholder` the margin-inset drag boxes (its `fg` is the box
+   text, its `bg` the box fill).
 
 ```toml
 [colors]

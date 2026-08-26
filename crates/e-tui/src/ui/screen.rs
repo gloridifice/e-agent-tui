@@ -122,12 +122,13 @@ fn render_placeholder_box(
     let Some(area) = pane_box(area, left_padding, right_padding) else {
         return;
     };
-    let bark = theme.surface.muted_text.fg;
-    frame.render_widget(Block::default().style(Style::default().bg(bark)), area);
+    let placeholder = theme.separator.placeholder;
+    let fill = placeholder.bg.unwrap_or(theme.surface.muted_text.fg);
+    frame.render_widget(Block::default().style(Style::default().bg(fill)), area);
     frame.render_widget(
         Paragraph::new(label.to_string())
             .alignment(Alignment::Center)
-            .style(Style::default().fg(theme.bg)),
+            .style(Style::default().fg(placeholder.fg)),
         area,
     );
 }
@@ -136,15 +137,18 @@ fn paint_separator(frame: &mut Frame, area: Rect, column: u16, theme: &Theme, dr
     if column < area.x || column >= area.right() || area.height == 0 {
         return;
     }
-    let bark = theme.surface.muted_text.fg;
+    let bar = theme.separator.bar;
+    let line = theme.separator.line;
+    let bar_bg = bar.bg.unwrap_or(theme.bg);
+    let line_bg = line.bg.unwrap_or(theme.bg);
     let center = area.y + area.height / 2;
     let buffer = frame.buffer_mut();
     if dragging {
         for row in area.y..area.bottom() {
             buffer[(column, row)]
                 .set_symbol("│")
-                .set_fg(bark)
-                .set_bg(theme.bg);
+                .set_fg(line.fg)
+                .set_bg(line_bg);
         }
     }
     let grip_height = if dragging { 5 } else { 3 };
@@ -153,8 +157,8 @@ fn paint_separator(frame: &mut Frame, area: Rect, column: u16, theme: &Theme, dr
     for row in start..end {
         buffer[(column, row)]
             .set_symbol(if dragging { "┃" } else { "│" })
-            .set_fg(bark)
-            .set_bg(theme.bg);
+            .set_fg(bar.fg)
+            .set_bg(bar_bg);
     }
 }
 

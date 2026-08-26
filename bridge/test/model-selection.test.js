@@ -71,12 +71,13 @@ test('adapter records the public, tested DSH export rather than a bridge copy', 
   assert.deepEqual(MODEL_SELECTION_UPSTREAM, {
     package: '@deepseek-ai/dsh-agent',
     export: 'installModelSelection',
-    testedHost: '0.1.0-rc.6',
-    testedPackage: '0.1.0-rc.6',
+    testedHost: '0.1.1-rc.2',
+    testedPackage: '0.1.1-rc.2',
     signature: '(agentCtx, selection) => disposer',
   })
   const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
   assert.equal(manifest.peerDependencies[MODEL_SELECTION_UPSTREAM.package], MODEL_SELECTION_UPSTREAM.testedPackage)
+  assert.equal(manifest.peerDependencies['@deepseek-ai/dsh-llm'], MODEL_SELECTION_UPSTREAM.testedHost)
   assert.equal(manifest.dshCompatibility.testedHost, MODEL_SELECTION_UPSTREAM.testedHost)
   assert.equal(manifest.dshCompatibility.modelSelection.package, MODEL_SELECTION_UPSTREAM.package)
   assert.equal(manifest.dshCompatibility.modelSelection.export, MODEL_SELECTION_UPSTREAM.export)

@@ -10,8 +10,8 @@
 export const MODEL_SELECTION_UPSTREAM = Object.freeze({
   package: '@deepseek-ai/dsh-agent',
   export: 'installModelSelection',
-  testedHost: '0.1.0-rc.6',
-  testedPackage: '0.1.0-rc.6',
+  testedHost: '0.1.1-rc.2',
+  testedPackage: '0.1.1-rc.2',
   signature: '(agentCtx, selection) => disposer',
 })
 

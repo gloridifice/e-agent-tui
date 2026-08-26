@@ -1,4 +1,4 @@
-//! `dshe` launcher: probe for a running DSH bridge, spawn `dsh --profile e`
+//! `dshe` launcher: probe for a running DSH bridge, spawn `dsh --profile e --no-open`
 //! when absent (global `dsh` first, `npx @deepseek-ai/dsh` fallback), and shut
 //! the spawned service down when the last attached TUI exits.
 //!
@@ -908,6 +908,7 @@ mod tests {
         assert!(command
             .windows(2)
             .any(|args| args[0] == "--profile" && args[1] == crate::dsh_env::PROFILE_NAME));
+        assert!(command.iter().any(|arg| arg == "--no-open"));
     }
 
     #[test]

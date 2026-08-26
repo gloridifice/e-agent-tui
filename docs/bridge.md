@@ -14,7 +14,7 @@ Architecture conventions for the Node.js (ESM) DSH host-composition plugin.
 - **DSH command integration**: after attach, use `ctx.commands.list(agent)` to send handler-free
   `commands{commands[{name,description,input?:{hint}}]}`; on `commands/change`, recompute the effective catalog
   for each connection (agent-scoped shadowing cannot be done as a global incremental patch). `command{line}` goes
-  through `commands.execute(agent,line,signal)`; `undefined` means unregistered/invalid syntax, and the settled
+  through `commands.execute(agent,line,images,signal)` (the TUI passes an empty `images` list); `undefined` means unregistered/invalid syntax, and the settled
   result goes through `command-result{commandId,kind,text?}` — never becomes a model message. Each execution owns
   an `AbortController`; `interrupt` aborts all active command controllers as well as the agent turn, and the client
   keeps Esc interruptible while direct commands are unsettled even if agent status is idle. Execution spans awaits,
@@ -98,14 +98,17 @@ Architecture conventions for the Node.js (ESM) DSH host-composition plugin.
   truncated candidates.
 - **model selection must be installed**: every session the bridge creates/resumes must first call the
   `model-selection.js` adapter's `install(agentCtx, { current, assembled })` inside `setup`. The adapter
-  lazy-loads and reuses the `@deepseek-ai/dsh-agent@0.1.0-rc.6` public package-root `installModelSelection`
+  lazy-loads and reuses the `@deepseek-ai/dsh-agent@0.1.1-rc.2` public package-root `installModelSelection`
   export — the production bridge must **not** copy a waterfall; it is responsible for the
   `system-prompt/assemble` `variables.{provider,model}` injection and post-snapshot `agent/request` routing,
   otherwise the persona's `{{model}}` has no value. `current` takes the `/new` mirror's current session
   provider/model (`mirror`), else `agentDefaultModel.currentSelection()`; adapter install and preset mount are
-  two orthogonal steps, and the adapter runs first. After changing DSH/compatibility metadata you must
-  mount/restart, then run `npm run verify-dsh-upgrade`; it checks the canonical contract, exact host/agent
-  version/export, deployed helper, and `/new`/cold-resume/`/model` routing.
+  two orthogonal steps, and the adapter runs first. The bridge pins both direct DSH prerelease peers
+  (`dsh-agent` and `dsh-llm`) to the tested host version; do not combine an exact prerelease with a broad stable
+  range because pnpm's automatic peer intersection can discard the prerelease and request an unpublished stable
+  package. After changing DSH/compatibility metadata you must mount/restart, then run
+  `npm run verify-dsh-upgrade`; it checks the canonical contract, exact host/agent version/export, deployed
+  helper, and `/new`/cold-resume/`/model` routing.
 - **/login field destinations** (bridge `login.js`): upstream `login-get` / `login-set-api-key` /
   `login-proxy-create` / `login-proxy-delete`; downstream `login{providers[],proxies[],error?}`.
   - API key: `ctx.llm.listProviders()` lists providers; `providerCredentialRef` reads `apiKeyEnv` from settings

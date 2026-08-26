@@ -205,8 +205,8 @@ test('dispatcher executes an integrated command and relays its direct UI result'
   const calls = []
   const h = harness({
     commands: {
-      execute: async (agent, line, signal) => {
-        calls.push({ agent, line, signal })
+      execute: async (agent, line, images, signal) => {
+        calls.push({ agent, line, images, signal })
         return {
           commandId: 'cmd-1',
           result: { kind: 'success', text: 'feedback recorded' },
@@ -221,6 +221,9 @@ test('dispatcher executes an integrated command and relays its direct UI result'
   h.dispatcher.handle(Buffer.from(JSON.stringify({ type: 'command', line: '/feedback good' })))
   await new Promise((resolve) => setImmediate(resolve))
   assert.equal(calls[0].line, '/feedback good')
+  assert.deepEqual(calls[0].images, [])
+  assert.ok(calls[0].signal instanceof AbortSignal)
+  assert.equal(calls[0].signal.aborted, false)
   assert.deepEqual(h.frames.at(-1), {
     type: 'command-result', commandId: 'cmd-1', kind: 'success', text: 'feedback recorded',
   })
@@ -230,7 +233,7 @@ test('dispatcher interrupt aborts an active integrated command', async () => {
   let commandSignal
   const h = harness({
     commands: {
-      execute: (_agent, _line, signal) => {
+      execute: (_agent, _line, _images, signal) => {
         commandSignal = signal
         return new Promise((_resolve, reject) => {
           signal.addEventListener('abort', () => reject(signal.reason), { once: true })

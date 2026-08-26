@@ -64,12 +64,13 @@ pub fn dsh_launcher_argv() -> Option<Vec<String>> {
     }
 }
 
-/// The argv that boots the dedicated `e` profile, or `None` when DSH is
-/// not installed.
+/// The argv that boots the dedicated `e` profile without opening the browser
+/// UI, or `None` when DSH is not installed.
 pub fn dsh_command() -> Option<Vec<String>> {
     let mut argv = dsh_launcher_argv()?;
     argv.push("--profile".into());
     argv.push(PROFILE_NAME.into());
+    argv.push("--no-open".into());
     Some(argv)
 }
 
@@ -100,5 +101,6 @@ mod tests {
         assert!(command
             .windows(2)
             .any(|args| args[0] == "--profile" && args[1] == PROFILE_NAME));
+        assert!(command.iter().any(|arg| arg == "--no-open"));
     }
 }

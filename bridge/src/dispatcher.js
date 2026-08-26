@@ -123,7 +123,10 @@ export function createClientDispatcher({
     const abortOnDetach = () => commandAbort.abort()
     current.abort.signal.addEventListener?.('abort', abortOnDetach, { once: true })
     Promise.resolve()
-      .then(() => commands.execute(current.agent, msg.line, commandAbort.signal))
+      // DSH 0.1.1-rc.2 widened the signature to `execute(agent, line, images, signal)`;
+      // the TUI sends no composer images, so pass an empty images list and keep the
+      // abort signal in its final position.
+      .then(() => commands.execute(current.agent, msg.line, [], commandAbort.signal))
       .then((execution) => {
         if (!conns.isCurrent(current, conn)) return
         if (commandAbort.signal.aborted) {

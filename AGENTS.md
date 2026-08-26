@@ -1,9 +1,9 @@
 # AGENTS.md
 
-Project notes for coding agents. Human readers should see [README.md](README.md); for design decisions see
-[docs/design.md](docs/design.md) (D1–D32, protocol, milestones). Detailed architecture conventions live in
-[docs/client.md](docs/client.md) (Rust client) and [docs/bridge.md](docs/bridge.md) (Node.js bridge); the full
-docs index is in [docs/README.md](docs/README.md).
+Project notes for coding agents. Human readers should see [README.md](README.md). Current architecture
+conventions live in [the Rust client documentation](docs/subsystem/client/architecture.md) and
+[the Node.js bridge documentation](docs/subsystem/bridge/architecture.md); documentation authority and history
+navigation live in [docs/README.md](docs/README.md).
 
 > **Language policy:** All project documentation — this file and everything under `docs/` — is written and
 > maintained in **English**. When adding or updating documentation, write English prose; do not introduce new
@@ -14,9 +14,9 @@ docs index is in [docs/README.md](docs/README.md).
 Terminal client for DeepSeek Harness (DSH) (project name **e**, executable **`dshe`**), in two parts:
 
 - `bridge/` — Node.js (ESM) DSH **host-composition plugin** (one WS upgrade route `/dsh-tui`). Conventions:
-  [docs/bridge.md](docs/bridge.md).
+  [the bridge architecture](docs/subsystem/bridge/architecture.md).
 - `crates/e-dsh/` — Rust DSH adapter and executable package (`e-dsh`, artifact `dshe.exe`; transitional library import name `e`).
-- `crates/e-tui/` — kernel-neutral frontend library package (`e-tui`), owning lifecycle state, projection, rendering, semantic syntax highlighting, paced transcript/Preview text reveal, responsive Preview, Reading View, themes, and config values. Rust conventions: [docs/client.md](docs/client.md).
+- `crates/e-tui/` — kernel-neutral frontend library package (`e-tui`), owning lifecycle state, projection, rendering, semantic syntax highlighting, paced transcript/Preview text reveal, responsive Preview, Reading View, themes, and config values. Rust conventions: [the client architecture](docs/subsystem/client/architecture.md).
 
 The two processes communicate over JSON WebSocket; the machine-readable contract is
 `bridge/protocol-contract.json` (see [docs/protocol.md](docs/protocol.md)). Token auth lives at
@@ -81,21 +81,11 @@ dependencies directly to the owning package manifest (`crates/e-dsh/Cargo.toml` 
 
 ## Key architecture conventions
 
-Implementation conventions are documented per part and are the source of truth when editing:
-
-- **client (Rust)** — [docs/client.md](docs/client.md): event display model (four public surfaces), reasoning
-  folding, file/tool activity formatting (including reserved trailing metrics), surface semantics, render cache,
-  performance red lines, runtime/lock discipline, input & character boundaries, overlays/Input Page (including
-  ask_user_question pages that suppress tool activity and preserve the input draft), semantic Reading/copy,
-  responsive Preview and deferred resolution, application-owned visible mouse selection/copy alongside wheel scrolling, draggable percentage-based
-  pane separators (25% message minimum, 19-column split rectangle for 16 usable Preview columns, one-column pane margins, capture before selection, Bark-only placeholder drag frames, and
-  release-only persistence), layered rendering, markdown/table styling, history paging, status bar, command paradigm, deferred `/new`, stable
-  transcript grapheme reveal, Preview row reveal/fade and independent animation deadlines,
-  config/theme/launcher.
-- **bridge (Node.js)** — [docs/bridge.md](docs/bridge.md): module layout, DSH command integration, dynamic
-  user-question relay, cross-await conn discipline, snapshot/history data sources, payload trimming,
-  protocol-contract sync, `/new` workspace
-  inheritance, session title, model-selection install, `/login` `/model` `/skill` bridging.
+Use [the Rust client architecture](docs/subsystem/client/architecture.md) for frontend/adapter ownership,
+projection, rendering, interaction, cache, and runtime invariants. Use
+[the bridge architecture](docs/subsystem/bridge/architecture.md) for host composition, connection/session
+lifecycle, payload trimming, and DSH integration. Exact wire fields and capacities come only from
+`bridge/protocol-contract.json`; [docs/protocol.md](docs/protocol.md) is generated.
 
 ## Maintenance discipline
 
@@ -105,11 +95,19 @@ Implementation conventions are documented per part and are the source of truth w
 - For small and medium Rust tasks, do not run `cargo fmt --all` or `cargo clippy` at the end; for large tasks,
   run `cargo fmt --all` and `cargo clippy` at the end. Regardless of task size, `cargo fmt --all` must pass
   before committing.
-- After a task, sync this file (AGENTS.md) and related `docs/` (e.g. design.md, client.md, bridge.md) to the
-  scope of the change; descriptions of features, interaction keys, protocol fields, config defaults, or command
-  lists must not lag. Key changes must also sync `ui.rs`'s `help_overlay`.
-- **Do not update `README.md` unless necessary, and keep it concise.** Only update README when user-facing
-  basics materially change — install/build flow, core user-visible capabilities, or keybinding quick reference;
+- Documentation is not a mirror of implementation state; a task completing with no documentation changes is
+  normal. Update docs only when a change affects a documented public workflow/interface, architecture boundary/
+  invariant, persistent format or cross-boundary ABI, or benchmark methodology. Internal refactors, private
+  renames, derivable details, and bug fixes restoring the existing contract normally require no docs edit.
+- Keep each fact in one authoritative location. Prefer source, tests, generated output, schema, and `--help` for
+  exact behavior. Current docs are maintained; audits, reports, experiments, history, and archive are context only
+  and must not constrain current implementation by themselves. Freeze and replace obsolete design narratives
+  instead of continuously synchronizing them. See [docs/README.md](docs/README.md) for the full authority and
+  lifecycle model.
+- User-visible interaction-key changes must still update `e-tui`'s help overlay and the README quick reference
+  when applicable.
+- **Do not update `README.md` unless necessary, and keep it concise.** Only update README when user-facing basics
+  materially change — install/build flow, core user-visible capabilities, or keybinding quick reference;
   implementation details, architecture notes, protocol details, and development records belong in `docs/`, not
   in an expanded README.
 
@@ -140,8 +138,6 @@ Implementation conventions are documented per part and are the source of truth w
   The old bridge's startup full disk read is ~14s; the new bridge's active-session path is <100ms.
 - The `dshe` binary embeds the bridge runtime and gates startup on a current `.dshe-setup.json` record; a
   missing/stale/damaged setup fails with English guidance to run `dshe setup` before the launcher runs.
-- Design-doc M milestone numbering has fallen behind the implementation (features exceed M6); code and README
-  are authoritative.
 - Under `DSH_TUI_TIMING=1`, per-stage startup timings print to stderr, for locating startup regressions.
 - Paste accepts terminal bracketed-paste events and an application-owned `Ctrl+V` fallback through the `e-dsh` clipboard-read port. Both paths normalize line endings and target only the active Input Page editor or the visible composer; never let a non-editing Input Page mutate its preserved hidden draft, and never insert modified shortcut letters as text.
 - Live assistant Markdown and selected Ready Preview content use presentation-only reveal sidecars; retain complete semantic/copy/cache content, exclude width-dependent fill padding from signatures, and preserve transcript suffix-splice behavior. Transcript admission must reuse UAX #14 wrapping and hold only the unstable trailing atom until a break, timeout, or settlement; Preview pacing applies after wrapping and counts display rows. Compose independent admission, content, and fade deadlines with the spinner clock rather than restoring a fixed ticker.

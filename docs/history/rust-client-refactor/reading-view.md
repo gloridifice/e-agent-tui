@@ -1,5 +1,8 @@
 # Reading View and Preview pane
 
+> Status: Historical
+> Authority: Non-normative. This document records the design used during the completed migration; current behavior is defined elsewhere.
+
 ## Purpose
 
 Reading View replaces the existing row-oriented Copy Mode. It treats the transcript as a semantic document made of Blocks and Items. The same Preview pane is present in normal mode and Reading View, but each mode chooses its target differently.

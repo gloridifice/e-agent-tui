@@ -1,5 +1,8 @@
 # Brooks-Lint Review
 
+> Status: Historical
+> Authority: Non-normative. This audit records one repository snapshot and does not define the current implementation.
+
 - **Mode:** Architecture Audit
 - **Scope:** whole repository; full mapping of `client/` and `bridge/` production modules, sampling `tools/`, `docs/`, and OpenSpec.
 - **Health Score:** 94/100

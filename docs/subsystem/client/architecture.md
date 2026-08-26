@@ -1,6 +1,9 @@
-# Rust client
+# Rust client architecture
 
-Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-dsh` and owns the `dshe.exe` artifact (with transitional library import name `e`); `crates/e-tui` is the kernel-neutral frontend library. During the staged extraction, modules not yet moved remain under `e-dsh`, and current ownership is always determined by the code rather than the target plan.
+> Status: Current
+> Authority: Stable package boundaries and frontend invariants. Source and tests govern exact types, defaults, and behavior.
+
+Architecture conventions for the Rust workspace. `crates/e-dsh` is package `e-dsh` and owns the `dshe.exe` artifact (with transitional library import name `e`); `crates/e-tui` is the kernel-neutral frontend library. Current ownership is determined by the code and the boundaries below, never by the completed migration record.
 
 - **Current package boundary**: DSH `ServerMessage`/`ClientMessage` and raw host-event parsing remain in `e-dsh::protocol`. `e-dsh::bridge::adapter` converts inbound values to `e-tui::AgentEvent` and outbound `e-tui::AgentRequest` values back to wire messages. `e-tui::TuiApp` owns `SessionModel`, `TimelineModel`, `CatalogModel`, `InteractionModel`, `RenderState`, shared Preview state/cache, Reading Document/Layout, and Reading View state. `e-dsh::AppState` remains the normalized DSH reduction adapter around that root; it does not mirror migrated lifecycle fields. `RuntimeController` returns owned `e-tui::UiAction` values, and the runner executes or awaits them only after releasing state guards. `e-tui` contains no DSH message/event names, WebSocket, filesystem persistence, clipboard implementation, process control, or terminal lifecycle, enforced by `crates/e-dsh/tests/architecture.rs`.
 - **Event display model** (`crates/e-tui/src/display.rs` + `crates/e-tui/src/projection/{store,assistant,tool,lifecycle,retry,command,workflow,surface}.rs` +

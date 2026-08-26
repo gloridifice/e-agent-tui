@@ -1,5 +1,8 @@
 # Migration plan
 
+> Status: Historical
+> Authority: Non-normative. This completed migration plan is preserved for context and does not define the current implementation.
+
 ## Approach
 
 The migration should preserve behavior while boundaries move. Crate extraction, state decomposition, rendering reorganization, the two-pane layout, and Reading View should not land as one rewrite.
@@ -436,7 +439,7 @@ npm test
 node tools/sync-protocol-contract.mjs --check
 ```
 
-After DSH compatibility changes, run the deployed-copy upgrade gate documented in [../bridge.md](../bridge.md).
+After DSH compatibility changes, run the deployed-copy upgrade gate documented in [the current bridge architecture](../../subsystem/bridge/architecture.md).
 
 The normalized `AgentEvent` contract is internal to the Rust workspace and does not automatically require a wire protocol bump. A bump is required only when the bridge messages change.
 
@@ -447,10 +450,10 @@ During implementation, keep future and current behavior separate. Update current
 When the crate split lands, update:
 
 - root workspace commands in `AGENTS.md`;
-- [the root README](../../README.md) only if user-facing install commands change;
-- [../client.md](../client.md) for the new crate and runtime boundaries;
-- [../design.md](../design.md) for the two-pane layout decision;
-- [the documentation index](../README.md).
+- [the root README](../../../README.md) only if user-facing install commands change;
+- [the current Rust client architecture](../../subsystem/client/architecture.md) for the new crate and runtime boundaries;
+- [the archived design draft](../../archive/dsh-tui-design-v0.5.md) for the two-pane layout decision;
+- [the documentation index](../../README.md).
 
 When Preview and Reading View land, update:
 

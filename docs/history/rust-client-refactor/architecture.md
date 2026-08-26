@@ -1,5 +1,8 @@
 # Target Rust architecture
 
+> Status: Historical
+> Authority: Non-normative. This document records the migration target as proposed and completed; it does not define the current implementation.
+
 ## Status and scope
 
 This document defines the target architecture for the Rust side of `e`. It covers crate ownership, the agent kernel boundary, state transitions, rendering composition, screen layout, and the runtime model.

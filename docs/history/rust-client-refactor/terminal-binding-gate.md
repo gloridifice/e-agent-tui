@@ -1,5 +1,8 @@
 # Reading View terminal binding gate
 
+> Status: Historical
+> Authority: Non-normative. This compatibility investigation records why the implemented binding was selected.
+
 The original `Ctrl+V` candidate does not pass the supported-terminal gate. Windows Terminal reserves `Ctrl+V` for paste in its default configuration, and current ConHost configurations may also translate it into a paste operation before Crossterm can observe a key event. That makes it unsuitable as the only Reading View entry gesture even though bracketed paste itself continues to arrive as `Event::Paste`.
 
 The selected binding is **`Ctrl+Y`**. It is unclaimed by dshe's global router, composer, Input Pages, approvals, and Preview toggle, and the supported terminal families deliver the corresponding control key without taking ownership of paste.

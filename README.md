@@ -92,9 +92,4 @@ cargo build --release
 dshe setup
 ```
 
-Development documentation is available in [`docs/`](docs/):
-
-- [`docs/design.md`](docs/design.md) — architecture, design decisions, interaction rules, and implementation notes.
-- [`docs/protocol.md`](docs/protocol.md) — generated WebSocket protocol reference. Its canonical source is [`bridge/protocol-contract.json`](bridge/protocol-contract.json).
-- [`docs/tracy.md`](docs/tracy.md) — Tracy setup, startup timing, frame metrics, and performance benchmarks.
-- [`docs/architecture-audit.md`](docs/architecture-audit.md) — current module dependency and architecture health audit.
+See the [`docs/` index](docs/README.md) for current client and bridge architecture, the generated WebSocket reference, performance methodology, and clearly separated historical material. The canonical wire source is [`bridge/protocol-contract.json`](bridge/protocol-contract.json).

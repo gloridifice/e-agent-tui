@@ -1,6 +1,9 @@
 # CJK-Aware Greedy Line Wrapping — Design
 
-Status: **implemented** — `unicode-linebreak` 0.1.5 (crates.io) is integrated into
+> Status: Historical
+> Authority: Non-normative. This document preserves the completed research and implementation record; current wrapping invariants live in the client architecture and source.
+
+Implementation status at completion: **implemented** — `unicode-linebreak` 0.1.5 (crates.io) is integrated into
 `crates/e-tui/src/wrap.rs` (words split at UAX #14 break opportunities, whitespace handling
 unchanged, over-wide words fall back to grapheme splitting). This document remains the research and
 design record.

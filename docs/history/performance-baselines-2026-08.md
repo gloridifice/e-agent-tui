@@ -1,5 +1,8 @@
 # dshe Tracy and frame performance measurement
 
+> Status: Historical
+> Authority: Non-normative. This document is a 2026-08 measurement snapshot and does not define the current implementation or benchmark method.
+
 Tracy ([wolfpld/tracy](https://github.com/wolfpld/tracy)) is used to locate startup, event-loop, cache-layout, and terminal-frame bottlenecks; without a GUI you can use startup timing, aggregate frame metrics, and release benchmarks.
 
 ## 1. Dependencies and feature switches

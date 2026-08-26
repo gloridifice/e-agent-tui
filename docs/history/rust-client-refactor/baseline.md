@@ -1,5 +1,8 @@
 # Rust client refactor baseline
 
+> Status: Historical
+> Authority: Non-normative. This dated baseline is frozen evidence and does not define current commands, performance, or implementation.
+
 This file records the pre-migration baseline for the architecture and Reading View refactor. Measurements were captured on 2026-08-19 at commit `68e3511` on the local Windows reference workstation.
 
 ## Environment

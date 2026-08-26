@@ -1,4 +1,7 @@
-# bridge (Node.js)
+# Bridge architecture (Node.js)
+
+> Status: Current
+> Authority: Stable bridge boundaries and host-integration invariants. Source, tests, and the generated wire contract govern exact behavior.
 
 Architecture conventions for the Node.js (ESM) DSH host-composition plugin.
 

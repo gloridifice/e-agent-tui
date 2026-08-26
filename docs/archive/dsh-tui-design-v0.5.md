@@ -1,7 +1,9 @@
 # DSH TUI Design Document (draft v0.5)
 
-> Status: D1–D30 implemented; later implementation revisions follow this document's current sections and the
-> machine-readable protocol contract.
+> Status: Archived
+> Authority: None for the current implementation. This document preserves the original design narrative and decision list.
+>
+> Completion note: D1–D30 were implemented; later implementation revisions were once synchronized into this draft before it was archived.
 > v0.4 changes: message format spec (user messages verbatim, shell card spinner+line count, read merge-fold);
 > borderless input-bar background block + paste placeholder.
 > v0.5 changes (v0.1.0 milestone): project renamed **e** (executable **`dshe`**); config moved to
@@ -748,8 +750,8 @@ font size (terminal side), clipboard backend (platform-decided), key rebinding (
 ### 5.2 Message protocol (JSON, single-contract generation)
 
 The only machine-readable source for message names, surface events, capacities, `shapeTypes`, payload `records`,
-and crates/e-dsh/server `messageShapes` is [`bridge/protocol-contract.json`](../bridge/protocol-contract.json).
-`node tools/sync-protocol-contract.mjs` validates that JSON and sync-generates [`docs/protocol.md`](protocol.md),
+and crates/e-dsh/server `messageShapes` is [`bridge/protocol-contract.json`](../../bridge/protocol-contract.json).
+`node tools/sync-protocol-contract.mjs` validates that JSON and sync-generates [`docs/protocol.md`](../protocol.md),
 Rust `build.rs` constants/shape JSON, Rust/Node conformance fixtures, and
 `bridge/package.json.dshCompatibility.wireProtocol`; `--check` fails on any unsynced derivative.
 `tools/generate-protocol-doc.mjs` is just the sync tool's compatibility entry point. Both the Node bridge runtime
@@ -921,7 +923,7 @@ items are **implementation verification items**, not design questions:
   distance).
 - 2026-08-18 Brooks Architecture Audit: 94/100; production dependency graph SCC-free, single-track transcript/
   strict Config/canonical contract all have automatic guards. Full graph and remaining `AppState` cognitive-load
-  suggestions in [`architecture-audit.md`](architecture-audit.md).
+  suggestions in [the 2026-08-18 architecture audit](../history/architecture-audit-2026-08-18.md).
 
 ## 9. Milestone draft (refined after design finalization)
 

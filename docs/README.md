@@ -1,46 +1,38 @@
-# docs
+# Documentation
 
-Design and architecture documentation for the **e** / `dshe` project. Everything here — and in
-[AGENTS.md](../AGENTS.md) — is written and maintained in English (see the language policy there).
+> Status: Current
 
-## Index
+This directory contains the maintained architecture and measurement method for **e** / `dshe`, plus frozen project history. Documentation is not a mirror of implementation state.
 
-- [client.md](client.md) — Rust TUI architecture conventions (kernel boundary, lifecycle state, event display,
-  layered rendering, responsive Preview, semantic Reading/copy, performance, input precedence, Input Pages,
-  deferred `/new`, config/theme/launcher).
-- [bridge.md](bridge.md) — Node.js bridge architecture conventions (module layout, DSH command integration,
-  cross-await conn discipline, snapshot/history data sources, payload trimming, `/new` workspace inheritance,
-  session title, model-selection install, `/login` `/model` `/skill` bridging).
-- [design.md](design.md) — design decisions D1–D30, protocol, milestones.
-- [protocol.md](protocol.md) — generated protocol documentation (hand-written source of truth is
-  `bridge/protocol-contract.json`).
-- [tracy.md](tracy.md) — Tracy profiling notes.
-- [architecture-audit.md](architecture-audit.md) — architecture audit notes.
-- [cjk-line-wrapping.md](cjk-line-wrapping.md) — proposal: UAX #14 (Unicode line breaking) based CJK-aware
-  wrapping for `crates/e-tui/src/wrap.rs`; research, integration design, test and docs plan.
-- [plan/](plan/README.md): completed migration baselines, package/state/render extraction record, performance
-  gates, and the Reading binding compatibility decision.
+All project documentation is maintained in English.
 
-## Project overview
+## Authority
 
-Terminal client for DeepSeek Harness (DSH) (project name **e**, executable **`dshe`**), in two parts:
+When sources disagree, use this order:
 
-- `bridge/` — Node.js (ESM) DSH **host-composition plugin**. Registers one WS upgrade route
-  (`/dsh-tui`), forwards session events to the TUI, and accepts input/commands/interrupt/approval answers/
-  session switching/history paging, plus `/login` `/model` `/skill:<name>` bridging. The only injected
-  dependency is `webServer`.
-- `crates/e-dsh/` — Rust DSH adapter and executable package (`e-dsh`, artifact `dshe.exe`; transitional library import name `e`). It owns protocol/setup/launcher infrastructure, terminal/runtime composition, effect ports, clipboard, persistence, and deferred Preview resolution.
-- `crates/e-tui/` — kernel-neutral frontend library package (`e-tui`). It owns normalized contracts, lifecycle state, projection, rendering, themes/config values, responsive Preview, Reading Document/Layout, and Reading View.
+1. active normative specifications under `openspec/specs/` and the canonical wire contract at [`bridge/protocol-contract.json`](../bridge/protocol-contract.json);
+2. source code, tests, generated contracts/schema, and command `--help` output for exact behavior;
+3. Current architecture and methodology documents listed below for stable boundaries, invariants, and rationale;
+4. audits, research, migration records, experiments, and archive material as context only.
 
-The two processes communicate over JSON WebSocket; the only machine-readable contract is
-`bridge/protocol-contract.json` (the sole hand-written source of truth for version/capacities/roster/
-shapeTypes/records/messageShapes). `tools/sync-protocol-contract.mjs` syncs `docs/protocol.md`,
-`crates/e-dsh/build.rs` constants/shape JSON, Rust/Node conformance fixtures, and
-`bridge/package.json.dshCompatibility.wireProtocol` from it; `--check` must pass after changing the contract.
-`bridge/src/protocol.js` reads the same JSON at runtime; `tools/generate-protocol-doc.mjs` is only a
-compatibility wrapper. Token auth; the token lives at `%DSH_HOME%\dsh-tui.token`.
-Client config lives at `%APPDATA%\dshe\config.toml`; the default config source is
-`crates/e-tui/assets/default_config.toml` (embedded via `include_str!` and parsed; the user TOML only overrides
-known keys and is then deserialized through a single strict `Config` schema; missing fields inherit,
-deprecated unknown keys are ignored, malformed/known-type errors fall back safely); themes live in
-`%APPDATA%\dshe\themes\`.
+Historical or archived material never becomes a current requirement by itself. The generated [wire protocol reference](protocol.md) is useful for reading, but its header identifies the machine-readable source that must be edited.
+
+## Current documentation
+
+- [Rust client](subsystem/client/README.md) — `e-dsh` / `e-tui` ownership, state, interaction, rendering, and runtime invariants.
+- [Node.js bridge](subsystem/bridge/README.md) — DSH composition, session, host-integration, and transport invariants.
+- [Performance methodology](subsystem/performance/README.md) — repeatable profiling and frame-measurement workflow.
+- [Generated wire protocol](protocol.md) — human-readable derivative of the canonical JSON contract.
+
+For installation, common commands, and user-facing key interactions, see the [root README](../README.md).
+
+## History and archive
+
+- [History](history/README.md) — dated audits, research, migration records, and measurement snapshots; non-normative.
+- [Archive](archive/README.md) — superseded design material; frozen and non-authoritative.
+
+## Update policy
+
+Update a Current document only when a change affects a documented public workflow or interface, architecture boundary or invariant, persistent format or cross-boundary contract, or benchmark methodology. Internal refactors, private renames, mechanically derivable details, and bug fixes that restore an existing contract normally require no documentation change.
+
+Keep each fact in one authoritative location. Prefer source, tests, generated output, schema, or `--help` for exact registries, defaults, field lists, and implementation details. When an old design no longer serves as a concise current reference, freeze it in history or archive and replace it with a smaller Current document instead of continuously synchronizing the old narrative.

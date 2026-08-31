@@ -5,10 +5,10 @@
 `e` is a terminal UI for coding agents, designed to be concise, attention-friendly, lightweight, and fast. It provides `dshe` for [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness) and the experimental `pie` frontend for Pi. It does not alter either agent runtime. The project is still in an early stage of development.
 
 <p align="center">
-<a href="#quick-start">Quick Start</a> | <a href="#build-yourself">Build Yourself</a> | <a href="#development">Development</a>
+<a href="#quick-start-dsh">Start for DSH</a> | <a href="#quick-start-pi">Start for Pi</a> | <a href="#build-yourself">Build Yourself</a> | <a href="#development">Development</a>
 </p>
 
-## Quick Start
+## Quick Start DSH
 
 > Windows and PowerShell are currently the primary supported environment.
 
@@ -32,28 +32,7 @@ dshe
 
 On first launch, `dshe` starts its dedicated DSH service automatically. Use `/login` to configure an API key or proxy, `/model` to select a provider and model, and `/effort` to change the reasoning effort. Wide terminals show a themed Preview pane; drag the Bark-colored separator to resize it. Preview collapses below 16 columns, while narrow terminals keep the main conversation usable.
 
-### Build Yourself
-
-To build without installing:
-
-```bash
-git clone https://github.com/gloridifice/e.git
-cd e
-cargo dev # alias of `cargo install --path crates/e-dsh`
-```
-
-```bash
-dshe setup
-dshe
-```
-
-For a profiling build, enable the optional Tracy integration:
-
-```bash
-cargo build --release --features tracy
-```
-
-### Pi frontend (experimental)
+## Quick Start Pi
 
 Install Pi and the `pie` executable from source, then run it in a project directory:
 
@@ -64,6 +43,31 @@ pie
 ```
 
 `pie` launches the official `pi --mode rpc` runtime and reuses Pi's native models, credentials, extensions, resources, and session files. Use `pie --session <session.jsonl>` to resume directly; `pie --approve` or `pie --no-approve` explicitly overrides Pi's native project-trust behavior. Run `pie --help` for all launch options.
+
+## Build Yourself
+
+To build without installing:
+
+```bash
+git clone https://github.com/gloridifice/e.git
+cd e
+cargo devdsh # alias of `cargo install --path crates/e-dsh`
+cargo devpi # alias of `cargo install --path crates/e-pi`
+```
+
+```bash
+dshe setup
+dshe
+# or for pi
+pie
+```
+
+For a profiling build, enable the optional Tracy integration:
+
+```bash
+cargo build --release --features tracy
+```
+
 
 ## Key interactions
 

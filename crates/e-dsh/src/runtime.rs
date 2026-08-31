@@ -622,6 +622,13 @@ impl RuntimeController {
                     .into_iter()
                     .collect();
             }
+            AgentEvent::Interaction(e_tui::agent::InteractionEvent::SetEditorText { text }) => {
+                if ui.input_page.is_none() {
+                    ui.input.restore_text(text);
+                    return vec![UiAction::RequestDraw(DrawPriority::Interactive)];
+                }
+                return Vec::new();
+            }
             event => {
                 let Ok(msg) = crate::bridge::adapter::legacy_server_message(event) else {
                     return Vec::new();

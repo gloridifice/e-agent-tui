@@ -357,7 +357,8 @@ pub(crate) fn legacy_server_message(event: AgentEvent) -> Result<ServerMessage, 
             ServerMessage::Error { code, message }
         }
         AgentEvent::Interaction(InteractionEvent::Heartbeat) => ServerMessage::Pong,
-        other @ (AgentEvent::Preview(_)
+        other @ (AgentEvent::Interaction(InteractionEvent::SetEditorText { .. })
+        | AgentEvent::Preview(_)
         | AgentEvent::EffectCompleted(_)
         | AgentEvent::Deadline(_)) => return Err(other),
     })

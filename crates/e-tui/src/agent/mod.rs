@@ -195,6 +195,11 @@ pub enum InteractionEvent {
         code: String,
         message: String,
     },
+    /// Replace the visible ordinary composer text at an adapter's request.
+    /// Hidden Input Page editors retain their own drafts.
+    SetEditorText {
+        text: String,
+    },
     Heartbeat,
 }
 

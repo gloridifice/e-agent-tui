@@ -1,0 +1,29 @@
+[package]
+name = "e-pi"
+version = "0.0.3"
+edition = "2021"
+description = "Pi RPC adapter and pie executable for the e agent TUI"
+
+[lib]
+name = "e_pi"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pie"
+path = "src/main.rs"
+
+[dependencies]
+e-tui = { path = "../e-tui" }
+e-dsh = { path = "../e-dsh" }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+ratatui = "0.30"
+crossterm = { version = "0.29", features = ["event-stream"] }
+arboard = "3"
+toml = "1.1"
+directories = "6"
+
+[dev-dependencies]
+tempfile = "3"

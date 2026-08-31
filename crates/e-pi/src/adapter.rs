@@ -65,6 +65,7 @@ pub struct PiAdapter {
     session_root: PathBuf,
     next_id: u64,
     next_sequence: u64,
+    current_turn: u64,
     is_streaming: bool,
     session_id: String,
     session_name: Option<String>,
@@ -84,6 +85,7 @@ impl PiAdapter {
             session_root: session_root.into(),
             next_id: 1,
             next_sequence: 1,
+            current_turn: 0,
             is_streaming: false,
             session_id: "pi-starting".into(),
             session_name: None,
@@ -223,7 +225,10 @@ impl PiAdapter {
                 self.is_streaming = false;
                 AdapterOutput::event(AgentEvent::Session(SessionEvent::Status(AgentStatus::Idle)))
             }
-            "turn_start" => self.timeline(TimelineFact::TurnStart),
+            "turn_start" => {
+                self.current_turn = self.current_turn.saturating_add(1);
+                self.timeline(TimelineFact::TurnStart)
+            }
             "turn_end" => self.timeline(TimelineFact::TurnEnd {
                 reason: record
                     .field("message")
@@ -377,6 +382,7 @@ impl PiAdapter {
                 let Some(text) = self.pending_new.remove(&id) else {
                     return AdapterOutput::default();
                 };
+                self.current_turn = 0;
                 let mut output = AdapterOutput {
                     commands: self.refresh_commands(),
                     events: Vec::new(),
@@ -388,10 +394,13 @@ impl PiAdapter {
                 });
                 output
             }
-            "switch_session" => AdapterOutput {
-                commands: self.refresh_commands(),
-                events: Vec::new(),
-            },
+            "switch_session" => {
+                self.current_turn = 0;
+                AdapterOutput {
+                    commands: self.refresh_commands(),
+                    events: Vec::new(),
+                }
+            }
             "set_model" => {
                 if let Some(model) = response.data {
                     self.current_model = Some(model);
@@ -489,9 +498,17 @@ impl PiAdapter {
             .cloned()
             .unwrap_or_default();
         let mut records = Vec::new();
+        let mut snapshot_turn = 0_u64;
         for message in messages {
-            records.extend(self.snapshot_message(&message));
+            let turn = if message.get("role").and_then(Value::as_str) == Some("assistant") {
+                snapshot_turn = snapshot_turn.saturating_add(1);
+                Some(snapshot_turn)
+            } else {
+                None
+            };
+            records.extend(self.snapshot_message(&message, turn));
         }
+        self.current_turn = snapshot_turn;
         AdapterOutput::event(AgentEvent::Timeline(TimelineEvent::Snapshot {
             records,
             truncated: false,
@@ -637,8 +654,8 @@ impl PiAdapter {
         self.timeline(TimelineFact::AssistantChunk {
             text: text.to_owned(),
             reasoning: reasoning.to_owned(),
-            turn: None,
-            step: None,
+            turn: Some(self.current_turn.max(1)),
+            step: Some(0),
             usage: record.field("usage").map(token_usage),
         })
     }
@@ -646,17 +663,21 @@ impl PiAdapter {
     fn live_message(&mut self, message: &Value) -> AdapterOutput {
         match message.get("role").and_then(Value::as_str) {
             Some("user") => self.timeline(user_fact(message)),
-            Some("assistant") => self.timeline(assistant_fact(message)),
+            Some("assistant") => self.timeline(assistant_fact(
+                message,
+                Some(self.current_turn.max(1)),
+                Some(0),
+            )),
             Some("toolResult") => self.timeline(tool_result_fact(message)),
             _ => AdapterOutput::default(),
         }
     }
 
-    fn snapshot_message(&mut self, message: &Value) -> Vec<TimelineRecord> {
+    fn snapshot_message(&mut self, message: &Value, turn: Option<u64>) -> Vec<TimelineRecord> {
         match message.get("role").and_then(Value::as_str) {
             Some("user") => vec![self.record_fact(user_fact(message))],
             Some("assistant") => {
-                let mut records = vec![self.record_fact(assistant_fact(message))];
+                let mut records = vec![self.record_fact(assistant_fact(message, turn, Some(0)))];
                 for call in content_parts(message)
                     .filter(|part| part.get("type").and_then(Value::as_str) == Some("toolCall"))
                 {
@@ -872,7 +893,7 @@ fn user_fact(message: &Value) -> TimelineFact {
     let text = content_text(message.get("content").unwrap_or(&Value::Null));
     TimelineFact::UserMessage {
         text: text.clone(),
-        source_kind: Some("pi".into()),
+        source_kind: Some("user".into()),
         content: vec![ContentBlock::Text(text)],
         source: MessageSource {
             kind: Some("user".into()),
@@ -882,7 +903,7 @@ fn user_fact(message: &Value) -> TimelineFact {
     }
 }
 
-fn assistant_fact(message: &Value) -> TimelineFact {
+fn assistant_fact(message: &Value, turn: Option<u64>, step: Option<u64>) -> TimelineFact {
     let mut text = String::new();
     let mut reasoning = String::new();
     let mut content = Vec::new();
@@ -908,8 +929,8 @@ fn assistant_fact(message: &Value) -> TimelineFact {
         text,
         reasoning,
         content,
-        turn: None,
-        step: None,
+        turn,
+        step,
         usage: message.get("usage").map(token_usage),
     }
 }
@@ -1139,6 +1160,53 @@ mod tests {
         })));
         assert!(done.commands.iter().any(
             |command| matches!(command, RpcCommand::Prompt { message, .. } if message == "first")
+        ));
+    }
+
+    #[test]
+    fn snapshot_turns_seed_live_correlation_and_user_card_kind() {
+        let mut adapter = PiAdapter::new(".", "sessions");
+        let snapshot = adapter.record(record(serde_json::json!({
+            "type":"response", "id":"m", "command":"get_messages", "success":true,
+            "data":{"messages":[
+                {"role":"user","content":"old prompt"},
+                {"role":"assistant","content":[{"type":"text","text":"old answer"}]}
+            ]}
+        })));
+        assert!(matches!(
+            &snapshot.events[0],
+            AgentEvent::Timeline(TimelineEvent::Snapshot { records, .. })
+                if matches!(
+                    &records[1].fact,
+                    TimelineFact::AssistantMessage { turn: Some(1), step: Some(0), .. }
+                )
+        ));
+
+        adapter.record(record(serde_json::json!({"type":"turn_start"})));
+        let user = adapter.record(record(serde_json::json!({
+            "type":"message_end", "message":{"role":"user","content":"new prompt"}
+        })));
+        assert!(matches!(
+            &user.events[0],
+            AgentEvent::Timeline(TimelineEvent::Append(TimelineRecord {
+                fact: TimelineFact::UserMessage { source_kind: Some(kind), .. }, ..
+            })) if kind == "user"
+        ));
+
+        let delta = adapter.record(record(serde_json::json!({
+            "type":"message_update", "usage":{},
+            "assistantMessageEvent":{"type":"text_delta","delta":"new answer"}
+        })));
+        assert!(matches!(
+            &delta.events[0],
+            AgentEvent::Timeline(TimelineEvent::Append(TimelineRecord {
+                fact: TimelineFact::AssistantChunk {
+                    turn: Some(2),
+                    step: Some(0),
+                    ..
+                },
+                ..
+            }))
         ));
     }
 

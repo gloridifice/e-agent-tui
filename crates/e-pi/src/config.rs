@@ -33,6 +33,9 @@ pub fn load() -> Config {
         Ok(text) => Config::user_toml_or_default(&text),
         Err(_) => Config::default(),
     };
+    // The shared frontend still exposes a mode label for deferred `/new`
+    // drafts; Pi has one adapter-owned mode rather than DSH mode presets.
+    config.default_mode = "pi".into();
     config.config_path_display = path.display().to_string();
     config
 }

@@ -2,7 +2,7 @@
 <img src="./readme/logo.png" width="128">
 </p>
 
-`e` is a terminal UI for [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness), designed to be concise, attention-friendly, lightweight, fast, and ready to use out of the box. It does not alter the behavior of the DeepSeek Harness core. The project is still in an early stage of development.
+`e` is a terminal UI for coding agents, designed to be concise, attention-friendly, lightweight, and fast. It provides `dshe` for [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness) and the experimental `pie` frontend for Pi. It does not alter either agent runtime. The project is still in an early stage of development.
 
 <p align="center">
 <a href="#quick-start">Quick Start</a> | <a href="#build-yourself">Build Yourself</a> | <a href="#development">Development</a>
@@ -53,6 +53,17 @@ For a profiling build, enable the optional Tracy integration:
 cargo build --release --features tracy
 ```
 
+### Pi frontend (experimental)
+
+Install Pi and the `pie` executable from source, then run it in a project directory:
+
+```bash
+npm install --global @earendil-works/pi-coding-agent
+cargo install --path crates/e-pi --locked
+pie
+```
+
+`pie` launches the official `pi --mode rpc` runtime and reuses Pi's native models, credentials, extensions, resources, and session files. Use `pie --session <session.jsonl>` to resume directly; `pie --approve` or `pie --no-approve` explicitly overrides Pi's native project-trust behavior. Run `pie --help` for all launch options.
 
 ## Key interactions
 

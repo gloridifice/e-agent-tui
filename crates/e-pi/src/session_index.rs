@@ -37,6 +37,20 @@ pub fn session_root() -> PathBuf {
         .unwrap_or_else(|| agent_dir().join("sessions"))
 }
 
+/// Return Pi's native directory for this project. A custom session directory
+/// is already an exact directory; the default layout adds encoded cwd.
+pub fn project_session_root(cwd: &Path) -> PathBuf {
+    if let Some(custom) = std::env::var_os("PI_CODING_AGENT_SESSION_DIR")
+        .filter(|value| !value.is_empty())
+    {
+        return PathBuf::from(custom);
+    }
+    let resolved = cwd.to_string_lossy();
+    let trimmed = resolved.trim_start_matches(['/', '\\']);
+    let safe = trimmed.replace(['/', '\\', ':'], "-");
+    session_root().join(format!("--{safe}--"))
+}
+
 pub fn list_current_project(root: &Path, cwd: &Path) -> SessionIndex {
     let mut diagnostics = Vec::new();
     let mut sessions = Vec::new();

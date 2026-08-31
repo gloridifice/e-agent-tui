@@ -11,17 +11,17 @@ navigation live in [docs/README.md](docs/README.md).
 
 ## What this project is
 
-Terminal client for DeepSeek Harness (DSH) (project name **e**, executable **`dshe`**), in two parts:
+Terminal frontends for coding-agent runtimes (project name **e**):
 
 - `bridge/` — Node.js (ESM) DSH **host-composition plugin** (one WS upgrade route `/dsh-tui`). Conventions:
   [the bridge architecture](docs/subsystem/bridge/architecture.md).
 - `crates/e-dsh/` — Rust DSH adapter and executable package (`e-dsh`, artifact `dshe.exe`; transitional library import name `e`).
+- `crates/e-pi/` — Rust Pi RPC adapter and executable package (`e-pi`, artifact `pie.exe`). It launches official `pi --mode rpc`; Pi remains authoritative for credentials, models, resources, extensions, and session writes.
 - `crates/e-tui/` — kernel-neutral frontend library package (`e-tui`), owning lifecycle state, projection, rendering, semantic syntax highlighting, paced transcript/Preview text reveal, responsive Preview, Reading View, themes, and config values. Rust conventions: [the client architecture](docs/subsystem/client/architecture.md).
 
-The two processes communicate over JSON WebSocket; the machine-readable contract is
-`bridge/protocol-contract.json` (see [docs/protocol.md](docs/protocol.md)). Token auth lives at
-`%DSH_HOME%\dsh-tui.token`; client config at `%APPDATA%\dshe\config.toml`; themes at `%APPDATA%\dshe\themes\`.
-Full overview: [docs/README.md](docs/README.md).
+DSH uses JSON WebSocket with the machine-readable contract at `bridge/protocol-contract.json` (see
+[docs/protocol.md](docs/protocol.md)); Pi uses strict JSONL over child-process stdio. DSH client config lives at
+`%APPDATA%\dshe\`; Pi frontend-only config lives under `%APPDATA%\pie\`. Full overview: [docs/README.md](docs/README.md).
 
 ## Common commands (Windows / PowerShell)
 
@@ -41,8 +41,14 @@ dshe setup
 # Force-stop only the project-managed DSH service and remove its stale `%DSH_HOME%\e.lock`.
 dshe clean
 
-# Rust workspace (default member e-dsh, artifact dshe.exe; e-dsh -> e-tui)
+# Pi frontend (official Pi runtime must already provide `pi` on PATH)
+npm install --global @earendil-works/pi-coding-agent
+cargo install --path crates/e-pi --locked
+pie                                      # optional: --session <file>, --approve, --no-approve
+
+# Rust workspace (default member e-dsh, artifacts dshe.exe and pie.exe)
 cargo run                                # build from root and launch dshe
+cargo run -p e-pi --bin pie              # build and launch pie
 cargo build --release                    # artifact target\release\dshe.exe
 cargo build --release --features tracy   # Tracy profiling build (activated by DSH_TUI_TRACY=1)
 cargo fmt --check

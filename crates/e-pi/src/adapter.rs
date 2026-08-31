@@ -23,7 +23,6 @@ use crate::{
     session_index,
 };
 
-const PI_PROTOCOL_VERSION: u64 = 1;
 const GENERIC_JSON_CHARS: usize = 2_000;
 
 #[derive(Debug, Default)]
@@ -70,6 +69,7 @@ pub struct PiAdapter {
     session_id: String,
     session_name: Option<String>,
     current_model: Option<Value>,
+    available_models: Vec<Value>,
     thinking_level: Option<String>,
     thinking_levels: Vec<String>,
     pending_new: HashMap<String, String>,
@@ -88,6 +88,7 @@ impl PiAdapter {
             session_id: "pi-starting".into(),
             session_name: None,
             current_model: None,
+            available_models: Vec::new(),
             thinking_level: None,
             thinking_levels: vec!["off".into()],
             pending_new: HashMap::new(),
@@ -128,12 +129,24 @@ impl PiAdapter {
                     sessions: index.sessions,
                     titles_pending: false,
                 }));
-                output.events.extend(index.diagnostics.into_iter().map(|message| {
-                    AgentEvent::Interaction(InteractionEvent::Error {
-                        code: "pi-session-index".into(),
-                        message,
-                    })
-                }));
+                if !index.diagnostics.is_empty() {
+                    let total = index.diagnostics.len();
+                    let mut message = index
+                        .diagnostics
+                        .into_iter()
+                        .take(3)
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    if total > 3 {
+                        message.push_str(&format!("; and {} more", total - 3));
+                    }
+                    output.events.push(AgentEvent::Interaction(
+                        InteractionEvent::Error {
+                            code: "pi-session-index".into(),
+                            message,
+                        },
+                    ));
+                }
                 output
             }
             AgentRequest::ApprovalAnswer { id, allow } => {
@@ -349,7 +362,7 @@ impl PiAdapter {
                         .map(str::to_owned)
                         .collect();
                 }
-                self.current_model_catalog()
+                self.available_model_catalog()
             }
             "new_session" => {
                 let Some(id) = response.id else {
@@ -421,6 +434,11 @@ impl PiAdapter {
             .and_then(Value::as_str)
             .unwrap_or("pi-session")
             .to_owned();
+        let session_key = data
+            .get("sessionFile")
+            .and_then(Value::as_str)
+            .unwrap_or(&self.session_id)
+            .to_owned();
         self.session_name = data
             .get("sessionName")
             .and_then(Value::as_str)
@@ -439,9 +457,9 @@ impl PiAdapter {
             .map(str::to_owned);
         let mut output = AdapterOutput::event(AgentEvent::Session(SessionEvent::Attached(
             AttachedSession {
-                protocol_version: Some(PI_PROTOCOL_VERSION),
+                protocol_version: None,
                 max_frame_bytes: None,
-                id: self.session_id.clone(),
+                id: session_key,
                 status: if self.is_streaming {
                     AgentStatus::Running
                 } else {
@@ -454,7 +472,7 @@ impl PiAdapter {
                 workspace: Some(self.cwd.to_string_lossy().into_owned()),
             },
         )));
-        output.merge(self.current_model_catalog());
+        output.merge(self.available_model_catalog());
         output
     }
 
@@ -513,17 +531,21 @@ impl PiAdapter {
     }
 
     fn models_response(&mut self, data: Option<&Value>) -> AdapterOutput {
-        let models = data
+        self.available_models = data
             .and_then(|data| data.get("models"))
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        self.model_catalog(&models)
+        self.available_model_catalog()
     }
 
-    fn current_model_catalog(&self) -> AdapterOutput {
-        let models = self.current_model.clone().into_iter().collect::<Vec<_>>();
-        self.model_catalog(&models)
+    fn available_model_catalog(&self) -> AdapterOutput {
+        if self.available_models.is_empty() {
+            let models = self.current_model.clone().into_iter().collect::<Vec<_>>();
+            self.model_catalog(&models)
+        } else {
+            self.model_catalog(&self.available_models)
+        }
     }
 
     fn model_catalog(&self, models: &[Value]) -> AdapterOutput {
@@ -539,17 +561,24 @@ impl PiAdapter {
                 .get("reasoning")
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
-                .then(|| ModelReasoning {
-                    efforts: self
-                        .thinking_levels
-                        .iter()
-                        .map(|level| ReasoningEffort {
-                            id: level.clone(),
-                            name: thinking_label(level),
-                            description: None,
-                        })
-                        .collect(),
-                    default_effort: self.thinking_level.clone(),
+                .then(|| {
+                    let levels = model
+                        .get("thinkingLevelMap")
+                        .and_then(Value::as_object)
+                        .map(|map| map.keys().cloned().collect::<Vec<_>>())
+                        .filter(|levels| !levels.is_empty())
+                        .unwrap_or_else(|| self.thinking_levels.clone());
+                    ModelReasoning {
+                        efforts: levels
+                            .iter()
+                            .map(|level| ReasoningEffort {
+                                id: level.clone(),
+                                name: thinking_label(level),
+                                description: None,
+                            })
+                            .collect(),
+                        default_effort: self.thinking_level.clone(),
+                    }
                 });
             let descriptor = ModelDescriptor {
                 id: model_id.to_owned(),

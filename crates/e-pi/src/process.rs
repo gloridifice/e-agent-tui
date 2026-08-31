@@ -35,6 +35,8 @@ pub struct PiLaunchOptions {
     pub session: Option<String>,
     pub trust: ProjectTrust,
     pub executable: String,
+    /// Optional executable prefix arguments, primarily for wrappers.
+    pub executable_args: Vec<String>,
 }
 
 impl PiLaunchOptions {
@@ -44,6 +46,7 @@ impl PiLaunchOptions {
             session: None,
             trust: ProjectTrust::Native,
             executable: std::env::var("PIE_PI_COMMAND").unwrap_or_else(|_| "pi".into()),
+            executable_args: Vec::new(),
         }
     }
 
@@ -79,6 +82,7 @@ impl PiProcess {
     pub async fn spawn(options: &PiLaunchOptions) -> anyhow::Result<Self> {
         let mut command = Command::new(&options.executable);
         command
+            .args(&options.executable_args)
             .args(options.args())
             .current_dir(&options.cwd)
             .stdin(std::process::Stdio::piped())
@@ -289,5 +293,57 @@ mod tests {
             options.args(),
             ["--mode", "rpc", "--approve", "--session", "s.jsonl"]
         );
+    }
+
+    #[tokio::test]
+    async fn child_lifecycle_writes_and_reads_jsonl() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut options = PiLaunchOptions::for_cwd(".");
+        #[cfg(windows)]
+        let script = {
+            let path = temp.path().join("fake-pi.cmd");
+            std::fs::write(
+                &path,
+                "@echo off\r\nset /p line=\r\necho {\"type\":\"response\",\"id\":\"p1\",\"command\":\"prompt\",\"success\":true}\r\necho diagnostic 1>&2\r\n",
+            )
+            .unwrap();
+            path
+        };
+        #[cfg(not(windows))]
+        let script = {
+            use std::os::unix::fs::PermissionsExt;
+            let path = temp.path().join("fake-pi.sh");
+            std::fs::write(
+                &path,
+                "#!/bin/sh\nread line\nprintf diagnostic >&2\nprintf '%s\\n' '{\"type\":\"response\",\"id\":\"p1\",\"command\":\"prompt\",\"success\":true}'\n",
+            )
+            .unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path
+        };
+        options.executable = script.to_string_lossy().into_owned();
+        let mut process = PiProcess::spawn(&options).await.unwrap();
+        process
+            .send(RpcCommand::Prompt {
+                id: Some("p1".into()),
+                message: "hello".into(),
+                streaming_behavior: None,
+            })
+            .await
+            .unwrap();
+        let event = tokio::time::timeout(Duration::from_secs(5), process.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                event,
+                PiProcessEvent::Record(RpcRecord { ref kind, .. }) if kind == "response"
+            ),
+            "unexpected child event: {event:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(process.stderr_tail().contains("diagnostic"));
+        process.shutdown().await;
     }
 }

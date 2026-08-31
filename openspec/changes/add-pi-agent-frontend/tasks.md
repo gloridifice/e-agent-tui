@@ -9,7 +9,7 @@
 - [x] 2.1 Define typed outbound Pi RPC commands and inbound response/event/Extension UI DTO parsing
 - [x] 2.2 Implement strict LF-only bounded JSONL framing with CRLF tolerance and Unicode-separator coverage
 - [x] 2.3 Implement Pi CLI discovery/spawn, stderr diagnostics, bounded channels, stdin writes, and bounded shutdown/reaping
-- [ ] 2.4 Add CLI parsing for session selection and one-run project-trust overrides
+- [x] 2.4 Add CLI parsing for session selection and one-run project-trust overrides
 
 ## 3. Request and event adapter
 
@@ -28,12 +28,12 @@
 
 ## 5. `pie` composition
 
-- [ ] 5.1 Compose Pi process input, normalized events, terminal events, deadlines, rendering, and effect execution in the event-driven main loop
-- [ ] 5.2 Preserve bounded inbound work, streaming redraw behavior, terminal restoration, child cleanup, and actionable fatal diagnostics
-- [ ] 5.3 Run an installed-Pi smoke test covering startup queries, one prompt, streaming completion, and clean shutdown
+- [x] 5.1 Compose Pi process input, normalized events, terminal events, deadlines, rendering, and effect execution in the event-driven main loop
+- [x] 5.2 Preserve bounded inbound work, streaming redraw behavior, terminal restoration, child cleanup, and actionable fatal diagnostics
+- [x] 5.3 Run an installed-Pi smoke test covering startup queries, one prompt, streaming completion, and clean shutdown
 
 ## 6. Verification and public workflow
 
-- [ ] 6.1 Add focused protocol, adapter, session-index, request-chain, and Extension UI regression tests
-- [ ] 6.2 Update current client architecture documentation for the `e-pi` boundary and add concise `pie` source-install/run guidance
+- [x] 6.1 Add focused protocol, adapter, session-index, request-chain, and Extension UI regression tests
+- [x] 6.2 Update current client architecture documentation for the `e-pi` boundary and add concise `pie` source-install/run guidance
 - [ ] 6.3 Run `cargo fmt --all`, targeted `e-pi` tests, workspace clippy, and relevant architecture tests

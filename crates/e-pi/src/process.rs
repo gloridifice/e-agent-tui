@@ -80,7 +80,8 @@ pub struct PiProcess {
 
 impl PiProcess {
     pub async fn spawn(options: &PiLaunchOptions) -> anyhow::Result<Self> {
-        let mut command = Command::new(&options.executable);
+        let executable = resolve_executable(&options.executable);
+        let mut command = Command::new(&executable);
         command
             .args(&options.executable_args)
             .args(options.args())
@@ -91,8 +92,9 @@ impl PiProcess {
             .kill_on_drop(true);
         let mut child = command.spawn().map_err(|error| {
             anyhow::anyhow!(
-                "cannot start Pi RPC with `{}`: {error}. Install @earendil-works/pi-coding-agent and ensure `pi` is on PATH",
-                options.executable
+                "cannot start Pi RPC with `{}` (resolved as `{}`): {error}. Install @earendil-works/pi-coding-agent and ensure its bin directory is on PATH",
+                options.executable,
+                executable.display()
             )
         })?;
         let stdin = child
@@ -269,6 +271,55 @@ async fn stderr_loop(mut stderr: tokio::process::ChildStderr, tail: Arc<Mutex<Ve
     }
 }
 
+fn resolve_executable(executable: &str) -> PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(path) = resolve_windows_executable(
+            executable,
+            std::env::var_os("PATH").as_deref().unwrap_or_default(),
+        ) {
+            return path;
+        }
+    }
+    PathBuf::from(executable)
+}
+
+/// `std::process::Command` does not consistently apply Windows `PATHEXT` to
+/// npm's `.cmd` shims. Resolve the native launcher explicitly before spawn.
+#[cfg(windows)]
+fn resolve_windows_executable(executable: &str, path_value: &std::ffi::OsStr) -> Option<PathBuf> {
+    let requested = Path::new(executable);
+    let has_directory = requested.is_absolute()
+        || requested
+            .parent()
+            .is_some_and(|parent| !parent.as_os_str().is_empty());
+    if has_directory {
+        return executable_candidates(requested)
+            .into_iter()
+            .find(|candidate| candidate.is_file());
+    }
+
+    std::env::split_paths(path_value).find_map(|directory| {
+        executable_candidates(&directory.join(requested))
+            .into_iter()
+            .find(|candidate| candidate.is_file())
+    })
+}
+
+#[cfg(windows)]
+fn executable_candidates(path: &Path) -> Vec<PathBuf> {
+    if path.extension().is_some() {
+        return vec![path.to_path_buf()];
+    }
+    // Prefer native binaries and Windows launchers over npm's extensionless
+    // POSIX shim, which CreateProcess cannot execute directly.
+    ["exe", "com", "cmd", "bat"]
+        .into_iter()
+        .map(|extension| path.with_extension(extension))
+        .chain(std::iter::once(path.to_path_buf()))
+        .collect()
+}
+
 pub fn session_arg_is_path(value: &str) -> bool {
     Path::new(value)
         .extension()
@@ -289,6 +340,18 @@ mod tests {
             options.args(),
             ["--mode", "rpc", "--approve", "--session", "s.jsonl"]
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolves_npm_cmd_shim_from_windows_path() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("pi"), "#!/bin/sh\n").unwrap();
+        let shim = temp.path().join("pi.cmd");
+        std::fs::write(&shim, "@echo off\r\n").unwrap();
+        let path = std::env::join_paths([temp.path()]).unwrap();
+
+        assert_eq!(resolve_windows_executable("pi", &path), Some(shim));
     }
 
     #[tokio::test]

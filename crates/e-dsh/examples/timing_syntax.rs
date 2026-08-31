@@ -40,7 +40,7 @@ fn main() {
         .join("\n");
 
     let start = Instant::now();
-    let cold = highlight_source(&code, SyntaxHint::Token("rust"), &theme.markdown);
+    let cold = highlight_source(&code, SyntaxHint::Token("rust"), &theme.code);
     let cold_ms = start.elapsed().as_secs_f64() * 1_000.0;
     assert_eq!(cold.len(), 120);
 

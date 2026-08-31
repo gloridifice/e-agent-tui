@@ -259,18 +259,24 @@ impl PiAdapter {
                 retry: record.field("attempt").and_then(Value::as_u64).unwrap_or(1),
                 max_retries: record.field("maxAttempts").and_then(Value::as_u64),
                 delay_ms: record.field("delayMs").and_then(Value::as_u64).unwrap_or(0),
-                message: record.string("errorMessage").unwrap_or("Pi retry").to_owned(),
+                message: record
+                    .string("errorMessage")
+                    .unwrap_or("Pi retry")
+                    .to_owned(),
             }),
             "auto_retry_end" => self.timeline(TimelineFact::RetryStarted {
                 id: "pi-auto-retry".into(),
                 retry: record.field("attempt").and_then(Value::as_u64).unwrap_or(1),
             }),
-            "extension_error" => AdapterOutput::event(AgentEvent::Interaction(
-                InteractionEvent::Error {
+            "extension_error" => {
+                AdapterOutput::event(AgentEvent::Interaction(InteractionEvent::Error {
                     code: "pi-extension".into(),
-                    message: record.string("error").unwrap_or("Pi extension error").to_owned(),
-                },
-            )),
+                    message: record
+                        .string("error")
+                        .unwrap_or("Pi extension error")
+                        .to_owned(),
+                }))
+            }
             "queue_update" | "agent_end" | "message_start" | "tool_execution_update" => {
                 AdapterOutput::default()
             }
@@ -324,9 +330,9 @@ impl PiAdapter {
             Err(error) => return self.protocol_error(error.to_string()),
         };
         if !response.success {
-            let message = response.error.unwrap_or_else(|| {
-                format!("Pi RPC command `{}` failed", response.command)
-            });
+            let message = response
+                .error
+                .unwrap_or_else(|| format!("Pi RPC command `{}` failed", response.command));
             if let Some(id) = response.id.as_ref() {
                 if self.pending_new.remove(id).is_some() {
                     return AdapterOutput::event(AgentEvent::Interaction(
@@ -622,14 +628,10 @@ impl PiAdapter {
         };
         let kind = delta.get("type").and_then(Value::as_str);
         let (text, reasoning) = match kind {
-            Some("text_delta") => (
-                delta.get("delta").and_then(Value::as_str).unwrap_or(""),
-                "",
-            ),
-            Some("thinking_delta") => (
-                "",
-                delta.get("delta").and_then(Value::as_str).unwrap_or(""),
-            ),
+            Some("text_delta") => (delta.get("delta").and_then(Value::as_str).unwrap_or(""), ""),
+            Some("thinking_delta") => {
+                ("", delta.get("delta").and_then(Value::as_str).unwrap_or(""))
+            }
             _ => return AdapterOutput::default(),
         };
         self.timeline(TimelineFact::AssistantChunk {
@@ -746,11 +748,11 @@ impl PiAdapter {
                     })
                 }
             }
-            "set_editor_text" => AdapterOutput::event(AgentEvent::Interaction(
-                InteractionEvent::SetEditorText {
+            "set_editor_text" => {
+                AdapterOutput::event(AgentEvent::Interaction(InteractionEvent::SetEditorText {
                     text: request.text.unwrap_or_default(),
-                },
-            )),
+                }))
+            }
             "setTitle" => AdapterOutput::event(AgentEvent::Session(SessionEvent::Title(
                 request.title.unwrap_or_default(),
             ))),
@@ -892,10 +894,7 @@ fn assistant_fact(message: &Value) -> TimelineFact {
                 content.push(ContentBlock::Text(value.to_owned()));
             }
             Some("thinking") => {
-                let value = part
-                    .get("thinking")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
+                let value = part.get("thinking").and_then(Value::as_str).unwrap_or("");
                 reasoning.push_str(value);
                 content.push(ContentBlock::Reasoning(value.to_owned()));
             }
@@ -969,14 +968,8 @@ fn token_usage(value: &Value) -> TokenUsage {
     TokenUsage {
         input_tokens: value.get("input").and_then(Value::as_u64).unwrap_or(0),
         output_tokens: value.get("output").and_then(Value::as_u64).unwrap_or(0),
-        cache_read_tokens: value
-            .get("cacheRead")
-            .and_then(Value::as_u64)
-            .unwrap_or(0),
-        cache_write_tokens: value
-            .get("cacheWrite")
-            .and_then(Value::as_u64)
-            .unwrap_or(0),
+        cache_read_tokens: value.get("cacheRead").and_then(Value::as_u64).unwrap_or(0),
+        cache_write_tokens: value.get("cacheWrite").and_then(Value::as_u64).unwrap_or(0),
     }
 }
 
@@ -986,9 +979,7 @@ fn tool_activity(id: &str, name: &str, arguments: Value) -> ToolActivity {
         "edit" => ToolCapability::Edit,
         "write" => ToolCapability::Create,
         "grep" | "find" | "ls" => ToolCapability::Search,
-        "bash" | "powershell" | "command" | "shell" | "sh" | "pwsh" => {
-            ToolCapability::Command
-        }
+        "bash" | "powershell" | "command" | "shell" | "sh" | "pwsh" => ToolCapability::Command,
         _ => ToolCapability::Custom {
             namespace: "pi".into(),
             name: name.into(),
@@ -1120,10 +1111,15 @@ mod tests {
     fn streaming_prompt_uses_steering_behavior() {
         let mut adapter = PiAdapter::new(".", "sessions");
         adapter.record(record(serde_json::json!({"type":"agent_start"})));
-        let output = adapter.request(AgentRequest::Input { text: "next".into() });
+        let output = adapter.request(AgentRequest::Input {
+            text: "next".into(),
+        });
         assert!(matches!(
             output.commands.as_slice(),
-            [RpcCommand::Prompt { streaming_behavior: Some(StreamingBehavior::Steer), .. }]
+            [RpcCommand::Prompt {
+                streaming_behavior: Some(StreamingBehavior::Steer),
+                ..
+            }]
         ));
     }
 
@@ -1167,8 +1163,26 @@ mod tests {
         assert!(matches!(
             &tool.events[0],
             AgentEvent::Timeline(TimelineEvent::Append(TimelineRecord {
-                fact: TimelineFact::ToolCall(ToolActivity { capability: ToolCapability::Read, .. }), ..
+                fact: TimelineFact::ToolCall(ToolActivity {
+                    capability: ToolCapability::Read,
+                    ..
+                }),
+                ..
             }))
+        ));
+    }
+
+    #[test]
+    fn extension_editor_text_targets_the_frontend_composer() {
+        let mut adapter = PiAdapter::new(".", "sessions");
+        let output = adapter.record(record(serde_json::json!({
+            "type":"extension_ui_request", "id":"u0", "method":"set_editor_text",
+            "text":"extension draft"
+        })));
+        assert!(matches!(
+            output.events.as_slice(),
+            [AgentEvent::Interaction(InteractionEvent::SetEditorText { text })]
+                if text == "extension draft"
         ));
     }
 
@@ -1186,7 +1200,9 @@ mod tests {
         let answer = adapter.request(AgentRequest::AnswerQuestions {
             request_id: "u1".into(),
             answers: vec![QuestionAnswer {
-                id: "value".into(), selected: vec!["B".into()], custom: None
+                id: "value".into(),
+                selected: vec!["B".into()],
+                custom: None,
             }],
         });
         assert!(matches!(

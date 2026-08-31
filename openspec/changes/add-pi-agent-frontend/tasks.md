@@ -36,4 +36,4 @@
 
 - [x] 6.1 Add focused protocol, adapter, session-index, request-chain, and Extension UI regression tests
 - [x] 6.2 Update current client architecture documentation for the `e-pi` boundary and add concise `pie` source-install/run guidance
-- [ ] 6.3 Run `cargo fmt --all`, targeted `e-pi` tests, workspace clippy, and relevant architecture tests
+- [x] 6.3 Run `cargo fmt --all`, targeted `e-pi` tests, workspace clippy, and relevant architecture tests

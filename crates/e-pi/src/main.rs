@@ -5,9 +5,9 @@
 //! Pi remains the authoritative agent runtime. This process owns only the Pi
 //! RPC child, protocol adaptation, terminal lifecycle, and frontend runtime.
 
-use std::{collections::VecDeque, path::PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use std::{collections::VecDeque, path::PathBuf};
 
 use anyhow::{bail, Context};
 use e::model::{animation_active, tick_spinners, AppState};
@@ -139,8 +139,15 @@ fn parse_cli_from(mut args: impl Iterator<Item = String>) -> anyhow::Result<Cli>
     let mut launch = PiLaunchOptions::for_cwd(std::env::current_dir()?);
     while let Some(argument) = args.next() {
         match argument.as_str() {
-            "--cwd" => launch.cwd = PathBuf::from(args.next().context("--cwd requires a directory")?),
-            "--session" => launch.session = Some(args.next().context("--session requires a Pi session file")?),
+            "--cwd" => {
+                launch.cwd = PathBuf::from(args.next().context("--cwd requires a directory")?)
+            }
+            "--session" => {
+                launch.session = Some(
+                    args.next()
+                        .context("--session requires a Pi session file")?,
+                )
+            }
             "--approve" => launch.trust = ProjectTrust::Approve,
             "--no-approve" => launch.trust = ProjectTrust::Reject,
             "--pi" => launch.executable = args.next().context("--pi requires an executable")?,
@@ -152,7 +159,9 @@ fn parse_cli_from(mut args: impl Iterator<Item = String>) -> anyhow::Result<Cli>
                 println!("pie {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
-            option if option.starts_with('-') => bail!("unknown pie option `{option}`\n\n{}", help()),
+            option if option.starts_with('-') => {
+                bail!("unknown pie option `{option}`\n\n{}", help())
+            }
             session if launch.session.is_none() => launch.session = Some(session.to_owned()),
             extra => bail!("unexpected argument `{extra}`\n\n{}", help()),
         }
@@ -257,7 +266,11 @@ async fn execute_runtime_effects(
                 let lines = text.lines().count();
                 let (preview, truncated) = e_tui::clipboard_preview(&text, 6);
                 execution.completed.push(match ports.write_clipboard(text) {
-                    Ok(()) => EffectResult::ClipboardWritten { lines, preview, truncated },
+                    Ok(()) => EffectResult::ClipboardWritten {
+                        lines,
+                        preview,
+                        truncated,
+                    },
                     Err(error) => EffectResult::ClipboardFailed(error),
                 });
             }
@@ -376,90 +389,90 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
         if let Some(event) = pending_inbound.pop_front() {
             first_inbound = Some(event);
         } else {
-        tokio::select! {
-            maybe = process.recv() => {
-                match maybe {
-                    Some(PiProcessEvent::Record(record)) => {
-                        if let Err(error) = route_output(adapter.record(record), &rpc, &mut pending_inbound).await {
+            tokio::select! {
+                maybe = process.recv() => {
+                    match maybe {
+                        Some(PiProcessEvent::Record(record)) => {
+                            if let Err(error) = route_output(adapter.record(record), &rpc, &mut pending_inbound).await {
+                                fatal = Some(error);
+                                break 'outer;
+                            }
+                            first_inbound = pending_inbound.pop_front();
+                        }
+                        Some(PiProcessEvent::Fatal(error)) => {
                             fatal = Some(error);
                             break 'outer;
                         }
-                        first_inbound = pending_inbound.pop_front();
+                        Some(PiProcessEvent::Eof) | None => {
+                            let status = process.try_exit().ok().flatten().map(|status| status.to_string()).unwrap_or_else(|| "unknown status".into());
+                            let stderr = process.stderr_tail();
+                            fatal = Some(if stderr.trim().is_empty() {
+                                format!("Pi RPC exited ({status})")
+                            } else {
+                                format!("Pi RPC exited ({status}): {}", stderr.trim())
+                            });
+                            break 'outer;
+                        }
                     }
-                    Some(PiProcessEvent::Fatal(error)) => {
+                }
+                request = request_rx.recv() => {
+                    let Some(request) = request else {
+                        fatal = Some("Pi adapter request channel closed".into());
+                        break 'outer;
+                    };
+                    if let Err(error) = route_output(adapter.request(request), &rpc, &mut pending_inbound).await {
                         fatal = Some(error);
                         break 'outer;
                     }
-                    Some(PiProcessEvent::Eof) | None => {
-                        let status = process.try_exit().ok().flatten().map(|status| status.to_string()).unwrap_or_else(|| "unknown status".into());
-                        let stderr = process.stderr_tail();
-                        fatal = Some(if stderr.trim().is_empty() {
-                            format!("Pi RPC exited ({status})")
-                        } else {
-                            format!("Pi RPC exited ({status}): {}", stderr.trim())
-                        });
-                        break 'outer;
+                    first_inbound = pending_inbound.pop_front();
+                }
+                event = events.next_event() => {
+                    match event {
+                        Some(Ok(event)) => {
+                            pending_event = Some(event);
+                            scheduler.request(DirtyReason::Interactive, Instant::now());
+                        }
+                        Some(Err(error)) => {
+                            fatal = Some(format!("terminal event stream failed: {error}"));
+                            break 'outer;
+                        }
+                        None => {
+                            fatal = Some("terminal event stream closed".into());
+                            break 'outer;
+                        }
                     }
                 }
-            }
-            request = request_rx.recv() => {
-                let Some(request) = request else {
-                    fatal = Some("Pi adapter request channel closed".into());
-                    break 'outer;
-                };
-                if let Err(error) = route_output(adapter.request(request), &rpc, &mut pending_inbound).await {
-                    fatal = Some(error);
-                    break 'outer;
-                }
-                first_inbound = pending_inbound.pop_front();
-            }
-            event = events.next_event() => {
-                match event {
-                    Some(Ok(event)) => {
-                        pending_event = Some(event);
-                        scheduler.request(DirtyReason::Interactive, Instant::now());
-                    }
-                    Some(Err(error)) => {
-                        fatal = Some(format!("terminal event stream failed: {error}"));
-                        break 'outer;
-                    }
-                    None => {
-                        fatal = Some("terminal event stream closed".into());
-                        break 'outer;
+                _ = wait_for_deadline(frame_deadline) => {}
+                _ = wait_for_deadline(notice_deadline) => {
+                    let now = runtime_ports.now();
+                    let expired = {
+                        let mut state = state_r.lock().unwrap();
+                        let duration = state.config.copy_toast_secs;
+                        state.interaction.notice.expire(duration, now)
+                    };
+                    if expired {
+                        scheduler.request(DirtyReason::Interactive, now);
                     }
                 }
-            }
-            _ = wait_for_deadline(frame_deadline) => {}
-            _ = wait_for_deadline(notice_deadline) => {
-                let now = runtime_ports.now();
-                let expired = {
+                _ = wait_for_deadline(animation_deadline) => {
+                    let now = Instant::now();
                     let mut state = state_r.lock().unwrap();
-                    let duration = state.config.copy_toast_secs;
-                    state.interaction.notice.expire(duration, now)
-                };
-                if expired {
-                    scheduler.request(DirtyReason::Interactive, now);
+                    let spinner_due = spinner_deadline.is_some_and(|deadline| deadline <= now);
+                    let reveal_due = state.reveal_deadline().is_some_and(|deadline| deadline <= now);
+                    let mut redraw = false;
+                    if spinner_due {
+                        redraw |= tick_spinners(&mut state, now);
+                        spinner_deadline = animation_active(&state, now)
+                            .then(|| now + animation_interval(&state));
+                    }
+                    if reveal_due {
+                        redraw |= state.tick_reveals(now);
+                    }
+                    if redraw {
+                        scheduler.request(DirtyReason::Animation, now);
+                    }
                 }
             }
-            _ = wait_for_deadline(animation_deadline) => {
-                let now = Instant::now();
-                let mut state = state_r.lock().unwrap();
-                let spinner_due = spinner_deadline.is_some_and(|deadline| deadline <= now);
-                let reveal_due = state.reveal_deadline().is_some_and(|deadline| deadline <= now);
-                let mut redraw = false;
-                if spinner_due {
-                    redraw |= tick_spinners(&mut state, now);
-                    spinner_deadline = animation_active(&state, now)
-                        .then(|| now + animation_interval(&state));
-                }
-                if reveal_due {
-                    redraw |= state.tick_reveals(now);
-                }
-                if redraw {
-                    scheduler.request(DirtyReason::Animation, now);
-                }
-            }
-        }
         }
 
         if let Some(first) = first_inbound {
@@ -496,9 +509,13 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
                 };
                 let effects = RuntimeController::apply_agent(event, &state_r, &mut ui);
                 state_r.lock().unwrap().interaction = interaction;
-                let execution =
-                    execute_runtime_effects(effects, &request_tx, &mut scheduler, &mut runtime_ports)
-                        .await;
+                let execution = execute_runtime_effects(
+                    effects,
+                    &request_tx,
+                    &mut scheduler,
+                    &mut runtime_ports,
+                )
+                .await;
                 if let Some(reason) = execution.fatal {
                     fatal = Some(reason);
                     break 'outer;
@@ -591,7 +608,8 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
             );
             state_r.lock().unwrap().interaction = interaction;
             let execution =
-                execute_runtime_effects(effects, &request_tx, &mut scheduler, &mut runtime_ports).await;
+                execute_runtime_effects(effects, &request_tx, &mut scheduler, &mut runtime_ports)
+                    .await;
             for result in execution.completed {
                 match result {
                     EffectResult::ConfigReloaded {
@@ -768,7 +786,11 @@ mod tests {
     #[test]
     fn cli_accepts_explicit_session_cwd_and_trust() {
         let cli = parse_cli_from(args(&[
-            "--cwd", "project", "--session", "one.jsonl", "--approve",
+            "--cwd",
+            "project",
+            "--session",
+            "one.jsonl",
+            "--approve",
         ]))
         .unwrap();
         assert_eq!(cli.launch.cwd, PathBuf::from("project"));

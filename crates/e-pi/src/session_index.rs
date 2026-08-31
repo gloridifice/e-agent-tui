@@ -40,8 +40,8 @@ pub fn session_root() -> PathBuf {
 /// Return Pi's native directory for this project. A custom session directory
 /// is already an exact directory; the default layout adds encoded cwd.
 pub fn project_session_root(cwd: &Path) -> PathBuf {
-    if let Some(custom) = std::env::var_os("PI_CODING_AGENT_SESSION_DIR")
-        .filter(|value| !value.is_empty())
+    if let Some(custom) =
+        std::env::var_os("PI_CODING_AGENT_SESSION_DIR").filter(|value| !value.is_empty())
     {
         return PathBuf::from(custom);
     }
@@ -73,7 +73,10 @@ pub fn list_current_project(root: &Path, cwd: &Path) -> SessionIndex {
                 pending.push_back(path);
                 continue;
             }
-            if path.extension().is_none_or(|extension| extension != "jsonl") {
+            if path
+                .extension()
+                .is_none_or(|extension| extension != "jsonl")
+            {
                 continue;
             }
             if seen == MAX_SESSION_FILES {
@@ -91,7 +94,7 @@ pub fn list_current_project(root: &Path, cwd: &Path) -> SessionIndex {
             }
         }
     }
-    sessions.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+    sessions.sort_by_key(|session| std::cmp::Reverse(session.created_at));
     SessionIndex {
         sessions,
         diagnostics,
@@ -126,21 +129,23 @@ fn read_summary(path: &Path, cwd: &Path) -> Result<Option<SessionSummary>, Strin
     let mut first_user = None;
     for (index, line) in lines.enumerate() {
         if index >= MAX_SESSION_LINES {
-            return Err(format!("session metadata exceeds {MAX_SESSION_LINES} lines"));
+            return Err(format!(
+                "session metadata exceeds {MAX_SESSION_LINES} lines"
+            ));
         }
         let line = line.map_err(|error| error.to_string())?;
         let value: Value = serde_json::from_str(&line).map_err(|error| error.to_string())?;
         match value.get("type").and_then(Value::as_str) {
             Some("session_info") => {
-                native_name = value
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .map(clean_title);
+                native_name = value.get("name").and_then(Value::as_str).map(clean_title);
             }
             Some("message") if first_user.is_none() => {
                 let message = &value["message"];
                 if message.get("role").and_then(Value::as_str) == Some("user") {
-                    first_user = message.get("content").and_then(content_text).map(clean_title);
+                    first_user = message
+                        .get("content")
+                        .and_then(content_text)
+                        .map(clean_title);
                 }
             }
             _ => {}
@@ -201,6 +206,14 @@ mod tests {
     use std::io::Write;
 
     #[test]
+    fn default_project_directory_uses_pi_native_cwd_encoding() {
+        if std::env::var_os("PI_CODING_AGENT_SESSION_DIR").is_none() {
+            let path = project_session_root(Path::new(r"G:\work/project"));
+            assert!(path.ends_with("--G--work-project--"));
+        }
+    }
+
+    #[test]
     fn indexes_matching_sessions_with_native_name_precedence() {
         let temp = tempfile::tempdir().unwrap();
         let cwd = temp.path().join("project");
@@ -216,7 +229,12 @@ mod tests {
         )
         .unwrap();
         writeln!(file, "{}", serde_json::json!({"type":"message","id":"1","parentId":null,"message":{"role":"user","content":"first prompt"}})).unwrap();
-        writeln!(file, "{}", serde_json::json!({"type":"session_info","id":"2","parentId":"1","name":"Named work"})).unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({"type":"session_info","id":"2","parentId":"1","name":"Named work"})
+        )
+        .unwrap();
 
         let index = list_current_project(&temp.path().join("sessions"), &cwd);
         assert!(index.diagnostics.is_empty(), "{:?}", index.diagnostics);
@@ -230,7 +248,11 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("sessions");
         std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("other.jsonl"), "{\"type\":\"session\",\"cwd\":\"elsewhere\"}\n").unwrap();
+        std::fs::write(
+            root.join("other.jsonl"),
+            "{\"type\":\"session\",\"cwd\":\"elsewhere\"}\n",
+        )
+        .unwrap();
         std::fs::write(root.join("bad.jsonl"), "not json\n").unwrap();
         let index = list_current_project(&root, temp.path());
         assert!(index.sessions.is_empty());

@@ -12,10 +12,7 @@ pub enum RpcCommand {
         #[serde(skip_serializing_if = "Option::is_none")]
         id: Option<String>,
         message: String,
-        #[serde(
-            rename = "streamingBehavior",
-            skip_serializing_if = "Option::is_none"
-        )]
+        #[serde(rename = "streamingBehavior", skip_serializing_if = "Option::is_none")]
         streaming_behavior: Option<StreamingBehavior>,
     },
     Abort {
@@ -172,9 +169,7 @@ pub fn response(record: &RpcRecord) -> Result<RpcResponse, serde_json::Error> {
     serde_json::from_value(value)
 }
 
-pub fn extension_ui_request(
-    record: &RpcRecord,
-) -> Result<ExtensionUiRequest, serde_json::Error> {
+pub fn extension_ui_request(record: &RpcRecord) -> Result<ExtensionUiRequest, serde_json::Error> {
     let value = Value::Object(record.fields.clone().into_iter().collect());
     serde_json::from_value(value)
 }

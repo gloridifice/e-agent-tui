@@ -188,7 +188,7 @@ async fn write_loop(
             }
         };
         wire.push(b'\n');
-        if let Err(error) = stdin.write_all(&wire).await.and_then(|_| Ok(())) {
+        if let Err(error) = stdin.write_all(&wire).await {
             let _ = events
                 .send(PiProcessEvent::Fatal(format!(
                     "cannot write Pi RPC stdin: {error}"
@@ -208,10 +208,7 @@ async fn write_loop(
     let _ = stdin.shutdown().await;
 }
 
-async fn read_loop(
-    mut stdout: tokio::process::ChildStdout,
-    events: mpsc::Sender<PiProcessEvent>,
-) {
+async fn read_loop(mut stdout: tokio::process::ChildStdout, events: mpsc::Sender<PiProcessEvent>) {
     let mut decoder = JsonlDecoder::new(DEFAULT_MAX_RECORD_BYTES);
     let mut buffer = [0_u8; 8192];
     loop {
@@ -253,10 +250,7 @@ async fn read_loop(
     }
 }
 
-async fn stderr_loop(
-    mut stderr: tokio::process::ChildStderr,
-    tail: Arc<Mutex<VecDeque<u8>>>,
-) {
+async fn stderr_loop(mut stderr: tokio::process::ChildStderr, tail: Arc<Mutex<VecDeque<u8>>>) {
     let mut buffer = [0_u8; 2048];
     loop {
         let Ok(read) = stderr.read(&mut buffer).await else {
@@ -276,7 +270,9 @@ async fn stderr_loop(
 }
 
 pub fn session_arg_is_path(value: &str) -> bool {
-    Path::new(value).extension().is_some_and(|ext| ext == "jsonl")
+    Path::new(value)
+        .extension()
+        .is_some_and(|ext| ext == "jsonl")
 }
 
 #[cfg(test)]

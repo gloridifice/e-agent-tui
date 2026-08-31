@@ -1287,6 +1287,54 @@ mod tests {
     }
 
     #[test]
+    fn external_editor_text_targets_only_the_visible_composer() {
+        let state = Arc::new(Mutex::new(AppState::default()));
+        let mut scroll = ScrollState::default();
+        let mut input = InputState::new(&Config::default());
+        let mut input_page = None;
+        let mut approval = None;
+        let mut question = None;
+        let mut queue = Vec::new();
+
+        let effects = RuntimeController::apply_agent(
+            AgentEvent::Interaction(e_tui::agent::InteractionEvent::SetEditorText {
+                text: "extension draft".into(),
+            }),
+            &state,
+            &mut ui(
+                &mut scroll,
+                &mut input,
+                &mut input_page,
+                &mut approval,
+                &mut question,
+                &mut queue,
+            ),
+        );
+        assert_eq!(input.buf, "extension draft");
+        assert!(matches!(
+            effects.as_slice(),
+            [UiAction::RequestDraw(DrawPriority::Interactive)]
+        ));
+
+        input_page = Some(InputPageSession::login());
+        RuntimeController::apply_agent(
+            AgentEvent::Interaction(e_tui::agent::InteractionEvent::SetEditorText {
+                text: "must stay hidden".into(),
+            }),
+            &state,
+            &mut ui(
+                &mut scroll,
+                &mut input,
+                &mut input_page,
+                &mut approval,
+                &mut question,
+                &mut queue,
+            ),
+        );
+        assert_eq!(input.buf, "extension draft");
+    }
+
+    #[test]
     fn welcome_switch_resets_agent_scoped_ui_and_defers_state_file_io() {
         let state = Arc::new(Mutex::new(AppState::default()));
         let mut scroll = ScrollState {

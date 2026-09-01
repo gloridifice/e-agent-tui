@@ -540,7 +540,6 @@ dependencies = [
  "arboard",
  "crossterm",
  "directories",
- "e-dsh",
  "e-tui",
  "ratatui",
  "serde",
@@ -548,6 +547,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+ "winapi",
 ]
 
 [[package]]
@@ -555,10 +555,12 @@ name = "e-tui"
 version = "0.0.3"
 dependencies = [
  "crossterm",
+ "futures-util",
  "pulldown-cmark",
  "ratatui",
  "serde",
  "syntect",
+ "tokio",
  "toml",
  "tracy-client",
  "tui-syntax-highlight",

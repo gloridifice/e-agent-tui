@@ -19,7 +19,7 @@ fn main() -> std::io::Result<()> {
     {
         use std::io::Read;
 
-        use e::vt_input::VtInputParser;
+        use e_tui::runtime::input::vt::VtInputParser;
 
         crossterm::terminal::enable_raw_mode()?;
         // Must run after raw mode, whose setup otherwise clears the flag.
@@ -68,14 +68,14 @@ fn main() -> std::io::Result<()> {
 }
 
 #[cfg(windows)]
-fn native_mods() -> e::vt_input::NativeMods {
+fn native_mods() -> e_tui::runtime::input::vt::NativeMods {
     use winapi::um::winuser::{GetAsyncKeyState, VK_BACK, VK_CONTROL, VK_MENU, VK_SHIFT};
 
     fn down(key: i32) -> bool {
         unsafe { (GetAsyncKeyState(key) as u16) & 0x8000 != 0 }
     }
 
-    e::vt_input::NativeMods {
+    e_tui::runtime::input::vt::NativeMods {
         shift: down(VK_SHIFT),
         ctrl: down(VK_CONTROL),
         alt: down(VK_MENU),

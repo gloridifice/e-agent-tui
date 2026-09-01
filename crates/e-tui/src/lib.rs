@@ -35,6 +35,7 @@ pub mod reading;
 pub mod render;
 pub mod render_state;
 pub mod reveal;
+pub mod runtime;
 pub mod settings;
 pub mod syntax;
 pub mod theme;

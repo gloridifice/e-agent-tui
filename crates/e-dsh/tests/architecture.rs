@@ -264,12 +264,12 @@ fn tarjan_reports_cycles_and_leaves_dag_nodes_single() {
 #[test]
 fn single_track_transcript_has_no_legacy_production_path() {
     let dsh_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let root = dsh_root.join("src");
     let tui_root = dsh_root
         .parent()
         .expect("workspace crates directory")
         .join("e-tui/src");
-    let model = fs::read_to_string(root.join("model.rs")).expect("read model.rs");
+    let model =
+        fs::read_to_string(tui_root.join("runtime/state.rs")).expect("read shared runtime state");
     let app = fs::read_to_string(tui_root.join("app.rs")).expect("read app module");
     let projection =
         fs::read_to_string(tui_root.join("projection/mod.rs")).expect("read projection module");
@@ -310,7 +310,7 @@ fn single_track_transcript_has_no_legacy_production_path() {
         model.contains("pub tui: TuiApp")
             && app.contains("pub timeline: TimelineModel")
             && !model.contains("pub transcript: TranscriptStore"),
-        "AppState must forward through TuiApp to the sole TimelineModel owner"
+        "RuntimeState must forward through TuiApp to the sole TimelineModel owner"
     );
     let lines = model.lines().collect::<Vec<_>>();
     for (index, line) in lines.iter().enumerate() {
@@ -331,7 +331,8 @@ fn lifecycle_models_are_sole_production_owners() {
         .parent()
         .expect("workspace crates directory")
         .join("e-tui/src");
-    let model = fs::read_to_string(dsh_root.join("src/model.rs")).expect("read model facade");
+    let runtime_state =
+        fs::read_to_string(tui_root.join("runtime/state.rs")).expect("read shared runtime state");
     let main = fs::read_to_string(dsh_root.join("src/main.rs")).expect("read composition root");
     let app = fs::read_to_string(tui_root.join("app.rs")).expect("read app root");
 
@@ -360,8 +361,8 @@ fn lifecycle_models_are_sole_production_owners() {
         "pub expanded:",
     ] {
         assert!(
-            !production_source(&model).contains(forbidden),
-            "AppState facade retained migrated mirror field: {forbidden}"
+            !production_source(&runtime_state).contains(forbidden),
+            "RuntimeState retained migrated mirror field: {forbidden}"
         );
     }
     for forbidden in [
@@ -541,10 +542,19 @@ fn production_crate_graphs_are_acyclic_and_keep_leaf_boundaries() {
         .parent()
         .expect("workspace crates directory")
         .join("e-tui");
+    let pi_root = dsh_root
+        .parent()
+        .expect("workspace crates directory")
+        .join("e-pi");
     let dsh_graph = production_graph(&dsh_root.join("src"));
+    let pi_graph = production_graph(&pi_root.join("src"));
     let tui_graph = production_graph(&tui_root.join("src"));
 
-    for (name, graph) in [("e-dsh", &dsh_graph), ("e-tui", &tui_graph)] {
+    for (name, graph) in [
+        ("e-dsh", &dsh_graph),
+        ("e-pi", &pi_graph),
+        ("e-tui", &tui_graph),
+    ] {
         let cycles: Vec<_> = strongly_connected_components(graph)
             .into_iter()
             .filter(|component| component.len() > 1)
@@ -584,6 +594,7 @@ fn production_crate_graphs_are_acyclic_and_keep_leaf_boundaries() {
 
     let dsh_manifest =
         fs::read_to_string(dsh_root.join("Cargo.toml")).expect("read e-dsh manifest");
+    let pi_manifest = fs::read_to_string(pi_root.join("Cargo.toml")).expect("read e-pi manifest");
     let tui_manifest =
         fs::read_to_string(tui_root.join("Cargo.toml")).expect("read e-tui manifest");
     assert!(
@@ -591,7 +602,14 @@ fn production_crate_graphs_are_acyclic_and_keep_leaf_boundaries() {
         "e-dsh must depend on the local e-tui package"
     );
     assert!(
-        !tui_manifest.contains("e-dsh") && !tui_manifest.contains("../e-dsh"),
-        "e-tui must not depend on e-dsh"
+        pi_manifest.contains("e-tui = { path = \"../e-tui\" }") && !pi_manifest.contains("e-dsh"),
+        "e-pi must depend directly on e-tui and not on e-dsh"
+    );
+    assert!(
+        !tui_manifest.contains("e-dsh")
+            && !tui_manifest.contains("../e-dsh")
+            && !tui_manifest.contains("e-pi")
+            && !tui_manifest.contains("../e-pi"),
+        "e-tui must not depend on an executable adapter"
     );
 }

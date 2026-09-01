@@ -7,6 +7,7 @@
 
 pub mod adapter;
 pub mod config;
+pub mod effects;
 pub mod framing;
 pub mod process;
 pub mod protocol;

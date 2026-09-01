@@ -9,17 +9,15 @@
 
 use std::time::Instant;
 
-use e::{
-    config::Config,
-    model::{tick_spinners, AppState},
-    profile::{percentile, CountingBackend, CountingWriter, IoCounters},
-};
+use e::config::Config;
 use e_tui::{
     display::{
         CardRole, ContentCard, DisplayId, DisplayItem, DisplayTone, TranscriptBlock,
         TranscriptFormat,
     },
     input::InputState,
+    profile::{percentile, CountingBackend, CountingWriter, IoCounters},
+    runtime::{tick_spinners, RuntimeState as AppState},
     ui::{render, scroll_lines, RenderOverlays, ScrollState},
 };
 use ratatui::{

@@ -619,7 +619,7 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 /// Windows clipboards and terminals deliver `\r\n` (or lone `\r`) line
 /// endings; the composer's internal newline is `\n`.
 fn normalize_paste(bytes: &[u8]) -> String {
-    e_tui::input::normalize_paste_text(&String::from_utf8_lossy(bytes))
+    crate::input::normalize_paste_text(&String::from_utf8_lossy(bytes))
 }
 
 #[cfg(test)]

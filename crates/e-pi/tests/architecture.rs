@@ -22,6 +22,17 @@ fn production(source: &str) -> &str {
         .map_or(source, |index| &source[..index])
 }
 
+fn contains_crate_path(source: &str, name: &str) -> bool {
+    let needle = format!("{name}::");
+    source.match_indices(&needle).any(|(index, _)| {
+        index == 0
+            || source[..index]
+                .chars()
+                .next_back()
+                .is_some_and(|ch| !ch.is_ascii_alphanumeric() && ch != '_')
+    })
+}
+
 #[test]
 fn pi_protocol_stays_out_of_e_tui() {
     let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -47,12 +58,22 @@ fn pi_protocol_stays_out_of_e_tui() {
 }
 
 #[test]
-fn pi_adapter_does_not_reach_dsh_bridge_modules() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+fn pi_adapter_has_no_dsh_dependency_or_imports() {
+    let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = fs::read_to_string(crate_root.join("Cargo.toml")).unwrap();
+    assert!(!manifest.contains("e-dsh"), "e-pi must not depend on e-dsh");
+
+    let root = crate_root.join("src");
     for path in rust_files(&root) {
         let source = fs::read_to_string(&path).unwrap();
         let source = production(&source);
+        assert!(
+            !contains_crate_path(source, "e"),
+            "{} imports the transitional e-dsh library name",
+            path.display()
+        );
         for forbidden in [
+            "e_dsh::",
             "e::bridge",
             "e::bridge_io",
             "e::protocol",

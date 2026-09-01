@@ -11,83 +11,21 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context};
-use e::model::{animation_active, tick_spinners, AppState};
-use e::profile::{FrameMetrics, FrameSample};
 use e::protocol::{ClientMessage, MAX_WIRE_FRAME_BYTES, WIRE_PROTOCOL_VERSION};
-use e::runtime::{BridgeUiState, DrawPriority, EffectResult, RuntimeController, UiAction};
-use e::runtime_ports::{
-    BridgeTransportPort, ProductionRuntimePorts, ProductionTerminalEvents, TerminalEventPort,
-    TerminalLifecyclePort, UiActionPorts,
+use e::runtime_ports::{BridgeTransportPort, ProductionRuntimePorts};
+use e_tui::profile::{FrameMetrics, FrameSample};
+use e_tui::runtime::{
+    animation_active, route_terminal_event, tick_spinners, DirtyReason, FrameScheduler,
+    ProductionTerminalEvents, RuntimeController, RuntimeState, RuntimeUiState, TerminalEventPort,
+    TerminalFocus, TerminalLifecyclePort, TerminalOwner, TerminalUiState, UiActionPorts,
 };
-use e::terminal_runtime::TerminalOwner;
 use e_tui::ui::TerminalSize;
+use e_tui::{DrawPriority, EffectResult, UiAction};
 
 const DSH_SERVER_CLOSED_MESSAGE: &str = "dsh 服务器已关闭。";
-const INTERACTIVE_FRAME_INTERVAL: Duration = Duration::from_millis(16);
-const CONTENT_FRAME_INTERVAL: Duration = Duration::from_millis(30);
 const MIN_ANIMATION_INTERVAL: Duration = Duration::from_millis(16);
 const INBOUND_BATCH_LIMIT: usize = 64;
 const INBOUND_BATCH_BUDGET: Duration = Duration::from_millis(2);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DirtyReason {
-    Interactive,
-    Content,
-    Animation,
-}
-
-#[derive(Debug)]
-struct FrameScheduler {
-    deadline: Option<Instant>,
-    requested_at: Option<Instant>,
-    last_frame: Option<Instant>,
-}
-
-impl FrameScheduler {
-    fn new(now: Instant) -> Self {
-        Self {
-            deadline: Some(now),
-            requested_at: Some(now),
-            last_frame: None,
-        }
-    }
-
-    fn interval(reason: DirtyReason) -> Duration {
-        match reason {
-            DirtyReason::Interactive => INTERACTIVE_FRAME_INTERVAL,
-            DirtyReason::Content => CONTENT_FRAME_INTERVAL,
-            DirtyReason::Animation => INTERACTIVE_FRAME_INTERVAL,
-        }
-    }
-
-    fn request(&mut self, reason: DirtyReason, now: Instant) {
-        let due = self
-            .last_frame
-            .map(|last| (last + Self::interval(reason)).max(now))
-            .unwrap_or(now);
-        self.deadline = Some(self.deadline.map_or(due, |current| current.min(due)));
-        self.requested_at = Some(
-            self.requested_at
-                .map_or(now, |requested| requested.min(now)),
-        );
-    }
-
-    fn deadline(&self) -> Option<Instant> {
-        self.deadline
-    }
-
-    fn take_due(&mut self, now: Instant) -> Option<Instant> {
-        if self.deadline.is_some_and(|deadline| deadline <= now) {
-            self.deadline = None;
-            return self.requested_at.take();
-        }
-        None
-    }
-
-    fn complete(&mut self, now: Instant) {
-        self.last_frame = Some(now);
-    }
-}
 
 async fn wait_for_deadline(deadline: Option<Instant>) {
     match deadline {
@@ -96,7 +34,7 @@ async fn wait_for_deadline(deadline: Option<Instant>) {
     }
 }
 
-fn animation_interval(state: &AppState) -> Duration {
+fn animation_interval(state: &RuntimeState) -> Duration {
     Duration::from_millis(
         state
             .config
@@ -232,10 +170,11 @@ fn run_clean() -> anyhow::Result<()> {
 }
 
 async fn run_tui(url: String, resume_session_id: Option<String>) -> anyhow::Result<()> {
-    let mut phases = e::profile::PhaseTimers::new();
+    let mut phases =
+        e_tui::profile::PhaseTimers::new(std::env::var("DSH_TUI_TIMING").as_deref() == Ok("1"));
     // Tracy: active only with `--features tracy` AND DSH_TUI_TRACY=1.
     #[allow(unused_variables)]
-    let _tracy = e::profile::start_tracy();
+    let _tracy = e_tui::profile::start_tracy(std::env::var("DSH_TUI_TRACY").as_deref() == Ok("1"));
 
     let home = e::launcher::dsh_home();
     e::setup::require_ready(&home).map_err(|error| anyhow::anyhow!("{error}"))?;
@@ -246,7 +185,7 @@ async fn run_tui(url: String, resume_session_id: Option<String>) -> anyhow::Resu
     // below can shut it down when the last TUI closes.
     let mut dsh_session = e::launcher::acquire(&url, &home)?;
 
-    let _z = e::tracy_zone!("read_token");
+    let _z = e_tui::tracy_zone!("read_token");
     let token = read_token();
     drop(_z);
     phases.mark("read token");
@@ -367,10 +306,10 @@ async fn run(
     url: String,
     token: String,
     resume_session_id: Option<String>,
-    phases: &mut e::profile::PhaseTimers,
+    phases: &mut e_tui::profile::PhaseTimers,
 ) -> anyhow::Result<()> {
     // Config: persisted TOML, live-editable via /settings (D26–D30).
-    let _z = e::tracy_zone!("config load");
+    let _z = e_tui::tracy_zone!("config load");
     let mut config = e::config::load();
     // Discover the themes directory (ensuring the two defaults exist) and
     // resolve the configured theme name to a palette. `themes` is refreshed
@@ -393,7 +332,7 @@ async fn run(
     drop(_z);
     phases.mark("config load");
     let theme = config.theme();
-    let mut app = AppState::default();
+    let mut app = RuntimeState::default();
     app.config = config.clone();
     app.interaction = e_tui::InteractionModel::new(&config);
     let state = Arc::new(std::sync::Mutex::new(app));
@@ -418,7 +357,7 @@ async fn run(
         },
         protocol_version: WIRE_PROTOCOL_VERSION,
     };
-    let _z = e::tracy_zone!("ws connect");
+    let _z = e_tui::tracy_zone!("ws connect");
     let mut bridge_io = e::bridge_io::BridgeIo::connect(&url, hello, max_frame_bytes).await?;
     drop(_z);
     phases.mark("ws connect");
@@ -431,20 +370,34 @@ async fn run(
     let state_r = Arc::clone(&state);
 
     // ---- event-driven main loop ----
-    let mut terminal = TerminalOwner::new().context("initialize terminal")?;
+    let sync_output = std::env::var("DSHE_DISABLE_SYNC_OUTPUT").as_deref() != Ok("1");
+    #[cfg(windows)]
+    let mut terminal =
+        TerminalOwner::new_with_options(e::win_input::enable_virtual_terminal_input, sync_output)
+            .context("initialize terminal")?;
+    #[cfg(not(windows))]
+    let mut terminal =
+        TerminalOwner::new_with_options(|| Ok(()), sync_output).context("initialize terminal")?;
     phases.mark("terminal setup");
+    #[cfg(windows)]
+    let mut events = ProductionTerminalEvents::new(e::win_input::native_mods);
+    #[cfg(not(windows))]
     let mut events = ProductionTerminalEvents::new();
     let mut runtime_ports = ProductionRuntimePorts;
     let mut scheduler = FrameScheduler::new(runtime_ports.now());
     let mut committed_selection_frame = e_tui::SelectionFrame::default();
     let mut spinner_deadline: Option<Instant> = None;
-    let mut frame_metrics = FrameMetrics::from_env();
+    let mut frame_metrics = FrameMetrics::new(
+        std::env::var("DSHE_FRAME_TIMING").as_deref() == Ok("1"),
+        240,
+        120,
+    );
     let mut pending_update_elapsed = Duration::ZERO;
     let mut fatal: Option<String> = None;
     let mut first_draw_done = false;
 
     'outer: loop {
-        let _main_loop_zone = e::tracy_zone!("main loop");
+        let _main_loop_zone = e_tui::tracy_zone!("main loop");
         let mut pending_event = None;
         let mut first_inbound = None;
         let frame_deadline = scheduler.deadline();
@@ -517,7 +470,7 @@ async fn run(
         }
 
         if let Some(first) = first_inbound {
-            let _batch_zone = e::tracy_zone!("inbound batch");
+            let _batch_zone = e_tui::tracy_zone!("inbound batch");
             let batch_started = Instant::now();
             let mut next = Some(first);
             let mut count = 0usize;
@@ -541,7 +494,7 @@ async fn run(
                     let mut app = state_r.lock().unwrap();
                     std::mem::take(&mut app.interaction)
                 };
-                let mut ui = BridgeUiState {
+                let mut ui = RuntimeUiState {
                     scroll: &mut interaction.scroll,
                     input: &mut interaction.input,
                     input_page: &mut interaction.input_page,
@@ -611,14 +564,14 @@ async fn run(
             let focus = {
                 let state = state_r.lock().unwrap();
                 let drafting = state.is_new_conversation();
-                e::runtime::TerminalFocus {
+                TerminalFocus {
                     help_visible: state.interaction.help_visible,
                     input_page_open: state.interaction.input_page.is_some(),
                     approval_open: !drafting && state.interaction.approval.is_some(),
                     reading_view_open: state.reading.is_some(),
                 }
             };
-            let route = e::runtime::route_terminal_event(event, focus);
+            let route = route_terminal_event(event, focus);
             let terminal_size = terminal.size();
             let terminal_height = terminal_size.as_ref().map(|s| s.height).unwrap_or(40);
             let terminal_width = terminal_size.as_ref().map(|s| s.width).unwrap_or(120);
@@ -635,7 +588,7 @@ async fn run(
                 runtime_ports.now(),
                 &state_r,
                 &committed_selection_frame,
-                &mut e::runtime::TerminalUiState {
+                &mut TerminalUiState {
                     scroll: &mut interaction.scroll,
                     input: &mut interaction.input,
                     input_page: &mut interaction.input_page,
@@ -668,7 +621,7 @@ async fn run(
                             *loaded,
                             loaded_themes,
                             &state_r,
-                            &mut e::runtime::TerminalUiState {
+                            &mut TerminalUiState {
                                 scroll: &mut interaction.scroll,
                                 input: &mut interaction.input,
                                 input_page: &mut interaction.input_page,
@@ -727,7 +680,7 @@ async fn run(
                 .visible_text(state.config.copy_toast_secs, notice_now);
             let first_frame = !first_draw_done;
             let _first_zone = if first_frame {
-                e::tracy_zone!("first frame")
+                e_tui::tracy_zone!("first frame")
             } else {
                 None
             };
@@ -915,7 +868,7 @@ mod tests {
 
     #[test]
     fn queued_dispatch_releases_the_state_lock() {
-        let state = std::sync::Mutex::new(AppState::default());
+        let state = std::sync::Mutex::new(RuntimeState::default());
         state.lock().unwrap().interaction.queue.push("next".into());
 
         let effects = RuntimeController::dispatch_next_queued(&state);
@@ -1031,9 +984,15 @@ mod tests {
         scheduler.take_due(now);
         scheduler.complete(now);
         scheduler.request(DirtyReason::Content, now + Duration::from_millis(1));
-        assert_eq!(scheduler.deadline(), Some(now + CONTENT_FRAME_INTERVAL));
+        assert_eq!(
+            scheduler.deadline(),
+            Some(now + e_tui::runtime::CONTENT_FRAME_INTERVAL)
+        );
         scheduler.request(DirtyReason::Interactive, now + Duration::from_millis(2));
-        assert_eq!(scheduler.deadline(), Some(now + INTERACTIVE_FRAME_INTERVAL));
+        assert_eq!(
+            scheduler.deadline(),
+            Some(now + e_tui::runtime::INTERACTIVE_FRAME_INTERVAL)
+        );
     }
 
     #[test]
@@ -1054,7 +1013,10 @@ mod tests {
                 now + Duration::from_millis(u64::from(millis)),
             );
         }
-        assert_eq!(scheduler.deadline(), Some(now + INTERACTIVE_FRAME_INTERVAL));
+        assert_eq!(
+            scheduler.deadline(),
+            Some(now + e_tui::runtime::INTERACTIVE_FRAME_INTERVAL)
+        );
     }
 
     #[test]
@@ -1073,7 +1035,7 @@ mod tests {
 
         let now = Instant::now();
         let spinner = now + Duration::from_millis(120);
-        let mut state = AppState::default();
+        let mut state = RuntimeState::default();
         state.config.message_chars_per_second = e_tui::config::RevealRate::new(16).unwrap();
         state.config.preview_lines_per_second = e_tui::config::RevealRate::new(32).unwrap();
         let mut transcript = e_tui::reveal::RevealTrack::default();
@@ -1123,7 +1085,7 @@ mod tests {
 
     #[test]
     fn animation_interval_honors_config_with_safe_floor() {
-        let mut state = AppState::default();
+        let mut state = RuntimeState::default();
         state.config.spinner_frame_ms = 120;
         assert_eq!(animation_interval(&state), Duration::from_millis(120));
         state.config.spinner_frame_ms = 0;

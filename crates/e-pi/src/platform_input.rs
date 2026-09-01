@@ -1,17 +1,16 @@
-//! DSH executable's narrow Windows console shim for shared terminal input.
+//! Pi executable's narrow Windows console shim for shared terminal input.
 
-use e_tui::runtime::input::vt::NativeMods;
-
-pub fn native_mods() -> NativeMods {
+#[cfg(windows)]
+pub fn native_mods() -> e_tui::runtime::input::vt::NativeMods {
     use winapi::um::winuser::{GetAsyncKeyState, VK_BACK, VK_CONTROL, VK_MENU, VK_SHIFT};
 
     fn down(key: i32) -> bool {
-        // SAFETY: `GetAsyncKeyState` accepts a virtual-key code and has no
+        // SAFETY: `GetAsyncKeyState` accepts any virtual-key code and has no
         // pointer or lifetime preconditions.
         unsafe { (GetAsyncKeyState(key) as u16) & 0x8000 != 0 }
     }
 
-    NativeMods {
+    e_tui::runtime::input::vt::NativeMods {
         shift: down(VK_SHIFT),
         ctrl: down(VK_CONTROL),
         alt: down(VK_MENU),
@@ -19,6 +18,7 @@ pub fn native_mods() -> NativeMods {
     }
 }
 
+#[cfg(windows)]
 pub fn enable_virtual_terminal_input() -> std::io::Result<()> {
     use winapi::um::consoleapi::{GetConsoleMode, SetConsoleMode};
     use winapi::um::handleapi::INVALID_HANDLE_VALUE;

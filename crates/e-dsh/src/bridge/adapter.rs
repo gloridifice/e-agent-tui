@@ -18,12 +18,18 @@ use e_tui::{
 use serde_json::Value;
 
 use crate::protocol::{
-    ClientMessage, CommandInfo, CommandInputInfo, HostContentBlock, HostEvent, HostEventKind,
-    HostLifecycleOutcome, HostMessageSource, HostMutationHunk, HostSurfaceOp, ModelCurrent,
-    ModelInfo, ModelProviderInfo, ModelReasoningEffortInfo, ModelReasoningInfo, PresetInfo,
-    ProviderInfo, ProxyInfo, QuestionAnswer, QuestionItem, QuestionOption as WireQuestionOption,
-    ServerMessage, SessionInfo, SkillInfo, TokenUsage as HostTokenUsage,
+    ClientMessage, HostContentBlock, HostEvent, HostEventKind, HostLifecycleOutcome,
+    HostMessageSource, HostMutationHunk, HostSurfaceOp, ModelCurrent, ModelInfo, ModelProviderInfo,
+    ProviderInfo, ProxyInfo, QuestionAnswer, QuestionItem, ServerMessage, SessionInfo,
+    TokenUsage as HostTokenUsage, WIRE_PROTOCOL_VERSION,
 };
+
+fn protocol_mismatch_fatal(detail: &str) -> String {
+    format!(
+        "bridge protocol mismatch: {detail}. Update the client and bridge from the same checkout: remount with `tools\\mount-bridge.ps1 -Profile {profile}`, run `dsh plugin --profile {profile} install`, rebuild/reinstall `dshe`, and restart DSH",
+        profile = crate::dsh_env::PROFILE_NAME,
+    )
+}
 
 pub fn normalize_server_message(message: ServerMessage) -> AgentEvent {
     match message {
@@ -37,17 +43,29 @@ pub fn normalize_server_message(message: ServerMessage) -> AgentEvent {
             mode,
             title,
             cwd,
-        } => AgentEvent::Session(SessionEvent::Attached(AttachedSession {
-            protocol_version,
-            max_frame_bytes,
-            id: session_id,
-            status: normalize_status(status),
-            provider,
-            model,
-            mode,
-            title,
-            workspace: cwd,
-        })),
+        } => {
+            if let Some(bridge_version) = protocol_version {
+                if bridge_version != WIRE_PROTOCOL_VERSION {
+                    return AgentEvent::Interaction(InteractionEvent::Error {
+                        code: "fatal".into(),
+                        message: protocol_mismatch_fatal(&format!(
+                            "client protocol {WIRE_PROTOCOL_VERSION}, bridge protocol {bridge_version}"
+                        )),
+                    });
+                }
+            }
+            AgentEvent::Session(SessionEvent::Attached(AttachedSession {
+                protocol_version,
+                max_frame_bytes,
+                id: session_id,
+                status: normalize_status(status),
+                provider,
+                model,
+                mode,
+                title,
+                workspace: cwd,
+            }))
+        }
         ServerMessage::Snapshot { events, truncated } => {
             AgentEvent::Timeline(TimelineEvent::Snapshot {
                 records: events.into_iter().map(normalize_host_event).collect(),
@@ -158,210 +176,24 @@ pub fn normalize_server_message(message: ServerMessage) -> AgentEvent {
             outcome,
         }),
         ServerMessage::Error { code, message } => {
-            AgentEvent::Interaction(InteractionEvent::Error { code, message })
+            let fatal_message = match code.as_str() {
+                "disconnected" => Some(format!("bridge disconnected: {message}")),
+                "protocol-newer" => Some(protocol_mismatch_fatal(&message)),
+                "bad-token" => Some(format!("bridge authentication failed: {message}")),
+                "hello-failed" => Some(format!("bridge startup failed: {message}")),
+                _ => None,
+            };
+            AgentEvent::Interaction(InteractionEvent::Error {
+                code: if fatal_message.is_some() {
+                    "fatal".into()
+                } else {
+                    code
+                },
+                message: fatal_message.unwrap_or(message),
+            })
         }
         ServerMessage::Pong => AgentEvent::Interaction(InteractionEvent::Heartbeat),
     }
-}
-
-pub(crate) fn legacy_server_message(event: AgentEvent) -> Result<ServerMessage, AgentEvent> {
-    Ok(match event {
-        AgentEvent::Session(SessionEvent::Attached(session)) => ServerMessage::Welcome {
-            protocol_version: session.protocol_version,
-            max_frame_bytes: session.max_frame_bytes,
-            session_id: session.id,
-            status: legacy_status(session.status),
-            provider: session.provider,
-            model: session.model,
-            mode: session.mode,
-            title: session.title,
-            cwd: session.workspace,
-        },
-        AgentEvent::Session(SessionEvent::Status(status)) => ServerMessage::Status {
-            status: legacy_status(status),
-        },
-        AgentEvent::Session(SessionEvent::Title(title)) => ServerMessage::Title { title },
-        AgentEvent::Session(SessionEvent::List {
-            sessions,
-            titles_pending,
-        }) => ServerMessage::Sessions {
-            sessions: sessions
-                .into_iter()
-                .map(|session| SessionInfo {
-                    id: session.id,
-                    title: session.title,
-                    live: session.live,
-                    created_at: session.created_at,
-                })
-                .collect(),
-            titles_pending,
-        },
-        AgentEvent::Timeline(TimelineEvent::Snapshot { records, truncated }) => {
-            ServerMessage::Snapshot {
-                events: records.into_iter().map(legacy_host_event).collect(),
-                truncated,
-            }
-        }
-        AgentEvent::Timeline(TimelineEvent::Append(record)) => ServerMessage::Event {
-            event: legacy_host_event(record),
-        },
-        AgentEvent::Timeline(TimelineEvent::History { records, has_more }) => {
-            ServerMessage::History {
-                events: records.into_iter().map(legacy_host_event).collect(),
-                has_more,
-            }
-        }
-        AgentEvent::Catalog(CatalogEvent::Presets(presets)) => ServerMessage::Presets {
-            presets: presets
-                .into_iter()
-                .map(|preset| PresetInfo {
-                    id: preset.id,
-                    name: preset.name,
-                    description: preset.description,
-                    order: preset.order,
-                    broken: preset.unavailable_reason,
-                })
-                .collect(),
-        },
-        AgentEvent::Catalog(CatalogEvent::Skills(skills)) => ServerMessage::Skills {
-            skills: skills
-                .into_iter()
-                .map(|skill| SkillInfo {
-                    name: skill.name,
-                    description: skill.description,
-                })
-                .collect(),
-        },
-        AgentEvent::Catalog(CatalogEvent::Commands(commands)) => ServerMessage::Commands {
-            commands: commands
-                .into_iter()
-                .map(|command| CommandInfo {
-                    name: command.name,
-                    description: command.description,
-                    input: command.input_hint.map(|hint| CommandInputInfo { hint }),
-                })
-                .collect(),
-        },
-        AgentEvent::Catalog(CatalogEvent::Login {
-            providers,
-            proxies,
-            error,
-        }) => ServerMessage::Login {
-            providers: providers
-                .into_iter()
-                .map(|provider| ProviderInfo {
-                    id: provider.id,
-                    name: provider.name,
-                    api_key_configured: provider.api_key_configured,
-                    api_key_writable: provider.api_key_writable,
-                    api_key_source: provider.api_key_source,
-                    api_key_hint: provider.api_key_hint,
-                })
-                .collect(),
-            proxies: proxies
-                .into_iter()
-                .map(|proxy| ProxyInfo {
-                    id: proxy.id,
-                    name: proxy.name,
-                    base_url: proxy.base_url,
-                    protocol: proxy.protocol,
-                    model: proxy.model,
-                })
-                .collect(),
-            error,
-        },
-        AgentEvent::Catalog(CatalogEvent::Models { providers, current }) => ServerMessage::Model {
-            providers: providers
-                .into_iter()
-                .map(|provider| ModelProviderInfo {
-                    id: provider.id,
-                    name: provider.name,
-                    models: provider
-                        .models
-                        .into_iter()
-                        .map(|model| ModelInfo {
-                            id: model.id,
-                            name: model.name,
-                            description: model.description,
-                            reasoning: model.reasoning.map(|reasoning| ModelReasoningInfo {
-                                efforts: reasoning
-                                    .efforts
-                                    .into_iter()
-                                    .map(|effort| ModelReasoningEffortInfo {
-                                        id: effort.id,
-                                        name: effort.name,
-                                        description: effort.description,
-                                    })
-                                    .collect(),
-                                default_effort: reasoning.default_effort,
-                            }),
-                        })
-                        .collect(),
-                })
-                .collect(),
-            current: current.map(|current| ModelCurrent {
-                provider: current.provider,
-                model: current.model,
-                reasoning_effort: current.reasoning_effort,
-            }),
-        },
-        AgentEvent::Interaction(InteractionEvent::CommandResult { id, outcome, text }) => {
-            ServerMessage::CommandResult {
-                command_id: id,
-                kind: outcome,
-                text,
-            }
-        }
-        AgentEvent::Interaction(InteractionEvent::Approval {
-            id, label, reason, ..
-        }) => ServerMessage::Approval {
-            id,
-            tool_name: label,
-            reason,
-            call_id: None,
-        },
-        AgentEvent::Interaction(InteractionEvent::Question {
-            request_id,
-            session_id,
-            questions,
-        }) => ServerMessage::Question {
-            rpc_id: request_id,
-            session_id,
-            questions: questions
-                .into_iter()
-                .map(|question| QuestionItem {
-                    id: question.id,
-                    question: question.question,
-                    header: question.header,
-                    options: question.options.map(|options| {
-                        options
-                            .into_iter()
-                            .map(|option| WireQuestionOption {
-                                label: option.label,
-                                description: option.description,
-                            })
-                            .collect()
-                    }),
-                    multi_select: question.multi_select,
-                })
-                .collect(),
-        },
-        AgentEvent::Interaction(InteractionEvent::QuestionResolved {
-            request_id,
-            outcome,
-        }) => ServerMessage::QuestionResolved {
-            question_rpc_id: request_id,
-            outcome,
-        },
-        AgentEvent::Interaction(InteractionEvent::Error { code, message }) => {
-            ServerMessage::Error { code, message }
-        }
-        AgentEvent::Interaction(InteractionEvent::Heartbeat) => ServerMessage::Pong,
-        other @ (AgentEvent::Interaction(InteractionEvent::SetEditorText { .. })
-        | AgentEvent::Preview(_)
-        | AgentEvent::EffectCompleted(_)
-        | AgentEvent::Deadline(_)) => return Err(other),
-    })
 }
 
 pub fn agent_request_to_client(request: AgentRequest) -> ClientMessage {
@@ -473,7 +305,7 @@ pub fn client_message_to_agent_request(
     })
 }
 
-pub(crate) fn normalize_host_event(event: HostEvent) -> TimelineRecord {
+pub fn normalize_host_event(event: HostEvent) -> TimelineRecord {
     let surface = if event.surface_op_invalid {
         Some(SurfaceOperation::Invalid)
     } else {
@@ -945,14 +777,6 @@ fn normalize_mutation_hunk(hunk: HostMutationHunk) -> MutationHunk {
     }
 }
 
-fn legacy_mutation_hunk(hunk: MutationHunk) -> HostMutationHunk {
-    HostMutationHunk {
-        path: hunk.path,
-        old_text: hunk.old,
-        new_text: hunk.new,
-    }
-}
-
 pub fn normalize_capability(name: &str, arguments: Option<&Value>) -> ToolCapability {
     if let Some(command) = arguments.and_then(editor_command) {
         match command {
@@ -1066,272 +890,6 @@ fn exit_code(output: &str) -> Option<i32> {
             .and_then(|value| value.strip_suffix(']'))
             .and_then(|value| value.parse().ok())
     })
-}
-
-pub(crate) fn legacy_host_event(record: TimelineRecord) -> HostEvent {
-    let (surface_op, surface_op_invalid) = match record.surface {
-        Some(SurfaceOperation::Append) => (Some(HostSurfaceOp::Append), false),
-        Some(SurfaceOperation::Replace { start, end }) => {
-            (Some(HostSurfaceOp::Replace { start, end }), false)
-        }
-        Some(SurfaceOperation::Invalid) => (None, true),
-        None => (None, false),
-    };
-    HostEvent::from_normalized_parts(
-        record.sequence,
-        record.time_ms,
-        surface_op,
-        surface_op_invalid,
-        record.source_sequences,
-        legacy_host_fact(record.fact),
-    )
-}
-
-fn legacy_host_fact(fact: TimelineFact) -> HostEventKind {
-    match fact {
-        TimelineFact::UserMessage {
-            text,
-            source_kind,
-            content,
-            source,
-        } => HostEventKind::UserMessage {
-            text,
-            source_kind,
-            content: content.into_iter().map(legacy_content).collect(),
-            source: HostMessageSource {
-                kind: source.kind,
-                form: source.form,
-                summary: source.summary,
-                producer: source.producer,
-            },
-        },
-        TimelineFact::AssistantChunk {
-            text,
-            reasoning,
-            turn,
-            step,
-            usage,
-        } => HostEventKind::AssistantChunk {
-            text,
-            reasoning,
-            turn,
-            step,
-            usage: usage.map(legacy_usage),
-        },
-        TimelineFact::AssistantMessage {
-            text,
-            reasoning,
-            content,
-            turn,
-            step,
-            usage,
-        } => HostEventKind::AssistantMessage {
-            text,
-            reasoning,
-            content: content.into_iter().map(legacy_content).collect(),
-            turn,
-            step,
-            usage: usage.map(legacy_usage),
-        },
-        TimelineFact::ToolCall(activity) => HostEventKind::ToolCall {
-            call_id: activity.id,
-            name: activity.label,
-            arguments: legacy_tool_arguments(activity.reference, activity.summary),
-        },
-        TimelineFact::ToolResult {
-            activity_id,
-            output,
-            state,
-            output_truncated,
-            mutation_hunks,
-        } => HostEventKind::ToolResult {
-            call_id: activity_id,
-            output,
-            is_error: state == ActivityState::Failure,
-            output_truncated,
-            mutation_hunks: mutation_hunks
-                .into_iter()
-                .map(legacy_mutation_hunk)
-                .collect(),
-        },
-        TimelineFact::TurnStart => HostEventKind::TurnStart,
-        TimelineFact::StepStart { turn, step } => HostEventKind::StepStart { turn, step },
-        TimelineFact::StepEnd { turn, step } => HostEventKind::StepEnd { turn, step },
-        TimelineFact::TurnEnd {
-            reason,
-            error_message,
-            error_code,
-        } => HostEventKind::TurnEnd {
-            reason,
-            error_message,
-            error_code,
-        },
-        TimelineFact::SessionTitle { title } => HostEventKind::SessionTitle { title },
-        TimelineFact::TodoWrite { todos } => HostEventKind::TodoWrite { todos },
-        TimelineFact::RetryScheduled {
-            id,
-            retry,
-            max_retries,
-            delay_ms,
-            message,
-        } => HostEventKind::LlmRetry {
-            retry_id: id,
-            retry,
-            max_retries,
-            delay_ms,
-            message,
-        },
-        TimelineFact::RetryStarted { id, retry } => HostEventKind::LlmRetryStarted {
-            retry_id: id,
-            retry,
-        },
-        TimelineFact::CommandStarted { id, name, args } => HostEventKind::CommandRun {
-            command_id: id,
-            name,
-            args,
-        },
-        TimelineFact::CommandFinished { id, success, text } => HostEventKind::CommandDone {
-            command_id: id,
-            success,
-            text,
-        },
-        TimelineFact::SubagentStarted {
-            root_id,
-            parent_id,
-            id,
-            name,
-            summary,
-        } => HostEventKind::CodeDispatchStart {
-            root_call_id: root_id,
-            parent_call_id: parent_id,
-            sub_call_id: id,
-            name,
-            arguments: summary,
-        },
-        TimelineFact::SubagentFinished { id, failed } => HostEventKind::CodeDispatchEnd {
-            sub_call_id: id,
-            is_error: failed,
-        },
-        TimelineFact::WorkflowStarted { id, name } => {
-            HostEventKind::WorkflowRunStart { run_id: id, name }
-        }
-        TimelineFact::WorkflowMemberStarted {
-            workflow_id,
-            sequence,
-            label,
-        } => HostEventKind::WorkflowAgentStart {
-            run_id: workflow_id,
-            member_seq: sequence,
-            label,
-        },
-        TimelineFact::WorkflowMemberFinished {
-            workflow_id,
-            sequence,
-            outcome,
-        } => HostEventKind::WorkflowAgentEnd {
-            run_id: workflow_id,
-            member_seq: sequence,
-            outcome: legacy_outcome(outcome),
-        },
-        TimelineFact::WorkflowFinished { id, outcome } => HostEventKind::WorkflowRunEnd {
-            run_id: id,
-            outcome: legacy_outcome(outcome),
-        },
-        TimelineFact::CompactionStarted { id } => {
-            HostEventKind::CompactionStart { compaction_id: id }
-        }
-        TimelineFact::CompactionSummary { id, summary } => HostEventKind::CompactionSummary {
-            compaction_id: id,
-            summary,
-        },
-        TimelineFact::CompactionFinished { id, error } => HostEventKind::CompactionEnd {
-            compaction_id: id,
-            error,
-        },
-        TimelineFact::GoalChanged { summary } => HostEventKind::GoalChange { summary },
-        TimelineFact::ModeChanged { mode } => HostEventKind::PlanMode { mode },
-        TimelineFact::PresetSelected { preset } => HostEventKind::AgentPresetSelected { preset },
-        TimelineFact::SessionState { state } => HostEventKind::SessionState { event_type: state },
-        TimelineFact::Audit { kind, .. } => HostEventKind::AuditOnly { event_type: kind },
-        TimelineFact::Custom { kind, .. } => HostEventKind::Unknown { event_type: kind },
-    }
-}
-
-fn legacy_content(block: ContentBlock) -> HostContentBlock {
-    match block {
-        ContentBlock::Text(text) => HostContentBlock::Text(text),
-        ContentBlock::Reasoning(text) => HostContentBlock::Reasoning(text),
-        ContentBlock::Image { label } => HostContentBlock::Image { label },
-        ContentBlock::Custom { kind, .. } => HostContentBlock::Other { block_type: kind },
-    }
-}
-
-fn legacy_usage(usage: TokenUsage) -> HostTokenUsage {
-    HostTokenUsage {
-        input_tokens: usage.input_tokens,
-        output_tokens: usage.output_tokens,
-        cache_read_tokens: usage.cache_read_tokens,
-        cache_write_tokens: usage.cache_write_tokens,
-    }
-}
-
-fn legacy_outcome(outcome: LifecycleOutcome) -> HostLifecycleOutcome {
-    match outcome {
-        LifecycleOutcome::Success => HostLifecycleOutcome::Success,
-        LifecycleOutcome::Failure => HostLifecycleOutcome::Failure,
-        LifecycleOutcome::Cancelled => HostLifecycleOutcome::Cancelled,
-    }
-}
-
-fn legacy_tool_arguments(reference: Option<ToolReference>, summary: String) -> String {
-    match reference {
-        Some(ToolReference::Path { path }) => serde_json::json!({ "path": path }).to_string(),
-        Some(ToolReference::Link { url, .. }) => serde_json::json!({ "url": url }).to_string(),
-        Some(ToolReference::Text { text } | ToolReference::PlainText { text }) => {
-            serde_json::json!({ "text": text }).to_string()
-        }
-        Some(ToolReference::Diff { path, diff }) => {
-            serde_json::json!({ "path": path, "diff": diff }).to_string()
-        }
-        Some(ToolReference::Hunks(hunks)) => {
-            let hunks = hunks
-                .iter()
-                .map(|hunk| {
-                    serde_json::json!({
-                        "path": hunk.path,
-                        "old": hunk.old,
-                        "new": hunk.new,
-                        "anchor_line": hunk.anchor_line,
-                    })
-                })
-                .collect::<Vec<_>>();
-            serde_json::json!({ "hunks": hunks }).to_string()
-        }
-        Some(ToolReference::Lines { path, start, lines }) => {
-            serde_json::json!({ "path": path, "start": start, "lines": lines }).to_string()
-        }
-        Some(ToolReference::SearchResult { query, matches }) => {
-            serde_json::json!({ "query": query, "matches": matches }).to_string()
-        }
-        Some(ToolReference::Command { command }) => {
-            serde_json::json!({ "command": command }).to_string()
-        }
-        Some(ToolReference::Markdown { source }) => {
-            serde_json::json!({ "markdown": source }).to_string()
-        }
-        Some(ToolReference::Custom { value, .. }) => value,
-        None => summary,
-    }
-}
-
-fn legacy_status(status: AgentStatus) -> String {
-    match status {
-        AgentStatus::Idle => "idle".into(),
-        AgentStatus::Running => "running".into(),
-        AgentStatus::Waiting => "waiting".into(),
-        AgentStatus::Error => "error".into(),
-        AgentStatus::Custom(status) => status,
-    }
 }
 
 fn normalize_status(status: String) -> AgentStatus {
@@ -1678,9 +1236,9 @@ mod tests {
     }
 
     #[test]
-    fn attached_session_survives_the_transitional_controller_adapter() {
+    fn attached_session_is_normalized_at_the_dsh_boundary() {
         let event = normalize_server_message(ServerMessage::Welcome {
-            protocol_version: Some(4),
+            protocol_version: Some(WIRE_PROTOCOL_VERSION),
             max_frame_bytes: Some(1024),
             session_id: "s1".into(),
             status: "idle".into(),
@@ -1690,16 +1248,37 @@ mod tests {
             title: Some("title".into()),
             cwd: Some("C:\\work".into()),
         });
-        let restored = legacy_server_message(event).expect("supported agent event");
         assert!(matches!(
-            restored,
-            ServerMessage::Welcome {
-                session_id,
-                protocol_version: Some(4),
+            event,
+            AgentEvent::Session(SessionEvent::Attached(AttachedSession {
+                id,
+                protocol_version: Some(version),
                 max_frame_bytes: Some(1024),
-                cwd: Some(cwd),
+                workspace: Some(cwd),
                 ..
-            } if session_id == "s1" && cwd == "C:\\work"
+            })) if id == "s1" && version == WIRE_PROTOCOL_VERSION && cwd == "C:\\work"
+        ));
+    }
+
+    #[test]
+    fn protocol_mismatch_becomes_a_provider_formatted_fatal_event() {
+        let event = normalize_server_message(ServerMessage::Welcome {
+            protocol_version: Some(WIRE_PROTOCOL_VERSION + 1),
+            max_frame_bytes: Some(1024),
+            session_id: "s1".into(),
+            status: "idle".into(),
+            provider: None,
+            model: None,
+            mode: None,
+            title: None,
+            cwd: None,
+        });
+        assert!(matches!(
+            event,
+            AgentEvent::Interaction(InteractionEvent::Error { code, message })
+                if code == "fatal"
+                    && message.contains("bridge protocol mismatch")
+                    && message.contains("dshe")
         ));
     }
 }

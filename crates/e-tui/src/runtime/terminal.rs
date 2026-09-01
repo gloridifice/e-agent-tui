@@ -34,14 +34,6 @@ pub struct FrameTransaction {
     pub io: IoSnapshot,
 }
 
-fn sync_output_enabled(value: Option<&str>) -> bool {
-    value != Some("1")
-}
-
-fn sync_output_enabled_from_env() -> bool {
-    sync_output_enabled(std::env::var("DSHE_DISABLE_SYNC_OUTPUT").ok().as_deref())
-}
-
 fn begin_sync<W: Write>(writer: &mut W, enabled: bool) -> io::Result<()> {
     if enabled {
         execute!(writer, BeginSynchronizedUpdate)?;
@@ -86,6 +78,17 @@ pub struct TerminalOwner {
 
 impl TerminalOwner {
     pub fn new() -> io::Result<Self> {
+        Self::new_with_input_setup(|| Ok(()))
+    }
+
+    pub fn new_with_input_setup(setup_input: impl FnOnce() -> io::Result<()>) -> io::Result<Self> {
+        Self::new_with_options(setup_input, true)
+    }
+
+    pub fn new_with_options(
+        setup_input: impl FnOnce() -> io::Result<()>,
+        sync_output: bool,
+    ) -> io::Result<Self> {
         enable_raw_mode()?;
         let counters = IoCounters::default();
         let writer = CountingWriter::new(
@@ -128,8 +131,7 @@ impl TerminalOwner {
         // doing it immediately after `enable_raw_mode` is too early and the
         // later setup silently clears 0x0200, so Esc/navigation never enter
         // the byte stream even though ordinary characters still do.
-        #[cfg(windows)]
-        if let Err(error) = crate::win_input::enable_virtual_terminal_input() {
+        if let Err(error) = setup_input() {
             drop(terminal);
             let mut stdout = std::io::stdout();
             let _ = leave_terminal_modes(&mut stdout);
@@ -139,7 +141,7 @@ impl TerminalOwner {
         Ok(Self {
             terminal,
             counters,
-            sync_output: sync_output_enabled_from_env(),
+            sync_output,
             restored: false,
         })
     }
@@ -205,6 +207,12 @@ impl TerminalOwner {
     }
 }
 
+impl crate::runtime::ports::TerminalLifecyclePort for TerminalOwner {
+    fn restore_terminal(&mut self) -> Result<(), String> {
+        self.restore().map_err(|error| error.to_string())
+    }
+}
+
 impl Drop for TerminalOwner {
     fn drop(&mut self) {
         let _ = self.restore();
@@ -241,12 +249,5 @@ mod tests {
             finish_sync::<_, ()>(&mut out, true, Err(io::Error::other("draw failed"))).unwrap_err();
         assert_eq!(error.to_string(), "draw failed");
         assert!(out.ends_with(b"\x1b[?2026l"));
-    }
-
-    #[test]
-    fn sync_disable_contract_uses_exact_one() {
-        assert!(sync_output_enabled(None));
-        assert!(sync_output_enabled(Some("0")));
-        assert!(!sync_output_enabled(Some("1")));
     }
 }

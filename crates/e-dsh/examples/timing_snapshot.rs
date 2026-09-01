@@ -8,9 +8,9 @@
 
 use std::time::Instant;
 
-use e::model::AppState;
-use e_tui::input::InputState;
+use e::protocol::HostEvent;
 use e_tui::ui::{render, ScrollState};
+use e_tui::{input::InputState, runtime::RuntimeState};
 
 fn main() -> anyhow::Result<()> {
     let path = std::env::args()
@@ -34,12 +34,14 @@ fn main() -> anyhow::Result<()> {
     );
 
     // Phase 2: fold events into messages (state.apply("snapshot")).
-    let mut state = AppState::default();
+    let mut state = RuntimeState::default();
     state.config = e::config::load();
-    let _ = state.apply(
-        "snapshot",
-        &serde_json::json!({ "events": events, "truncated": false }),
-    );
+    let records = events
+        .into_iter()
+        .map(HostEvent::from_value)
+        .map(e::bridge::adapter::normalize_host_event)
+        .collect::<Vec<_>>();
+    state.apply_snapshot(&records, false);
     let t3 = Instant::now();
     println!(
         "  model fold:  {:.2} ms ({} display nodes, {} render units)",

@@ -237,27 +237,6 @@ impl HostEventKind {
 }
 
 impl HostEvent {
-    /// Transitional constructor used by the DSH anti-corruption adapter while
-    /// legacy projection ownership remains in `e-dsh`.
-    pub(crate) fn from_normalized_parts(
-        seq: Option<u64>,
-        time_ms: Option<u64>,
-        surface_op: Option<HostSurfaceOp>,
-        surface_op_invalid: bool,
-        source_event_seqs: Vec<u64>,
-        kind: HostEventKind,
-    ) -> Self {
-        Self {
-            seq,
-            time_ms,
-            surface_op,
-            surface_op_invalid,
-            source_event_seqs,
-            kind,
-            raw: Value::Null,
-        }
-    }
-
     pub fn from_value(raw: Value) -> Self {
         let seq = raw.get("seq").and_then(Value::as_u64);
         let data = raw.get("data").unwrap_or(&Value::Null);

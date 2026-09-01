@@ -1615,8 +1615,8 @@ fn diff_preview_composes_normal_syntax_with_added_and_removed_backgrounds() {
         .iter()
         .map(|cell| cell.symbol())
         .collect::<String>();
-    assert!(content.contains("│    1 │ fn old"));
-    assert!(content.contains("│    1 │ fn new"));
+    assert!(content.contains("▌    1 │ fn old"));
+    assert!(content.contains("▌    1 │ fn new"));
 }
 
 #[test]

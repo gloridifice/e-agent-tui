@@ -407,8 +407,8 @@ mod tests {
         assert_eq!(texts[0], "a.rs");
         assert_eq!(texts[1], "@ line 10");
         // anchor_line is 0-based; first added row displays as 11.
-        assert!(texts[2].starts_with("\u{2502}   11 \u{2502} line a"));
-        assert!(texts[3].starts_with("\u{2502}   12 \u{2502} line b"));
+        assert!(texts[2].starts_with("\u{258c}   11 \u{2502} line a"));
+        assert!(texts[3].starts_with("\u{258c}   12 \u{2502} line b"));
     }
 
     #[test]
@@ -422,9 +422,9 @@ mod tests {
         };
         let lines = hunk_lines(&hunk, &theme, 40);
         let texts: Vec<String> = lines.iter().map(line_text).collect();
-        assert!(texts[0].starts_with("\u{2502}    1 \u{2502} old1"));
-        assert!(texts[1].starts_with("\u{2502}    2 \u{2502} old2"));
-        assert!(texts[2].starts_with("\u{2502}    1 \u{2502} new1"));
-        assert!(texts[3].starts_with("\u{2502}    2 \u{2502} new2"));
+        assert!(texts[0].starts_with("\u{258c}    1 \u{2502} old1"));
+        assert!(texts[1].starts_with("\u{258c}    2 \u{2502} old2"));
+        assert!(texts[2].starts_with("\u{258c}    1 \u{2502} new1"));
+        assert!(texts[3].starts_with("\u{258c}    2 \u{2502} new2"));
     }
 }

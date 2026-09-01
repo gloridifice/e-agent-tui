@@ -2,10 +2,11 @@
 //! report the resulting public display-surface mix. Usage:
 //!   cargo run --example smoke_snapshot -- <path-to-snapshot.json>
 
-use e::model::AppState;
+use e::protocol::HostEvent;
 use e_tui::{
     display::{ActivityState, CardRole, DisplayItem, TranscriptFormat},
     presentation::materialize_transcript,
+    runtime::RuntimeState,
     ui::provenance_layout_rows,
 };
 
@@ -31,9 +32,11 @@ fn main() -> anyhow::Result<()> {
     let raw = std::fs::read_to_string(&path)?;
     let events: Vec<serde_json::Value> = serde_json::from_str(&raw)?;
 
-    let mut state = AppState::default();
-    for event in &events {
-        state.apply_event(event);
+    let mut state = RuntimeState::default();
+    for event in events.iter().cloned() {
+        state.apply_host_event(&e::bridge::adapter::normalize_host_event(
+            HostEvent::from_value(event),
+        ));
     }
     materialize_transcript(&mut state);
     state.render.transcript_cache.width = 120;

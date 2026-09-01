@@ -7,19 +7,16 @@
 
 use std::{future::Future, time::Instant};
 
+#[cfg(test)]
 use crossterm::event::Event;
-#[cfg(not(windows))]
-use crossterm::event::EventStream;
-#[cfg(not(windows))]
-use futures_util::StreamExt;
 use tokio::sync::mpsc;
 
 use crate::{
     config::{self, Config, StateFile},
     protocol::ClientMessage,
-    terminal_runtime::TerminalOwner,
     theme::{self, ThemeFile},
 };
+pub use e_tui::runtime::{TerminalEventPort, TerminalLifecyclePort, UiActionPorts};
 use e_tui::{PreviewContent, PreviewRequest};
 
 pub trait BridgeTransportPort {
@@ -40,78 +37,6 @@ impl BridgeTransportPort for mpsc::Sender<ClientMessage> {
                 .map_err(|_| "bridge outbound channel closed".to_owned())
         }
     }
-}
-
-pub trait TerminalEventPort {
-    fn next_event(&mut self) -> impl Future<Output = Option<Result<Event, String>>> + Send;
-}
-
-pub struct ProductionTerminalEvents {
-    #[cfg(windows)]
-    raw: crate::win_input::WindowsRawInput,
-    #[cfg(not(windows))]
-    stream: EventStream,
-}
-
-impl ProductionTerminalEvents {
-    pub fn new() -> Self {
-        Self {
-            #[cfg(windows)]
-            raw: crate::win_input::WindowsRawInput::new(),
-            #[cfg(not(windows))]
-            stream: EventStream::new(),
-        }
-    }
-}
-
-impl Default for ProductionTerminalEvents {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl TerminalEventPort for ProductionTerminalEvents {
-    fn next_event(&mut self) -> impl Future<Output = Option<Result<Event, String>>> + Send {
-        async move {
-            #[cfg(windows)]
-            {
-                // crossterm's Windows backend never emits `Event::Paste`, so
-                // input comes from the raw VT byte stream instead (see
-                // `win_input` / `vt_input`).
-                self.raw.next_event().await
-            }
-            #[cfg(not(windows))]
-            {
-                self.stream
-                    .next()
-                    .await
-                    .map(|result| result.map_err(|error| error.to_string()))
-            }
-        }
-    }
-}
-
-pub trait TerminalLifecyclePort {
-    fn restore_terminal(&mut self) -> Result<(), String>;
-}
-
-impl TerminalLifecyclePort for TerminalOwner {
-    fn restore_terminal(&mut self) -> Result<(), String> {
-        self.restore().map_err(|error| error.to_string())
-    }
-}
-
-pub trait UiActionPorts {
-    fn load_config(&mut self) -> Result<(Config, Vec<ThemeFile>), String>;
-    fn persist_config(&mut self, config: &Config) -> Result<(), String>;
-    fn persist_session_id(&mut self, session_id: String);
-    fn read_clipboard(&mut self) -> Result<String, String>;
-    fn write_clipboard(&mut self, text: String) -> Result<(), String>;
-    fn resolve_preview(
-        &mut self,
-        request: PreviewRequest,
-    ) -> impl Future<Output = Result<PreviewContent, String>> + Send;
-    fn now(&self) -> Instant;
 }
 
 #[derive(Default)]

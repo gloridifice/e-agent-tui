@@ -105,17 +105,31 @@ impl PiAdapter {
 
     pub fn request(&mut self, request: AgentRequest) -> AdapterOutput {
         match request {
-            AgentRequest::Input { text } => AdapterOutput::command(RpcCommand::Prompt {
-                id: Some(self.request_id("prompt")),
-                message: text,
-                streaming_behavior: self.is_streaming.then_some(StreamingBehavior::Steer),
-            }),
-            AgentRequest::NewInput { mode: _, text } => {
+            AgentRequest::Input { prompt } => {
+                let Some(text) = prompt.plain_text().map(str::to_owned) else {
+                    return self.unsupported("Pi image prompts must be pasted as temporary file paths");
+                };
+                AdapterOutput::command(RpcCommand::Prompt {
+                    id: Some(self.request_id("prompt")),
+                    message: text,
+                    streaming_behavior: self.is_streaming.then_some(StreamingBehavior::Steer),
+                })
+            }
+            AgentRequest::NewInput { mode: _, prompt } => {
+                let Some(text) = prompt.plain_text().map(str::to_owned) else {
+                    return self.unsupported("Pi image prompts must be pasted as temporary file paths");
+                };
                 let id = self.request_id("new");
                 self.pending_new.insert(id.clone(), text);
                 AdapterOutput::command(RpcCommand::NewSession { id: Some(id) })
             }
-            AgentRequest::Command { line } => self.command_line(line),
+            AgentRequest::Command { line, images } => {
+                if images.is_empty() {
+                    self.command_line(line)
+                } else {
+                    self.unsupported("Pi command images must be pasted as temporary file paths")
+                }
+            }
             AgentRequest::Interrupt => AdapterOutput::command(RpcCommand::Abort {
                 id: Some(self.request_id("abort")),
             }),
@@ -535,8 +549,9 @@ impl PiAdapter {
             if command.get("source").and_then(Value::as_str) == Some("skill") {
                 skills.push(Skill {
                     name: name.strip_prefix("skill:").unwrap_or(name).to_owned(),
-                    description: description.clone(),
+                    description,
                 });
+                continue;
             }
             commands.push(CommandDescriptor {
                 name: name.to_owned(),
@@ -889,16 +904,62 @@ impl PiAdapter {
     }
 }
 
+fn pi_skill_name(text: &str) -> Option<&str> {
+    let rest = text.strip_prefix("<skill name=\"")?;
+    let (name, rest) = rest.split_once("\" location=\"")?;
+    let (location, rest) = rest.split_once("\">\n")?;
+    let (_, suffix) = rest.rsplit_once("\n</skill>")?;
+    if name.is_empty()
+        || location.is_empty()
+        || !(suffix.is_empty()
+            || suffix
+                .strip_prefix("\n\n")
+                .is_some_and(|arguments| !arguments.is_empty()))
+    {
+        return None;
+    }
+    Some(name)
+}
+
 fn user_fact(message: &Value) -> TimelineFact {
-    let text = content_text(message.get("content").unwrap_or(&Value::Null));
+    let value = message.get("content").unwrap_or(&Value::Null);
+    let text = content_text(value);
+    let skill_name = pi_skill_name(&text).map(str::to_owned);
+    let content = if value.is_string() {
+        vec![ContentBlock::Text(text.clone())]
+    } else {
+        content_parts(message)
+            .filter_map(|part| match part.get("type").and_then(Value::as_str) {
+                Some("text") => Some(ContentBlock::Text(
+                    part.get("text")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_owned(),
+                )),
+                Some("image") => Some(ContentBlock::Image {
+                    label: "image".into(),
+                }),
+                _ => None,
+            })
+            .collect()
+    };
     TimelineFact::UserMessage {
-        text: text.clone(),
-        source_kind: Some("user".into()),
-        content: vec![ContentBlock::Text(text)],
+        text,
+        source_kind: Some(if skill_name.is_some() {
+            "skill-invocation".into()
+        } else {
+            "user".into()
+        }),
+        content,
         source: MessageSource {
-            kind: Some("user".into()),
+            kind: Some(if skill_name.is_some() {
+                "skill-invocation".into()
+            } else {
+                "user".into()
+            }),
+            form: skill_name.as_ref().map(|_| "instructions".into()),
+            summary: skill_name,
             producer: Some("pi".into()),
-            ..Default::default()
         },
     }
 }
@@ -1129,11 +1190,69 @@ mod tests {
     }
 
     #[test]
+    fn skill_commands_are_kept_out_of_the_integrated_command_catalog() {
+        let mut adapter = PiAdapter::new(".", "sessions");
+        let output = adapter.commands_response(Some(&serde_json::json!({
+            "commands": [
+                {"name":"review", "description":"Review", "source":"prompt"},
+                {"name":"skill:code-review", "description":"Review code", "source":"skill"}
+            ]
+        })));
+        assert!(matches!(
+            output.events.as_slice(),
+            [
+                AgentEvent::Catalog(CatalogEvent::Commands(commands)),
+                AgentEvent::Catalog(CatalogEvent::Skills(skills)),
+            ] if commands.len() == 1
+                && commands[0].name == "review"
+                && skills.len() == 1
+                && skills[0].name == "code-review"
+        ));
+    }
+
+    #[test]
+    fn expanded_skill_message_projects_as_injected_context() {
+        let text = "<skill name=\"code-review\" location=\"C:/skills/code-review/SKILL.md\">\nReferences are relative to C:/skills/code-review.\n\nReview carefully.\n</skill>";
+        let fact = user_fact(&serde_json::json!({
+            "content": [{"type":"text", "text":text}]
+        }));
+        assert!(matches!(
+            fact,
+            TimelineFact::UserMessage { text: actual, source_kind, source, .. }
+                if actual == text
+                    && source_kind.as_deref() == Some("skill-invocation")
+                    && source.kind.as_deref() == Some("skill-invocation")
+                    && source.form.as_deref() == Some("instructions")
+                    && source.summary.as_deref() == Some("code-review")
+                    && source.producer.as_deref() == Some("pi")
+        ));
+    }
+
+    #[test]
+    fn user_image_content_remains_visible_in_the_timeline_projection() {
+        let fact = user_fact(&serde_json::json!({
+            "content": [
+                {"type":"text", "text":"look"},
+                {"type":"image", "data":"AA==", "mimeType":"image/png"}
+            ]
+        }));
+        assert!(matches!(
+            fact,
+            TimelineFact::UserMessage { text, content, .. }
+                if text == "look"
+                    && content == vec![
+                        ContentBlock::Text("look".into()),
+                        ContentBlock::Image { label: "image".into() },
+                    ]
+        ));
+    }
+
+    #[test]
     fn streaming_prompt_uses_steering_behavior() {
         let mut adapter = PiAdapter::new(".", "sessions");
         adapter.record(record(serde_json::json!({"type":"agent_start"})));
         let output = adapter.request(AgentRequest::Input {
-            text: "next".into(),
+            prompt: e_tui::PromptInput::text("next"),
         });
         assert!(matches!(
             output.commands.as_slice(),
@@ -1149,7 +1268,7 @@ mod tests {
         let mut adapter = PiAdapter::new(".", "sessions");
         let start = adapter.request(AgentRequest::NewInput {
             mode: "pi".into(),
-            text: "first".into(),
+            prompt: e_tui::PromptInput::text("first"),
         });
         let [RpcCommand::NewSession { id: Some(id) }] = start.commands.as_slice() else {
             panic!("expected new_session")

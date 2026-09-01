@@ -137,7 +137,7 @@ impl UiActionPorts for PiRuntimePorts {
         state.save();
     }
 
-    fn read_clipboard(&mut self) -> Result<String, String> {
+    fn read_clipboard(&mut self) -> Result<e_tui::ClipboardPaste, String> {
         e_pi::effects::read_clipboard()
     }
 

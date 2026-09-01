@@ -26,8 +26,8 @@ use crate::{
     },
     theme,
     ui::{scroll_lines, scroll_page, transcript_view_height, ScrollState, TerminalSize},
-    AgentEvent, AgentRequest, Config, MouseSelection, NoticeState, PaneResizeState, PointerEvent,
-    SelectionFrame, Theme, ThemeFile,
+    AgentEvent, AgentRequest, ClipboardPaste, Config, MouseSelection, NoticeState, PaneResizeState,
+    PointerEvent, PromptImage, PromptInput, SelectionFrame, Theme, ThemeFile,
 };
 pub use crate::{DrawPriority, EffectResult, UiAction};
 
@@ -77,14 +77,20 @@ pub struct RuntimeUiState<'a> {
     pub input_page: &'a mut Option<InputPageSession>,
     pub approval: &'a mut Option<ApprovalCard>,
     pub question: &'a mut Option<String>,
-    pub queue: &'a mut Vec<String>,
+    pub queue: &'a mut Vec<PromptInput>,
 }
 
 #[derive(Default)]
 pub struct InputHandlerOutcome {
-    pub command: Option<String>,
+    pub command: Option<PendingCommand>,
     pub activate_reading: bool,
     pub effects: Vec<UiAction>,
+}
+
+pub struct PendingCommand {
+    pub line: String,
+    pub images: Vec<PromptImage>,
+    pub original: PromptInput,
 }
 
 pub struct InputPageUiState<'a> {
@@ -106,7 +112,7 @@ pub struct TerminalUiState<'a> {
     pub pane_resize: &'a mut PaneResizeState,
     pub approval: &'a mut Option<ApprovalCard>,
     pub question: &'a mut Option<String>,
-    pub queue: &'a mut Vec<String>,
+    pub queue: &'a mut Vec<PromptInput>,
     pub config: &'a mut Config,
     pub themes: &'a mut Vec<ThemeFile>,
     pub theme: &'a mut Theme,
@@ -428,9 +434,27 @@ impl RuntimeController {
                 ui.notice.show("没有可阅读的内容", now);
             }
         }
-        if let Some(line) = outcome.command {
+        if let Some(pending) = outcome.command {
+            let command_name = pending
+                .line
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .trim_start_matches('/');
+            let is_builtin = crate::command_catalog::BUILTIN_COMMANDS
+                .iter()
+                .any(|command| command.name == command_name);
+            let is_skill_injection = command_name.eq_ignore_ascii_case("skill")
+                || command_name.split_once(':').is_some_and(|(prefix, skill)| {
+                    prefix.eq_ignore_ascii_case("skill") && !skill.is_empty()
+                });
+            if (is_builtin || is_skill_injection) && !pending.images.is_empty() {
+                ui.input.restore_prompt(pending.original);
+                ui.notice.show("此命令不接受图片", now);
+                return outcome.effects;
+            }
             let command = runtime_command::handle_local_command(
-                line,
+                pending.line,
                 LocalCommandContext {
                     input_page: ui.input_page,
                     help_visible: ui.help_visible,
@@ -450,7 +474,16 @@ impl RuntimeController {
             }
             outcome
                 .effects
-                .extend(command.outbound.into_iter().map(agent_action));
+                .extend(command.outbound.into_iter().map(|request| {
+                    let request = match request {
+                        AgentRequest::Command { line, .. } => AgentRequest::Command {
+                            line,
+                            images: pending.images.clone(),
+                        },
+                        other => other,
+                    };
+                    agent_action(request)
+                }));
             if command.activate_reading {
                 let viewport_height = {
                     let app = state.lock().unwrap();
@@ -501,6 +534,16 @@ impl RuntimeController {
             }
             AgentEvent::Timeline(TimelineEvent::Append(record)) => {
                 let mut app = state.lock().unwrap();
+                let commits_new_conversation = matches!(
+                    &record.fact,
+                    crate::agent::timeline::TimelineFact::UserMessage {
+                        source_kind: Some(kind),
+                        ..
+                    } if kind == "user"
+                );
+                if commits_new_conversation {
+                    app.session.new_conversation = None;
+                }
                 app.apply_host_event(&record);
                 app.take_actions()
             }
@@ -566,7 +609,14 @@ impl RuntimeController {
                         app.interaction.question = None;
                     }
                     app.session.session_id = Some(attached.id.clone());
-                    app.session.new_conversation = None;
+                    let materialization_pending = app
+                        .session
+                        .new_conversation
+                        .as_ref()
+                        .is_some_and(|draft| draft.pending_input.is_some());
+                    if !materialization_pending {
+                        app.session.new_conversation = None;
+                    }
                     app.session.session_title = attached.title;
                     app.session.session_cwd = attached.workspace;
                     app.session.status = normalized_session_status(&attached.status);
@@ -772,7 +822,11 @@ impl RuntimeController {
         if code == "fatal" {
             return vec![UiAction::Fatal(message.to_owned())];
         }
-        if code == "new-failed" {
+        if matches!(
+            code,
+            "new-failed" | "new-input-failed" | "image-input-too-large"
+        ) && state.lock().unwrap().is_new_conversation()
+        {
             let restored = {
                 let mut app = state.lock().unwrap();
                 let restored = app.restore_new_conversation_input();
@@ -781,8 +835,8 @@ impl RuntimeController {
                 }
                 restored
             };
-            if let Some(text) = restored {
-                ui.input.restore_text(text);
+            if let Some(prompt) = restored {
+                ui.input.restore_prompt(prompt);
                 ui.input.multiline = ui.input.buf.contains('\n');
             } else {
                 state
@@ -817,16 +871,16 @@ impl RuntimeController {
     pub fn apply_input_action(
         action: InputAction,
         state: &Mutex<RuntimeState>,
-        queue: &mut Vec<String>,
+        queue: &mut Vec<PromptInput>,
     ) -> InputHandlerOutcome {
         let mut outcome = InputHandlerOutcome::default();
         match action {
             InputAction::None | InputAction::ToggleMultiline => {}
-            InputAction::Send(text) => {
+            InputAction::Send(prompt) => {
                 let new_input = {
                     let mut state = state.lock().unwrap();
                     if state.is_new_conversation() {
-                        state.materialize_new_conversation(text.clone())
+                        state.materialize_new_conversation(prompt.clone())
                     } else {
                         None
                     }
@@ -845,7 +899,7 @@ impl RuntimeController {
                 }
                 let immediate = {
                     let mut state = state.lock().unwrap();
-                    let immediate = state.enqueue_or_immediate(&text, queue);
+                    let immediate = state.enqueue_or_immediate(&prompt, queue);
                     if immediate {
                         state.start_thinking();
                     }
@@ -854,10 +908,20 @@ impl RuntimeController {
                 if immediate {
                     outcome
                         .effects
-                        .push(agent_action(AgentRequest::Input { text }));
+                        .push(agent_action(AgentRequest::Input { prompt }));
                 }
             }
-            InputAction::Command(line) => outcome.command = Some(line),
+            InputAction::Command {
+                line,
+                images,
+                original,
+            } => {
+                outcome.command = Some(PendingCommand {
+                    line,
+                    images,
+                    original,
+                })
+            }
             InputAction::Interrupt => {
                 queue.clear();
                 outcome.effects.push(agent_action(AgentRequest::Interrupt));
@@ -958,11 +1022,23 @@ impl RuntimeController {
     ) -> bool {
         match result {
             EffectResult::ConfigPersisted(Ok(())) | EffectResult::ConfigReloaded { .. } => false,
-            EffectResult::ClipboardRead(Ok(text)) => {
-                let text = crate::input::normalize_paste_text(&text);
+            EffectResult::ClipboardRead(Ok(content)) => {
                 let mut app = state.lock().unwrap();
                 let interaction = &mut app.interaction;
-                paste_text(&mut interaction.input, &mut interaction.input_page, &text)
+                match content {
+                    ClipboardPaste::Text(text) => {
+                        let text = crate::input::normalize_paste_text(&text);
+                        paste_text(&mut interaction.input, &mut interaction.input_page, &text)
+                    }
+                    ClipboardPaste::Image(image) => {
+                        if interaction.input_page.is_some() {
+                            false
+                        } else {
+                            interaction.input.paste_image(image);
+                            true
+                        }
+                    }
+                }
             }
             EffectResult::ClipboardRead(Err(error)) => {
                 state
@@ -1018,11 +1094,11 @@ impl RuntimeController {
     /// Atomically claim one queued prompt and defer transport I/O to the runner.
     pub fn dispatch_next_queued(state: &Mutex<RuntimeState>) -> Vec<UiAction> {
         let mut state = state.lock().unwrap();
-        let Some(text) = state.take_next_queued() else {
+        let Some(prompt) = state.take_next_queued() else {
             return Vec::new();
         };
         state.start_thinking();
-        vec![agent_action(AgentRequest::Input { text })]
+        vec![agent_action(AgentRequest::Input { prompt })]
     }
 }
 
@@ -1037,7 +1113,7 @@ mod tests {
         input_page: &'a mut Option<InputPageSession>,
         approval: &'a mut Option<ApprovalCard>,
         question: &'a mut Option<String>,
-        queue: &'a mut Vec<String>,
+        queue: &'a mut Vec<PromptInput>,
     ) -> RuntimeUiState<'a> {
         RuntimeUiState {
             scroll,
@@ -1097,6 +1173,36 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_image_completion_targets_only_the_visible_composer() {
+        let state = Mutex::new(RuntimeState::default());
+        let image = PromptImage {
+            media_type: "image/png".into(),
+            data: vec![1, 2, 3],
+            name: Some("clip.png".into()),
+        };
+        assert!(RuntimeController::apply_effect_result(
+            EffectResult::ClipboardRead(Ok(ClipboardPaste::Image(image.clone()))),
+            &state,
+            Instant::now(),
+        ));
+        assert_eq!(
+            state.lock().unwrap().interaction.input.display_text().text,
+            "[Image clip.png]"
+        );
+
+        state.lock().unwrap().interaction.input_page = Some(InputPageSession::login());
+        assert!(!RuntimeController::apply_effect_result(
+            EffectResult::ClipboardRead(Ok(ClipboardPaste::Image(image))),
+            &state,
+            Instant::now(),
+        ));
+        assert_eq!(
+            state.lock().unwrap().interaction.input.display_text().text,
+            "[Image clip.png]"
+        );
+    }
+
+    #[test]
     fn queued_prompt_is_claimed_atomically_when_idle() {
         let state = Mutex::new(RuntimeState::default());
         state.lock().unwrap().interaction.queue.push("next".into());
@@ -1104,8 +1210,154 @@ mod tests {
         assert!(state.lock().unwrap().interaction.queue.is_empty());
         assert!(matches!(
             effects.as_slice(),
-            [UiAction::Agent(AgentRequest::Input { text })] if text == "next"
+            [UiAction::Agent(AgentRequest::Input { prompt })] if prompt.plain_text() == Some("next")
         ));
+    }
+
+    #[test]
+    fn image_prompt_queues_and_dispatches_without_losing_bytes() {
+        let state = Mutex::new(RuntimeState::default());
+        state.lock().unwrap().session.status = crate::SessionStatus::Running;
+        let image = PromptImage {
+            media_type: "image/png".into(),
+            data: vec![1, 2, 3],
+            name: Some("clip.png".into()),
+        };
+        let prompt = PromptInput {
+            parts: vec![crate::PromptPart::Image(image.clone())],
+        };
+        let mut queue = Vec::new();
+        let outcome = RuntimeController::apply_input_action(
+            InputAction::Send(prompt.clone()),
+            &state,
+            &mut queue,
+        );
+        assert!(outcome.effects.is_empty());
+        assert_eq!(queue, [prompt.clone()]);
+
+        {
+            let mut app = state.lock().unwrap();
+            app.session.status = crate::SessionStatus::Idle;
+            app.session.working = false;
+            app.interaction.queue = queue;
+        }
+        let effects = RuntimeController::dispatch_next_queued(&state);
+        assert!(matches!(
+            effects.as_slice(),
+            [UiAction::Agent(AgentRequest::Input { prompt: sent })] if sent == &prompt
+        ));
+    }
+
+    #[test]
+    fn failed_image_draft_materialization_restores_the_atomic_block() {
+        let state = Arc::new(Mutex::new(RuntimeState::default()));
+        state.lock().unwrap().begin_new_conversation("standard");
+        let image = PromptImage {
+            media_type: "image/png".into(),
+            data: vec![1, 2, 3],
+            name: Some("clip.png".into()),
+        };
+        let prompt = PromptInput {
+            parts: vec![crate::PromptPart::Image(image)],
+        };
+        let mut queue = Vec::new();
+        let outcome = RuntimeController::apply_input_action(
+            InputAction::Send(prompt.clone()),
+            state.as_ref(),
+            &mut queue,
+        );
+        assert!(matches!(
+            outcome.effects.as_slice(),
+            [UiAction::Agent(AgentRequest::NewInput { prompt: sent, .. })] if sent == &prompt
+        ));
+
+        let mut scroll = ScrollState::default();
+        let mut input = InputState::new(&Config::default());
+        let mut page = None;
+        let mut approval = None;
+        let mut question = None;
+        RuntimeController::apply_agent(
+            AgentEvent::Session(crate::agent::SessionEvent::Attached(
+                crate::agent::AttachedSession {
+                    protocol_version: Some(7),
+                    max_frame_bytes: None,
+                    id: "new-session".into(),
+                    status: crate::agent::AgentStatus::Idle,
+                    provider: None,
+                    model: None,
+                    mode: Some("standard".into()),
+                    title: None,
+                    workspace: None,
+                },
+            )),
+            &state,
+            &mut runtime_ui(
+                &mut scroll,
+                &mut input,
+                &mut page,
+                &mut approval,
+                &mut question,
+                &mut queue,
+            ),
+        );
+        assert!(state.lock().unwrap().is_new_conversation());
+
+        RuntimeController::apply_agent_error(
+            "new-input-failed",
+            "bad image",
+            &state,
+            &mut runtime_ui(
+                &mut scroll,
+                &mut input,
+                &mut page,
+                &mut approval,
+                &mut question,
+                &mut queue,
+            ),
+        );
+        assert_eq!(input.display_text().text, "[Image clip.png]");
+    }
+
+    #[test]
+    fn first_direct_user_message_commits_the_attached_new_conversation() {
+        let state = Arc::new(Mutex::new(RuntimeState::default()));
+        state.lock().unwrap().begin_new_conversation("standard");
+        let _ = state
+            .lock()
+            .unwrap()
+            .materialize_new_conversation(PromptInput::text("first"));
+        let mut scroll = ScrollState::default();
+        let mut input = InputState::new(&Config::default());
+        let mut page = None;
+        let mut approval = None;
+        let mut question = None;
+        let mut queue = Vec::new();
+        RuntimeController::apply_agent(
+            AgentEvent::Timeline(crate::agent::TimelineEvent::Append(
+                crate::agent::TimelineRecord {
+                    sequence: Some(1),
+                    time_ms: None,
+                    surface: Some(crate::agent::SurfaceOperation::Append),
+                    source_sequences: Vec::new(),
+                    fact: crate::agent::TimelineFact::UserMessage {
+                        text: "first".into(),
+                        source_kind: Some("user".into()),
+                        content: vec![crate::agent::ContentBlock::Text("first".into())],
+                        source: Default::default(),
+                    },
+                },
+            )),
+            &state,
+            &mut runtime_ui(
+                &mut scroll,
+                &mut input,
+                &mut page,
+                &mut approval,
+                &mut question,
+                &mut queue,
+            ),
+        );
+        assert!(!state.lock().unwrap().is_new_conversation());
     }
 
     #[test]

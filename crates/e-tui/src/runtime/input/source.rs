@@ -15,9 +15,12 @@ use futures_util::StreamExt;
 #[cfg(windows)]
 use {
     super::vt::{NativeMods, Pending, VtInputParser, ESCAPE_TIMEOUT, SEQUENCE_TIMEOUT},
-    std::io::Read,
+    std::{io::Read, time::Duration},
     tokio::time::Instant,
 };
+
+#[cfg(windows)]
+const RESIZE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 pub struct ProductionTerminalEvents {
     #[cfg(not(windows))]
@@ -79,8 +82,42 @@ struct InputChunk {
 #[cfg(windows)]
 struct WindowsRawInput {
     rx: tokio::sync::mpsc::UnboundedReceiver<InputChunk>,
+    resize_rx: tokio::sync::watch::Receiver<(u16, u16)>,
     parser: VtInputParser,
     pending_deadline: Option<(Pending, Instant)>,
+}
+
+#[cfg(windows)]
+fn changed_size(previous: &mut (u16, u16), current: (u16, u16)) -> Option<(u16, u16)> {
+    if *previous == current {
+        return None;
+    }
+    *previous = current;
+    Some(current)
+}
+
+#[cfg(windows)]
+fn spawn_resize_watcher() -> tokio::sync::watch::Receiver<(u16, u16)> {
+    let initial = crossterm::terminal::size().unwrap_or((0, 0));
+    let (tx, rx) = tokio::sync::watch::channel(initial);
+    std::thread::spawn(move || {
+        let mut previous = initial;
+        loop {
+            std::thread::sleep(RESIZE_POLL_INTERVAL);
+            if tx.is_closed() {
+                break;
+            }
+            let Ok(current) = crossterm::terminal::size() else {
+                continue;
+            };
+            if let Some(size) = changed_size(&mut previous, current) {
+                if tx.send(size).is_err() {
+                    break;
+                }
+            }
+        }
+    });
+    rx
 }
 
 #[cfg(windows)]
@@ -108,6 +145,7 @@ impl WindowsRawInput {
         });
         Self {
             rx,
+            resize_rx: spawn_resize_watcher(),
             parser: VtInputParser::new(Box::new(native_mods)),
             pending_deadline: None,
         }
@@ -149,11 +187,31 @@ impl WindowsRawInput {
                         None => return None,
                     }
                 }
+                resized = self.resize_rx.changed() => {
+                    if resized.is_err() {
+                        return None;
+                    }
+                    let (columns, rows) = *self.resize_rx.borrow_and_update();
+                    return Some(Ok(Event::Resize(columns, rows)));
+                }
                 _ = tokio::time::sleep_until(deadline.unwrap_or_else(Instant::now)), if deadline.is_some() => {
                     self.pending_deadline = None;
                     self.parser.flush_timeout();
                 }
             }
         }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resize_watcher_emits_only_changed_dimensions() {
+        let mut previous = (120, 40);
+        assert_eq!(changed_size(&mut previous, (120, 40)), None);
+        assert_eq!(changed_size(&mut previous, (100, 35)), Some((100, 35)));
+        assert_eq!(previous, (100, 35));
     }
 }

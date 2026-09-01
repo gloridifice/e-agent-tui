@@ -9,15 +9,25 @@ Architecture conventions for the Node.js (ESM) DSH host-composition plugin.
   client frame router; `host.js` explicitly wraps the DSH service locator, `connection.js` unifies detach/
   expired-connection determination, `history.js` manages surface cache and paging, `session.js` manages
   create/cold-resume/workspace/preset composition, `session-list.js` manages the progressive session catalog and
-  title folding, `model-selection.js` is the sole DSH model-selection adapter, `command.js` projects the host
-  command catalog/direct results, `question.js` owns API-proxy question relay lifecycle, `protocol.js` reads the
-  shared wire contract; `trim.js`, `compose.js`,
+  title folding, `model-selection.js` is the sole DSH model-selection adapter, `session-prompt.js` validates
+  encoded prompt parts and owns lazy `apiProxy.sessions.prompt` admission, `command.js` projects the host command
+  catalog/direct results, `question.js` owns API-proxy question relay lifecycle, `protocol.js` reads the shared
+  wire contract; `trim.js`, `compose.js`,
   `login.js`, `skill.js`, `model.js`, `frame.js` keep their own pure logic. Every boundary must have
   `node:test` under `bridge/test/`; new code must not pile back into `index.js`.
+- **Image prompt admission**: wire v7 `input`/`new-input` carry ordered text/image content. Pure text keeps the
+  direct `createUserMessage` + `agent.followup` path; any image requires the lazy session-prompt adapter to call
+  `apiProxy.sessions.prompt({payload:{sessionId,mode:'queue',content}})`. The Host remains authoritative for Base64,
+  MIME, dimensions, count/byte limits, model modality, durable attachment creation, and message publication. A
+  rejection must return a bounded error and must never fall back to constructing a durable image reference or
+  injecting encoded bytes through `agent.followup`. The Rust client rejects image-bearing frames above the
+  contract's `maxFrameBytes` before sending. New-session admission and every async result retain the normal
+  current-connection guard.
 - **DSH command integration**: after attach, use `ctx.commands.list(agent)` to send handler-free
   `commands{commands[{name,description,input?:{hint}}]}`; on `commands/change`, recompute the effective catalog
-  for each connection (agent-scoped shadowing cannot be done as a global incremental patch). `command{line}` goes
-  through `commands.execute(agent,line,images,signal)` (the TUI passes an empty `images` list); `undefined` means unregistered/invalid syntax, and the settled
+  for each connection (agent-scoped shadowing cannot be done as a global incremental patch). `command{line,images?}`
+  goes through `commands.execute(agent,line,images,signal)`; bridge-owned commands that cannot consume images are
+  rejected instead of silently discarding them. `undefined` means unregistered/invalid syntax, and the settled
   result goes through `command-result{commandId,kind,text?}` — never becomes a model message. Each execution owns
   an `AbortController`; `interrupt` aborts all active command controllers as well as the agent turn, and the client
   keeps Esc interruptible while direct commands are unsettled even if agent status is idle. Execution spans awaits,

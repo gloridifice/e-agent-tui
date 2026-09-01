@@ -1,17 +1,17 @@
 {
   "generatedFrom": "bridge/protocol-contract.json",
-  "protocolVersion": 6,
+  "protocolVersion": 7,
   "client": {
     "hello": {
       "minimal": {
         "type": "hello",
         "token": "contract-token",
-        "protocolVersion": 6
+        "protocolVersion": 7
       },
       "full": {
         "type": "hello",
         "token": "contract-token",
-        "protocolVersion": 6,
+        "protocolVersion": 7,
         "resumeSessionId": "session-1",
         "cwd": "C:\\workspace",
         "mode": "standard"
@@ -20,23 +20,41 @@
     "input": {
       "minimal": {
         "type": "input",
-        "text": "sample text"
+        "content": [
+          {}
+        ]
       },
       "full": {
         "type": "input",
-        "text": "sample text"
+        "content": [
+          {
+            "text": "sample text",
+            "mediaType": "mediaType-sample",
+            "data": "data-sample",
+            "name": "sample"
+          }
+        ]
       }
     },
     "new-input": {
       "minimal": {
         "type": "new-input",
         "mode": "standard",
-        "text": "sample text"
+        "content": [
+          {}
+        ]
       },
       "full": {
         "type": "new-input",
         "mode": "standard",
-        "text": "sample text"
+        "content": [
+          {
+            "text": "sample text",
+            "mediaType": "mediaType-sample",
+            "data": "data-sample",
+            "name": "sample"
+          }
+        ]
       }
     },
     "command": {
@@ -46,7 +64,14 @@
       },
       "full": {
         "type": "command",
-        "line": "/help"
+        "line": "/help",
+        "images": [
+          {
+            "mediaType": "mediaType-sample",
+            "data": "data-sample",
+            "name": "sample"
+          }
+        ]
       }
     },
     "interrupt": {
@@ -223,7 +248,7 @@
         "type": "welcome",
         "sessionId": "session-1",
         "status": "idle",
-        "protocolVersion": 6,
+        "protocolVersion": 7,
         "maxFrameBytes": 16777216,
         "provider": "provider-1",
         "model": "model-1",

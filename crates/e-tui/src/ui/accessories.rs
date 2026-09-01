@@ -82,7 +82,7 @@ pub(super) fn render_todo(
 pub(super) fn render_queue(
     frame: &mut Frame,
     area: ratatui::layout::Rect,
-    queue: &[String],
+    queue: &[crate::PromptInput],
     visible: usize,
     theme: &Theme,
 ) {
@@ -95,7 +95,7 @@ pub(super) fn render_queue(
         .take(shown)
         .map(|item| {
             Line::from(Span::styled(
-                format!("  * {}", trim_to_width(item, width)),
+                format!("  * {}", trim_to_width(&item.display_text(), width)),
                 Style::default().fg(theme.dim).bg(theme.bg),
             ))
         })
@@ -293,7 +293,13 @@ mod tests {
         let width = 12usize;
 
         let queue = strip_rows(width as u16, 1, |frame, area, theme| {
-            render_queue(frame, area, &["abcdefghijklmnop".to_string()], 1, theme);
+            render_queue(
+                frame,
+                area,
+                &[crate::PromptInput::text("abcdefghijklmnop")],
+                1,
+                theme,
+            );
         });
         assert_last_column_blank(&queue, 0, width);
         assert!(
@@ -328,7 +334,11 @@ mod tests {
             render_queue(
                 frame,
                 area,
-                &["a".to_string(), "b".to_string(), "c".to_string()],
+                &[
+                    crate::PromptInput::text("a"),
+                    crate::PromptInput::text("b"),
+                    crate::PromptInput::text("c"),
+                ],
                 1,
                 theme,
             );

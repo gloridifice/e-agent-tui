@@ -44,7 +44,8 @@ pub mod ui;
 mod wrap;
 
 pub use action::{
-    clipboard_preview, AgentRequest, DirtyState, DrawPriority, EffectResult, UiAction, UpdateResult,
+    clipboard_preview, AgentRequest, ClipboardPaste, DirtyState, DrawPriority, EffectResult,
+    PromptImage, PromptInput, PromptPart, UiAction, UpdateResult,
 };
 pub use agent::AgentEvent;
 pub use app::{NewConversationDraft, SessionModel, SessionStatus, TuiApp};

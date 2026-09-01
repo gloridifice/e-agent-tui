@@ -33,12 +33,19 @@ pub enum ClientMessage {
         protocol_version: u64,
     },
     /// Ordinary user message (enters the currently attached agent inbox).
-    Input { text: String },
+    Input { content: Vec<PromptContentPart> },
     /// Atomically materialize a client-only `/new` draft and deliver its first
     /// user prompt to the newly attached agent.
-    NewInput { mode: String, text: String },
-    /// Slash command line.
-    Command { line: String },
+    NewInput {
+        mode: String,
+        content: Vec<PromptContentPart>,
+    },
+    /// Slash command line with optional encoded image inputs.
+    Command {
+        line: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<PromptImage>,
+    },
     /// Interrupt the current turn and any direct commands still executing.
     Interrupt,
     /// Switch the connection to another live session.
@@ -84,6 +91,33 @@ pub enum ClientMessage {
     },
     /// Keepalive.
     Ping,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(
+    tag = "type",
+    rename_all = "lowercase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PromptContentPart {
+    Text {
+        text: String,
+    },
+    Image {
+        media_type: String,
+        data: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptImage {
+    pub media_type: String,
+    pub data: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// One question in an ask_user_question batch (as received from the host).
@@ -389,6 +423,16 @@ pub struct ModelCurrent {
 impl ClientMessage {
     pub fn to_wire(&self) -> anyhow::Result<String> {
         Ok(serde_json::to_string(self)?)
+    }
+
+    pub fn has_images(&self) -> bool {
+        match self {
+            Self::Input { content } | Self::NewInput { content, .. } => content
+                .iter()
+                .any(|part| matches!(part, PromptContentPart::Image { .. })),
+            Self::Command { images, .. } => !images.is_empty(),
+            _ => false,
+        }
     }
 }
 

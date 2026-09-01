@@ -8,7 +8,7 @@ Do not edit capacities, rosters, or payload fields here by hand.
 
 | Field | Value |
 |---|---:|
-| Protocol version | 6 |
+| Protocol version | 7 |
 | Snapshot surface events | 600 |
 | History page events | 2000 |
 | Maximum normal frame | 16777216 bytes |
@@ -49,20 +49,21 @@ Do not edit capacities, rosters, or payload fields here by hand.
 
 | Presence | Field | Type |
 |---|---|---|
-| required | `text` | `string` |
+| required | `content` | `PromptContentPart[]` |
 
 ### `new-input`
 
 | Presence | Field | Type |
 |---|---|---|
 | required | `mode` | `string` |
-| required | `text` | `string` |
+| required | `content` | `PromptContentPart[]` |
 
 ### `command`
 
 | Presence | Field | Type |
 |---|---|---|
 | required | `line` | `string` |
+| optional | `images` | `PromptImage[]` |
 
 ### `interrupt`
 
@@ -312,6 +313,23 @@ Do not edit capacities, rosters, or payload fields here by hand.
 ## Payload records
 
 Array types use the `[]` suffix. `host-event` is the bounded typed event envelope described by the snapshot roster and client parser.
+
+### `PromptImage`
+
+| Presence | Field | Type |
+|---|---|---|
+| required | `mediaType` | `string` |
+| required | `data` | `string` |
+| optional | `name` | `string` |
+
+### `PromptContentPart`
+
+| Presence | Field | Type |
+|---|---|---|
+| optional | `text` | `string` |
+| optional | `mediaType` | `string` |
+| optional | `data` | `string` |
+| optional | `name` | `string` |
 
 ### `QuestionAnswer`
 

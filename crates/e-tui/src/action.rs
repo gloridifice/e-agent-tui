@@ -17,16 +17,100 @@ pub struct QuestionAnswer {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptImage {
+    pub media_type: String,
+    pub data: Vec<u8>,
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptPart {
+    Text(String),
+    Image(PromptImage),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PromptInput {
+    pub parts: Vec<PromptPart>,
+}
+
+impl From<String> for PromptInput {
+    fn from(text: String) -> Self {
+        Self::text(text)
+    }
+}
+
+impl From<&str> for PromptInput {
+    fn from(text: &str) -> Self {
+        Self::text(text)
+    }
+}
+
+impl PartialEq<&str> for PromptInput {
+    fn eq(&self, other: &&str) -> bool {
+        self.plain_text() == Some(*other)
+    }
+}
+
+impl PromptInput {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self {
+            parts: vec![PromptPart::Text(text.into())],
+        }
+    }
+
+    pub fn plain_text(&self) -> Option<&str> {
+        match self.parts.as_slice() {
+            [PromptPart::Text(text)] => Some(text),
+            _ => None,
+        }
+    }
+
+    pub fn display_text(&self) -> String {
+        self.parts
+            .iter()
+            .map(|part| match part {
+                PromptPart::Text(text) => text.clone(),
+                PromptPart::Image(image) => format!(
+                    "[Image {}]",
+                    image.name.as_deref().unwrap_or("clipboard.png")
+                ),
+            })
+            .collect()
+    }
+
+    pub fn has_images(&self) -> bool {
+        self.parts
+            .iter()
+            .any(|part| matches!(part, PromptPart::Image(_)))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.parts.iter().all(|part| match part {
+            PromptPart::Text(text) => text.is_empty(),
+            PromptPart::Image(_) => false,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClipboardPaste {
+    Text(String),
+    Image(PromptImage),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentRequest {
     Input {
-        text: String,
+        prompt: PromptInput,
     },
     NewInput {
         mode: String,
-        text: String,
+        prompt: PromptInput,
     },
     Command {
         line: String,
+        images: Vec<PromptImage>,
     },
     Interrupt,
     Attach {
@@ -96,7 +180,7 @@ pub enum EffectResult {
         themes: Vec<ThemeFile>,
     },
     ConfigReloadFailed(String),
-    ClipboardRead(Result<String, String>),
+    ClipboardRead(Result<ClipboardPaste, String>),
     ClipboardWritten {
         lines: usize,
         preview: String,

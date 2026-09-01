@@ -194,3 +194,35 @@ pub(super) fn render_input(
         inner.y + cursor_row.saturating_sub(start) as u16,
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Config, PromptImage};
+    use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn image_attachment_renders_as_one_placeholder_styled_block() {
+        let theme = Theme::ferra();
+        let mut input = InputState::new(&Config::default());
+        input.paste_image(PromptImage {
+            media_type: "image/png".into(),
+            data: vec![1, 2, 3],
+            name: Some("clip.png".into()),
+        });
+        let mut terminal = Terminal::new(TestBackend::new(48, 3)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_input(frame, frame.area(), &input, &theme, 0);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let row = (0..48).map(|x| buffer[(x, 1)].symbol()).collect::<String>();
+        assert!(row.starts_with("[Image clip.png]"), "rendered row: {row:?}");
+        assert_eq!(
+            buffer[(0, 1)].fg,
+            theme.input.placeholder.fg,
+            "the complete block uses the atomic-placeholder role"
+        );
+    }
+}

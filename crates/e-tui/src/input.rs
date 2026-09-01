@@ -11,6 +11,7 @@ use std::ops::Range;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use unicode_script::{Script, UnicodeScript};
 use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 #[cfg(test)]
 use crate::agent::CommandDescriptor;
@@ -20,7 +21,13 @@ pub use crate::command_catalog::NewMode;
 use crate::command_catalog::{
     completion_context, match_command_catalog, CommandSource, CompletionKind,
 };
-use crate::config::Config;
+use crate::{
+    action::{PromptImage, PromptInput, PromptPart},
+    config::Config,
+};
+
+const IMAGE_MARKER: char = '\u{fffc}';
+const IMAGE_NAME_DISPLAY_WIDTH: usize = 28;
 
 #[derive(Clone)]
 pub struct InputState {
@@ -32,8 +39,9 @@ pub struct InputState {
     pub multiline: bool,
     /// Draft saved when entering multiline mode from a single line.
     pub draft: Option<String>,
-    /// Atomic paste ranges belonging to the saved history-browsing draft.
+    /// Atomic ranges belonging to the saved history-browsing draft.
     draft_paste_blocks: Vec<PasteBlock>,
+    draft_image_blocks: Vec<ImageBlock>,
     /// Ctrl+R history search, when active.
     pub search: Option<SearchState>,
     /// Paste placeholder threshold (D24, config-driven).
@@ -41,6 +49,9 @@ pub struct InputState {
     /// Over-threshold paste ranges in expanded-buffer character offsets.
     /// Each range renders as one placeholder and remains independently atomic.
     paste_blocks: Vec<PasteBlock>,
+    /// Pending image attachments represented by one raw object marker and one
+    /// atomic display block. Image bytes never enter `buf`.
+    image_blocks: Vec<ImageBlock>,
     /// History cap (D28).
     pub history_limit: usize,
     // Characterization fixtures retain local catalogs only in test builds;
@@ -59,6 +70,13 @@ pub struct InputState {
 struct PasteBlock {
     start: usize,
     end: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ImageBlock {
+    start: usize,
+    end: usize,
+    image: PromptImage,
 }
 
 /// Display projection of the expanded input buffer. Large paste contents are
@@ -136,9 +154,11 @@ impl InputState {
             multiline: false,
             draft: None,
             draft_paste_blocks: Vec::new(),
+            draft_image_blocks: Vec::new(),
             search: None,
             paste_placeholder_chars: config.paste_placeholder_chars,
             paste_blocks: Vec::new(),
+            image_blocks: Vec::new(),
             history_limit: config.history_limit,
             #[cfg(test)]
             new_modes: Vec::new(),
@@ -193,12 +213,52 @@ impl InputState {
         self.suggest = None;
     }
 
+    /// Insert one pending image as an atomic object at the cursor.
+    pub fn paste_image(&mut self, image: PromptImage) {
+        let start = self.cursor;
+        self.shift_blocks_for_insert(start, 1);
+        self.buf
+            .insert(char_to_byte(&self.buf, start), IMAGE_MARKER);
+        self.cursor += 1;
+        self.image_blocks.push(ImageBlock {
+            start,
+            end: self.cursor,
+            image,
+        });
+        self.image_blocks.sort_by_key(|block| block.start);
+        self.suggest = None;
+    }
+
     /// Replace the whole composer with ordinary text from an external state
     /// restoration. Paste identity cannot be inferred from expanded text.
     pub fn restore_text(&mut self, text: String) {
         self.buf = text;
         self.cursor = self.buf.chars().count();
         self.paste_blocks.clear();
+        self.image_blocks.clear();
+        self.suggest = None;
+    }
+
+    /// Restore a complete prompt after deferred submission fails.
+    pub fn restore_prompt(&mut self, prompt: PromptInput) {
+        self.buf.clear();
+        self.paste_blocks.clear();
+        self.image_blocks.clear();
+        for part in prompt.parts {
+            match part {
+                PromptPart::Text(text) => self.buf.push_str(&text),
+                PromptPart::Image(image) => {
+                    let start = self.buf.chars().count();
+                    self.buf.push(IMAGE_MARKER);
+                    self.image_blocks.push(ImageBlock {
+                        start,
+                        end: start + 1,
+                        image,
+                    });
+                }
+            }
+        }
+        self.cursor = self.buf.chars().count();
         self.suggest = None;
     }
 
@@ -208,6 +268,7 @@ impl InputState {
         self.buf = text;
         self.cursor = self.buf.chars().count();
         self.paste_blocks.clear();
+        self.image_blocks.clear();
     }
 }
 
@@ -215,9 +276,13 @@ impl InputState {
 pub enum InputAction {
     None,
     /// Send the committed buffer as an ordinary message.
-    Send(String),
-    /// Send the committed buffer as a slash command line.
-    Command(String),
+    Send(PromptInput),
+    /// Send the committed buffer as a slash command line with any image inputs.
+    Command {
+        line: String,
+        images: Vec<PromptImage>,
+        original: PromptInput,
+    },
     /// Interrupt the agent (Ctrl+C while running).
     Interrupt,
     /// Quit the TUI (Ctrl+C while idle).
@@ -236,6 +301,44 @@ pub enum InputAction {
 /// input.
 fn char_to_byte(s: &str, idx: usize) -> usize {
     s.char_indices().nth(idx).map(|(i, _)| i).unwrap_or(s.len())
+}
+
+fn truncate_image_name(name: &str) -> String {
+    if UnicodeWidthStr::width(name) <= IMAGE_NAME_DISPLAY_WIDTH {
+        return name.to_owned();
+    }
+    let graphemes = name.graphemes(true).collect::<Vec<_>>();
+    let suffix_budget = (IMAGE_NAME_DISPLAY_WIDTH / 3).max(6);
+    let mut suffix = Vec::new();
+    let mut suffix_width = 0;
+    for grapheme in graphemes.iter().rev() {
+        let width = UnicodeWidthStr::width(*grapheme);
+        if suffix_width + width > suffix_budget {
+            break;
+        }
+        suffix.push(*grapheme);
+        suffix_width += width;
+    }
+    suffix.reverse();
+    let head_budget = IMAGE_NAME_DISPLAY_WIDTH.saturating_sub(1 + suffix_width);
+    let mut head = String::new();
+    let mut head_width = 0;
+    for grapheme in &graphemes {
+        let width = UnicodeWidthStr::width(*grapheme);
+        if head_width + width > head_budget {
+            break;
+        }
+        head.push_str(grapheme);
+        head_width += width;
+    }
+    format!("{head}…{}", suffix.concat())
+}
+
+fn image_placeholder(image: &PromptImage) -> String {
+    format!(
+        "[Image {}]",
+        truncate_image_name(image.name.as_deref().unwrap_or("clipboard.png"))
+    )
 }
 
 /// Han ideographs and kana carry no space separation, so each grapheme is
@@ -395,6 +498,7 @@ impl InputState {
                 self.multiline = false;
                 self.draft = None;
                 self.draft_paste_blocks.clear();
+                self.draft_image_blocks.clear();
                 return InputAction::None;
             }
             if idle {
@@ -631,8 +735,8 @@ impl InputState {
                 InputAction::None
             }
             KeyCode::Backspace => {
-                if let Some(block) = self.block_ending_at(self.cursor).cloned() {
-                    self.remove_range(block.start, block.end);
+                if let Some((start, end)) = self.block_ending_at(self.cursor) {
+                    self.remove_range(start, end);
                 } else if self.cursor > 0 {
                     let end = self.cursor;
                     self.remove_range(end - 1, end);
@@ -640,24 +744,24 @@ impl InputState {
                 InputAction::None
             }
             KeyCode::Delete => {
-                if let Some(block) = self.block_starting_at(self.cursor).cloned() {
-                    self.remove_range(block.start, block.end);
+                if let Some((start, end)) = self.block_starting_at(self.cursor) {
+                    self.remove_range(start, end);
                 } else if self.cursor < self.buf.chars().count() {
                     self.remove_range(self.cursor, self.cursor + 1);
                 }
                 InputAction::None
             }
             KeyCode::Left => {
-                if let Some(block) = self.block_ending_at(self.cursor) {
-                    self.cursor = block.start;
+                if let Some((start, _)) = self.block_ending_at(self.cursor) {
+                    self.cursor = start;
                 } else if self.cursor > 0 {
                     self.cursor -= 1;
                 }
                 InputAction::None
             }
             KeyCode::Right => {
-                if let Some(block) = self.block_starting_at(self.cursor) {
-                    self.cursor = block.end;
+                if let Some((_, end)) = self.block_starting_at(self.cursor) {
+                    self.cursor = end;
                 } else if self.cursor < self.buf.chars().count() {
                     self.cursor += 1;
                 }
@@ -728,7 +832,7 @@ impl InputState {
     /// the list and its query stay pinned, so the highlight follows the
     /// filled value and Esc can still restore the typed query.
     fn refresh_suggest(&mut self, catalogs: &CatalogModel) {
-        if !self.paste_blocks.is_empty() {
+        if !self.paste_blocks.is_empty() || !self.image_blocks.is_empty() {
             self.suggest = None;
             return;
         }
@@ -841,20 +945,36 @@ impl InputState {
                 block.end += count;
             }
         }
+        for block in &mut self.image_blocks {
+            if block.start >= at {
+                block.start += count;
+                block.end += count;
+            }
+        }
     }
 
-    fn block_starting_at(&self, cursor: usize) -> Option<&PasteBlock> {
-        self.paste_blocks.iter().find(|block| block.start == cursor)
+    fn block_ranges(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        self.paste_blocks
+            .iter()
+            .map(|block| (block.start, block.end))
+            .chain(
+                self.image_blocks
+                    .iter()
+                    .map(|block| (block.start, block.end)),
+            )
     }
 
-    fn block_ending_at(&self, cursor: usize) -> Option<&PasteBlock> {
-        self.paste_blocks.iter().find(|block| block.end == cursor)
+    fn block_starting_at(&self, cursor: usize) -> Option<(usize, usize)> {
+        self.block_ranges().find(|(start, _)| *start == cursor)
+    }
+
+    fn block_ending_at(&self, cursor: usize) -> Option<(usize, usize)> {
+        self.block_ranges().find(|(_, end)| *end == cursor)
     }
 
     fn preceding_block_end(&self, cursor: usize) -> usize {
-        self.paste_blocks
-            .iter()
-            .map(|block| block.end)
+        self.block_ranges()
+            .map(|(_, end)| end)
             .filter(|&end| end <= cursor)
             .max()
             .unwrap_or(0)
@@ -870,7 +990,15 @@ impl InputState {
         // whose content was edited is no longer an atomic paste.
         self.paste_blocks
             .retain(|block| block.end <= start || block.start >= end);
+        self.image_blocks
+            .retain(|block| block.end <= start || block.start >= end);
         for block in &mut self.paste_blocks {
+            if block.start >= end {
+                block.start -= removed;
+                block.end -= removed;
+            }
+        }
+        for block in &mut self.image_blocks {
             if block.start >= end {
                 block.start -= removed;
                 block.end -= removed;
@@ -892,8 +1020,8 @@ impl InputState {
         let chars: Vec<char> = self.buf.chars().collect();
         // Check the cursor boundary before inspecting content: trailing
         // whitespace may belong to the atomic paste block itself.
-        let unit_start = if let Some(block) = self.block_ending_at(end) {
-            block.start
+        let unit_start = if let Some((start, _)) = self.block_ending_at(end) {
+            start
         } else {
             let trailing_barrier = self.preceding_block_end(end);
             // Whitespace directly before the cursor goes with the word, but
@@ -902,7 +1030,7 @@ impl InputState {
             // A paste block ending at the word start is the unit; otherwise
             // the ordinary word scan stops at the nearest block boundary.
             match self.block_ending_at(start) {
-                Some(block) => block.start,
+                Some((block_start, _)) => block_start,
                 None => {
                     if start == 0 {
                         // Only whitespace before the cursor.
@@ -968,30 +1096,88 @@ impl InputState {
         true
     }
 
+    fn prompt(&self) -> PromptInput {
+        let mut parts = Vec::new();
+        let mut raw = 0usize;
+        let raw_end = self.buf.trim_end_matches('\n').chars().count();
+        let mut images = self.image_blocks.iter().collect::<Vec<_>>();
+        images.sort_by_key(|block| block.start);
+        for block in images {
+            if block.start > raw_end {
+                break;
+            }
+            let text = self
+                .buf
+                .chars()
+                .skip(raw)
+                .take(block.start.saturating_sub(raw))
+                .collect::<String>();
+            if !text.is_empty() {
+                parts.push(PromptPart::Text(text));
+            }
+            parts.push(PromptPart::Image(block.image.clone()));
+            raw = block.end;
+        }
+        let text = self
+            .buf
+            .chars()
+            .skip(raw)
+            .take(raw_end.saturating_sub(raw))
+            .collect::<String>();
+        if !text.is_empty() {
+            parts.push(PromptPart::Text(text));
+        }
+        PromptInput { parts }
+    }
+
     fn commit(&mut self) -> InputAction {
-        let text = self.buf.trim_end_matches('\n').to_string();
-        if text.is_empty() {
+        let prompt = self.prompt();
+        if prompt.is_empty() {
             self.suggest = None;
             return InputAction::None;
         }
+        let command_line = prompt
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                PromptPart::Text(text) => Some(text.as_str()),
+                PromptPart::Image(_) => None,
+            })
+            .collect::<String>();
+        let images = prompt
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                PromptPart::Image(image) => Some(image.clone()),
+                PromptPart::Text(_) => None,
+            })
+            .collect::<Vec<_>>();
         self.suggest = None;
-        self.history.push(text.clone());
-        if self.history.len() > self.history_limit {
-            self.history.remove(0);
+        if images.is_empty() {
+            self.history.push(command_line.clone());
+            if self.history.len() > self.history_limit {
+                self.history.remove(0);
+            }
         }
         self.hist_idx = None;
         self.buf.clear();
         self.cursor = 0;
         self.paste_blocks.clear();
+        self.image_blocks.clear();
         self.draft = None;
         self.draft_paste_blocks.clear();
+        self.draft_image_blocks.clear();
         if self.multiline {
             self.multiline = false;
         }
-        if text.starts_with('/') {
-            InputAction::Command(text)
+        if command_line.starts_with('/') {
+            InputAction::Command {
+                line: command_line,
+                images,
+                original: prompt,
+            }
         } else {
-            InputAction::Send(text)
+            InputAction::Send(prompt)
         }
     }
 
@@ -1002,6 +1188,7 @@ impl InputState {
             self.multiline = false;
             self.draft = None;
             self.draft_paste_blocks.clear();
+            self.draft_image_blocks.clear();
         }
         InputAction::ToggleMultiline
     }
@@ -1018,11 +1205,13 @@ impl InputState {
         if self.hist_idx.is_none() {
             self.draft = Some(self.buf.clone());
             self.draft_paste_blocks = self.paste_blocks.clone();
+            self.draft_image_blocks = self.image_blocks.clone();
         }
         self.hist_idx = Some(idx);
         self.buf = self.history[idx].clone();
         self.cursor = self.buf.chars().count();
         self.paste_blocks.clear();
+        self.image_blocks.clear();
     }
 
     fn history_next(&mut self) {
@@ -1031,10 +1220,12 @@ impl InputState {
             self.hist_idx = Some(idx + 1);
             self.buf = self.history[idx + 1].clone();
             self.paste_blocks.clear();
+            self.image_blocks.clear();
         } else {
             self.hist_idx = None;
             self.buf = self.draft.take().unwrap_or_default();
             self.paste_blocks = std::mem::take(&mut self.draft_paste_blocks);
+            self.image_blocks = std::mem::take(&mut self.draft_image_blocks);
         }
         self.cursor = self.buf.chars().count();
     }
@@ -1044,14 +1235,37 @@ impl InputState {
         self.cursor = 0;
         self.suggest = None;
         self.paste_blocks.clear();
+        self.image_blocks.clear();
     }
 
     /// The buffer as shown: each atomic paste block collapses into a
     /// placeholder (D24). The returned cursor is a character index into the
     /// returned display text; `paste_ranges` are display-character ranges of
     /// placeholder content.
+    fn display_blocks(&self) -> Vec<(usize, usize, String)> {
+        let mut blocks = self
+            .paste_blocks
+            .iter()
+            .map(|block| {
+                (
+                    block.start,
+                    block.end,
+                    format!("[{} text pasted]", block.end - block.start),
+                )
+            })
+            .chain(
+                self.image_blocks
+                    .iter()
+                    .map(|block| (block.start, block.end, image_placeholder(&block.image))),
+            )
+            .collect::<Vec<_>>();
+        blocks.sort_by_key(|(start, _, _)| *start);
+        blocks
+    }
+
     pub fn display_text(&self) -> InputDisplay {
-        if self.paste_blocks.is_empty() {
+        let blocks = self.display_blocks();
+        if blocks.is_empty() {
             return InputDisplay {
                 text: self.buf.clone(),
                 cursor: self.cursor,
@@ -1060,42 +1274,36 @@ impl InputState {
         }
         let raw_cursor = self.cursor;
         let mut text = String::with_capacity(self.buf.len());
-        let mut paste_ranges = Vec::with_capacity(self.paste_blocks.len());
+        let mut paste_ranges = Vec::with_capacity(blocks.len());
         let mut cursor = raw_cursor;
         let mut raw = 0usize;
         let mut display_pos = 0usize;
         let mut mapped = false;
-        for block in &self.paste_blocks {
-            let before = self.buf.chars().skip(raw).take(block.start - raw);
+        for (start, end, placeholder) in blocks {
+            let before = self.buf.chars().skip(raw).take(start - raw);
             for c in before {
                 text.push(c);
             }
-            let before_len = block.start - raw;
-            if !mapped && raw_cursor <= block.start {
-                // Cursor before the block: it stays at its own boundary in the
-                // plain segment just emitted.
+            let before_len = start - raw;
+            if !mapped && raw_cursor <= start {
                 cursor = display_pos + (raw_cursor - raw);
                 mapped = true;
             }
             display_pos += before_len;
-            let placeholder = format!("[{} text pasted]", block.end - block.start);
             let placeholder_len = placeholder.chars().count();
-            if !mapped && raw_cursor <= block.end {
-                // Cursor inside the block: snap to the placeholder end.
+            if !mapped && raw_cursor <= end {
                 cursor = display_pos + placeholder_len;
                 mapped = true;
             }
             text.push_str(&placeholder);
             display_pos += placeholder_len;
             paste_ranges.push(display_pos - placeholder_len..display_pos);
-            raw = block.end;
+            raw = end;
         }
         for c in self.buf.chars().skip(raw) {
             text.push(c);
         }
         if !mapped {
-            // Cursor after every block: all preceding placeholders have already
-            // been added, so offset from the last placeholder end.
             cursor = display_pos + (raw_cursor - raw);
         }
         InputDisplay {
@@ -1106,29 +1314,26 @@ impl InputState {
     }
 
     /// Map a display-character cursor (from `display_text`) back to the
-    /// raw-buffer character index, keeping it out of paste-block interiors.
+    /// raw-buffer character index, keeping it out of atomic-block interiors.
     fn display_to_raw_cursor(&self, display_cursor: usize) -> usize {
-        if self.paste_blocks.is_empty() {
+        let blocks = self.display_blocks();
+        if blocks.is_empty() {
             return display_cursor;
         }
         let mut raw = 0usize;
         let mut display_pos = 0usize;
-        for block in &self.paste_blocks {
-            let before = block.start - raw;
+        for (start, end, placeholder) in blocks {
+            let before = start - raw;
             if display_cursor <= display_pos + before {
-                // In the plain segment before this block.
                 return raw + (display_cursor - display_pos);
             }
             display_pos += before;
-            let placeholder_len = format!("[{} text pasted]", block.end - block.start)
-                .chars()
-                .count();
+            let placeholder_len = placeholder.chars().count();
             if display_cursor < display_pos + placeholder_len {
-                // Inside a placeholder: snap to the block start.
-                return block.start;
+                return start;
             }
             display_pos += placeholder_len;
-            raw = block.end;
+            raw = end;
         }
         raw + (display_cursor - display_pos).min(self.buf.chars().count() - raw)
     }
@@ -1150,6 +1355,75 @@ mod tests {
     fn state() -> InputState {
         let config = Config::default();
         InputState::new(&config)
+    }
+
+    fn image(name: &str) -> PromptImage {
+        PromptImage {
+            media_type: "image/png".into(),
+            data: vec![1, 2, 3],
+            name: Some(name.into()),
+        }
+    }
+
+    #[test]
+    fn image_blocks_render_atomically_and_truncate_long_names() {
+        let mut input = state();
+        input.paste_image(image(
+            "very-long-图片-capture-filename-that-keeps-going.png",
+        ));
+        let display = input.display_text();
+        assert!(display.text.starts_with("[Image "));
+        assert!(display.text.ends_with(".png]"));
+        assert!(display.text.contains('…'));
+        assert!(UnicodeWidthStr::width(display.text.as_str()) <= IMAGE_NAME_DISPLAY_WIDTH + 8);
+        assert_eq!(input.buf, IMAGE_MARKER.to_string());
+
+        input.handle_key(&key(KeyCode::Left), true);
+        assert_eq!(input.cursor, 0, "Left skips the complete image block");
+        input.handle_key(&key(KeyCode::Right), true);
+        assert_eq!(input.cursor, 1, "Right skips the complete image block");
+        input.handle_key(&key(KeyCode::Backspace), true);
+        assert!(input.buf.is_empty());
+        assert!(input.image_blocks.is_empty());
+
+        input.paste_image(image("delete.png"));
+        input.handle_key(&key(KeyCode::Left), true);
+        input.handle_key(&key(KeyCode::Delete), true);
+        assert!(input.buf.is_empty());
+        assert!(input.image_blocks.is_empty());
+    }
+
+    #[test]
+    fn mixed_and_image_only_commits_preserve_order_without_marker_text() {
+        let mut input = state();
+        input.paste("before ");
+        let expected = image("clip.png");
+        input.paste_image(expected.clone());
+        input.paste(" after");
+        let action = input.handle_key(&key(KeyCode::Enter), true);
+        assert_eq!(
+            action,
+            InputAction::Send(PromptInput {
+                parts: vec![
+                    PromptPart::Text("before ".into()),
+                    PromptPart::Image(expected.clone()),
+                    PromptPart::Text(" after".into()),
+                ],
+            })
+        );
+
+        input.paste_image(expected.clone());
+        assert_eq!(
+            input.handle_key(&key(KeyCode::Enter), true),
+            InputAction::Send(PromptInput {
+                parts: vec![PromptPart::Image(expected.clone())],
+            })
+        );
+
+        input.restore_prompt(PromptInput {
+            parts: vec![PromptPart::Text("x".into()), PromptPart::Image(expected)],
+        });
+        assert_eq!(input.display_text().text, "x[Image clip.png]");
     }
 
     #[test]
@@ -1226,7 +1500,9 @@ mod tests {
             s.handle_key(&key(KeyCode::Char(c)), true);
         }
         let action = s.handle_key(&key(KeyCode::Enter), true);
-        assert_eq!(action, InputAction::Command("/quit".into()));
+        assert!(
+            matches!(action, InputAction::Command { line, images, .. } if line == "/quit" && images.is_empty())
+        );
         // All three variants fuzzy-match from "q".
         let m = match_commands("q");
         assert!(
@@ -1394,7 +1670,9 @@ mod tests {
         let list = s.suggest.as_ref().unwrap().matches.to_vec();
         s.handle_key(&key(KeyCode::Down), true);
         let action = s.handle_key(&key(KeyCode::Enter), true);
-        assert_eq!(action, InputAction::Command(list[1].to_string()));
+        assert!(
+            matches!(action, InputAction::Command { line, images, .. } if line == list[1] && images.is_empty())
+        );
         assert!(s.buf.is_empty());
         assert!(s.suggest.is_none());
     }
@@ -1406,7 +1684,9 @@ mod tests {
             s.handle_key(&key(KeyCode::Char(c)), true);
         }
         let action = s.handle_key(&key(KeyCode::Enter), true);
-        assert_eq!(action, InputAction::Command("/settings".into()));
+        assert!(
+            matches!(action, InputAction::Command { line, images, .. } if line == "/settings" && images.is_empty())
+        );
     }
 
     #[test]
@@ -1585,7 +1865,9 @@ mod tests {
         s.handle_key(&key(KeyCode::Down), true);
         assert_eq!(s.buf, "/new code", "Down fills the next mode");
         let action = s.handle_key(&key(KeyCode::Enter), true);
-        assert_eq!(action, InputAction::Command("/new code".into()));
+        assert!(
+            matches!(action, InputAction::Command { line, images, .. } if line == "/new code" && images.is_empty())
+        );
         assert!(s.buf.is_empty());
         assert!(s.suggest.is_none());
     }

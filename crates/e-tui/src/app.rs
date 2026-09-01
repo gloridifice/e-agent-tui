@@ -73,9 +73,9 @@ pub enum SessionStatus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewConversationDraft {
     pub mode: String,
-    /// The first prompt remains owned until a real attached-session event
-    /// commits the new session.
-    pub pending_input: Option<String>,
+    /// The first prompt remains owned across attachment until its direct user
+    /// message commits the new session or admission reports a failure.
+    pub pending_input: Option<crate::PromptInput>,
     pub notice: Option<String>,
 }
 

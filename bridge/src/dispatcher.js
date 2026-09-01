@@ -2,6 +2,7 @@ import { createProxy, deleteProxy, sendLogin, setProviderApiKey } from './login.
 import { shapeCommandResultFrame } from './command.js'
 import { parseSkillCommand } from './skill.js'
 import { HISTORY_CAP, PROTOCOL_VERSION } from './protocol.js'
+import { normalizeCommandImages, normalizePromptContent } from './session-prompt.js'
 
 /** Per-socket client-message router. It owns mutable attachment/login state;
  * the bridge composition root only wires lifecycle effects and host adapters. */
@@ -23,6 +24,7 @@ export function createClientDispatcher({
   sendModel,
   modelSelections,
   sessionModel,
+  sessionPrompt,
   createUserMessage,
 }) {
   let conn = null
@@ -54,10 +56,23 @@ export function createClientDispatcher({
     }
   }
 
+  function clientPromptContent(msg) {
+    return msg.content === undefined && typeof msg.text === 'string'
+      ? [{ type: 'text', text: msg.text }]
+      : msg.content
+  }
+
   async function newInput(msg) {
-    if (!conn || typeof msg.mode !== 'string' || typeof msg.text !== 'string') return
+    if (!conn || typeof msg.mode !== 'string') return
     const mode = msg.mode.trim()
-    if (mode === '' || mode.split(/\s+/).length !== 1 || msg.text === '') {
+    let content
+    try {
+      content = normalizePromptContent(clientPromptContent(msg))
+    } catch (error) {
+      send(ws, { type: 'error', code: 'new-failed', message: String(error?.message ?? error) })
+      return
+    }
+    if (mode === '' || mode.split(/\s+/).length !== 1) {
       send(ws, { type: 'error', code: 'new-failed', message: 'invalid new conversation input' })
       return
     }
@@ -74,10 +89,14 @@ export function createClientDispatcher({
     if (next === undefined || !(conn === current || !conns.has(current))) return
     conn = next
     try {
-      next.agent.followup(createUserMessage({
-        content: [{ type: 'text', text: msg.text }],
-        source: { kind: 'user' },
-      }))
+      if (content.some((part) => part.type === 'image')) {
+        await sessionPrompt.prompt(next.agent.id, content)
+      } else {
+        next.agent.followup(createUserMessage({
+          content,
+          source: { kind: 'user' },
+        }))
+      }
     } catch (error) {
       if (conns.isCurrent(next, conn)) {
         send(ws, { type: 'error', code: 'new-input-failed', message: String(error?.message ?? error) })
@@ -85,10 +104,39 @@ export function createClientDispatcher({
     }
   }
 
+  async function input(msg) {
+    if (!conn) return
+    const current = conn
+    let content
+    try {
+      content = normalizePromptContent(clientPromptContent(msg))
+      if (content.some((part) => part.type === 'image')) {
+        await sessionPrompt.prompt(current.agent.id, content)
+      } else {
+        current.agent.followup(createUserMessage({ content, source: { kind: 'user' } }))
+      }
+    } catch (error) {
+      if (conns.isCurrent(current, conn)) {
+        send(ws, { type: 'error', code: 'image-input-failed', message: String(error?.message ?? error) })
+      }
+    }
+  }
+
   function command(msg) {
     if (!conn || typeof msg.line !== 'string') return
+    let images
+    try {
+      images = normalizeCommandImages(msg.images)
+    } catch (error) {
+      send(ws, { type: 'error', code: 'command-failed', message: String(error?.message ?? error) })
+      return
+    }
     const trimmed = msg.line.trim()
     if (trimmed === '/new' || trimmed.startsWith('/new ')) {
+      if (images.length > 0) {
+        send(ws, { type: 'error', code: 'command-failed', message: '/new does not accept images' })
+        return
+      }
       const tokens = trimmed.slice(4).trim().split(/\s+/).filter(Boolean)
       if (tokens.length > 1) {
         send(ws, { type: 'error', code: 'new-failed', message: '用法: /new 或 /new <模式>' })
@@ -104,6 +152,10 @@ export function createClientDispatcher({
     }
     const skillName = parseSkillCommand(trimmed)
     if (skillName !== undefined) {
+      if (images.length > 0) {
+        send(ws, { type: 'error', code: 'command-failed', message: '/skill does not accept images' })
+        return
+      }
       injectSkill(ws, conn, skillName)
       return
     }
@@ -123,10 +175,9 @@ export function createClientDispatcher({
     const abortOnDetach = () => commandAbort.abort()
     current.abort.signal.addEventListener?.('abort', abortOnDetach, { once: true })
     Promise.resolve()
-      // DSH 0.1.1-rc.2 widened the signature to `execute(agent, line, images, signal)`;
-      // the TUI sends no composer images, so pass an empty images list and keep the
-      // abort signal in its final position.
-      .then(() => commands.execute(current.agent, msg.line, [], commandAbort.signal))
+      // DSH admits encoded command images through the command service while
+      // preserving the direct-command abort signal in its final position.
+      .then(() => commands.execute(current.agent, msg.line, images, commandAbort.signal))
       .then((execution) => {
         if (!conns.isCurrent(current, conn)) return
         if (commandAbort.signal.aborted) {
@@ -263,11 +314,7 @@ export function createClientDispatcher({
     try { msg = JSON.parse(data.toString()) } catch { return false }
     switch (msg?.type) {
       case 'hello': void hello(msg); break
-      case 'input':
-        if (conn && typeof msg.text === 'string' && msg.text !== '') {
-          conn.agent.followup(createUserMessage({ content: [{ type: 'text', text: msg.text }], source: { kind: 'user' } }))
-        }
-        break
+      case 'input': void input(msg); break
       case 'new-input': void newInput(msg); break
       case 'command': command(msg); break
       case 'attach': void attachSession(msg); break

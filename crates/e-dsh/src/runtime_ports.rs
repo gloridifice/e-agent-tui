@@ -5,10 +5,12 @@
 //! that otherwise tend to leak filesystem, clipboard, and wall-clock access
 //! into business handlers.
 
-use std::{future::Future, time::Instant};
+use std::{
+    future::Future,
+    sync::atomic::{AtomicU64, Ordering},
+    time::Instant,
+};
 
-#[cfg(test)]
-use crossterm::event::Event;
 use tokio::sync::mpsc;
 
 use crate::{
@@ -17,7 +19,9 @@ use crate::{
     theme::{self, ThemeFile},
 };
 pub use e_tui::runtime::{TerminalEventPort, TerminalLifecyclePort, UiActionPorts};
-use e_tui::{PreviewContent, PreviewRequest};
+use e_tui::{ClipboardPaste, PreviewContent, PreviewRequest, PromptImage};
+
+static CLIPBOARD_IMAGE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 pub trait BridgeTransportPort {
     fn send_message(
@@ -60,9 +64,20 @@ impl UiActionPorts for ProductionRuntimePorts {
         state.save();
     }
 
-    fn read_clipboard(&mut self) -> Result<String, String> {
-        arboard::Clipboard::new()
-            .and_then(|mut clipboard| clipboard.get_text())
+    fn read_clipboard(&mut self) -> Result<ClipboardPaste, String> {
+        let mut clipboard = arboard::Clipboard::new().map_err(|error| error.to_string())?;
+        if let Ok(image) = clipboard.get_image() {
+            let data = encode_clipboard_png(image.width, image.height, image.bytes.as_ref())?;
+            let sequence = CLIPBOARD_IMAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            return Ok(ClipboardPaste::Image(PromptImage {
+                media_type: "image/png".into(),
+                data,
+                name: Some(format!("clipboard-{}-{sequence}.png", std::process::id())),
+            }));
+        }
+        clipboard
+            .get_text()
+            .map(ClipboardPaste::Text)
             .map_err(|error| error.to_string())
     }
 
@@ -82,6 +97,31 @@ impl UiActionPorts for ProductionRuntimePorts {
     fn now(&self) -> Instant {
         Instant::now()
     }
+}
+
+fn encode_clipboard_png(width: usize, height: usize, rgba: &[u8]) -> Result<Vec<u8>, String> {
+    let expected = width
+        .checked_mul(height)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| "clipboard image dimensions overflow".to_owned())?;
+    if width == 0 || height == 0 || rgba.len() != expected {
+        return Err("clipboard image has invalid RGBA dimensions".into());
+    }
+    let width = u32::try_from(width).map_err(|_| "clipboard image width is too large")?;
+    let height = u32::try_from(height).map_err(|_| "clipboard image height is too large")?;
+    let mut encoded = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut encoded, width, height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder
+            .write_header()
+            .map_err(|error| format!("encode clipboard image: {error}"))?;
+        writer
+            .write_image_data(rgba)
+            .map_err(|error| format!("encode clipboard image: {error}"))?;
+    }
+    Ok(encoded)
 }
 
 #[cfg(test)]
@@ -108,127 +148,22 @@ impl BridgeTransportPort for ScriptedBridgeTransport {
 }
 
 #[cfg(test)]
-pub struct ScriptedTerminalEvents {
-    events: std::collections::VecDeque<Result<Event, String>>,
-}
-
-#[cfg(test)]
-impl ScriptedTerminalEvents {
-    pub fn new(events: impl IntoIterator<Item = Result<Event, String>>) -> Self {
-        Self {
-            events: events.into_iter().collect(),
-        }
-    }
-}
-
-#[cfg(test)]
-impl TerminalEventPort for ScriptedTerminalEvents {
-    fn next_event(&mut self) -> impl Future<Output = Option<Result<Event, String>>> + Send {
-        std::future::ready(self.events.pop_front())
-    }
-}
-
-#[cfg(test)]
-#[derive(Default)]
-pub struct ScriptedTerminalLifecycle {
-    pub restore_calls: usize,
-    pub fail: bool,
-}
-
-#[cfg(test)]
-impl TerminalLifecyclePort for ScriptedTerminalLifecycle {
-    fn restore_terminal(&mut self) -> Result<(), String> {
-        self.restore_calls += 1;
-        if self.fail {
-            Err("scripted restore failed".into())
-        } else {
-            Ok(())
-        }
-    }
-}
-
-#[cfg(test)]
-pub struct ScriptedRuntimePorts {
-    pub loaded_config: Option<(Config, Vec<ThemeFile>)>,
-    pub persisted_configs: usize,
-    pub session_ids: Vec<String>,
-    pub clipboard_reads: usize,
-    pub clipboard_writes: Vec<String>,
-    pub config_result: Result<(), String>,
-    pub clipboard_read_result: Result<String, String>,
-    pub clipboard_result: Result<(), String>,
-    pub preview_results: std::collections::VecDeque<Result<PreviewContent, String>>,
-    pub preview_requests: Vec<PreviewRequest>,
-    pub now: Instant,
-}
-
-#[cfg(test)]
-impl ScriptedRuntimePorts {
-    pub fn successful(now: Instant) -> Self {
-        Self {
-            loaded_config: None,
-            persisted_configs: 0,
-            session_ids: Vec::new(),
-            clipboard_reads: 0,
-            clipboard_writes: Vec::new(),
-            config_result: Ok(()),
-            clipboard_read_result: Ok(String::new()),
-            clipboard_result: Ok(()),
-            preview_results: std::collections::VecDeque::new(),
-            preview_requests: Vec::new(),
-            now,
-        }
-    }
-}
-
-#[cfg(test)]
-impl UiActionPorts for ScriptedRuntimePorts {
-    fn load_config(&mut self) -> Result<(Config, Vec<ThemeFile>), String> {
-        self.loaded_config
-            .take()
-            .ok_or_else(|| "scripted config load failed".into())
-    }
-
-    fn persist_config(&mut self, _config: &Config) -> Result<(), String> {
-        self.persisted_configs += 1;
-        self.config_result.clone()
-    }
-
-    fn persist_session_id(&mut self, session_id: String) {
-        self.session_ids.push(session_id);
-    }
-
-    fn read_clipboard(&mut self) -> Result<String, String> {
-        self.clipboard_reads += 1;
-        self.clipboard_read_result.clone()
-    }
-
-    fn write_clipboard(&mut self, text: String) -> Result<(), String> {
-        self.clipboard_writes.push(text);
-        self.clipboard_result.clone()
-    }
-
-    fn resolve_preview(
-        &mut self,
-        request: PreviewRequest,
-    ) -> impl Future<Output = Result<PreviewContent, String>> + Send {
-        self.preview_requests.push(request);
-        std::future::ready(
-            self.preview_results
-                .pop_front()
-                .unwrap_or_else(|| Err("scripted Preview resolver failed".into())),
-        )
-    }
-
-    fn now(&self) -> Instant {
-        self.now
-    }
-}
+use e_tui::runtime::ports::{
+    ScriptedTerminalEvents, ScriptedTerminalLifecycle,
+    ScriptedUiActionPorts as ScriptedRuntimePorts,
+};
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+    #[test]
+    fn clipboard_rgba_encodes_as_png() {
+        let encoded = encode_clipboard_png(1, 1, &[0, 255, 0, 255]).unwrap();
+        assert_eq!(&encoded[..8], b"\x89PNG\r\n\x1a\n");
+        assert!(encode_clipboard_png(1, 1, &[0; 3]).is_err());
+    }
 
     #[tokio::test]
     async fn scripted_terminal_and_transport_are_deterministic() {

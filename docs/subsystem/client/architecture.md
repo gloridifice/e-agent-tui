@@ -101,10 +101,12 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   Shift/Ctrl/Alt/Backspace snapshot, and `runtime/input/vt.rs` parses them into crossterm events (bracketed paste,
   navigation, SGR mouse scroll, Alt prefixes). Terminals that consume `Ctrl+V` still deliver bracketed paste;
   terminals that pass it through produce a modified key, which the router turns into `UiAction::ReadClipboard`.
-  Each executable's clipboard port reads through `arboard`; completion reuses the same active-editor/composer paste
-  path, and both sources normalize CRLF/lone CR
-  through `e-tui::input::normalize_paste_text`. Reading View suppresses both paste forms, and a non-editing Input
-  Page must not mutate the preserved composer draft behind it. Windows Terminal's measured byte table is Backspace
+  Each executable's clipboard port reads through `arboard` and tries image content before text. The Pi adapter
+  writes an image to a temporary PNG and returns its path as ordinary editable text; the DSH adapter returns owned
+  PNG bytes as a provider-neutral `ClipboardPaste::Image`. Text completion reuses the same active-editor/composer
+  paste path, and both text sources normalize CRLF/lone CR through `e-tui::input::normalize_paste_text`.
+  Bracketed paste remains text-only. Reading View suppresses both paste forms, and a non-editing Input Page must not
+  mutate the preserved composer draft behind it. Windows Terminal's measured byte table is Backspace
   `0x7f`, **Ctrl+Backspace `0x17` (ETB)**, Ctrl+H
   `0x08`, Alt+Backspace `0x1b 0x7f`; re-measure with `cargo run -p e-dsh --example input_probe` before changing
   Backspace handling instead of assuming an encoding. The snapshot recovers `\r` Enter modifiers and identifies a
@@ -146,8 +148,12 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   `String::insert/remove` and slicing need byte indices — use `char_to_byte()` (`input.rs`); CJK has regression
   tests; cursor x uses `unicode_width`. Plain input is fixed: `Enter` sends, `Shift+Enter` inserts a newline, and
   `Ctrl+V` requests an application clipboard read when the terminal does not already translate it into bracketed
-  paste. Input Pages accept either paste source only in their active text editor; modified shortcut letters are not
-  inserted as literal text. Over-threshold composer pastes become **independent atomic paste blocks**
+  paste. `PromptInput` is an ordered provider-neutral sequence of owned text and image parts; queues and deferred
+  new-conversation drafts retain the whole value. Composer images use one internal object marker and render as one
+  Rose `[Image <name>]` block whose display-width truncation retains the filename suffix. Cursor movement skips the
+  block, Backspace/Delete removes the block and its bytes, and the marker is never projected into model text;
+  image-only prompts remain valid. Input Pages accept text paste only in their active text editor, and modified
+  shortcut letters are not inserted as literal text. Over-threshold composer pastes become **independent atomic paste blocks**
   (`InputState.paste_blocks`, raw-buffer char
   ranges): each renders as one Rose `[N text pasted]` placeholder between ordinary editable text, ←/→ skip a
   whole block, Backspace/Delete remove the whole block, Up/Down map the cursor through the placeholder

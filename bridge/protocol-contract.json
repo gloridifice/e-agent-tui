@@ -1,5 +1,5 @@
 {
-  "protocolVersion": 6,
+  "protocolVersion": 7,
   "limits": {
     "snapshotEvents": 600,
     "historyEvents": 2000,
@@ -86,6 +86,24 @@
     "recordReference": "Any other type name refers to an entry in records"
   },
   "records": {
+    "PromptImage": {
+      "required": {
+        "mediaType": "string",
+        "data": "string"
+      },
+      "optional": {
+        "name": "string"
+      }
+    },
+    "PromptContentPart": {
+      "required": {},
+      "optional": {
+        "text": "string",
+        "mediaType": "string",
+        "data": "string",
+        "name": "string"
+      }
+    },
     "QuestionAnswer": {
       "required": {
         "id": "string",
@@ -239,14 +257,14 @@
       },
       "input": {
         "required": {
-          "text": "string"
+          "content": "PromptContentPart[]"
         },
         "optional": {}
       },
       "new-input": {
         "required": {
           "mode": "string",
-          "text": "string"
+          "content": "PromptContentPart[]"
         },
         "optional": {}
       },
@@ -254,7 +272,9 @@
         "required": {
           "line": "string"
         },
-        "optional": {}
+        "optional": {
+          "images": "PromptImage[]"
+        }
       },
       "interrupt": {
         "required": {},

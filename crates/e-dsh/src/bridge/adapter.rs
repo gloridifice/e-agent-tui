@@ -1,7 +1,8 @@
 //! Conversion between DSH wire values and kernel-neutral frontend contracts.
 
+use base64::Engine;
 use e_tui::{
-    action::{AgentRequest, QuestionAnswer as UiQuestionAnswer},
+    action::{AgentRequest, PromptInput, PromptPart, QuestionAnswer as UiQuestionAnswer},
     agent::{
         timeline::{
             ContentBlock, LifecycleOutcome, MessageSource, SurfaceOperation, TimelineFact,
@@ -20,8 +21,9 @@ use serde_json::Value;
 use crate::protocol::{
     ClientMessage, HostContentBlock, HostEvent, HostEventKind, HostLifecycleOutcome,
     HostMessageSource, HostMutationHunk, HostSurfaceOp, ModelCurrent, ModelInfo, ModelProviderInfo,
-    ProviderInfo, ProxyInfo, QuestionAnswer, QuestionItem, ServerMessage, SessionInfo,
-    TokenUsage as HostTokenUsage, WIRE_PROTOCOL_VERSION,
+    PromptContentPart as WirePromptPart, PromptImage as WirePromptImage, ProviderInfo, ProxyInfo,
+    QuestionAnswer, QuestionItem, ServerMessage, SessionInfo, TokenUsage as HostTokenUsage,
+    WIRE_PROTOCOL_VERSION,
 };
 
 fn protocol_mismatch_fatal(detail: &str) -> String {
@@ -196,11 +198,42 @@ pub fn normalize_server_message(message: ServerMessage) -> AgentEvent {
     }
 }
 
+fn prompt_to_wire(prompt: PromptInput) -> Vec<WirePromptPart> {
+    prompt
+        .parts
+        .into_iter()
+        .map(|part| match part {
+            PromptPart::Text(text) => WirePromptPart::Text { text },
+            PromptPart::Image(image) => WirePromptPart::Image {
+                media_type: image.media_type,
+                data: base64::engine::general_purpose::STANDARD.encode(image.data),
+                name: image.name,
+            },
+        })
+        .collect()
+}
+
+fn image_to_wire(image: e_tui::PromptImage) -> WirePromptImage {
+    WirePromptImage {
+        media_type: image.media_type,
+        data: base64::engine::general_purpose::STANDARD.encode(image.data),
+        name: image.name,
+    }
+}
+
 pub fn agent_request_to_client(request: AgentRequest) -> ClientMessage {
     match request {
-        AgentRequest::Input { text } => ClientMessage::Input { text },
-        AgentRequest::NewInput { mode, text } => ClientMessage::NewInput { mode, text },
-        AgentRequest::Command { line } => ClientMessage::Command { line },
+        AgentRequest::Input { prompt } => ClientMessage::Input {
+            content: prompt_to_wire(prompt),
+        },
+        AgentRequest::NewInput { mode, prompt } => ClientMessage::NewInput {
+            mode,
+            content: prompt_to_wire(prompt),
+        },
+        AgentRequest::Command { line, images } => ClientMessage::Command {
+            line,
+            images: images.into_iter().map(image_to_wire).collect(),
+        },
         AgentRequest::Interrupt => ClientMessage::Interrupt,
         AgentRequest::Attach { session_id } => ClientMessage::Attach { session_id },
         AgentRequest::ListSessions => ClientMessage::ListSessions,
@@ -250,59 +283,6 @@ pub fn agent_request_to_client(request: AgentRequest) -> ClientMessage {
         },
         AgentRequest::Ping => ClientMessage::Ping,
     }
-}
-
-pub fn client_message_to_agent_request(
-    message: ClientMessage,
-) -> Result<AgentRequest, ClientMessage> {
-    Ok(match message {
-        ClientMessage::Hello { .. } => return Err(message),
-        ClientMessage::Input { text } => AgentRequest::Input { text },
-        ClientMessage::NewInput { mode, text } => AgentRequest::NewInput { mode, text },
-        ClientMessage::Command { line } => AgentRequest::Command { line },
-        ClientMessage::Interrupt => AgentRequest::Interrupt,
-        ClientMessage::Attach { session_id } => AgentRequest::Attach { session_id },
-        ClientMessage::ListSessions => AgentRequest::ListSessions,
-        ClientMessage::ApprovalAnswer { id, allow } => AgentRequest::ApprovalAnswer { id, allow },
-        ClientMessage::AnswerQuestions { rpc_id, answers } => AgentRequest::AnswerQuestions {
-            request_id: rpc_id,
-            answers: answers.into_iter().map(question_answer_from_wire).collect(),
-        },
-        ClientMessage::CancelQuestions { rpc_id } => {
-            AgentRequest::CancelQuestions { request_id: rpc_id }
-        }
-        ClientMessage::History { before_seq, limit } => AgentRequest::History {
-            before_sequence: before_seq,
-            limit,
-        },
-        ClientMessage::LoginGet => AgentRequest::LoginGet,
-        ClientMessage::LoginSetApiKey { provider, value } => {
-            AgentRequest::LoginSetApiKey { provider, value }
-        }
-        ClientMessage::LoginProxyCreate {
-            base_url,
-            api_key,
-            protocol,
-            model,
-        } => AgentRequest::LoginProxyCreate {
-            base_url,
-            api_key,
-            protocol,
-            model,
-        },
-        ClientMessage::LoginProxyDelete { id } => AgentRequest::LoginProxyDelete { id },
-        ClientMessage::ModelGet => AgentRequest::ModelGet,
-        ClientMessage::ModelSet {
-            provider,
-            model,
-            reasoning_effort,
-        } => AgentRequest::ModelSet {
-            provider,
-            model,
-            reasoning_effort,
-        },
-        ClientMessage::Ping => AgentRequest::Ping,
-    })
 }
 
 pub fn normalize_host_event(event: HostEvent) -> TimelineRecord {
@@ -1032,17 +1012,36 @@ fn question_answer_to_wire(answer: UiQuestionAnswer) -> QuestionAnswer {
     }
 }
 
-fn question_answer_from_wire(answer: QuestionAnswer) -> UiQuestionAnswer {
-    UiQuestionAnswer {
-        id: answer.id,
-        selected: answer.selected,
-        custom: answer.custom,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_prompt_is_base64_encoded_and_ordered_at_the_wire_boundary() {
+        let message = agent_request_to_client(AgentRequest::Input {
+            prompt: PromptInput {
+                parts: vec![
+                    PromptPart::Text("before".into()),
+                    PromptPart::Image(e_tui::PromptImage {
+                        media_type: "image/png".into(),
+                        data: vec![0, 1, 2],
+                        name: Some("clip.png".into()),
+                    }),
+                    PromptPart::Text("after".into()),
+                ],
+            },
+        });
+        let ClientMessage::Input { content } = message else {
+            panic!("expected input")
+        };
+        assert!(matches!(&content[0], WirePromptPart::Text { text } if text == "before"));
+        assert!(matches!(
+            &content[1],
+            WirePromptPart::Image { media_type, data, name }
+                if media_type == "image/png" && data == "AAEC" && name.as_deref() == Some("clip.png")
+        ));
+        assert!(matches!(&content[2], WirePromptPart::Text { text } if text == "after"));
+    }
 
     #[test]
     fn tool_frame_is_normalized_before_frontend_projection() {

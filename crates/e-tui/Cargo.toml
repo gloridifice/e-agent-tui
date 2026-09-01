@@ -6,6 +6,7 @@ description = "Kernel-neutral terminal frontend for interactive agent sessions"
 
 [features]
 default = []
+test-support = []
 tracy = ["dep:tracy-client"]
 
 [dependencies]

@@ -14,6 +14,8 @@ pub mod terminal;
 
 pub use controller::{RuntimeController, RuntimeUiState, TerminalUiState};
 pub use input::{route_terminal_event, ProductionTerminalEvents, TerminalFocus, TerminalRoute};
+#[cfg(any(test, feature = "test-support"))]
+pub use ports::{ScriptedTerminalEvents, ScriptedTerminalLifecycle, ScriptedUiActionPorts};
 pub use ports::{TerminalEventPort, TerminalLifecyclePort, UiActionPorts};
 pub use scheduler::{
     DirtyReason, FrameScheduler, CONTENT_FRAME_INTERVAL, INTERACTIVE_FRAME_INTERVAL,

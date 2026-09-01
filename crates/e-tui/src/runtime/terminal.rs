@@ -67,6 +67,13 @@ fn finish_sync<W: Write, T>(writer: &mut W, enabled: bool, first: io::Result<T>)
     }
 }
 
+fn remember_success(restored: &mut bool, result: io::Result<()>) -> io::Result<()> {
+    if result.is_ok() {
+        *restored = true;
+    }
+    result
+}
+
 /// Owns every terminal state transition. `restore` is idempotent and Drop is
 /// a final safety net for early returns from the async runtime.
 pub struct TerminalOwner {
@@ -193,7 +200,6 @@ impl TerminalOwner {
         if self.restored {
             return Ok(());
         }
-        self.restored = true;
         let backend = self.terminal.backend_mut();
         // End first in case a failed frame left the emulator synchronized.
         let sync_result = if self.sync_output {
@@ -203,7 +209,10 @@ impl TerminalOwner {
         };
         let command_result = leave_terminal_modes(backend);
         let raw_result = disable_raw_mode();
-        sync_result.and(command_result).and(raw_result)
+        remember_success(
+            &mut self.restored,
+            sync_result.and(command_result).and(raw_result),
+        )
     }
 }
 
@@ -249,5 +258,15 @@ mod tests {
             finish_sync::<_, ()>(&mut out, true, Err(io::Error::other("draw failed"))).unwrap_err();
         assert_eq!(error.to_string(), "draw failed");
         assert!(out.ends_with(b"\x1b[?2026l"));
+    }
+
+    #[test]
+    fn failed_restore_remains_retryable_until_one_attempt_succeeds() {
+        let mut restored = false;
+        assert!(remember_success(&mut restored, Err(io::Error::other("failed"))).is_err());
+        assert!(!restored, "a failed attempt must remain retryable");
+
+        remember_success(&mut restored, Ok(())).unwrap();
+        assert!(restored, "a successful attempt completes restoration");
     }
 }

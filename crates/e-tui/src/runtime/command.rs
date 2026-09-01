@@ -84,7 +84,10 @@ fn set_new_conversation_notice(state: &Arc<Mutex<RuntimeState>>, text: impl Into
 }
 
 fn forward(line: String, outcome: &mut CommandOutcome, interruptible: bool) {
-    outcome.outbound.push(AgentRequest::Command { line });
+    outcome.outbound.push(AgentRequest::Command {
+        line,
+        images: Vec::new(),
+    });
     outcome.starts_interruptible_command = interruptible;
 }
 

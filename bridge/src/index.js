@@ -31,6 +31,7 @@ import {
 } from './compose.js'
 import { shapeModelFrame } from './model.js'
 import { createSessionModelAdapter } from './session-model.js'
+import { createSessionPromptAdapter } from './session-prompt.js'
 import {
   renderSkillContent,
   shapeSkillsFrame,
@@ -88,6 +89,7 @@ function apply(ctx, config = {}) {
   const modelSelections = new Map()
   const modelSelection = createModelSelectionAdapter()
   const sessionModel = createSessionModelAdapter(() => host.apiProxy())
+  const sessionPrompt = createSessionPromptAdapter(() => host.apiProxy())
 
   // ---- user questions (ask_user_question) ----
   // The host's web UI owns the single userQuestions provider slot, so the
@@ -365,6 +367,7 @@ function apply(ctx, config = {}) {
       sendModel,
       modelSelections,
       sessionModel,
+      sessionPrompt,
       createUserMessage,
     })
     ws.on('message', dispatcher.handle)

@@ -49,6 +49,7 @@ function harness(options = {}) {
         selected: { provider, model, ...(reasoningEffort === undefined ? {} : { reasoningEffort }) },
       }),
     },
+    sessionPrompt: options.sessionPrompt,
     createUserMessage: (message) => message,
   })
   return { dispatcher, frames, closes, followups, cancellations, conn, conns, modelSelections }
@@ -60,9 +61,84 @@ test('dispatcher authenticates, attaches, and routes typed input', async () => {
     type: 'hello', token: 'secret', protocolVersion: 2,
   })))
   await new Promise((resolve) => setImmediate(resolve))
-  h.dispatcher.handle(Buffer.from(JSON.stringify({ type: 'input', text: 'hello' })))
+  h.dispatcher.handle(Buffer.from(JSON.stringify({
+    type: 'input', content: [{ type: 'text', text: 'hello' }],
+  })))
   assert.equal(h.dispatcher.connection(), h.conn)
   assert.equal(h.followups[0].content[0].text, 'hello')
+})
+
+test('dispatcher keeps legacy text input compatible while accepting protocol v7 content', async () => {
+  const h = harness()
+  h.dispatcher.handle(Buffer.from(JSON.stringify({
+    type: 'hello', token: 'secret', protocolVersion: 6,
+  })))
+  await new Promise((resolve) => setImmediate(resolve))
+  h.dispatcher.handle(Buffer.from(JSON.stringify({ type: 'input', text: 'legacy input' })))
+  assert.deepEqual(h.followups.at(-1).content, [{ type: 'text', text: 'legacy input' }])
+
+  h.dispatcher.handle(Buffer.from(JSON.stringify({
+    type: 'new-input', mode: 'standard', text: 'legacy first prompt',
+  })))
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(h.followups.at(-1).content, [{ type: 'text', text: 'legacy first prompt' }])
+})
+
+test('dispatcher routes mixed and image-only input through Host prompt admission', async () => {
+  const prompts = []
+  const h = harness({
+    sessionPrompt: {
+      prompt: async (sessionId, content) => prompts.push({ sessionId, content }),
+    },
+  })
+  h.dispatcher.handle(Buffer.from(JSON.stringify({
+    type: 'hello', token: 'secret', protocolVersion: 7,
+  })))
+  await new Promise((resolve) => setImmediate(resolve))
+  h.dispatcher.handle(Buffer.from(JSON.stringify({
+    type: 'input',
+    content: [
+      { type: 'text', text: 'inspect ' },
+      { type: 'image', mediaType: 'image/png', data: 'AA==', name: 'clip.png' },
+    ],
+  })))
+  await new Promise((resolve) => setImmediate(resolve))
+  h.dispatcher.handle(Buffer.from(JSON.stringify({
+    type: 'input',
+    content: [{ type: 'image', mediaType: 'image/png', data: 'AA==' }],
+  })))
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(prompts, [
+    {
+      sessionId: 'a1',
+      content: [
+        { type: 'text', text: 'inspect ' },
+        { type: 'image', mediaType: 'image/png', data: 'AA==', name: 'clip.png' },
+      ],
+    },
+    {
+      sessionId: 'a1',
+      content: [{ type: 'image', mediaType: 'image/png', data: 'AA==' }],
+    },
+  ])
+  assert.equal(h.followups.length, 0, 'encoded images never enter direct durable messages')
+})
+
+test('dispatcher reports image admission failure without direct fallback', async () => {
+  const h = harness({
+    sessionPrompt: { prompt: async () => { throw new Error('image-invalid: bad bytes') } },
+  })
+  h.dispatcher.handle(Buffer.from(JSON.stringify({
+    type: 'hello', token: 'secret', protocolVersion: 7,
+  })))
+  await new Promise((resolve) => setImmediate(resolve))
+  h.dispatcher.handle(Buffer.from(JSON.stringify({
+    type: 'input', content: [{ type: 'image', mediaType: 'image/png', data: 'AA==' }],
+  })))
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(h.followups.length, 0)
+  assert.equal(h.frames.at(-1).code, 'image-input-failed')
+  assert.match(h.frames.at(-1).message, /image-invalid/)
 })
 
 test('dispatcher resolves apiProxy lazily when answering a question', async () => {
@@ -133,7 +209,7 @@ test('dispatcher atomically creates a new session before delivering new-input', 
   })))
   await new Promise((resolve) => setImmediate(resolve))
   h.dispatcher.handle(Buffer.from(JSON.stringify({
-    type: 'new-input', mode: 'code', text: 'first prompt',
+    type: 'new-input', mode: 'code', content: [{ type: 'text', text: 'first prompt' }],
   })))
   await new Promise((resolve) => setImmediate(resolve))
   assert.deepEqual(calls, [['a1', 'code']])
@@ -159,7 +235,7 @@ test('new-input creation failure keeps the old connection and never misroutes th
   })))
   await new Promise((resolve) => setImmediate(resolve))
   h.dispatcher.handle(Buffer.from(JSON.stringify({
-    type: 'new-input', mode: 'standard', text: 'must not reach old',
+    type: 'new-input', mode: 'standard', content: [{ type: 'text', text: 'must not reach old' }],
   })))
   await new Promise((resolve) => setImmediate(resolve))
   assert.equal(h.dispatcher.connection(), h.conn)
@@ -218,14 +294,36 @@ test('dispatcher executes an integrated command and relays its direct UI result'
     type: 'hello', token: 'secret', protocolVersion: 3,
   })))
   await new Promise((resolve) => setImmediate(resolve))
-  h.dispatcher.handle(Buffer.from(JSON.stringify({ type: 'command', line: '/feedback good' })))
+  h.dispatcher.handle(Buffer.from(JSON.stringify({
+    type: 'command',
+    line: '/feedback good',
+    images: [{ mediaType: 'image/png', data: 'AA==', name: 'clip.png' }],
+  })))
   await new Promise((resolve) => setImmediate(resolve))
   assert.equal(calls[0].line, '/feedback good')
-  assert.deepEqual(calls[0].images, [])
+  assert.deepEqual(calls[0].images, [
+    { mediaType: 'image/png', data: 'AA==', name: 'clip.png' },
+  ])
   assert.ok(calls[0].signal instanceof AbortSignal)
   assert.equal(calls[0].signal.aborted, false)
   assert.deepEqual(h.frames.at(-1), {
     type: 'command-result', commandId: 'cmd-1', kind: 'success', text: 'feedback recorded',
+  })
+})
+
+test('dispatcher rejects images on bridge-owned commands instead of dropping them', async () => {
+  const h = harness()
+  h.dispatcher.handle(Buffer.from(JSON.stringify({
+    type: 'hello', token: 'secret', protocolVersion: 7,
+  })))
+  await new Promise((resolve) => setImmediate(resolve))
+  h.dispatcher.handle(Buffer.from(JSON.stringify({
+    type: 'command',
+    line: '/skill:review',
+    images: [{ mediaType: 'image/png', data: 'AA==' }],
+  })))
+  assert.deepEqual(h.frames.at(-1), {
+    type: 'error', code: 'command-failed', message: '/skill does not accept images',
   })
 })
 

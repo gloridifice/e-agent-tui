@@ -71,6 +71,37 @@ mod tests {
     }
 
     #[test]
+    fn durable_user_image_reference_keeps_its_display_name() {
+        let event = HostEvent::from_value(serde_json::json!({
+            "seq": 1,
+            "type": "user/message",
+            "data": {
+                "content": [
+                    {"type":"text", "text":"look"},
+                    {"type":"image", "attachment": {
+                        "attachmentId":"attachment-1",
+                        "mediaType":"image/png",
+                        "bytes":1,
+                        "width":1,
+                        "height":1,
+                        "name":"clipboard.png"
+                    }}
+                ],
+                "source":{"kind":"user"}
+            }
+        }));
+        assert!(matches!(
+            event.kind,
+            HostEventKind::UserMessage { text, content, .. }
+                if text == "look"
+                    && content.iter().any(|block| matches!(
+                        block,
+                        HostContentBlock::Image { label } if label == "clipboard.png"
+                    ))
+        ));
+    }
+
+    #[test]
     fn extended_history_fixture_enters_client_replay_roster() {
         let events: Vec<Value> = serde_json::from_str(include_str!(
             "../../../bridge/test/fixtures/session-events.json"
@@ -237,13 +268,26 @@ mod tests {
     fn new_input_serializes_mode_and_complete_first_prompt() {
         let msg = ClientMessage::NewInput {
             mode: "code".into(),
-            text: "first\nline".into(),
+            content: vec![
+                PromptContentPart::Text {
+                    text: "first\nline".into(),
+                },
+                PromptContentPart::Image {
+                    media_type: "image/png".into(),
+                    data: "AA==".into(),
+                    name: Some("clip.png".into()),
+                },
+            ],
         };
         let value: serde_json::Value =
             serde_json::from_str(&msg.to_wire().expect("new-input serializes")).unwrap();
         assert_eq!(value["type"], "new-input");
         assert_eq!(value["mode"], "code");
-        assert_eq!(value["text"], "first\nline");
+        assert_eq!(value["content"][0]["type"], "text");
+        assert_eq!(value["content"][0]["text"], "first\nline");
+        assert_eq!(value["content"][1]["type"], "image");
+        assert_eq!(value["content"][1]["mediaType"], "image/png");
+        assert_eq!(value["content"][1]["data"], "AA==");
     }
 
     #[test]

@@ -27,7 +27,9 @@ pub(super) fn parse_content(content: Option<&Value>) -> Vec<HostContentBlock> {
                         label: block
                             .get("attachment")
                             .and_then(|attachment| {
-                                attachment.get("name").or_else(|| attachment.get("id"))
+                                attachment
+                                    .get("name")
+                                    .or_else(|| attachment.get("attachmentId"))
                             })
                             .and_then(Value::as_str)
                             .unwrap_or("image")

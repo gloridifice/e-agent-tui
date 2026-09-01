@@ -61,7 +61,7 @@ pub use screen::RenderOverlays;
 fn input_accessories(
     state: &TuiApp,
     approval: Option<&crate::interaction::ApprovalCard>,
-    queue: &[String],
+    queue: &[crate::PromptInput],
 ) -> Vec<InputAccessory> {
     let mut accessories = Vec::new();
     if approval.is_some() {
@@ -168,7 +168,7 @@ pub fn transcript_view_height(
     input: &InputState,
     input_page_open: bool,
     approval: Option<&crate::interaction::ApprovalCard>,
-    queue: &[String],
+    queue: &[crate::PromptInput],
 ) -> usize {
     let bottom_rows = bottom_area_rows(
         size.height,

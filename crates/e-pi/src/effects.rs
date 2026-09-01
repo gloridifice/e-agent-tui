@@ -1,8 +1,8 @@
 //! Pi-owned production implementations for frontend runtime effects.
 
-use std::{fs, path::Path};
+use std::{fs, io::Write, path::Path};
 
-use e_tui::{PreviewContent, PreviewRequest, ThemeFile};
+use e_tui::{ClipboardPaste, PreviewContent, PreviewRequest, ThemeFile};
 
 const MAX_PREVIEW_BYTES: usize = 256 * 1024;
 const MAX_PREVIEW_LINES: usize = 2_000;
@@ -54,10 +54,55 @@ fn discover_themes(dir: &Path) -> Vec<ThemeFile> {
     themes
 }
 
-pub fn read_clipboard() -> Result<String, String> {
-    arboard::Clipboard::new()
-        .and_then(|mut clipboard| clipboard.get_text())
+pub fn read_clipboard() -> Result<ClipboardPaste, String> {
+    let mut clipboard = arboard::Clipboard::new().map_err(|error| error.to_string())?;
+    if let Ok(image) = clipboard.get_image() {
+        let png = encode_clipboard_png(image.width, image.height, image.bytes.as_ref())?;
+        return Ok(ClipboardPaste::Text(write_temp_clipboard_png(&png)?));
+    }
+    clipboard
+        .get_text()
+        .map(ClipboardPaste::Text)
         .map_err(|error| error.to_string())
+}
+
+fn write_temp_clipboard_png(png: &[u8]) -> Result<String, String> {
+    let mut file = tempfile::Builder::new()
+        .prefix("pi-clipboard-")
+        .suffix(".png")
+        .tempfile_in(std::env::temp_dir())
+        .map_err(|error| format!("create clipboard image: {error}"))?;
+    file.write_all(png)
+        .map_err(|error| format!("write clipboard image: {error}"))?;
+    let (_, path) = file
+        .keep()
+        .map_err(|error| format!("keep clipboard image: {}", error.error))?;
+    Ok(path.display().to_string())
+}
+
+fn encode_clipboard_png(width: usize, height: usize, rgba: &[u8]) -> Result<Vec<u8>, String> {
+    let expected = width
+        .checked_mul(height)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| "clipboard image dimensions overflow".to_owned())?;
+    if width == 0 || height == 0 || rgba.len() != expected {
+        return Err("clipboard image has invalid RGBA dimensions".into());
+    }
+    let width = u32::try_from(width).map_err(|_| "clipboard image width is too large")?;
+    let height = u32::try_from(height).map_err(|_| "clipboard image height is too large")?;
+    let mut encoded = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut encoded, width, height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder
+            .write_header()
+            .map_err(|error| format!("encode clipboard image: {error}"))?;
+        writer
+            .write_image_data(rgba)
+            .map_err(|error| format!("encode clipboard image: {error}"))?;
+    }
+    Ok(encoded)
 }
 
 pub fn write_clipboard(text: String) -> Result<(), String> {
@@ -132,6 +177,19 @@ mod tests {
             key: PreviewKey(key),
             revision: PreviewRevision(1),
         }
+    }
+
+    #[test]
+    fn clipboard_rgba_encodes_as_png() {
+        let encoded = encode_clipboard_png(1, 1, &[255, 0, 0, 255]).unwrap();
+        assert_eq!(&encoded[..8], b"\x89PNG\r\n\x1a\n");
+        assert!(encode_clipboard_png(1, 1, &[0; 3]).is_err());
+        let path = write_temp_clipboard_png(&encoded).unwrap();
+        let path = std::path::PathBuf::from(path);
+        assert!(path.exists());
+        let name = path.file_name().unwrap().to_string_lossy();
+        assert!(name.starts_with("pi-clipboard-") && name.ends_with(".png"));
+        std::fs::remove_file(path).unwrap();
     }
 
     #[tokio::test]

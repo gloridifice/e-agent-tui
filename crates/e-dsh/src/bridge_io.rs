@@ -70,19 +70,33 @@ impl BridgeIo {
             }
         };
         let (sink, mut stream) = ws.split();
+        let (inbound_tx, inbound) = mpsc::channel::<ServerMessage>(512);
         let (outbound, mut outbound_rx) = mpsc::channel::<ClientMessage>(128);
+        let writer_events = inbound_tx.clone();
         let writer = tokio::spawn(async move {
             let mut sink = sink;
             while let Some(message) = outbound_rx.recv().await {
+                let has_images = message.has_images();
                 let Ok(wire) = message.to_wire() else {
                     continue;
                 };
+                if has_images && wire.len() > MAX_WIRE_FRAME_BYTES {
+                    let _ = writer_events
+                        .send(ServerMessage::Error {
+                            code: "image-input-too-large".into(),
+                            message: format!(
+                                "encoded image prompt exceeds the {} byte wire limit",
+                                MAX_WIRE_FRAME_BYTES
+                            ),
+                        })
+                        .await;
+                    continue;
+                }
                 if sink.send(Message::Text(wire.into())).await.is_err() {
                     break;
                 }
             }
         });
-        let (inbound_tx, inbound) = mpsc::channel::<ServerMessage>(512);
         let reader = tokio::spawn(async move {
             while let Some(item) = stream.next().await {
                 let item = match item {

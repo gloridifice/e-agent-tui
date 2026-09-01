@@ -527,9 +527,13 @@ impl RuntimeState {
     /// is passed in because the caller may hold the InteractionModel outside
     /// the RuntimeState lock (main-loop take/restore); the queue must never be a
     /// transient default.
-    pub fn enqueue_or_immediate(&mut self, text: &str, queue: &mut Vec<String>) -> bool {
+    pub fn enqueue_or_immediate(
+        &mut self,
+        prompt: &crate::PromptInput,
+        queue: &mut Vec<crate::PromptInput>,
+    ) -> bool {
         if self.session.status == AgentStatus::Running {
-            queue.push(text.to_string());
+            queue.push(prompt.clone());
             false
         } else {
             true
@@ -539,7 +543,7 @@ impl RuntimeState {
     /// The agent went idle: pop the next queued prompt for auto-dispatch,
     /// one at a time (each dispatch keeps the agent busy until it returns
     /// to idle again).
-    pub fn take_next_queued(&mut self) -> Option<String> {
+    pub fn take_next_queued(&mut self) -> Option<crate::PromptInput> {
         if self.session.status == AgentStatus::Idle
             && !self.session.working
             && !self.interaction.queue.is_empty()
@@ -720,20 +724,23 @@ impl RuntimeState {
     /// Retain the first prompt and return the atomic materialization payload.
     /// A second submission while creation is in flight is rejected by the
     /// controller rather than entering the retained old session's queue.
-    pub fn materialize_new_conversation(&mut self, text: String) -> Option<AgentRequest> {
+    pub fn materialize_new_conversation(
+        &mut self,
+        prompt: crate::PromptInput,
+    ) -> Option<AgentRequest> {
         let draft = self.session.new_conversation.as_mut()?;
         if draft.pending_input.is_some() {
             return None;
         }
-        draft.pending_input = Some(text.clone());
+        draft.pending_input = Some(prompt.clone());
         draft.notice = Some("正在创建新对话…".into());
         Some(AgentRequest::NewInput {
             mode: draft.mode.clone(),
-            text,
+            prompt,
         })
     }
 
-    pub fn restore_new_conversation_input(&mut self) -> Option<String> {
+    pub fn restore_new_conversation_input(&mut self) -> Option<crate::PromptInput> {
         let draft = self.session.new_conversation.as_mut()?;
         draft.notice = None;
         draft.pending_input.take()

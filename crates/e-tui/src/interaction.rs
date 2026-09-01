@@ -164,7 +164,7 @@ pub struct InteractionModel {
     pub help_visible: bool,
     pub approval: Option<ApprovalCard>,
     pub question: Option<String>,
-    pub queue: Vec<String>,
+    pub queue: Vec<crate::PromptInput>,
     pub notice: NoticeState,
     pub mouse_selection: MouseSelection,
     pub pane_resize: PaneResizeState,

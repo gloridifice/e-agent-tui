@@ -401,11 +401,17 @@ pub fn start_tracy(_enabled: bool) -> Option<()> {
 }
 
 #[cfg(feature = "tracy")]
+#[doc(hidden)]
+pub use tracy_client as __tracy_client;
+
+#[cfg(feature = "tracy")]
 #[macro_export]
 macro_rules! tracy_zone {
     ($name:literal) => {{
-        match tracy_client::Client::running() {
-            Some(client) => Some(client.span(tracy_client::span_location!($name), 0)),
+        match $crate::profile::__tracy_client::Client::running() {
+            Some(client) => {
+                Some(client.span($crate::profile::__tracy_client::span_location!($name), 0))
+            }
             None => None,
         }
     }};

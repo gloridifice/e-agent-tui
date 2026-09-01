@@ -779,7 +779,7 @@ mod tests {
 
     struct ClipboardPorts {
         reads: usize,
-        read_result: Result<String, String>,
+        read_result: Result<e_tui::ClipboardPaste, String>,
         writes: Vec<String>,
         result: Result<(), String>,
         now: Instant,
@@ -796,7 +796,7 @@ mod tests {
 
         fn persist_session_id(&mut self, _session_id: String) {}
 
-        fn read_clipboard(&mut self) -> Result<String, String> {
+        fn read_clipboard(&mut self) -> Result<e_tui::ClipboardPaste, String> {
             self.reads += 1;
             self.read_result.clone()
         }
@@ -874,7 +874,8 @@ mod tests {
         let effects = RuntimeController::dispatch_next_queued(&state);
         assert!(matches!(
             effects.as_slice(),
-            [UiAction::Agent(e_tui::AgentRequest::Input { text })] if text == "next"
+            [UiAction::Agent(e_tui::AgentRequest::Input { prompt })]
+                if prompt.plain_text() == Some("next")
         ));
         let guard = state
             .try_lock()
@@ -918,7 +919,7 @@ mod tests {
         let mut scheduler = FrameScheduler::new(now);
         let mut ports = ClipboardPorts {
             reads: 0,
-            read_result: Ok("api-key".into()),
+            read_result: Ok(e_tui::ClipboardPaste::Text("api-key".into())),
             writes: Vec::new(),
             result: Ok(()),
             now,
@@ -933,7 +934,8 @@ mod tests {
         assert_eq!(ports.reads, 1);
         assert!(matches!(
             read.completed.as_slice(),
-            [EffectResult::ClipboardRead(Ok(text))] if text == "api-key"
+            [EffectResult::ClipboardRead(Ok(e_tui::ClipboardPaste::Text(text)))]
+                if text == "api-key"
         ));
 
         let success = execute_runtime_effects(

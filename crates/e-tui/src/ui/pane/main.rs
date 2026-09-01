@@ -14,7 +14,7 @@ pub(crate) struct MainPaneOverlays<'a> {
     pub settings: Option<&'a mut SettingsState>,
     pub login: Option<&'a mut LoginState>,
     pub approval: Option<&'a crate::interaction::ApprovalCard>,
-    pub queue: &'a [String],
+    pub queue: &'a [crate::PromptInput],
 }
 
 #[allow(clippy::too_many_arguments)] // Thin downward-only forwarding boundary.

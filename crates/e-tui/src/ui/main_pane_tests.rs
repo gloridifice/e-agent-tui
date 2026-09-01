@@ -1913,7 +1913,7 @@ fn overlays_paint_queue_and_approval_accessories() {
         tool_name: "bash".into(),
         reason: "run the test".into(),
     };
-    let queue = vec!["排队提示".to_string()];
+    let queue = vec![crate::PromptInput::text("排队提示")];
     let backend = TestBackend::new(80, 40);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal

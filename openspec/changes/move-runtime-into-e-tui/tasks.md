@@ -28,3 +28,11 @@
 - [x] 5.2 Build and smoke-check both `dshe` and `pie`, including idle scheduling, bounded inbound fairness, synchronized drawing/restoration, Preview completion, and Windows input paths.
 - [x] 5.3 Update the current English client architecture documentation to describe `e_tui::runtime`, direct adapter dependencies, and adapter-owned external effects.
 - [x] 5.4 Run `cargo fmt --all`, `cargo clippy --all-targets`, and OpenSpec validation; resolve all failures and mark the change implementation-complete.
+
+## 6. Review remediation
+
+- [x] 6.1 Keep failed terminal restoration attempts retryable and cover the state transition.
+- [x] 6.2 Deliver Windows terminal resize events through the shared raw-input source and smoke the behavior with `tui-test`.
+- [x] 6.3 Expose one shared set of scripted runtime ports and remove DSH-side duplicate fakes.
+- [x] 6.4 Remove the unused DSH reverse request projection and obsolete direct Tracy dependency.
+- [x] 6.5 Run focused tests, formatting, Clippy, and strict OpenSpec validation.

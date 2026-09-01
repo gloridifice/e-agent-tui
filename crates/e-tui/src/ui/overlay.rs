@@ -33,7 +33,7 @@ pub(super) fn render_toast(frame: &mut Frame, message: &str, theme: &Theme) {
 pub(super) fn help_overlay(theme: &Theme) -> Vec<Line<'static>> {
     let rows = [
         "帮助 — e",
-        "Enter 发送   Shift+Enter 换行   Ctrl+V 粘贴   Ctrl+Backspace/Ctrl+W 删词   ↑↓ 行间移动/边界切换提示词",
+        "Enter 发送   Shift+Enter 换行   Ctrl+V 粘贴图片/文本   Ctrl+Backspace/Ctrl+W 删词   ↑↓ 行间移动/边界切换提示词",
         "Esc 中断对话/运行中命令   Ctrl+C 清空输入/空闲退出   /exit /q /quit 退出",
         "Ctrl+Y 阅读视图   Ctrl+P 预览   Ctrl+N 续接会话 Input Page   Ctrl+H 帮助",
         "输入 /：补全内置命令及当前会话自动接入的 DSH/插件命令   Tab/↑↓ 选择",

@@ -11,7 +11,9 @@ use e_tui::{
         InteractionEvent, ModelDescriptor, ModelProvider, ModelReasoning, ModelSelection, Question,
         QuestionOption, ReasoningEffort, SessionEvent, Skill, TimelineEvent,
     },
-    preview::{LineSelection, ToolMetrics, ToolPreview, ToolPreviewPrimary},
+    preview::{
+        LineSelection, MutationDiff, MutationHunk, ToolMetrics, ToolPreview, ToolPreviewPrimary,
+    },
 };
 use serde_json::Value;
 
@@ -751,10 +753,11 @@ impl PiAdapter {
 
     fn tool_end(&mut self, record: &RpcRecord) -> AdapterOutput {
         let result = record.field("result").cloned().unwrap_or(Value::Null);
+        let is_error = record.bool("isError").unwrap_or(false);
         self.timeline(TimelineFact::ToolResult {
             activity_id: record.string("toolCallId").unwrap_or("pi-tool").to_owned(),
             output: content_text(result.get("content").unwrap_or(&Value::Null)),
-            state: if record.bool("isError").unwrap_or(false) {
+            state: if is_error {
                 ActivityState::Failure
             } else {
                 ActivityState::Success
@@ -763,6 +766,7 @@ impl PiAdapter {
                 .get("details")
                 .and_then(|details| details.get("truncation"))
                 .is_some_and(|value| !value.is_null()),
+            mutation_diff: pi_edit_mutation_diff(record.string("toolName"), &result, is_error),
             mutation_hunks: Vec::new(),
         })
     }
@@ -1014,6 +1018,10 @@ fn assistant_fact(message: &Value, turn: Option<u64>, step: Option<u64>) -> Time
 }
 
 fn tool_result_fact(message: &Value) -> TimelineFact {
+    let is_error = message
+        .get("isError")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     TimelineFact::ToolResult {
         activity_id: message
             .get("toolCallId")
@@ -1021,11 +1029,7 @@ fn tool_result_fact(message: &Value) -> TimelineFact {
             .unwrap_or("pi-tool")
             .to_owned(),
         output: content_text(message.get("content").unwrap_or(&Value::Null)),
-        state: if message
-            .get("isError")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
+        state: if is_error {
             ActivityState::Failure
         } else {
             ActivityState::Success
@@ -1034,8 +1038,32 @@ fn tool_result_fact(message: &Value) -> TimelineFact {
             .get("details")
             .and_then(|details| details.get("truncation"))
             .is_some_and(|value| !value.is_null()),
+        mutation_diff: pi_edit_mutation_diff(
+            message.get("toolName").and_then(Value::as_str),
+            message,
+            is_error,
+        ),
         mutation_hunks: Vec::new(),
     }
+}
+
+fn pi_edit_mutation_diff(
+    tool_name: Option<&str>,
+    result: &Value,
+    is_error: bool,
+) -> Option<MutationDiff> {
+    if is_error || !tool_name.is_some_and(|name| name.eq_ignore_ascii_case("edit")) {
+        return None;
+    }
+    result
+        .get("details")
+        .and_then(|details| details.get("patch"))
+        .and_then(Value::as_str)
+        .filter(|patch| !patch.is_empty())
+        .map(|patch| MutationDiff {
+            path: None,
+            source: patch.to_owned(),
+        })
 }
 
 fn content_parts(message: &Value) -> impl Iterator<Item = &Value> {
@@ -1104,6 +1132,9 @@ fn tool_activity(id: &str, name: &str, arguments: Value) -> ToolActivity {
         ToolCapability::Read | ToolCapability::Create => {
             path.clone().map(|path| ToolReference::Path { path })
         }
+        ToolCapability::Edit => edit_mutation_hunks(&arguments, path.as_deref())
+            .map(ToolReference::Hunks)
+            .or_else(|| path.clone().map(|path| ToolReference::Path { path })),
         ToolCapability::Command => command
             .clone()
             .map(|command| ToolReference::Command { command }),
@@ -1147,6 +1178,7 @@ fn tool_activity(id: &str, name: &str, arguments: Value) -> ToolActivity {
             },
             secondary: None,
         }),
+        ToolCapability::Edit if reference.is_some() => None,
         ToolCapability::Edit
         | ToolCapability::Insert
         | ToolCapability::Replace
@@ -1171,6 +1203,39 @@ fn tool_activity(id: &str, name: &str, arguments: Value) -> ToolActivity {
         items: Vec::new(),
         preview,
     }
+}
+
+fn edit_mutation_hunks(arguments: &Value, path: Option<&str>) -> Option<Vec<MutationHunk>> {
+    let replacements = if let Some(edits) = arguments.get("edits").and_then(Value::as_array) {
+        if edits.is_empty() {
+            return None;
+        }
+        edits
+            .iter()
+            .map(|edit| {
+                Some((
+                    edit.get("oldText")?.as_str()?,
+                    edit.get("newText")?.as_str()?,
+                ))
+            })
+            .collect::<Option<Vec<_>>>()?
+    } else {
+        vec![(
+            arguments.get("oldText")?.as_str()?,
+            arguments.get("newText")?.as_str()?,
+        )]
+    };
+    Some(
+        replacements
+            .into_iter()
+            .map(|(old, new)| MutationHunk {
+                path: path.map(str::to_owned),
+                old: Some(old.to_owned()),
+                new: Some(new.to_owned()),
+                anchor_line: None,
+            })
+            .collect(),
+    )
 }
 
 fn bounded_json(value: &Value) -> (String, bool) {
@@ -1373,6 +1438,117 @@ mod tests {
                 }),
                 ..
             }))
+        ));
+    }
+
+    #[test]
+    fn pi_edit_calls_use_ordered_mutation_hunks_for_current_and_legacy_inputs() {
+        let current = tool_activity(
+            "e1",
+            "edit",
+            serde_json::json!({
+                "path":"src/lib.rs",
+                "edits":[
+                    {"oldText":"old one","newText":"new one"},
+                    {"oldText":"old two","newText":"new two"}
+                ]
+            }),
+        );
+        assert!(current.preview.is_none());
+        assert!(matches!(
+            current.reference,
+            Some(ToolReference::Hunks(ref hunks))
+                if hunks.len() == 2
+                    && hunks[0].path.as_deref() == Some("src/lib.rs")
+                    && hunks[0].old.as_deref() == Some("old one")
+                    && hunks[1].new.as_deref() == Some("new two")
+        ));
+
+        let legacy = tool_activity(
+            "e2",
+            "edit",
+            serde_json::json!({
+                "path":"src/legacy.rs", "oldText":"before", "newText":"after"
+            }),
+        );
+        assert!(matches!(
+            legacy.reference,
+            Some(ToolReference::Hunks(ref hunks))
+                if hunks.len() == 1
+                    && hunks[0].old.as_deref() == Some("before")
+                    && hunks[0].new.as_deref() == Some("after")
+        ));
+    }
+
+    #[test]
+    fn incomplete_pi_edit_soft_falls_back_to_path_or_json() {
+        let with_path = tool_activity(
+            "e1",
+            "edit",
+            serde_json::json!({"path":"src/lib.rs", "edits":[{"oldText":"old"}]}),
+        );
+        assert!(matches!(
+            with_path.reference,
+            Some(ToolReference::Path { ref path }) if path == "src/lib.rs"
+        ));
+        assert!(with_path.preview.is_none());
+
+        let without_path = tool_activity(
+            "e2",
+            "edit",
+            serde_json::json!({"edits":[{"oldText":"old"}]}),
+        );
+        assert!(without_path.reference.is_none());
+        assert!(matches!(
+            without_path.preview,
+            Some(ToolPreview {
+                primary: ToolPreviewPrimary::Json { .. },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn live_and_replayed_pi_edit_results_keep_authoritative_patch() {
+        let patch = "--- src/lib.rs\n+++ src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        let mut adapter = PiAdapter::new(".", "sessions");
+        let live = adapter.record(record(serde_json::json!({
+            "type":"tool_execution_end", "toolCallId":"e1", "toolName":"edit",
+            "result":{"content":[{"type":"text","text":"ok"}],"details":{"patch":patch}},
+            "isError":false
+        })));
+        assert!(matches!(
+            &live.events[0],
+            AgentEvent::Timeline(TimelineEvent::Append(TimelineRecord {
+                fact: TimelineFact::ToolResult {
+                    mutation_diff: Some(MutationDiff { source, .. }),
+                    ..
+                },
+                ..
+            })) if source == patch
+        ));
+
+        assert!(matches!(
+            tool_result_fact(&serde_json::json!({
+                "role":"toolResult", "toolCallId":"e2", "toolName":"edit",
+                "content":[{"type":"text","text":"ok"}],
+                "details":{"patch":patch}, "isError":false
+            })),
+            TimelineFact::ToolResult {
+                mutation_diff: Some(MutationDiff { source, .. }),
+                ..
+            } if source == patch
+        ));
+        assert!(matches!(
+            tool_result_fact(&serde_json::json!({
+                "role":"toolResult", "toolCallId":"e3", "toolName":"edit",
+                "content":[{"type":"text","text":"failed"}],
+                "details":{"patch":patch}, "isError":true
+            })),
+            TimelineFact::ToolResult {
+                mutation_diff: None,
+                ..
+            }
         ));
     }
 

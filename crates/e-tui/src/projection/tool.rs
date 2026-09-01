@@ -291,10 +291,70 @@ fn classify_file_call(
         ToolReference::Diff {
             path: Some(path), ..
         } => path,
+        ToolReference::Hunks(hunks) => {
+            let path = hunks.first()?.path.as_ref()?;
+            if !hunks
+                .iter()
+                .all(|hunk| hunk.path.as_deref() == Some(path.as_str()))
+            {
+                return None;
+            }
+            path
+        }
         _ => return None,
     };
     Some((
         action,
         crate::agent::tool::workspace_relative_path(path, workspace),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        agent::tool::{ActivityState, ToolActivity},
+        preview::MutationHunk,
+    };
+
+    use super::*;
+
+    fn edit_with_hunks(paths: &[Option<&str>]) -> ToolActivity {
+        ToolActivity {
+            id: "edit-1".into(),
+            capability: ToolCapability::Edit,
+            label: "edit".into(),
+            summary: "edit".into(),
+            state: ActivityState::Running,
+            reference: Some(ToolReference::Hunks(
+                paths
+                    .iter()
+                    .map(|path| MutationHunk {
+                        path: path.map(str::to_owned),
+                        old: Some("old".into()),
+                        new: Some("new".into()),
+                        anchor_line: None,
+                    })
+                    .collect(),
+            )),
+            items: Vec::new(),
+            preview: None,
+        }
+    }
+
+    #[test]
+    fn single_path_hunks_are_file_activities() {
+        let activity = edit_with_hunks(&[Some(r"G:\repo\src\lib.rs"), Some(r"G:\repo\src\lib.rs")]);
+        assert_eq!(
+            classify_file_call(&activity, Some(r"G:\repo")),
+            Some((FileAction::Edit, "src/lib.rs".into()))
+        );
+    }
+
+    #[test]
+    fn pathless_or_multi_path_hunks_are_not_one_file_activity() {
+        assert!(classify_file_call(&edit_with_hunks(&[None]), None).is_none());
+        assert!(
+            classify_file_call(&edit_with_hunks(&[Some("a.rs"), Some("b.rs")]), None).is_none()
+        );
+    }
 }

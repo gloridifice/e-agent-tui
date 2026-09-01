@@ -120,6 +120,14 @@ pub struct ToolPreview {
     pub secondary: Option<ToolPreviewSecondary>,
 }
 
+/// Event-authored unified mutation text. The optional path is a syntax hint;
+/// `source` remains unchanged so adapters never need to parse or recompute it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MutationDiff {
+    pub path: Option<String>,
+    pub source: String,
+}
+
 /// One event-supplied mutation fragment. `old`/`new` are the raw before/after
 /// texts; `anchor_line` records an insert's 0-based insertion line when the
 /// event supplied no before-image.

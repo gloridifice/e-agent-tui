@@ -364,6 +364,7 @@ fn normalize_host_fact(kind: HostEventKind) -> TimelineFact {
             },
             output,
             output_truncated,
+            mutation_diff: None,
             mutation_hunks: mutation_hunks
                 .into_iter()
                 .map(normalize_mutation_hunk)

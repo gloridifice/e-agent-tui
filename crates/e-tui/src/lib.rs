@@ -18,6 +18,7 @@ pub mod config;
 pub mod copy;
 pub mod display;
 pub mod event;
+mod help;
 pub mod input;
 pub mod input_page;
 pub mod interaction;
@@ -60,9 +61,9 @@ pub use interaction::{
 pub use mouse_selection::{MouseSelection, SelectionFrame, SelectionSurface, SelectionUpdate};
 pub use notice::{NoticeState, COPY_NOTICE_MIN_SECS};
 pub use preview::{
-    LineSelection, MutationHunk, PreviewCache, PreviewContent, PreviewKey, PreviewPaneState,
-    PreviewPolicy, PreviewRef, PreviewRequest, PreviewRequestId, PreviewRevision, PreviewState,
-    PreviewTarget, PreviewWorkStats, ToolMetrics, ToolPreview, ToolPreviewPrimary,
+    LineSelection, MutationDiff, MutationHunk, PreviewCache, PreviewContent, PreviewKey,
+    PreviewPaneState, PreviewPolicy, PreviewRef, PreviewRequest, PreviewRequestId, PreviewRevision,
+    PreviewState, PreviewTarget, PreviewWorkStats, ToolMetrics, ToolPreview, ToolPreviewPrimary,
     ToolPreviewSecondary,
 };
 pub use projection::TimelineModel;

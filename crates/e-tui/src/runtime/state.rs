@@ -33,7 +33,10 @@ use crate::render::RenderLine;
 use crate::render::RenderOptions;
 use crate::{
     agent::timeline::{SurfaceOperation, TimelineFact, TimelineRecord, TokenUsage},
-    preview::{MutationHunk, ToolMetrics, ToolPreview, ToolPreviewPrimary, ToolPreviewSecondary},
+    preview::{
+        MutationDiff, MutationHunk, ToolMetrics, ToolPreview, ToolPreviewPrimary,
+        ToolPreviewSecondary,
+    },
     ActivityTransition, PreviewContent, PreviewKey, PreviewRef, PreviewRevision, TuiApp,
 };
 
@@ -462,6 +465,26 @@ impl RuntimeState {
 
     pub fn push_system_message(&mut self, text: impl Into<String>) {
         self.push_local_block(text.into(), DisplayTone::Info, "system");
+    }
+
+    /// Append complete frontend-only Markdown without creating an agent event.
+    pub fn push_local_markdown(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        let id = DisplayId::correlated("help", &format!("local:{}", self.next_local_display_id));
+        self.next_local_display_id = self.next_local_display_id.wrapping_add(1);
+        let block = TranscriptBlock {
+            id,
+            unit: None,
+            content: text.clone(),
+            format: TranscriptFormat::Markdown,
+            tone: DisplayTone::Normal,
+            copy_source: text,
+            streaming: false,
+        };
+        self.insert_transcript_item(DisplayItem::Block(block.clone()), None, None);
+        #[cfg(test)]
+        self.msgs.push(Msg::Block(block));
+        self.render.transcript_cache.invalidate();
     }
 
     pub fn push_error_message(&mut self, text: impl Into<String>) {
@@ -1605,6 +1628,7 @@ impl RuntimeState {
                     output,
                     state,
                     output_truncated,
+                    mutation_diff,
                     mutation_hunks,
                 } = &event.fact
                 {
@@ -1619,6 +1643,7 @@ impl RuntimeState {
                             output_truncated: *output_truncated,
                             time_ms: now_ms,
                             surface_seq: event.sequence,
+                            mutation_diff: mutation_diff.clone(),
                             mutation_hunks: mutation_hunks.clone(),
                         },
                     );
@@ -1686,6 +1711,7 @@ impl RuntimeState {
                 activity_id,
                 output,
                 output_truncated,
+                mutation_diff,
                 mutation_hunks,
                 ..
             } => {
@@ -1697,7 +1723,12 @@ impl RuntimeState {
                 };
                 let content = tool_preview_result(
                     seed.as_ref(),
-                    Some((output, *output_truncated, mutation_hunks)),
+                    Some((
+                        output,
+                        *output_truncated,
+                        mutation_diff.as_ref(),
+                        mutation_hunks,
+                    )),
                     Some(metrics),
                     self.session.session_cwd.as_deref(),
                 );
@@ -1749,6 +1780,7 @@ impl RuntimeState {
                 Some((
                     &pending.output,
                     pending.output_truncated,
+                    pending.mutation_diff.as_ref(),
                     &pending.mutation_hunks,
                 )),
                 Some(metrics),
@@ -2421,18 +2453,18 @@ fn relativize_tool_preview(preview: &ToolPreview, workspace: Option<&str>) -> To
 
 /// Enrich a stored preview seed with settled result facts. `None` keeps the
 /// existing call-time preview: primary-only tools (read/view/create/search/
-/// generic) never grow a secondary, and a mutation tool without result hunks
+/// generic) never grow a secondary, and a mutation tool without result data
 /// retains its call-time fragment.
 fn tool_preview_result(
     seed: Option<&ToolPreview>,
-    result: Option<(&str, bool, &[MutationHunk])>,
+    result: Option<(&str, bool, Option<&MutationDiff>, &[MutationHunk])>,
     metrics: Option<ToolMetrics>,
     workspace: Option<&str>,
 ) -> Option<PreviewContent> {
     match seed {
         Some(seed) => match &seed.primary {
             ToolPreviewPrimary::Command { command, .. } => {
-                let (output, truncated, _) = result?;
+                let (output, truncated, _, _) = result?;
                 let metrics = metrics?;
                 Some(PreviewContent::Tool(ToolPreview {
                     name: seed.name.clone(),
@@ -2449,8 +2481,16 @@ fn tool_preview_result(
             _ => None,
         },
         None => {
-            let (_, _, hunks) = result?;
-            if hunks.is_empty() {
+            let (_, _, diff, hunks) = result?;
+            if let Some(diff) = diff {
+                Some(PreviewContent::Diff {
+                    path: diff
+                        .path
+                        .as_deref()
+                        .map(|path| crate::agent::tool::workspace_relative_path(path, workspace)),
+                    source: diff.source.clone(),
+                })
+            } else if hunks.is_empty() {
                 None
             } else {
                 Some(PreviewContent::Hunks(
@@ -2466,5 +2506,99 @@ fn tool_preview_result(
                 ))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::agent::{
+        timeline::{TimelineFact, TimelineRecord},
+        tool::{ActivityState as AgentActivityState, ToolActivity, ToolCapability, ToolReference},
+    };
+
+    use super::*;
+
+    fn record(sequence: u64, fact: TimelineFact) -> TimelineRecord {
+        TimelineRecord {
+            sequence: Some(sequence),
+            time_ms: Some(sequence * 10),
+            surface: None,
+            source_sequences: Vec::new(),
+            fact,
+        }
+    }
+
+    fn edit_call() -> ToolActivity {
+        ToolActivity {
+            id: "edit-1".into(),
+            capability: ToolCapability::Edit,
+            label: "edit".into(),
+            summary: r"G:\repo\src\lib.rs".into(),
+            state: AgentActivityState::Running,
+            reference: Some(ToolReference::Hunks(vec![MutationHunk {
+                path: Some(r"G:\repo\src\lib.rs".into()),
+                old: Some("old".into()),
+                new: Some("new".into()),
+                anchor_line: None,
+            }])),
+            items: Vec::new(),
+            preview: None,
+        }
+    }
+
+    #[test]
+    fn unified_mutation_diff_takes_priority_over_result_hunks() {
+        let diff = MutationDiff {
+            path: Some(r"G:\repo\src\lib.rs".into()),
+            source: "--- src/lib.rs\n+++ src/lib.rs\n-old\n+new\n".into(),
+        };
+        let hunks = [MutationHunk {
+            path: Some(r"G:\repo\src\lib.rs".into()),
+            old: Some("requested old".into()),
+            new: Some("requested new".into()),
+            anchor_line: None,
+        }];
+        assert!(matches!(
+            tool_preview_result(
+                None,
+                Some(("ok", false, Some(&diff), &hunks)),
+                None,
+                Some(r"G:\repo")
+            ),
+            Some(PreviewContent::Diff { path: Some(path), source })
+                if path == "src/lib.rs" && source == diff.source
+        ));
+        assert!(tool_preview_result(None, Some(("ok", false, None, &[])), None, None).is_none());
+    }
+
+    #[test]
+    fn result_before_call_settles_to_the_same_unified_mutation_diff() {
+        let patch = "--- src/lib.rs\n+++ src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        let mut state = RuntimeState::default();
+        state.session.session_cwd = Some(r"G:\repo".into());
+        state.apply_host_event(&record(
+            1,
+            TimelineFact::ToolResult {
+                activity_id: "edit-1".into(),
+                output: "ok".into(),
+                state: AgentActivityState::Success,
+                output_truncated: false,
+                mutation_diff: Some(MutationDiff {
+                    path: None,
+                    source: patch.into(),
+                }),
+                mutation_hunks: Vec::new(),
+            },
+        ));
+        state.apply_host_event(&record(2, TimelineFact::ToolCall(edit_call())));
+
+        assert!(state.timeline.preview_refs.values().any(|preview| matches!(
+            preview,
+            PreviewRef::Inline {
+                key: PreviewKey(key),
+                content: PreviewContent::Diff { source, .. },
+                ..
+            } if key == "tool:edit-1" && source == patch
+        )));
     }
 }

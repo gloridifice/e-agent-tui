@@ -457,7 +457,7 @@ impl RuntimeController {
                 pending.line,
                 LocalCommandContext {
                     input_page: ui.input_page,
-                    help_visible: ui.help_visible,
+                    integrated_commands: &catalogs.integrated_commands,
                     config: ui.config,
                     themes: ui.themes,
                     new_modes: &catalogs.new_modes,

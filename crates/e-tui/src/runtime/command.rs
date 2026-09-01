@@ -14,12 +14,12 @@ pub use crate::command_catalog::{
     CommandSource, CompletionKind, BUILTIN_COMMANDS,
 };
 use crate::runtime::state::RuntimeState;
+use crate::{agent::CommandDescriptor, AgentRequest, Config, Theme};
 use crate::{
     command_catalog::{CommandAction, NewMode},
     input_page::InputPageSession,
     settings, ThemeFile,
 };
-use crate::{AgentRequest, Config, Theme};
 
 #[derive(Default)]
 pub struct CommandOutcome {
@@ -35,7 +35,7 @@ pub struct CommandOutcome {
 
 pub struct LocalCommandContext<'a> {
     pub input_page: &'a mut Option<InputPageSession>,
-    pub help_visible: &'a mut bool,
+    pub integrated_commands: &'a [CommandDescriptor],
     pub config: &'a mut Config,
     pub themes: &'a mut Vec<ThemeFile>,
     pub new_modes: &'a [NewMode],
@@ -183,7 +183,8 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
         }
         CommandAction::Help => {
             if !reject_arguments(&context, name, raw_input) {
-                *context.help_visible = true;
+                let markdown = crate::help::markdown(context.integrated_commands);
+                context.state.lock().unwrap().push_local_markdown(markdown);
             }
         }
         CommandAction::Reading => {
@@ -247,4 +248,65 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
         }
     }
     outcome
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::display::{DisplayItem, TranscriptFormat};
+
+    #[test]
+    fn help_appends_local_markdown_without_an_agent_request() {
+        let state = Arc::new(Mutex::new(RuntimeState::default()));
+        let integrated = vec![
+            CommandDescriptor {
+                name: "feedback".into(),
+                description: "record feedback".into(),
+                input_hint: Some("<text>".into()),
+            },
+            CommandDescriptor {
+                name: "plan".into(),
+                description: "shadowed host plan".into(),
+                input_hint: None,
+            },
+        ];
+        let mut input_page = None;
+        let mut config = Config::default();
+        let mut themes = Vec::new();
+        let mut paste_placeholder_chars = config.paste_placeholder_chars;
+        let mut history_limit = config.history_limit;
+        let mut theme = config.theme();
+
+        let outcome = handle_local_command(
+            "/help".into(),
+            LocalCommandContext {
+                input_page: &mut input_page,
+                integrated_commands: &integrated,
+                config: &mut config,
+                themes: &mut themes,
+                new_modes: &[],
+                input_paste_placeholder_chars: &mut paste_placeholder_chars,
+                input_history_limit: &mut history_limit,
+                theme: &mut theme,
+                question_open: false,
+                approval_open: false,
+                state: &state,
+            },
+        );
+
+        assert!(outcome.outbound.is_empty());
+        let state = state.lock().unwrap();
+        assert!(!state.interaction.help_visible);
+        let DisplayItem::Block(block) = &state.transcript.nodes().last().unwrap().item else {
+            panic!("help must append a transcript block");
+        };
+        assert_eq!(block.format, TranscriptFormat::Markdown);
+        assert!(!block.streaming);
+        assert!(block.unit.is_none(), "Markdown owns provenance allocation");
+        assert!(block.content.contains("# e 帮助"));
+        assert!(block
+            .content
+            .contains("`/feedback`：record feedback <text>"));
+        assert_eq!(block.content.matches("`/plan`").count(), 1);
+    }
 }

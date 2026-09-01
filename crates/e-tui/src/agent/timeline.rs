@@ -2,7 +2,7 @@
 
 use super::tool::ToolActivity;
 
-use crate::preview::MutationHunk;
+use crate::preview::{MutationDiff, MutationHunk};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SurfaceOperation {
@@ -71,6 +71,8 @@ pub enum TimelineFact {
         output: String,
         state: super::tool::ActivityState,
         output_truncated: bool,
+        /// Event-supplied unified mutation text (e.g. Pi `details.patch`).
+        mutation_diff: Option<MutationDiff>,
         /// Event-supplied mutation fragments (e.g. DSH edit `meta.diffs`).
         mutation_hunks: Vec<MutationHunk>,
     },

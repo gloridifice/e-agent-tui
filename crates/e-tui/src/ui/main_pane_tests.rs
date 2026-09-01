@@ -87,6 +87,37 @@ fn help_overlay_advertises_application_paste_shortcut() {
 }
 
 #[test]
+fn local_help_markdown_renders_as_styled_transcript_content() {
+    let mut runtime = crate::runtime::RuntimeState::default();
+    runtime.config.resolved_theme = Theme::ferra();
+    runtime.push_local_markdown(crate::help::markdown(&[crate::agent::CommandDescriptor {
+        name: "feedback".into(),
+        description: "record feedback".into(),
+        input_hint: Some("<text>".into()),
+    }]));
+    let mut state = runtime.tui;
+    force_message_only(&mut state);
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(120, 140)).unwrap();
+
+    terminal
+        .draw(|frame| {
+            render_with_cursor(frame, &mut state, &input, &mut scroll, &theme, overlays());
+        })
+        .unwrap();
+
+    let buffer = terminal.backend().buffer();
+    let heading = find_text(buffer, "e").expect("Markdown heading is visible");
+    assert_eq!(buffer[heading].fg, theme.markdown.heading1.fg);
+    assert!(buffer[heading].modifier.contains(Modifier::BOLD));
+    let command = find_text(buffer, "/settings").expect("built-in command is visible");
+    assert_eq!(buffer[command].fg, theme.markdown.inline_code.fg);
+    assert!(find_text(buffer, "/feedback").is_some());
+}
+
+#[test]
 fn copy_toast_is_a_popup_and_does_not_replace_the_input_draft() {
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();

@@ -69,6 +69,7 @@ pub struct PiAdapter {
     is_streaming: bool,
     session_id: String,
     session_name: Option<String>,
+    last_attached_session: Option<String>,
     current_model: Option<Value>,
     available_models: Vec<Value>,
     thinking_level: Option<String>,
@@ -89,6 +90,7 @@ impl PiAdapter {
             is_streaming: false,
             session_id: "pi-starting".into(),
             session_name: None,
+            last_attached_session: None,
             current_model: None,
             available_models: Vec::new(),
             thinking_level: None,
@@ -134,6 +136,9 @@ impl PiAdapter {
                 id: Some(self.request_id("abort")),
             }),
             AgentRequest::Attach { session_id } => {
+                // Force the post-switch refresh to re-emit `Attached` even when the
+                // resolved session key equals the last reported one (explicit re-attach).
+                self.last_attached_session = None;
                 AdapterOutput::command(RpcCommand::SwitchSession {
                     id: Some(self.request_id("switch")),
                     session_path: session_id,
@@ -484,23 +489,35 @@ impl PiAdapter {
             .and_then(|model| model.get("id"))
             .and_then(Value::as_str)
             .map(str::to_owned);
-        let mut output = AdapterOutput::event(AgentEvent::Session(SessionEvent::Attached(
-            AttachedSession {
-                protocol_version: None,
-                max_frame_bytes: None,
-                id: session_key,
-                status: if self.is_streaming {
-                    AgentStatus::Running
-                } else {
-                    AgentStatus::Idle
+        let status = if self.is_streaming {
+            AgentStatus::Running
+        } else {
+            AgentStatus::Idle
+        };
+        // `Attached` mirrors the DSH welcome contract: it reports a session attach,
+        // not a state refresh. Same-session refreshes (e.g. the `get_state` issued
+        // after `/model` or a ping) must not re-emit it, because the frontend
+        // discards a pending `/new` draft on every `Attached` and would visibly
+        // switch back to the retained session.
+        let switched = self.last_attached_session.as_deref() != Some(session_key.as_str());
+        self.last_attached_session = Some(session_key.clone());
+        let mut output = if switched {
+            AdapterOutput::event(AgentEvent::Session(SessionEvent::Attached(
+                AttachedSession {
+                    protocol_version: None,
+                    max_frame_bytes: None,
+                    id: session_key,
+                    status,
+                    provider,
+                    model,
+                    mode: Some("pi".into()),
+                    title: self.session_name.clone(),
+                    workspace: Some(self.cwd.to_string_lossy().into_owned()),
                 },
-                provider,
-                model,
-                mode: Some("pi".into()),
-                title: self.session_name.clone(),
-                workspace: Some(self.cwd.to_string_lossy().into_owned()),
-            },
-        )));
+            )))
+        } else {
+            AdapterOutput::event(AgentEvent::Session(SessionEvent::Status(status)))
+        };
         output.merge(self.available_model_catalog());
         output
     }
@@ -1396,6 +1413,50 @@ mod tests {
             answer.commands.as_slice(),
             [RpcCommand::ExtensionUiResponse { id, response: ExtensionUiResponse::Value { value } }]
                 if id == "u1" && value == "B"
+        ));
+    }
+
+    fn get_state_record(id: &str, session_file: &str) -> RpcRecord {
+        record(serde_json::json!({
+            "type":"response", "id":id, "command":"get_state", "success":true,
+            "data":{
+                "sessionId":"sess-1",
+                "sessionFile":session_file,
+                "sessionName":"Old",
+                "isStreaming":false,
+                "model":{"provider":"openai","id":"gpt-5"}
+            }
+        }))
+    }
+
+    #[test]
+    fn same_session_state_refresh_does_not_re_attach() {
+        let mut adapter = PiAdapter::new(".", "sessions");
+        let first = adapter.record(get_state_record("s1", "sessions/a.jsonl"));
+        assert!(matches!(
+            first.events.first(),
+            Some(AgentEvent::Session(SessionEvent::Attached(attached)))
+                if attached.id == "sessions/a.jsonl"
+        ));
+
+        // The model refresh after `/model` re-queries state for the same
+        // session; re-emitting `Attached` would make the frontend drop a
+        // pending `/new` draft and visibly jump back to the old conversation.
+        let second = adapter.record(get_state_record("s2", "sessions/a.jsonl"));
+        assert!(matches!(
+            second.events.first(),
+            Some(AgentEvent::Session(SessionEvent::Status(AgentStatus::Idle)))
+        ));
+
+        // An explicit attach resets the dedup key so re-attaching the current
+        // session still reports a real attach.
+        adapter.request(AgentRequest::Attach {
+            session_id: "sessions/a.jsonl".into(),
+        });
+        let third = adapter.record(get_state_record("s3", "sessions/a.jsonl"));
+        assert!(matches!(
+            third.events.first(),
+            Some(AgentEvent::Session(SessionEvent::Attached(_)))
         ));
     }
 }

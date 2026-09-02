@@ -98,9 +98,12 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   `e_tui::runtime::ProductionTerminalEvents` reads the raw VT byte stream instead: `TerminalOwner` invokes the
   executable adapter's narrow Windows setup shim only after ratatui/crossterm terminal construction (that setup
   clears an earlier flag), a reader thread forwards stdin byte chunks together with an immediate physical
-  Shift/Ctrl/Alt/Backspace snapshot, and `runtime/input/vt.rs` parses them into crossterm events (bracketed paste,
-  navigation, SGR mouse scroll, Alt prefixes). Terminals that consume `Ctrl+V` still deliver bracketed paste;
-  terminals that pass it through produce a modified key, which the router turns into `UiAction::ReadClipboard`.
+  Shift/Ctrl/Alt/Backspace/Ctrl+V snapshot, and `runtime/input/vt.rs` parses them into crossterm events (bracketed paste,
+  navigation, SGR mouse scroll, Alt prefixes). Terminals that consume `Ctrl+V` normally deliver bracketed text paste,
+  but may emit no bytes for an image-only clipboard; a rising-edge physical-key watcher therefore emits a delayed
+  Ctrl+V fallback only when no raw paste delivery arrived, with focus gating and deduplication. Terminals that pass
+  the shortcut through produce the modified key directly. The router turns either key path into
+  `UiAction::ReadClipboard`.
   Each executable's clipboard port reads through `arboard` and tries image content before text. The Pi adapter
   writes an image to a temporary PNG and returns its path as ordinary editable text; the DSH adapter returns owned
   PNG bytes as a provider-neutral `ClipboardPaste::Image`. Text completion reuses the same active-editor/composer

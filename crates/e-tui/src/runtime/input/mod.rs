@@ -62,6 +62,12 @@ pub fn route_terminal_event(event: Event, focus: TerminalFocus) -> TerminalRoute
         Event::FocusLost | Event::Resize(_, _) => TerminalRoute::Pointer(PointerEvent::FocusLost),
         Event::FocusGained => TerminalRoute::Ignore,
         Event::Paste(_) if focus.reading_view_open => TerminalRoute::Ignore,
+        // A terminal that consumed the paste shortcut but had no text (Windows
+        // Terminal with an image-only clipboard) delivers an EMPTY bracketed
+        // paste instead of nothing at all. Treat that as the terminal handing
+        // the paste back: read the clipboard through the application port,
+        // which prefers image content over text.
+        Event::Paste(text) if text.is_empty() => TerminalRoute::ReadClipboard,
         Event::Paste(text) => TerminalRoute::Paste { text },
         Event::Key(key) if key.kind == KeyEventKind::Release => TerminalRoute::Ignore,
         Event::Key(key) if is_clipboard_paste_shortcut(&key) && focus.reading_view_open => {
@@ -115,6 +121,37 @@ mod tests {
                 focus,
             ),
             TerminalRoute::Ignore
+        );
+        // An image-only clipboard makes some terminals deliver an empty
+        // bracketed paste; Reading View must suppress that path as well.
+        assert_eq!(
+            route_terminal_event(Event::Paste(String::new()), focus),
+            TerminalRoute::Ignore
+        );
+    }
+
+    #[test]
+    fn empty_bracketed_paste_reads_the_clipboard_itself() {
+        // Windows Terminal consumes Ctrl+V and, with an image-only clipboard,
+        // delivers `ESC[200~ESC[201~` with no text. That empty paste is the
+        // terminal handing the shortcut back: route it to the application
+        // clipboard read so image content can still be pasted.
+        assert_eq!(
+            route_terminal_event(Event::Paste(String::new()), TerminalFocus::default()),
+            TerminalRoute::ReadClipboard
+        );
+        assert_eq!(
+            route_terminal_event(Event::Paste("content".into()), TerminalFocus::default()),
+            TerminalRoute::Paste {
+                text: "content".into()
+            }
+        );
+        // Whitespace-only paste text is still real text and pastes verbatim.
+        assert_eq!(
+            route_terminal_event(Event::Paste(" \n ".into()), TerminalFocus::default()),
+            TerminalRoute::Paste {
+                text: " \n ".into()
+            }
         );
     }
 

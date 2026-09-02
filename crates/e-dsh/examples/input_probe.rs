@@ -71,6 +71,8 @@ fn main() -> std::io::Result<()> {
 fn native_mods() -> e_tui::runtime::input::vt::NativeMods {
     use winapi::um::winuser::{GetAsyncKeyState, VK_BACK, VK_CONTROL, VK_MENU, VK_SHIFT};
 
+    const VK_V: i32 = b'V' as i32;
+
     fn down(key: i32) -> bool {
         unsafe { (GetAsyncKeyState(key) as u16) & 0x8000 != 0 }
     }
@@ -79,6 +81,7 @@ fn native_mods() -> e_tui::runtime::input::vt::NativeMods {
         shift: down(VK_SHIFT),
         ctrl: down(VK_CONTROL),
         alt: down(VK_MENU),
+        paste: down(VK_CONTROL) && down(VK_V),
         back: down(VK_BACK),
     }
 }

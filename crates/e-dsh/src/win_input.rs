@@ -5,6 +5,8 @@ use e_tui::runtime::input::vt::NativeMods;
 pub fn native_mods() -> NativeMods {
     use winapi::um::winuser::{GetAsyncKeyState, VK_BACK, VK_CONTROL, VK_MENU, VK_SHIFT};
 
+    const VK_V: i32 = b'V' as i32;
+
     fn down(key: i32) -> bool {
         // SAFETY: `GetAsyncKeyState` accepts a virtual-key code and has no
         // pointer or lifetime preconditions.
@@ -15,6 +17,7 @@ pub fn native_mods() -> NativeMods {
         shift: down(VK_SHIFT),
         ctrl: down(VK_CONTROL),
         alt: down(VK_MENU),
+        paste: down(VK_CONTROL) && down(VK_V),
         back: down(VK_BACK),
     }
 }

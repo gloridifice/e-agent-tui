@@ -29,6 +29,10 @@ pub struct NativeMods {
     pub shift: bool,
     pub ctrl: bool,
     pub alt: bool,
+    /// Physical Ctrl+V state. Some Windows terminal hosts consume the shortcut
+    /// without emitting bytes when the clipboard contains only an image, so
+    /// the raw-input source uses this to synthesize the missing key event.
+    pub paste: bool,
     /// Physical Backspace state captured when the reader receives the byte.
     /// Windows Terminal encodes Ctrl+Backspace as ETB (`0x17`) and Ctrl+H as
     /// BS (`0x08`), so this snapshot is what separates a real Backspace origin

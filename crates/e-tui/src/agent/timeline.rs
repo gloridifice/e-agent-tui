@@ -71,6 +71,10 @@ pub enum TimelineFact {
         output: String,
         state: super::tool::ActivityState,
         output_truncated: bool,
+        /// Whether this result immediately begins a new model-thinking phase.
+        /// Backends that emit the next model call as an explicit `TurnStart`
+        /// leave this false so the lifecycle is not counted twice.
+        starts_thinking: bool,
         /// Event-supplied unified mutation text (e.g. Pi `details.patch`).
         mutation_diff: Option<MutationDiff>,
         /// Event-supplied mutation fragments (e.g. DSH edit `meta.diffs`).

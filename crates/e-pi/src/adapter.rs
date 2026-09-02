@@ -1,6 +1,9 @@
 //! Stateful conversion between Pi RPC and provider-neutral `e-tui` contracts.
 
-use std::{collections::HashMap, path::PathBuf};
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+};
 
 use e_tui::{
     action::{AgentRequest, QuestionAnswer},
@@ -86,6 +89,9 @@ pub struct PiAdapter {
     thinking_levels: Vec<String>,
     pending_new: HashMap<String, String>,
     pending_model_effort: HashMap<String, Option<String>>,
+    /// Pi emits both `tool_execution_end` and the durable `message_end` for
+    /// one result. Retain the id only until that duplicate message arrives.
+    pending_tool_result_messages: HashSet<String>,
     extension_ui: HashMap<String, PendingExtensionUi>,
 }
 
@@ -110,6 +116,7 @@ impl PiAdapter {
             thinking_levels: vec!["off".into()],
             pending_new: HashMap::new(),
             pending_model_effort: HashMap::new(),
+            pending_tool_result_messages: HashSet::new(),
             extension_ui: HashMap::new(),
         }
     }
@@ -254,12 +261,14 @@ impl PiAdapter {
             "response" => self.rpc_response(record),
             "extension_ui_request" => self.extension_request(record),
             "agent_start" => {
+                self.pending_tool_result_messages.clear();
                 self.is_streaming = true;
                 AdapterOutput::event(AgentEvent::Session(SessionEvent::Status(
                     AgentStatus::Running,
                 )))
             }
             "agent_settled" => {
+                self.pending_tool_result_messages.clear();
                 self.is_streaming = false;
                 AdapterOutput::event(AgentEvent::Session(SessionEvent::Status(AgentStatus::Idle)))
             }
@@ -428,6 +437,7 @@ impl PiAdapter {
                     return AdapterOutput::default();
                 };
                 self.current_turn = 0;
+                self.pending_tool_result_messages.clear();
                 // The fresh session starts unnamed; the follow-up refresh
                 // re-derives every session-scoped value.
                 self.session_name = None;
@@ -450,6 +460,7 @@ impl PiAdapter {
             }
             "switch_session" => {
                 self.current_turn = 0;
+                self.pending_tool_result_messages.clear();
                 self.session_name = None;
                 self.derived_title = None;
                 self.emitted_title = None;
@@ -821,7 +832,20 @@ impl PiAdapter {
                 Some(self.current_turn.max(1)),
                 Some(0),
             )),
-            Some("toolResult") => self.timeline(tool_result_fact(message)),
+            // `tool_execution_end` carries the same result immediately
+            // before Pi appends its durable `toolResult` message. The former
+            // owns live tool projection; suppress the latter duplicate.
+            Some("toolResult") => {
+                let id = message
+                    .get("toolCallId")
+                    .and_then(Value::as_str)
+                    .unwrap_or("pi-tool");
+                if self.pending_tool_result_messages.remove(id) {
+                    AdapterOutput::default()
+                } else {
+                    self.timeline(tool_result_fact(message))
+                }
+            }
             _ => AdapterOutput::default(),
         }
     }
@@ -873,8 +897,11 @@ impl PiAdapter {
     fn tool_end(&mut self, record: &RpcRecord) -> AdapterOutput {
         let result = record.field("result").cloned().unwrap_or(Value::Null);
         let is_error = record.bool("isError").unwrap_or(false);
+        let activity_id = record.string("toolCallId").unwrap_or("pi-tool").to_owned();
+        self.pending_tool_result_messages
+            .insert(activity_id.clone());
         self.timeline(TimelineFact::ToolResult {
-            activity_id: record.string("toolCallId").unwrap_or("pi-tool").to_owned(),
+            activity_id,
             output: content_text(result.get("content").unwrap_or(&Value::Null)),
             state: if is_error {
                 ActivityState::Failure
@@ -885,6 +912,7 @@ impl PiAdapter {
                 .get("details")
                 .and_then(|details| details.get("truncation"))
                 .is_some_and(|value| !value.is_null()),
+            starts_thinking: false,
             mutation_diff: pi_edit_mutation_diff(record.string("toolName"), &result, is_error),
             mutation_hunks: Vec::new(),
         })
@@ -1157,6 +1185,7 @@ fn tool_result_fact(message: &Value) -> TimelineFact {
             .get("details")
             .and_then(|details| details.get("truncation"))
             .is_some_and(|value| !value.is_null()),
+        starts_thinking: false,
         mutation_diff: pi_edit_mutation_diff(
             message.get("toolName").and_then(Value::as_str),
             message,
@@ -1558,6 +1587,44 @@ mod tests {
                 }),
                 ..
             }))
+        ));
+    }
+
+    #[test]
+    fn pi_tool_result_is_projected_once_and_waits_for_turn_start() {
+        let mut adapter = PiAdapter::new(".", "sessions");
+        let result = adapter.record(record(serde_json::json!({
+            "type":"tool_execution_end", "toolCallId":"c1", "toolName":"read",
+            "result":{"content":[{"type":"text","text":"ok"}]}, "isError":false
+        })));
+        assert!(matches!(
+            result.events.as_slice(),
+            [AgentEvent::Timeline(TimelineEvent::Append(TimelineRecord {
+                fact: TimelineFact::ToolResult { activity_id, starts_thinking: false, .. },
+                ..
+            }))] if activity_id == "c1"
+        ));
+
+        let durable = adapter.record(record(serde_json::json!({
+            "type":"message_end", "message":{
+                "role":"toolResult", "toolCallId":"c1", "toolName":"read",
+                "content":[{"type":"text","text":"ok"}], "isError":false
+            }
+        })));
+        assert!(
+            durable.events.is_empty(),
+            "durable tool result duplicates the execution end"
+        );
+
+        let turn = adapter.record(record(serde_json::json!({"type":"turn_start"})));
+        assert!(matches!(
+            turn.events.as_slice(),
+            [AgentEvent::Timeline(TimelineEvent::Append(
+                TimelineRecord {
+                    fact: TimelineFact::TurnStart,
+                    ..
+                }
+            ))]
         ));
     }
 

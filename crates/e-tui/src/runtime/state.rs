@@ -1603,8 +1603,12 @@ impl RuntimeState {
                     now_ms,
                 )
             }
-            TimelineFact::ToolResult { .. } => {
-                self.start_thinking();
+            TimelineFact::ToolResult {
+                starts_thinking, ..
+            } => {
+                if *starts_thinking {
+                    self.start_thinking();
+                }
                 self.projector.tool_family.project_result(event, now_ms)
             }
             TimelineFact::UserMessage { .. }
@@ -1630,6 +1634,7 @@ impl RuntimeState {
                     output_truncated,
                     mutation_diff,
                     mutation_hunks,
+                    ..
                 } = &event.fact
                 {
                     if let Some(seq) = event.sequence {
@@ -1656,7 +1661,7 @@ impl RuntimeState {
                 self.render.transcript_cache.invalidate();
                 self.stop_thinking();
             }
-            TimelineFact::ToolResult { .. } => self.start_thinking(),
+            TimelineFact::ToolResult { .. } => {}
             _ => {}
         }
 
@@ -2583,6 +2588,7 @@ mod tests {
                 output: "ok".into(),
                 state: AgentActivityState::Success,
                 output_truncated: false,
+                starts_thinking: true,
                 mutation_diff: Some(MutationDiff {
                     path: None,
                     source: patch.into(),
@@ -2600,5 +2606,49 @@ mod tests {
                 ..
             } if key == "tool:edit-1" && source == patch
         )));
+    }
+
+    #[test]
+    fn pi_tool_result_waits_for_the_following_turn_start() {
+        let mut state = RuntimeState::default();
+        state.apply_host_event(&record(1, TimelineFact::ToolCall(edit_call())));
+        state.apply_host_event(&record(
+            2,
+            TimelineFact::ToolResult {
+                activity_id: "edit-1".into(),
+                output: "ok".into(),
+                state: AgentActivityState::Success,
+                output_truncated: false,
+                starts_thinking: false,
+                mutation_diff: None,
+                mutation_hunks: Vec::new(),
+            },
+        ));
+        state.apply_host_event(&record(
+            3,
+            TimelineFact::TurnEnd {
+                reason: None,
+                error_message: None,
+                error_code: None,
+            },
+        ));
+        assert!(state
+            .transcript
+            .nodes()
+            .iter()
+            .all(|node| !matches!(node.item, DisplayItem::Thinking(_))));
+
+        state.apply_host_event(&record(4, TimelineFact::TurnStart));
+        let thinking = state
+            .transcript
+            .nodes()
+            .iter()
+            .find_map(|node| match &node.item {
+                DisplayItem::Thinking(node) => Some(node),
+                _ => None,
+            })
+            .expect("turn start creates one Thinking row");
+        assert_eq!(thinking.row.count, 1);
+        assert_eq!(thinking.row.state, ActivityState::Running);
     }
 }

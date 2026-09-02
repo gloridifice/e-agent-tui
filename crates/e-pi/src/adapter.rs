@@ -71,6 +71,14 @@ pub struct PiAdapter {
     is_streaming: bool,
     session_id: String,
     session_name: Option<String>,
+    /// First-user-message fallback title, mirroring `session_index` so the
+    /// status bar matches the session list for unnamed sessions.
+    derived_title: Option<String>,
+    /// Last title reported to the frontend; suppresses duplicate events.
+    emitted_title: Option<String>,
+    /// Id of a prompt sent for a slash command; its response triggers the
+    /// same-session state refresh that observes extension-side renames.
+    pending_command_prompt: Option<String>,
     last_attached_session: Option<String>,
     current_model: Option<Value>,
     available_models: Vec<Value>,
@@ -92,6 +100,9 @@ impl PiAdapter {
             is_streaming: false,
             session_id: "pi-starting".into(),
             session_name: None,
+            derived_title: None,
+            emitted_title: None,
+            pending_command_prompt: None,
             last_attached_session: None,
             current_model: None,
             available_models: Vec::new(),
@@ -113,11 +124,17 @@ impl PiAdapter {
                 let Some(text) = prompt.plain_text().map(str::to_owned) else {
                     return self.unsupported("Pi image prompts must be pasted as temporary file paths");
                 };
-                AdapterOutput::command(RpcCommand::Prompt {
+                // The first prompt of an unnamed session is its title in the
+                // session list; report it immediately so the status bar stops
+                // showing `新会话` as soon as the conversation starts.
+                self.note_first_user_title(&text);
+                let mut output = AdapterOutput::command(RpcCommand::Prompt {
                     id: Some(self.request_id("prompt")),
                     message: text,
                     streaming_behavior: self.is_streaming.then_some(StreamingBehavior::Steer),
-                })
+                });
+                output.events.extend(self.title_events());
+                output
             }
             AgentRequest::NewInput { mode: _, prompt } => {
                 let Some(text) = prompt.plain_text().map(str::to_owned) else {
@@ -317,8 +334,12 @@ impl PiAdapter {
                 custom_instructions: (!rest.trim().is_empty()).then(|| rest.trim().to_owned()),
             });
         }
+        let id = self.request_id("command");
+        // Remember the id: its response triggers a same-session state refresh
+        // that reports extension-side session renames.
+        self.pending_command_prompt = Some(id.clone());
         AdapterOutput::command(RpcCommand::Prompt {
-            id: Some(self.request_id("command")),
+            id: Some(id),
             message: line,
             streaming_behavior: None,
         })
@@ -369,6 +390,9 @@ impl PiAdapter {
                     ));
                 }
                 self.pending_model_effort.remove(id);
+                if response.id.as_deref() == self.pending_command_prompt.as_deref() {
+                    self.pending_command_prompt = None;
+                }
             }
             return AdapterOutput::event(AgentEvent::Interaction(InteractionEvent::Error {
                 code: format!("pi-rpc-{}", response.command),
@@ -404,10 +428,19 @@ impl PiAdapter {
                     return AdapterOutput::default();
                 };
                 self.current_turn = 0;
+                // The fresh session starts unnamed; the follow-up refresh
+                // re-derives every session-scoped value.
+                self.session_name = None;
+                self.derived_title = None;
+                self.emitted_title = None;
                 let mut output = AdapterOutput {
                     commands: self.refresh_commands(),
                     events: Vec::new(),
                 };
+                // The prompt that opened the conversation seeds the fallback
+                // title; it reaches the frontend once the switch settles (an
+                // earlier `Title` event would be overwritten by `Attached`).
+                self.note_first_user_title(&text);
                 output.commands.push(RpcCommand::Prompt {
                     id: Some(self.request_id("prompt")),
                     message: text,
@@ -417,6 +450,9 @@ impl PiAdapter {
             }
             "switch_session" => {
                 self.current_turn = 0;
+                self.session_name = None;
+                self.derived_title = None;
+                self.emitted_title = None;
                 AdapterOutput {
                     commands: self.refresh_commands(),
                     events: Vec::new(),
@@ -448,6 +484,19 @@ impl PiAdapter {
                 commands: self.model_refresh_commands(),
                 events: Vec::new(),
             },
+            // A slash command ran through `prompt`; extension commands can
+            // rename the session (`ctx.setSessionName`), so refresh state and
+            // report the new title without re-attaching.
+            "prompt" => {
+                if response.id.as_deref() == self.pending_command_prompt.as_deref() {
+                    self.pending_command_prompt = None;
+                    AdapterOutput::command(RpcCommand::GetState {
+                        id: Some(self.request_id("state")),
+                    })
+                } else {
+                    AdapterOutput::default()
+                }
+            }
             _ => AdapterOutput::default(),
         }
     }
@@ -504,6 +553,9 @@ impl PiAdapter {
         let switched = self.last_attached_session.as_deref() != Some(session_key.as_str());
         self.last_attached_session = Some(session_key.clone());
         let mut output = if switched {
+            // `Attached` already carries the title; mirror it in the dedup key
+            // so the follow-up refresh does not emit a duplicate event.
+            self.emitted_title = self.session_name.clone();
             AdapterOutput::event(AgentEvent::Session(SessionEvent::Attached(
                 AttachedSession {
                     protocol_version: None,
@@ -518,10 +570,58 @@ impl PiAdapter {
                 },
             )))
         } else {
-            AdapterOutput::event(AgentEvent::Session(SessionEvent::Status(status)))
+            // Same-session refresh: the only path that observes in-session
+            // renames (an extension command calling `set_session_name`).
+            let mut output =
+                AdapterOutput::event(AgentEvent::Session(SessionEvent::Status(status)));
+            output.events.extend(self.title_events());
+            output
         };
         output.merge(self.available_model_catalog());
         output
+    }
+
+    /// Status-bar title: Pi's explicit session name when set, else the first
+    /// user message — the same precedence the session index uses, so the
+    /// status bar and the session list agree.
+    fn current_title(&self) -> Option<String> {
+        self.session_name
+            .as_deref()
+            .filter(|name| !name.trim().is_empty())
+            .map(str::to_owned)
+            .or_else(|| self.derived_title.clone())
+    }
+
+    /// Report a `SessionEvent::Title` whenever the visible title changed since
+    /// the last report. Same-session state refreshes, snapshots, and live
+    /// first user messages flow through here; `Attached` already carries the
+    /// title on session switches.
+    fn title_events(&mut self) -> Vec<AgentEvent> {
+        let title = self.current_title();
+        if title == self.emitted_title {
+            return Vec::new();
+        }
+        self.emitted_title = title.clone();
+        vec![AgentEvent::Session(SessionEvent::Title(
+            title.unwrap_or_default(),
+        ))]
+    }
+
+    /// Seed the first-user-message fallback title. Pi only names sessions
+    /// explicitly (`set_session_name`); every other session is identified by
+    /// its first prompt, exactly like the session index.
+    fn note_first_user_title(&mut self, text: &str) {
+        let named = self
+            .session_name
+            .as_deref()
+            .is_some_and(|name| !name.trim().is_empty());
+        if named || self.derived_title.is_some() {
+            return;
+        }
+        let title = session_index::clean_title(text);
+        if !title.is_empty() {
+            self.derived_title = Some(title);
+        }
     }
 
     fn messages_response(&mut self, data: Option<&Value>) -> AdapterOutput {
@@ -530,6 +630,16 @@ impl PiAdapter {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
+        // The first user message is the fallback title for unnamed sessions,
+        // matching what the session list already shows.
+        if let Some(first_user) = messages
+            .iter()
+            .find(|message| message.get("role").and_then(Value::as_str) == Some("user"))
+        {
+            self.note_first_user_title(&content_text(
+                first_user.get("content").unwrap_or(&Value::Null),
+            ));
+        }
         let mut records = Vec::new();
         let mut snapshot_turn = 0_u64;
         for message in messages {
@@ -542,10 +652,12 @@ impl PiAdapter {
             records.extend(self.snapshot_message(&message, turn));
         }
         self.current_turn = snapshot_turn;
-        AdapterOutput::event(AgentEvent::Timeline(TimelineEvent::Snapshot {
+        let mut output = AdapterOutput::event(AgentEvent::Timeline(TimelineEvent::Snapshot {
             records,
             truncated: false,
-        }))
+        }));
+        output.events.extend(self.title_events());
+        output
     }
 
     fn commands_response(&mut self, data: Option<&Value>) -> AdapterOutput {
@@ -696,7 +808,14 @@ impl PiAdapter {
 
     fn live_message(&mut self, message: &Value) -> AdapterOutput {
         match message.get("role").and_then(Value::as_str) {
-            Some("user") => self.timeline(user_fact(message)),
+            Some("user") => {
+                self.note_first_user_title(&content_text(
+                    message.get("content").unwrap_or(&Value::Null),
+                ));
+                let mut output = self.timeline(user_fact(message));
+                output.events.extend(self.title_events());
+                output
+            }
             Some("assistant") => self.timeline(assistant_fact(
                 message,
                 Some(self.current_turn.max(1)),
@@ -1257,6 +1376,7 @@ fn thinking_label(level: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use e_tui::action::PromptInput;
 
     fn record(value: Value) -> RpcRecord {
         RpcRecord::from_value(value).unwrap()
@@ -1634,5 +1754,159 @@ mod tests {
             third.events.first(),
             Some(AgentEvent::Session(SessionEvent::Attached(_)))
         ));
+    }
+
+    fn unnamed_get_state(id: &str, session_file: &str) -> RpcRecord {
+        record(serde_json::json!({
+            "type":"response", "id":id, "command":"get_state", "success":true,
+            "data":{
+                "sessionId":"sess-1",
+                "sessionFile":session_file,
+                "isStreaming":false,
+                "model":{"provider":"openai","id":"gpt-5"}
+            }
+        }))
+    }
+
+    fn title_event(output: &AdapterOutput) -> Option<&String> {
+        output.events.iter().find_map(|event| match event {
+            AgentEvent::Session(SessionEvent::Title(title)) => Some(title),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn first_user_message_becomes_the_status_bar_title() {
+        let mut adapter = PiAdapter::new(".", "sessions");
+        let attached = adapter.record(unnamed_get_state("s1", "sessions/a.jsonl"));
+        assert!(matches!(
+            attached.events.first(),
+            Some(AgentEvent::Session(SessionEvent::Attached(attached)))
+                if attached.title.is_none()
+        ));
+
+        // Resuming an unnamed session: the snapshot's first user message is
+        // the title the session list already shows.
+        let snapshot = adapter.record(record(serde_json::json!({
+            "type":"response", "id":"m1", "command":"get_messages", "success":true,
+            "data":{"messages":[
+                {"role":"assistant","content":"hello"},
+                {"role":"user","content":"  Fix the   login bug  "}
+            ]}
+        })));
+        assert_eq!(
+            title_event(&snapshot),
+            Some(&"Fix the login bug".to_owned())
+        );
+
+        // An explicit rename through a same-session refresh wins over the
+        // first-message fallback.
+        let renamed = adapter.record(get_state_record("s2", "sessions/a.jsonl"));
+        assert_eq!(title_event(&renamed), Some(&"Old".to_owned()));
+        assert!(matches!(
+            renamed.events.first(),
+            Some(AgentEvent::Session(SessionEvent::Status(_)))
+        ));
+    }
+
+    #[test]
+    fn first_prompt_reports_its_title_immediately() {
+        let mut adapter = PiAdapter::new(".", "sessions");
+        adapter.record(unnamed_get_state("s1", "sessions/a.jsonl"));
+
+        let output = adapter.request(AgentRequest::Input {
+            prompt: PromptInput::text("Fix the login bug"),
+        });
+        assert!(matches!(
+            output.commands.first(),
+            Some(RpcCommand::Prompt { .. })
+        ));
+        assert_eq!(title_event(&output), Some(&"Fix the login bug".to_owned()));
+
+        // Later prompts keep the first message as the title.
+        let output = adapter.request(AgentRequest::Input {
+            prompt: PromptInput::text("And another thing"),
+        });
+        assert_eq!(title_event(&output), None);
+    }
+
+    #[test]
+    fn new_session_prompt_reports_its_title_once_the_switch_settles() {
+        let mut adapter = PiAdapter::new(".", "sessions");
+        adapter.record(unnamed_get_state("s1", "sessions/a.jsonl"));
+
+        let commands = adapter
+            .request(AgentRequest::NewInput {
+                mode: "chat".into(),
+                prompt: PromptInput::text("Fix the login bug"),
+            })
+            .commands;
+        assert!(matches!(
+            commands.as_slice(),
+            [RpcCommand::NewSession { .. }]
+        ));
+
+        // new_session response: refresh + the opening prompt; no Title event
+        // yet because the follow-up `Attached` would overwrite it.
+        let output = adapter.record(record(serde_json::json!({
+            "type":"response", "id":"pie-new-1", "command":"new_session", "success":true
+        })));
+        assert_eq!(title_event(&output), None);
+        assert!(matches!(
+            output.commands.first(),
+            Some(RpcCommand::GetState { .. })
+        ));
+        assert!(matches!(
+            output.commands.last(),
+            Some(RpcCommand::Prompt { .. })
+        ));
+
+        // The switch refresh attaches the fresh unnamed session...
+        let attached = adapter.record(unnamed_get_state("s2", "sessions/b.jsonl"));
+        assert!(matches!(
+            attached.events.first(),
+            Some(AgentEvent::Session(SessionEvent::Attached(attached)))
+                if attached.title.is_none()
+        ));
+
+        // ...and the opening prompt's user message reports the title.
+        let output = adapter.record(record(serde_json::json!({
+            "type":"message_end", "message":{"role":"user","content":"Fix the login bug"}
+        })));
+        assert_eq!(title_event(&output), Some(&"Fix the login bug".to_owned()));
+    }
+
+    #[test]
+    fn command_prompt_refreshes_state_to_report_renames() {
+        let mut adapter = PiAdapter::new(".", "sessions");
+        adapter.record(unnamed_get_state("s1", "sessions/a.jsonl"));
+
+        let output = adapter.request(AgentRequest::Command {
+            line: "/name New name".into(),
+            images: Vec::new(),
+        });
+        assert!(matches!(
+            output.commands.as_slice(),
+            [RpcCommand::Prompt { .. }]
+        ));
+
+        let refresh = adapter.record(record(serde_json::json!({
+            "type":"response", "id":"pie-command-1", "command":"prompt", "success":true
+        })));
+        assert!(matches!(
+            refresh.commands.as_slice(),
+            [RpcCommand::GetState { .. }]
+        ));
+
+        let state = adapter.record(record(serde_json::json!({
+            "type":"response", "id":"s2", "command":"get_state", "success":true,
+            "data":{
+                "sessionId":"sess-1",
+                "sessionFile":"sessions/a.jsonl",
+                "sessionName":"New name",
+                "isStreaming":false
+            }
+        })));
+        assert_eq!(title_event(&state), Some(&"New name".to_owned()));
     }
 }

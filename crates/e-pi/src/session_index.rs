@@ -179,7 +179,7 @@ fn content_text(content: &Value) -> Option<&str> {
     })
 }
 
-fn clean_title(value: &str) -> String {
+pub(crate) fn clean_title(value: &str) -> String {
     let flattened = value.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut chars = flattened.chars();
     let title = chars.by_ref().take(TITLE_CHARS).collect::<String>();

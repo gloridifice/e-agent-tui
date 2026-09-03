@@ -1,6 +1,9 @@
 //! Effect completion, config reload, and deferred queue controller behavior.
 
-use super::*;
+use super::{
+    agent_action, paste_text, AgentRequest, ClipboardPaste, Config, EffectResult, InputState,
+    Instant, Mutex, RuntimeState, TerminalUiState, ThemeFile, UiAction,
+};
 
 pub(super) fn apply_reloaded_config(
     config: Config,

@@ -50,6 +50,30 @@ fn separator_column(state: &TuiApp, width: u16) -> usize {
     usize::from(state.config.message_pane_percent.columns(width))
 }
 
+/// Vertical geometry of the input box for `content` chars inside an
+/// `inner`-wide text area. The bottom stack below the box is one gap row,
+/// one status row, and one title row.
+struct InputBoxGeometry {
+    box_top: u16,
+    last_y: u16,
+}
+
+fn input_box_geometry(
+    terminal_height: u16,
+    content: usize,
+    extra_rows: usize,
+    inner: usize,
+) -> InputBoxGeometry {
+    let full_rows = content / inner;
+    let tail = content - full_rows * inner;
+    let rows = (extra_rows + full_rows + usize::from(tail > 0)).min(5);
+    let box_top = terminal_height - 3 - (rows as u16 + 2);
+    InputBoxGeometry {
+        box_top,
+        last_y: box_top + rows as u16,
+    }
+}
+
 fn force_message_only(state: &mut TuiApp) {
     state.config.message_pane_percent = crate::PaneWidthPercent::from_basis_points(10_000).unwrap();
 }
@@ -277,12 +301,11 @@ fn input_bar_box_grows_with_wrapped_rows_and_keeps_cursor_visible() {
     // The box grows with the wrapped content (capped at 5 text rows) and the
     // wrap window follows the cursor, so the last five wrapped rows stay
     // visible and the IME anchor stays inside the text area.
-    let full_rows = 200 / inner;
-    let tail = 200 - full_rows * inner;
-    let rows = (full_rows + usize::from(tail > 0)).min(5);
-    let box_top = 24 - 3 - (rows as u16 + 2);
-    let last_y = box_top + rows as u16;
-    for offset in 0..full_rows.min(4) {
+    let tail = 200 % inner;
+    let geo = input_box_geometry(24, 200, 0, inner);
+    let box_top = geo.box_top;
+    let last_y = geo.last_y;
+    for offset in 0..(200 / inner).min(4) {
         let y = box_top + 1 + offset as u16;
         assert_eq!(
             &row(y)[text_x..text_x + inner],
@@ -340,12 +363,11 @@ fn input_bar_full_final_row_keeps_cursor_out_of_bottom_padding() {
             .map(|x| buffer[(x, y)].symbol().chars().next().unwrap_or(' '))
             .collect::<String>()
     };
-    let full_rows = 180 / inner;
-    let tail = 180 - full_rows * inner;
-    let rows = (full_rows + usize::from(tail > 0)).min(5);
-    let box_top = 24 - 3 - (rows as u16 + 2);
-    let last_y = box_top + rows as u16;
-    for offset in 0..full_rows {
+    let tail = 180 % inner;
+    let geo = input_box_geometry(24, 180, 0, inner);
+    let box_top = geo.box_top;
+    let last_y = geo.last_y;
+    for offset in 0..180 / inner {
         let y = box_top + 1 + offset as u16;
         assert_eq!(
             &row(y)[text_x..text_x + inner],
@@ -397,11 +419,10 @@ fn input_bar_multiline_wrapped_rows_keep_cursor_row_in_box() {
             .map(|x| buffer[(x, y)].symbol().chars().next().unwrap_or(' '))
             .collect::<String>()
     };
-    let full_rows = 200 / inner;
-    let tail = 200 - full_rows * inner;
-    let rows = (1 + full_rows + usize::from(tail > 0)).min(5);
-    let box_top = 24 - 3 - (rows as u16 + 2);
-    let last_y = box_top + rows as u16;
+    let tail = 200 % inner;
+    let geo = input_box_geometry(24, 200, 1, inner);
+    let box_top = geo.box_top;
+    let last_y = geo.last_y;
     for offset in 0..4 {
         let y = box_top + 1 + offset as u16;
         assert_eq!(
@@ -448,12 +469,11 @@ fn input_bar_fits_all_wrapped_rows_when_they_fit_the_box() {
             .map(|x| buffer[(x, y)].symbol().chars().next().unwrap_or(' '))
             .collect::<String>()
     };
-    let full_rows = 100 / inner;
-    let tail = 100 - full_rows * inner;
-    assert_eq!(full_rows, 2, "100 chars occupy two full rows plus a tail");
-    let rows = full_rows + usize::from(tail > 0);
-    let box_top = 24 - 3 - (rows as u16 + 2);
-    let last_y = box_top + rows as u16;
+    let tail = 100 % inner;
+    assert_eq!(100 / inner, 2, "100 chars occupy two full rows plus a tail");
+    let geo = input_box_geometry(24, 100, 0, inner);
+    let box_top = geo.box_top;
+    let last_y = geo.last_y;
     assert_eq!(
         &row(box_top + 1)[text_x..text_x + inner],
         "z".repeat(inner),
@@ -490,7 +510,7 @@ fn input_box_rows_follow_wrapped_content() {
     // A single long line wraps inside a narrow bar and grows the box.
     input.buf = "a very long single line that wraps".into();
     let rows = input_rows(&input, 16, 0);
-    assert!(rows >= 2 && rows <= INPUT_MAX_ROWS);
+    assert!((2..=INPUT_MAX_ROWS).contains(&rows));
 }
 
 #[test]
@@ -2075,7 +2095,7 @@ fn mouse_selection_keeps_preview_and_transcript_ranges_independent() {
 }
 
 #[test]
-fn pane_separator_uses_the_theme_background_in_normal_mode() {
+fn pane_separator_uses_explicit_background_in_normal_mode() {
     let mut state = TuiApp::default();
     let mut theme = Theme::ferra();
     theme.separator.bar.bg = Some(Color::Rgb(1, 2, 3));
@@ -2094,4 +2114,25 @@ fn pane_separator_uses_the_theme_background_in_normal_mode() {
     assert_eq!(buffer[(separator_x, 10)].fg, theme.separator.bar.fg);
     assert_eq!(buffer[(separator_x, 10)].bg, Color::Rgb(1, 2, 3));
     assert_eq!(buffer[(separator_x, 0)].symbol(), " ");
+}
+
+#[test]
+fn pane_separator_without_background_inherits_base_surface() {
+    let mut state = TuiApp::default();
+    let mut theme = Theme::ferra();
+    theme.bg = Color::Rgb(4, 5, 6);
+    theme.separator.bar.bg = None;
+    state.config.resolved_theme = theme;
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let mut terminal = Terminal::new(TestBackend::new(120, 20)).unwrap();
+    terminal
+        .draw(|frame| {
+            render(frame, &mut state, &input, &mut scroll, &theme, overlays());
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let separator_x = separator_column(&state, 120) as u16;
+    assert_eq!(buffer[(separator_x, 10)].symbol(), "│");
+    assert_eq!(buffer[(separator_x, 10)].bg, theme.bg);
 }

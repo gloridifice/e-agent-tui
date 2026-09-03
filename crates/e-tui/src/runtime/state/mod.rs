@@ -22,13 +22,8 @@ use crate::display::{
     TranscriptBlock, TranscriptFormat,
 };
 use crate::projection::{
-    assistant::{self, AssistantMutation},
-    command::{self, CommandProjection},
-    is_surface_node,
-    lifecycle::{self, LifecycleProjection},
-    retry,
-    tool::ToolMutation,
-    workflow::{self, WorkflowProjection},
+    assistant::AssistantMutation, command::CommandProjection, is_surface_node,
+    lifecycle::LifecycleProjection, tool::ToolMutation, workflow::WorkflowProjection,
     AccessoryStateEffect, ActivityMutation, EventProjector, PageStateEffect,
     PendingActivityEnrichment, PendingActivityResult, PendingToolResult, ProjectionEffect,
 };

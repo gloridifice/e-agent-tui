@@ -439,7 +439,6 @@ pub fn unified(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::style::Modifier;
 
     fn concat(line: &Line<'static>) -> String {
         line.spans

@@ -1,6 +1,11 @@
 //! Composer, Input Page, approval, and queued-prompt controller behavior.
 
-use super::*;
+use super::{
+    agent_action, AgentRequest, ApprovalCard, ControllerAction, InputAction, InputHandlerOutcome,
+    InputPageSession, InputPageUiState, KeyCode, KeyEvent, Mutex, PageEffect, PendingCommand,
+    PromptInput, RuntimeState, UiAction,
+};
+use crate::theme;
 
 pub(super) fn apply_action(action: ControllerAction, input_page: &mut Option<InputPageSession>) {
     match action {
@@ -88,6 +93,9 @@ pub(super) fn answer_approval(
     vec![UiAction::Agent(card.answer(allow))]
 }
 
+/// Apply one Input Page key synchronously and return only lock-external work.
+/// Config persistence owns a cloned snapshot so the runner need not borrow
+/// controller state.
 pub(super) fn apply_input_page_key(
     key: &KeyEvent,
     state: &Mutex<RuntimeState>,

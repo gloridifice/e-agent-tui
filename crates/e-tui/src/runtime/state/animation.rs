@@ -1,6 +1,10 @@
 //! Spinner, settle, and reveal-adjacent animation state helpers.
 
-use super::*;
+use super::{AgentStatus, DisplayItem, RuntimeState, TranscriptFormat, SETTLE_TRANSITION_MS};
+#[cfg(test)]
+use super::{Msg, ThinkState, ToolState};
+#[cfg(test)]
+use ratatui::style::Color;
 
 /// Whether an animation deadline is needed. This is separate from advancing
 /// the clock so the event-driven main loop can remain asleep when idle.

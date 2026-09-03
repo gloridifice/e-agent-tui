@@ -234,7 +234,6 @@ fn syntect_color(color: Color) -> SyntectColor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::style::Modifier;
 
     fn span_for<'a>(lines: &'a [Line<'static>], text: &str) -> &'a Span<'static> {
         lines

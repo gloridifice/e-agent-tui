@@ -3,7 +3,6 @@
 
 use ratatui::{
     layout::{Alignment, Position, Rect},
-    style::Color,
     widgets::{Block, Paragraph},
     Frame,
 };
@@ -139,8 +138,10 @@ fn paint_separator(frame: &mut Frame, area: Rect, column: u16, theme: &Theme, dr
     }
     let bar = theme.separator.bar;
     let line = theme.separator.line;
-    let bar_bg = bar.bg.unwrap_or(Color::Reset);
-    let line_bg = line.bg.unwrap_or(Color::Reset);
+    // Omitted separator backgrounds inherit the themed base surface (the
+    // documented behavior) instead of falling back to terminal Reset.
+    let bar_bg = bar.bg.unwrap_or(theme.bg);
+    let line_bg = line.bg.unwrap_or(theme.bg);
     let center = area.y + area.height / 2;
     let buffer = frame.buffer_mut();
     if dragging {

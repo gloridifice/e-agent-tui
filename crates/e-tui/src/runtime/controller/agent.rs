@@ -1,6 +1,10 @@
 //! Session, catalog, interaction, and normalized agent-error controller behavior.
 
-use super::*;
+use super::{
+    normalized_session_status, AgentEvent, ApprovalCard, Arc, DrawPriority, InputPageSession,
+    Instant, LoginView, Mutex, NewMode, QuestionBatch, RuntimeState, RuntimeUiState, ScrollState,
+    UiAction,
+};
 
 pub(super) fn apply_agent(
     event: AgentEvent,
@@ -61,7 +65,7 @@ pub(super) fn apply_agent(
                 .preview
                 .complete(request_id, key, revision, result);
             visible
-                .then(|| UiAction::RequestDraw(DrawPriority::Content))
+                .then_some(UiAction::RequestDraw(DrawPriority::Content))
                 .into_iter()
                 .collect()
         }
@@ -69,7 +73,7 @@ pub(super) fn apply_agent(
             let dirty =
                 super::RuntimeController::apply_effect_result(result, state, Instant::now());
             dirty
-                .then(|| UiAction::RequestDraw(DrawPriority::Content))
+                .then_some(UiAction::RequestDraw(DrawPriority::Content))
                 .into_iter()
                 .collect()
         }

@@ -1,6 +1,11 @@
 //! Terminal, pointer, selection, Reading, and ordinary-key controller behavior.
 
-use super::*;
+use super::{
+    agent_action, paste_text, runtime_command, scroll_lines, scroll_page, transcript_view_height,
+    AgentRequest, Arc, ControllerAction, InputPageSession, InputPageUiState, Instant, KeyCode,
+    KeyEvent, KeyModifiers, LocalCommandContext, Mutex, PointerEvent, Rect, RuntimeState,
+    ScrollState, SelectionFrame, TerminalRoute, TerminalSize, TerminalUiState, UiAction,
+};
 
 pub(super) fn apply_terminal_route(
     route: TerminalRoute,
@@ -47,10 +52,12 @@ pub(super) fn apply_terminal_route(
                     && !app.session.history_exhausted
                     && !app.session.history_loading
                 {
-                    app.session.min_seq.map(|seq| {
+                    if let Some(seq) = app.session.min_seq {
                         app.session.history_loading = true;
-                        seq
-                    })
+                        Some(seq)
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }

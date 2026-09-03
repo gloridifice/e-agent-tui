@@ -5,7 +5,7 @@ use e_tui::agent::{AgentEvent, InteractionEvent};
 use crate::protocol::{response, RpcCommand, RpcRecord};
 use serde_json::Value;
 
-use super::{AdapterOutput, PiAdapter};
+use super::{model, session, AdapterOutput, PiAdapter};
 
 pub(super) fn dispatch(adapter: &mut PiAdapter, record: RpcRecord) -> AdapterOutput {
     let response = match response(&record) {
@@ -35,10 +35,14 @@ pub(super) fn dispatch(adapter: &mut PiAdapter, record: RpcRecord) -> AdapterOut
     }
 
     match response.command.as_str() {
-        "get_state" => adapter.state_response(response.data.as_ref()),
-        "get_messages" => adapter.messages_response(response.data.as_ref()),
+        "get_state" => {
+            let mut output = session::state_response(adapter, response.data.as_ref());
+            output.merge(model::available_model_catalog(adapter));
+            output
+        }
+        "get_messages" => session::messages_response(adapter, response.data.as_ref()),
         "get_commands" => adapter.commands_response(response.data.as_ref()),
-        "get_available_models" => adapter.models_response(response.data.as_ref()),
+        "get_available_models" => model::models_response(adapter, response.data.as_ref()),
         "get_available_thinking_levels" => {
             if let Some(levels) = response
                 .data
@@ -52,7 +56,7 @@ pub(super) fn dispatch(adapter: &mut PiAdapter, record: RpcRecord) -> AdapterOut
                     .map(str::to_owned)
                     .collect();
             }
-            adapter.available_model_catalog()
+            model::available_model_catalog(adapter)
         }
         "new_session" => {
             let Some(id) = response.id else {
@@ -75,7 +79,7 @@ pub(super) fn dispatch(adapter: &mut PiAdapter, record: RpcRecord) -> AdapterOut
             // The prompt that opened the conversation seeds the fallback
             // title; it reaches the frontend once the switch settles (an
             // earlier `Title` event would be overwritten by `Attached`).
-            adapter.note_first_user_title(&text);
+            session::note_first_user_title(adapter, &text);
             output.commands.push(RpcCommand::Prompt {
                 id: Some(adapter.request_id("prompt")),
                 message: text,

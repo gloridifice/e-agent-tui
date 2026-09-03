@@ -24,7 +24,6 @@ use crate::{
         input::TerminalRoute,
         state::RuntimeState,
     },
-    theme,
     ui::{scroll_lines, scroll_page, transcript_view_height, ScrollState, TerminalSize},
     AgentEvent, AgentRequest, ClipboardPaste, Config, MouseSelection, NoticeState, PaneResizeState,
     PointerEvent, PromptImage, PromptInput, SelectionFrame, Theme, ThemeFile,
@@ -181,9 +180,6 @@ impl RuntimeController {
         input::apply_input_page_key(key, state, ui)
     }
 
-    /// Apply one Input Page key synchronously, consume page-state actions, and
-    /// return only lock-external work. Config persistence owns a cloned
-    /// snapshot, so the runner never has to borrow controller state.
     pub fn apply_reloaded_config(
         config: Config,
         themes: Vec<ThemeFile>,
@@ -337,7 +333,7 @@ mod tests {
             &mut queue,
         );
         assert!(outcome.effects.is_empty());
-        assert_eq!(queue, [prompt.clone()]);
+        assert_eq!(queue.as_slice(), std::slice::from_ref(&prompt));
 
         {
             let mut app = state.lock().unwrap();

@@ -116,6 +116,7 @@ lifecycle, payload trimming, and DSH integration. Exact wire fields and capaciti
   materially change — install/build flow, core user-visible capabilities, or keybinding quick reference;
   implementation details, architecture notes, protocol details, and development records belong in `docs/`, not
   in an expanded README.
+- Keep comments minimal. Do not add comments that merely restate what the code does.
 
 ## Test discipline
 

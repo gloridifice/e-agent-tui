@@ -1,6 +1,19 @@
 //! Timeline/snapshot/history reduction and assistant/tool/activity mutation application.
 
-use super::*;
+#[cfg(test)]
+use super::{
+    breathing_color, exit_marker, legacy_file_action, settle_group, DisplayTone, FileGroup,
+    FileItem, Msg, ThinkState, ThinkingCard, ToolCard, ToolState,
+};
+use super::{
+    host_event_time, is_surface_node, mutation_id, relativize_tool_preview, tool_preview_result,
+    ActivityMutation, ActivityRow, ActivityState, AgentStatus, AssistantMutation, CardRole,
+    CommandProjection, DisplayId, DisplayItem, LifecycleProjection, PendingActivityEnrichment,
+    PendingActivityResult, PendingToolResult, PreviewContent, PreviewKey, PreviewRef,
+    PreviewRevision, RenderOptions, RuntimeState, ThinkingNode, TimelineFact, TimelineRecord,
+    ToolMetrics, ToolMutation, TranscriptBlock, WorkflowProjection,
+};
+use crate::projection::{command, lifecycle, retry, workflow};
 
 impl RuntimeState {
     pub(super) fn allocate_copy_unit(&mut self, source: &str) -> u64 {
@@ -645,50 +658,40 @@ impl RuntimeState {
         }
     }
 
-    pub(super) fn reduce_tool_family(&mut self, event: &TimelineRecord, mutation: ToolMutation) {
-        let now_ms = host_event_time(event);
-        let mut row = match mutation {
-            ToolMutation::Upsert(row) => row,
-            ToolMutation::Ignore => return,
-            ToolMutation::MissingResult => {
-                if let TimelineFact::ToolResult {
-                    activity_id,
-                    output,
-                    state,
-                    output_truncated,
-                    mutation_diff,
-                    mutation_hunks,
-                    ..
-                } = &event.fact
-                {
-                    if let Some(seq) = event.sequence {
-                        self.projector.record_surface_seq(seq);
-                    }
-                    self.projector.remember_tool_result(
-                        activity_id.clone(),
-                        PendingToolResult {
-                            output: output.clone(),
-                            is_error: !matches!(state, crate::agent::ActivityState::Success),
-                            output_truncated: *output_truncated,
-                            time_ms: now_ms,
-                            surface_seq: event.sequence,
-                            mutation_diff: mutation_diff.clone(),
-                            mutation_hunks: mutation_hunks.clone(),
-                        },
-                    );
-                }
-                return;
+    /// Stage a result that arrived before its call: keep it in the projector
+    /// until the matching call event replays, so history pages can reorder.
+    fn remember_missing_tool_result(&mut self, event: &TimelineRecord, now_ms: u64) {
+        if let TimelineFact::ToolResult {
+            activity_id,
+            output,
+            state,
+            output_truncated,
+            mutation_diff,
+            mutation_hunks,
+            ..
+        } = &event.fact
+        {
+            if let Some(seq) = event.sequence {
+                self.projector.record_surface_seq(seq);
             }
-        };
-        match &event.fact {
-            TimelineFact::ToolCall(_) => {
-                self.render.transcript_cache.invalidate();
-                self.stop_thinking();
-            }
-            TimelineFact::ToolResult { .. } => {}
-            _ => {}
+            self.projector.remember_tool_result(
+                activity_id.clone(),
+                PendingToolResult {
+                    output: output.clone(),
+                    is_error: !matches!(state, crate::agent::ActivityState::Success),
+                    output_truncated: *output_truncated,
+                    time_ms: now_ms,
+                    surface_seq: event.sequence,
+                    mutation_diff: mutation_diff.clone(),
+                    mutation_hunks: mutation_hunks.clone(),
+                },
+            );
         }
+    }
 
+    /// Maintain projector indexes and structured Preview seeds for one tool
+    /// call/result and stage inline preview refs for the row.
+    fn project_tool_indexes_and_preview(&mut self, event: &TimelineRecord, row: &ActivityRow) {
         let row_id = row.id.clone();
         match &event.fact {
             TimelineFact::ToolCall(activity) => {
@@ -774,6 +777,16 @@ impl RuntimeState {
             }
             _ => {}
         }
+    }
+
+    /// Merge a staged result-before-call into the live row: settle state,
+    /// metrics, and the finalized structured preview from the same facts.
+    fn settle_staged_tool_result(
+        &mut self,
+        event: &TimelineRecord,
+        row: &mut ActivityRow,
+        row_id: &DisplayId,
+    ) -> Option<PendingToolResult> {
         let pending_result = match &event.fact {
             TimelineFact::ToolCall(activity) => self.projector.take_tool_result(&activity.id),
             _ => None,
@@ -826,6 +839,19 @@ impl RuntimeState {
                 );
             }
         }
+        pending_result
+    }
+
+    /// Commit the settled activity row into the transcript, capture the
+    /// settle transition, and mirror the result into the legacy fixture.
+    fn commit_tool_activity_row(
+        &mut self,
+        event: &TimelineRecord,
+        row: ActivityRow,
+        pending_result: Option<PendingToolResult>,
+        _now_ms: u64,
+    ) {
+        let row_id = row.id.clone();
         let surface_seq = event.sequence.filter(|_| is_surface_node(&event.fact));
         let was_active = self.transcript.get(&row_id).is_some_and(|node| {
             matches!(&node.item, DisplayItem::Activity(existing) if existing.state.is_active())
@@ -885,9 +911,34 @@ impl RuntimeState {
                 output,
                 !matches!(state, crate::agent::ActivityState::Success),
                 *output_truncated,
-                now_ms,
+                _now_ms,
             );
         }
+    }
+
+    pub(super) fn reduce_tool_family(&mut self, event: &TimelineRecord, mutation: ToolMutation) {
+        let now_ms = host_event_time(event);
+        let mut row = match mutation {
+            ToolMutation::Upsert(row) => row,
+            ToolMutation::Ignore => return,
+            ToolMutation::MissingResult => {
+                self.remember_missing_tool_result(event, now_ms);
+                return;
+            }
+        };
+        match &event.fact {
+            TimelineFact::ToolCall(_) => {
+                self.render.transcript_cache.invalidate();
+                self.stop_thinking();
+            }
+            TimelineFact::ToolResult { .. } => {}
+            _ => {}
+        }
+
+        let row_id = row.id.clone();
+        self.project_tool_indexes_and_preview(event, &row);
+        let pending_result = self.settle_staged_tool_result(event, &mut row, &row_id);
+        self.commit_tool_activity_row(event, row, pending_result, now_ms);
     }
 
     #[cfg(test)]

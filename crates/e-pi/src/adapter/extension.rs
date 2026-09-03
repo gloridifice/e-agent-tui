@@ -46,9 +46,9 @@ pub(super) fn request(adapter: &mut PiAdapter, record: RpcRecord) -> AdapterOutp
         Err(error) => return adapter.protocol_error(error.to_string()),
     };
     match request.method.as_str() {
-        "select" => adapter.extension_question(request, PendingExtensionUi::Select, true),
-        "input" => adapter.extension_question(request, PendingExtensionUi::Input, false),
-        "editor" => adapter.extension_question(request, PendingExtensionUi::Editor, false),
+        "select" => question(adapter, request, PendingExtensionUi::Select, true),
+        "input" => question(adapter, request, PendingExtensionUi::Input, false),
+        "editor" => question(adapter, request, PendingExtensionUi::Editor, false),
         "confirm" => {
             adapter
                 .extension_ui

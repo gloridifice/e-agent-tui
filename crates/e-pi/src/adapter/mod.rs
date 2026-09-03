@@ -6,7 +6,7 @@ use std::{
 };
 
 use e_tui::{
-    action::{AgentRequest, QuestionAnswer},
+    action::AgentRequest,
     agent::{
         timeline::{TimelineFact, TimelineRecord},
         AgentEvent, AgentStatus, CatalogEvent, CommandDescriptor, InteractionEvent, SessionEvent,
@@ -15,7 +15,7 @@ use e_tui::{
 };
 use serde_json::Value;
 
-use crate::protocol::{ExtensionUiRequest, RpcCommand, RpcRecord};
+use crate::protocol::{RpcCommand, RpcRecord};
 
 #[derive(Debug, Default)]
 pub struct AdapterOutput {
@@ -118,8 +118,8 @@ impl PiAdapter {
 
     pub fn record(&mut self, record: RpcRecord) -> AdapterOutput {
         match record.kind.as_str() {
-            "response" => self.rpc_response(record),
-            "extension_ui_request" => self.extension_request(record),
+            "response" => response::dispatch(self, record),
+            "extension_ui_request" => extension::request(self, record),
             "agent_start" => {
                 self.pending_tool_result_messages.clear();
                 self.is_streaming = true;
@@ -149,13 +149,13 @@ impl PiAdapter {
                     .map(str::to_owned),
                 error_code: None,
             }),
-            "message_update" => self.message_update(&record),
+            "message_update" => tool::message_update(self, &record),
             "message_end" => record
                 .field("message")
-                .map(|message| self.live_message(message))
+                .map(|message| session::live_message(self, message))
                 .unwrap_or_default(),
-            "tool_execution_start" => self.tool_start(&record),
-            "tool_execution_end" => self.tool_end(&record),
+            "tool_execution_start" => tool::tool_start(self, &record),
+            "tool_execution_end" => tool::tool_end(self, &record),
             "compaction_start" => self.timeline(TimelineFact::CompactionStarted {
                 id: "pi-compaction".into(),
             }),
@@ -196,82 +196,6 @@ impl PiAdapter {
         }
     }
 
-    fn command_line(&mut self, line: String) -> AdapterOutput {
-        if let Some(rest) = line.strip_prefix("/compact") {
-            return AdapterOutput::command(RpcCommand::Compact {
-                id: Some(self.request_id("compact")),
-                custom_instructions: (!rest.trim().is_empty()).then(|| rest.trim().to_owned()),
-            });
-        }
-        let id = self.request_id("command");
-        // Remember the id: its response triggers a same-session state refresh
-        // that reports extension-side session renames.
-        self.pending_command_prompt = Some(id.clone());
-        AdapterOutput::command(RpcCommand::Prompt {
-            id: Some(id),
-            message: line,
-            streaming_behavior: None,
-        })
-    }
-
-    fn answer_extension_question(
-        &mut self,
-        request_id: String,
-        answers: Vec<QuestionAnswer>,
-    ) -> AdapterOutput {
-        extension::answer_question(self, request_id, answers)
-    }
-
-    fn extension_request(&mut self, record: RpcRecord) -> AdapterOutput {
-        extension::request(self, record)
-    }
-
-    fn extension_question(
-        &mut self,
-        request: ExtensionUiRequest,
-        method: PendingExtensionUi,
-        has_options: bool,
-    ) -> AdapterOutput {
-        extension::question(self, request, method, has_options)
-    }
-
-    fn rpc_response(&mut self, record: RpcRecord) -> AdapterOutput {
-        response::dispatch(self, record)
-    }
-
-    fn state_response(&mut self, data: Option<&Value>) -> AdapterOutput {
-        session::state_response(self, data)
-    }
-
-    fn current_title(&self) -> Option<String> {
-        session::current_title(self)
-    }
-
-    fn title_events(&mut self) -> Vec<AgentEvent> {
-        session::title_events(self)
-    }
-
-    fn note_first_user_title(&mut self, text: &str) {
-        session::note_first_user_title(self, text)
-    }
-
-    fn messages_response(&mut self, data: Option<&Value>) -> AdapterOutput {
-        session::messages_response(self, data)
-    }
-
-    /// Status-bar title: Pi's explicit session name when set, else the first
-    /// user message — the same precedence the session index uses, so the
-    /// status bar and the session list agree.
-
-    /// Report a `SessionEvent::Title` whenever the visible title changed since
-    /// the last report. Same-session state refreshes, snapshots, and live
-    /// first user messages flow through here; `Attached` already carries the
-    /// title on session switches.
-
-    /// Seed the first-user-message fallback title. Pi only names sessions
-    /// explicitly (`set_session_name`); every other session is identified by
-    /// its first prompt, exactly like the session index.
-
     fn commands_response(&mut self, data: Option<&Value>) -> AdapterOutput {
         let mut commands = Vec::new();
         let mut skills = Vec::new();
@@ -309,38 +233,6 @@ impl PiAdapter {
                 AgentEvent::Catalog(CatalogEvent::Skills(skills)),
             ],
         }
-    }
-
-    fn models_response(&mut self, data: Option<&Value>) -> AdapterOutput {
-        model::models_response(self, data)
-    }
-
-    fn available_model_catalog(&self) -> AdapterOutput {
-        model::available_model_catalog(self)
-    }
-
-    fn model_catalog(&self, models: &[Value]) -> AdapterOutput {
-        model::model_catalog(self, models)
-    }
-
-    fn message_update(&mut self, record: &RpcRecord) -> AdapterOutput {
-        tool::message_update(self, record)
-    }
-
-    fn live_message(&mut self, message: &Value) -> AdapterOutput {
-        tool::live_message(self, message)
-    }
-
-    fn snapshot_message(&mut self, message: &Value, turn: Option<u64>) -> Vec<TimelineRecord> {
-        tool::snapshot_message(self, message, turn)
-    }
-
-    fn tool_start(&mut self, record: &RpcRecord) -> AdapterOutput {
-        tool::tool_start(self, record)
-    }
-
-    fn tool_end(&mut self, record: &RpcRecord) -> AdapterOutput {
-        tool::tool_end(self, record)
     }
 
     fn timeline(&mut self, fact: TimelineFact) -> AdapterOutput {
@@ -433,6 +325,7 @@ mod tests {
     };
     use crate::protocol::{ExtensionUiResponse, StreamingBehavior};
     use e_tui::action::PromptInput;
+    use e_tui::action::QuestionAnswer;
     use e_tui::{
         agent::{
             timeline::ContentBlock,

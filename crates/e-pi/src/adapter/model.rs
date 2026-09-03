@@ -7,7 +7,15 @@ use e_tui::agent::{
 
 use serde_json::Value;
 
-use super::{tool::thinking_label, AdapterOutput, PiAdapter};
+use super::{AdapterOutput, PiAdapter};
+
+fn thinking_label(level: &str) -> String {
+    let mut chars = level.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
 
 pub(super) fn models_response(adapter: &mut PiAdapter, data: Option<&Value>) -> AdapterOutput {
     adapter.available_models = data
@@ -15,7 +23,7 @@ pub(super) fn models_response(adapter: &mut PiAdapter, data: Option<&Value>) -> 
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    adapter.available_model_catalog()
+    available_model_catalog(adapter)
 }
 
 pub(super) fn available_model_catalog(adapter: &PiAdapter) -> AdapterOutput {
@@ -25,9 +33,9 @@ pub(super) fn available_model_catalog(adapter: &PiAdapter) -> AdapterOutput {
             .clone()
             .into_iter()
             .collect::<Vec<_>>();
-        adapter.model_catalog(&models)
+        model_catalog(adapter, &models)
     } else {
-        adapter.model_catalog(&adapter.available_models)
+        model_catalog(adapter, &adapter.available_models)
     }
 }
 

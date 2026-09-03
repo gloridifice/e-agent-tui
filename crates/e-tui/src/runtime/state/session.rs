@@ -1,6 +1,13 @@
 //! Session attach, deferred `/new` draft, and queued-prompt state.
 
-use super::*;
+use super::{
+    is_surface_node, AccessoryStateEffect, AgentRequest, DisplayItem, NewConversationDraft,
+    PageStateEffect, ProjectionEffect, RuntimeState, SurfaceOperation, TimelineRecord,
+    FRONTEND_REPLAY_EVENT_CAP,
+};
+#[cfg(test)]
+use super::{Msg, ThinkingCard};
+use crate::projection::assistant;
 
 impl RuntimeState {
     pub fn begin_new_conversation(&mut self, mode: impl Into<String>) {

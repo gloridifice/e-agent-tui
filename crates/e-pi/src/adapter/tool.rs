@@ -3,7 +3,7 @@
 use crate::protocol::RpcRecord;
 use e_tui::{
     agent::{
-        timeline::{TimelineFact, TimelineRecord},
+        timeline::TimelineFact,
         tool::{ActivityState, ToolActivity, ToolCapability, ToolReference},
     },
     preview::{
@@ -13,7 +13,7 @@ use e_tui::{
 use serde_json::Value;
 
 use super::{
-    content::{assistant_fact, content_parts, content_text, token_usage, user_fact},
+    content::{content_text, token_usage},
     AdapterOutput, PiAdapter,
 };
 
@@ -213,15 +213,6 @@ pub(super) fn bounded_json(value: &Value) -> (String, bool) {
     let truncated = chars.next().is_some();
     (bounded, truncated)
 }
-pub(super) fn thinking_label(level: &str) -> String {
-    let mut chars = level.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-        None => String::new(),
-    }
-}
-
-// Live tool/message lifecycle projection.
 
 pub(super) fn message_update(adapter: &mut PiAdapter, record: &RpcRecord) -> AdapterOutput {
     let Some(delta) = record.field("assistantMessageEvent") else {
@@ -240,80 +231,6 @@ pub(super) fn message_update(adapter: &mut PiAdapter, record: &RpcRecord) -> Ada
         step: Some(0),
         usage: record.field("usage").map(token_usage),
     })
-}
-
-pub(super) fn live_message(adapter: &mut PiAdapter, message: &Value) -> AdapterOutput {
-    match message.get("role").and_then(Value::as_str) {
-        Some("user") => {
-            adapter.note_first_user_title(&content_text(
-                message.get("content").unwrap_or(&Value::Null),
-            ));
-            let mut output = adapter.timeline(user_fact(message));
-            output.events.extend(adapter.title_events());
-            output
-        }
-        Some("assistant") => adapter.timeline(assistant_fact(
-            message,
-            Some(adapter.current_turn.max(1)),
-            Some(0),
-        )),
-        // `tool_execution_end` carries the same result immediately
-        // before Pi appends its durable `toolResult` message. The former
-        // owns live tool projection; suppress the latter duplicate.
-        Some("toolResult") => {
-            let id = message
-                .get("toolCallId")
-                .and_then(Value::as_str)
-                .unwrap_or("pi-tool");
-            if adapter.pending_tool_result_messages.remove(id) {
-                AdapterOutput::default()
-            } else {
-                adapter.timeline(tool_result_fact(message))
-            }
-        }
-        _ => AdapterOutput::default(),
-    }
-}
-
-pub(super) fn snapshot_message(
-    adapter: &mut PiAdapter,
-    message: &Value,
-    turn: Option<u64>,
-) -> Vec<TimelineRecord> {
-    match message.get("role").and_then(Value::as_str) {
-        Some("user") => vec![adapter.record_fact(user_fact(message))],
-        Some("assistant") => {
-            let mut records = vec![adapter.record_fact(assistant_fact(message, turn, Some(0)))];
-            for call in content_parts(message)
-                .filter(|part| part.get("type").and_then(Value::as_str) == Some("toolCall"))
-            {
-                records.push(adapter.record_fact(TimelineFact::ToolCall(tool_activity(
-                    call.get("id").and_then(Value::as_str).unwrap_or("pi-tool"),
-                    call.get("name").and_then(Value::as_str).unwrap_or("tool"),
-                    call.get("arguments").cloned().unwrap_or(Value::Null),
-                ))));
-            }
-            records
-        }
-        Some("toolResult") => vec![adapter.record_fact(tool_result_fact(message))],
-        Some("compactionSummary") => vec![adapter.record_fact(TimelineFact::CompactionSummary {
-            id: "pi-compaction".into(),
-            summary: message
-                .get("summary")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_owned(),
-        })],
-        Some("branchSummary") => vec![adapter.record_fact(TimelineFact::Custom {
-            namespace: "pi".into(),
-            kind: Some("branch-summary".into()),
-            summary: message
-                .get("summary")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-        })],
-        _ => Vec::new(),
-    }
 }
 
 pub(super) fn tool_start(adapter: &mut PiAdapter, record: &RpcRecord) -> AdapterOutput {

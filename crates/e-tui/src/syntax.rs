@@ -245,26 +245,6 @@ mod tests {
     }
 
     #[test]
-    fn rust_uses_normal_and_weak_semantic_colors_without_token_backgrounds() {
-        let theme = crate::theme::Theme::ferra();
-        let source = ["fn main() {", "    let message = \"hello\";", "}"];
-        let normal = highlight_lines(&source, SyntaxHint::Token("rust"), &theme.code);
-        let weak = highlight_lines(&source, SyntaxHint::Token("rs"), &theme.code_weak);
-
-        let normal_keyword = span_for(&normal, "fn");
-        let weak_keyword = span_for(&weak, "fn");
-        assert_eq!(normal_keyword.style.fg, Some(theme.code.keyword.fg));
-        assert_eq!(weak_keyword.style.fg, Some(theme.code_weak.keyword.fg));
-        assert!(normal_keyword.style.add_modifier.contains(Modifier::BOLD));
-        assert_eq!(normal_keyword.style.bg, None);
-        assert_eq!(weak_keyword.style.bg, None);
-
-        let normal_string = span_for(&normal, "hello");
-        assert_eq!(normal_string.style.fg, Some(theme.code.string.fg));
-        assert!(normal_string.style.add_modifier.contains(Modifier::ITALIC));
-    }
-
-    #[test]
     fn aliases_and_paths_resolve_without_io() {
         let theme = crate::theme::Theme::ferra();
         let js = highlight_lines(

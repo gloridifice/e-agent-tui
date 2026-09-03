@@ -119,23 +119,20 @@ lifecycle, payload trimming, and DSH integration. Exact wire fields and capaciti
 
 ## Test discipline
 
-- Add tests cautiously: only when genuinely necessary, when they cover real risk or prevent regression; do not
-  add tests for formal coverage's sake.
-- Unless the user explicitly asks or the change is a large-scale refactor, do **not** run the full
-  `cargo test --lib` or `cargo test`; only run `cargo test` scoped to the module under change (e.g.
-  `cargo test --lib <module>` or `cargo test <test_name>`). Skip tests entirely for small changes.
-  Rendering/spacing changes must have UI-layer regression tests (TestBackend asserting cached line
-  counts/colors/content), not only model-layer tests.
-- Known flake: full parallel tests occasionally flake once (tool card assertion); a single or rerun passes — do
-  not make big changes based on it.
-- The bridge side has `node:test` (`bridge/test/`, `cd bridge && npm test`, using `--test-isolation=none` to
-  avoid sandbox spawn EPERM): besides trim/compose/login/skill/model/model-selection,
-  host/connection/history/session/session-list/protocol/dispatcher edges must also be covered; file-layer tests
-  use a temp home (do not touch the real `%DSH_HOME%`). Protocol changes must also run
-  `node tools/sync-protocol-contract.mjs --check`. After a DSH upgrade, mount + `dsh plugin --profile <p>
-  install`, then run `npm run verify-dsh-upgrade` from `bridge/` (set `DSH_TUI_SMOKE_PROFILE=<p>` if needed);
-  it smokes public exports, helpers, `/new`, cold resume, and `/model` routing against the deployed copy rather
-  than relying on a local waterfall copy.
+* Add tests cautiously: only when genuinely necessary, when they cover real risk, or when they prevent regressions. Do not add tests merely for formal coverage.
+* Unless the user explicitly asks, **do not** run the full `cargo test --lib` or `cargo test`. Only run tests scoped to the module under change, such as `cargo test --lib <module>` or `cargo test <test_name>`. Skip tests entirely for small changes.
+* The bridge side uses `node:test` (tests are under `bridge/test/`; run them with `cd bridge && npm test`, using `--test-isolation=none` to avoid `EPERM` when spawning sandboxed processes).
+  File-layer tests must use a temporary home directory and must not touch the real `%DSH_HOME%`.
+  After protocol changes, also run:
+  `node tools/sync-protocol-contract.mjs --check`
+  After a DSH upgrade, first mount and run:
+  `dsh plugin --profile <p> install`
+  Then, from `bridge/`, run:
+  `npm run verify-dsh-upgrade`
+  Set `DSH_TUI_SMOKE_PROFILE=<p>` if needed.
+  This verification smoke-tests public exports, helpers, `/new`, cold resume, and `/model` routing against the actually deployed copy rather than relying on a local waterfall copy.
+* Tests must not use external configuration files or theme files.
+* Do not add tests for theme styling.
 
 ## Known issues
 

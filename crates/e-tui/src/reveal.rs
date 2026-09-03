@@ -758,35 +758,6 @@ mod tests {
     }
 
     #[test]
-    fn preview_fade_preserves_syntax_modifier_and_diff_background() {
-        let theme = crate::theme::Theme::ferra();
-        let highlighted = crate::syntax::highlight_lines(
-            &["fn main() {}"],
-            crate::syntax::SyntaxHint::Token("rust"),
-            &theme.code,
-        );
-        let line = crate::ui::component::diff::styled_line(
-            &theme,
-            crate::ui::component::diff::DiffKind::Added,
-            Some(1),
-            highlighted[0].spans.clone(),
-            32,
-        );
-        let start = Instant::now();
-        let mut track = LineRevealTrack::default();
-        track.reconcile(std::slice::from_ref(&line), start, 30);
-        let output = apply_line_reveal(vec![line], &track, Color::Rgb(0, 0, 0), Color::White, true);
-        let keyword = output[0]
-            .spans
-            .iter()
-            .find(|span| span.content == "fn")
-            .expect("revealed syntax keyword");
-        assert_ne!(keyword.style.fg, Some(theme.code.keyword.fg));
-        assert_eq!(keyword.style.bg, theme.diff.added.bg);
-        assert!(keyword.style.add_modifier.contains(Modifier::BOLD));
-    }
-
-    #[test]
     fn variable_profile_support_remains_generic() {
         let output = apply_reveal_with_profile(
             vec![Line::styled("abcd", Color::Rgb(100, 100, 100))],

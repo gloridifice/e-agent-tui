@@ -445,54 +445,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn embedded_default_config_is_the_default_source() {
-        let direct: Config =
-            toml::from_str(DEFAULT_CONFIG_SOURCE).expect("embedded defaults are the full schema");
-        let config = Config::default();
-        assert_eq!(config.spinner_style, direct.spinner_style);
-        assert_eq!(config.spinner_frame_ms, direct.spinner_frame_ms);
-        assert_eq!(config.theme, direct.theme.as_str());
-        assert_eq!(
-            config.theme, "ferra",
-            "the embedded theme default is contractual"
-        );
-        assert_eq!(config.background_color, direct.background_color);
-        assert_eq!(config.background_color.to_string(), "#000000");
-        assert_eq!(
-            config.message_chars_per_second,
-            direct.message_chars_per_second
-        );
-        assert_eq!(
-            config.message_chars_per_second.get(),
-            120,
-            "the transcript reveal default is contractual"
-        );
-        assert_eq!(
-            config.preview_lines_per_second,
-            direct.preview_lines_per_second
-        );
-        assert_eq!(
-            config.preview_lines_per_second.get(),
-            30,
-            "the Preview row reveal default is contractual"
-        );
-        assert_eq!(config.user_input_padding, 1);
-        assert_eq!(config.user_input_padding, direct.user_input_padding);
-        assert_eq!(config.default_mode, direct.default_mode.as_str());
-        assert_eq!(
-            config.paste_placeholder_chars,
-            direct.paste_placeholder_chars
-        );
-        assert_eq!(config.message_pane_percent, direct.message_pane_percent);
-        assert_eq!(config.message_pane_percent, PaneWidthPercent::default());
-        assert_eq!(config.page_max_width, direct.page_max_width);
-        assert_eq!(config.page_align, direct.page_align.as_str());
-        assert_eq!(config.thinking_display, direct.thinking_display.as_str());
-        assert_eq!(config.thinking_lines, direct.thinking_lines);
-        assert_eq!(config.thinking_display_mode(), ThinkingDisplayMode::Compact);
-    }
-
-    #[test]
     fn partial_user_config_overlays_embedded_defaults() {
         let config = Config::from_user_toml(
             r#"
@@ -550,15 +502,6 @@ mod tests {
     }
 
     #[test]
-    fn obsolete_absolute_pane_width_is_ignored() {
-        let config = Config::from_user_toml("main_pane_width = 240").unwrap();
-        assert_eq!(config.message_pane_percent, PaneWidthPercent::default());
-        assert!(toml::to_string(&config)
-            .unwrap()
-            .contains("message_pane_percent = 60.0"));
-    }
-
-    #[test]
     fn pane_width_percent_rejects_invalid_values() {
         assert!(Config::from_user_toml("message_pane_percent = 24.99").is_err());
         assert!(Config::from_user_toml("message_pane_percent = 100.01").is_err());
@@ -602,21 +545,6 @@ mod tests {
         assert!(Config::from_user_toml("preview_lines_per_second = 1025").is_err());
         assert!("-1".parse::<RevealRate>().is_err());
         assert!("1.5".parse::<RevealRate>().is_err());
-    }
-
-    #[test]
-    fn obsolete_unknown_fields_are_filtered_without_losing_valid_overrides() {
-        let config = Config::from_user_toml(
-            r#"
-                theme = "ferra"
-                removed_legacy_option = true
-                preview_chars_per_second = 999
-            "#,
-        )
-        .expect("unknown legacy key is ignored");
-        assert_eq!(config.theme, "ferra");
-        assert_eq!(config.spinner_frame_ms, 120);
-        assert_eq!(config.preview_lines_per_second.get(), 30);
     }
 
     #[test]

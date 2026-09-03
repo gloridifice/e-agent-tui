@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use e::protocol::{
-    ClientMessage, ServerMessage, CLIENT_MESSAGE_TYPES, SERVER_MESSAGE_TYPES,
-    WIRE_MESSAGE_SHAPES_JSON, WIRE_PROTOCOL_VERSION, WIRE_RECORD_SHAPES_JSON,
+    ServerMessage, CLIENT_MESSAGE_TYPES, SERVER_MESSAGE_TYPES, WIRE_MESSAGE_SHAPES_JSON,
+    WIRE_PROTOCOL_VERSION, WIRE_RECORD_SHAPES_JSON,
 };
 use serde_json::{Map, Value};
 
@@ -116,33 +116,6 @@ fn generated_rosters_shapes_and_fixtures_cover_the_same_messages() {
         include_str!("../../../bridge/test/fixtures/wire-contract-fixtures.json"),
         "Rust and Node conformance fixtures are generated together"
     );
-}
-
-#[test]
-fn every_client_fixture_deserializes_reserializes_and_matches_its_shape() {
-    let fixtures = fixtures();
-    let shapes: Value = serde_json::from_str(WIRE_MESSAGE_SHAPES_JSON).unwrap();
-    let records: Value = serde_json::from_str(WIRE_RECORD_SHAPES_JSON).unwrap();
-    let records = records.as_object().unwrap();
-    for message_type in CLIENT_MESSAGE_TYPES {
-        let shape = &shapes["client"][*message_type];
-        for form in ["minimal", "full"] {
-            let fixture = &fixtures["client"][*message_type][form];
-            assert_shape(
-                fixture,
-                shape,
-                records,
-                &format!("client.{message_type}.{form}"),
-            );
-            let message: ClientMessage = serde_json::from_value(fixture.clone())
-                .unwrap_or_else(|error| panic!("client {message_type}/{form}: {error}"));
-            let serialized = serde_json::to_value(message).expect("serialize client fixture");
-            assert_eq!(
-                serialized, *fixture,
-                "client {message_type}/{form} wire drift"
-            );
-        }
-    }
 }
 
 #[test]

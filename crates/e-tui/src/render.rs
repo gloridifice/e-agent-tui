@@ -1974,52 +1974,6 @@ mod tests {
     }
 
     #[test]
-    fn list_items_render_inline_markdown_like_paragraphs() {
-        let theme = Theme::ferra();
-        // Items are built from the list's own parser events, so inline code
-        // keeps its independent chip foreground/background and padding instead
-        // of degrading to plain text (a flattened re-parse saw no backticks).
-        let lines = render("1. run `cargo fmt` now");
-        let spans = &lines[0].line.spans;
-        let chip = spans
-            .iter()
-            .find(|span| span.content == "cargo fmt")
-            .expect("inline code span");
-        assert_eq!(chip.style.fg, Some(theme.markdown.inline_code.fg));
-        assert_eq!(chip.style.bg, theme.markdown.inline_code.bg);
-        assert_eq!(
-            spans
-                .iter()
-                .filter(|span| span.content == " " && span.style.bg == theme.markdown.inline_code.bg)
-                .count(),
-            2,
-            "the chip keeps its padding on both sides"
-        );
-
-        // Emphasis, strong, and the link URL survive as well.
-        let lines = render("- **bold** and *em* and [label](https://x.y)");
-        let spans = &lines[0].line.spans;
-        let styled = |text: &str| {
-            spans
-                .iter()
-                .find(|span| span.content == text)
-                .unwrap_or_else(|| panic!("span {text:?} present in {spans:?}"))
-                .style
-        };
-        assert_eq!(
-            styled("bold").add_modifier.contains(Modifier::BOLD),
-            theme.markdown.strong.bold
-        );
-        assert!(styled("em").add_modifier.contains(Modifier::ITALIC));
-        assert_eq!(styled("label").fg, Some(theme.markdown.link_text.fg));
-        assert_eq!(
-            styled("https://x.y").fg,
-            Some(theme.markdown.link_url.fg),
-            "the link URL is rendered, not dropped"
-        );
-    }
-
-    #[test]
     fn list_items_keep_escaped_markers_literal() {
         // A flattened re-parse consumed `1.` as an ordered marker and turned
         // escaped `\*` into emphasis; both must stay literal text.

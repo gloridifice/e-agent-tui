@@ -461,18 +461,6 @@ mod tests {
     }
 
     #[test]
-    fn styled_body_keeps_foreground_and_modifiers_under_diff_background() {
-        let theme = Theme::ferra();
-        let syntax = Span::styled("fn", theme.code.keyword.style());
-        let line = styled_line(&theme, DiffKind::Added, Some(1), vec![syntax], 24);
-        let body = &line.spans[6];
-        assert_eq!(body.style.fg, Some(theme.code.keyword.fg));
-        assert!(body.style.add_modifier.contains(Modifier::BOLD));
-        assert_eq!(body.style.bg, theme.diff.added.bg);
-        assert_eq!(concat(&line).width(), 24);
-    }
-
-    #[test]
     fn context_rows_have_no_background_or_padding() {
         let theme = Theme::ferra();
         let context = line(&theme, DiffKind::Context, Some(4), "}", 30);

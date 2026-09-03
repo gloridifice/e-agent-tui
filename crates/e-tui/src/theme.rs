@@ -527,47 +527,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn embedded_themes_parse_through_the_public_schema() {
-        let deepseek = parse_theme(DEEPSEEK_E_SOURCE).expect("deepseek-e parses");
-        let ferra = parse_theme(FERRA_SOURCE).expect("ferra parses");
-        assert_eq!(deepseek.name, "deepseek-e");
-        assert_eq!(ferra.name, "ferra");
-        assert_eq!(ferra.theme.bg, Color::Rgb(0x2b, 0x29, 0x2d));
-        assert_eq!(
-            ferra.theme.markdown.heading2.fg,
-            Color::Rgb(0xfe, 0xcd, 0xb2)
-        );
-        assert!(ferra.theme.markdown.heading2.bold);
-        assert_eq!(
-            ferra.theme.markdown.heading3.fg,
-            Color::Rgb(0xb1, 0xb6, 0x95)
-        );
-        assert!(ferra.theme.markdown.heading3.bold);
-        assert_eq!(
-            ferra.theme.markdown_weak.text.fg,
-            Color::Rgb(0x6f, 0x5d, 0x63)
-        );
-        assert_eq!(ferra.theme.code_weak.meta.fg, Color::Rgb(0x4d, 0x42, 0x4b));
-        assert_eq!(
-            ferra.theme.markdown_weak.code_block_bg.bg,
-            Some(Color::Rgb(0x2b, 0x29, 0x2d))
-        );
-        assert_eq!(ferra.theme.code.keyword.fg, Color::Rgb(0xff, 0xa0, 0x7a));
-        // Pane separator semantics: the idle grip and drag guide use their
-        // configured foreground/background; the placeholder box uses its own
-        // configured text/fill pair.
-        assert_eq!(ferra.theme.separator.bar.fg, Color::Rgb(0x6f, 0x5d, 0x63));
-        assert_eq!(ferra.theme.separator.line.fg, Color::Rgb(0x4d, 0x42, 0x4b));
-        assert_eq!(ferra.theme.separator.bar.bg, Some(ferra.theme.bg));
-        assert_eq!(ferra.theme.separator.line.bg, Some(ferra.theme.bg));
-        assert_eq!(
-            ferra.theme.separator.placeholder.fg,
-            Color::Rgb(0xb1, 0xb6, 0x95)
-        );
-        assert_eq!(ferra.theme.separator.placeholder.bg, Some(ferra.theme.bg));
-    }
-
-    #[test]
     fn palette_names_are_open_ended_and_style_flags_are_optional() {
         let source = FERRA_SOURCE
             .replace("night = \"#2b292d\"", "my_custom_night = \"#010203\"")

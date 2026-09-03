@@ -5,6 +5,7 @@ use std::time::Instant;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
+    i18n::{tr_args, Language},
     preview::{PreviewContent, PreviewKey, PreviewRequest, PreviewRequestId, PreviewRevision},
     Config, ThemeFile,
 };
@@ -67,13 +68,21 @@ impl PromptInput {
     }
 
     pub fn display_text(&self) -> String {
+        self.display_text_in(Language::English)
+    }
+
+    pub fn display_text_in(&self, language: Language) -> String {
         self.parts
             .iter()
             .map(|part| match part {
                 PromptPart::Text(text) => text.clone(),
-                PromptPart::Image(image) => format!(
-                    "[Image {}]",
-                    image.name.as_deref().unwrap_or("clipboard.png")
+                PromptPart::Image(image) => tr_args(
+                    language,
+                    "composer.image",
+                    &[(
+                        "name",
+                        image.name.as_deref().unwrap_or("clipboard.png").to_owned(),
+                    )],
                 ),
             })
             .collect()

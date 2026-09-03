@@ -6,12 +6,16 @@ pub(super) fn render_resume_page(
     page: &ResumePage,
     viewport: &mut crate::input_page::ViewportState,
     theme: &Theme,
+    language: crate::Language,
 ) {
     let regions = input_page_shell(frame, area, theme);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("❯ ", Style::default().fg(theme.user)),
-            Span::styled("续接会话  ", Style::default().fg(theme.fg)),
+            Span::styled(
+                format!("{}  ", crate::i18n::tr(language, "input_page.resume.title")),
+                Style::default().fg(theme.fg),
+            ),
             Span::styled("> ", Style::default().fg(theme.dim)),
             Span::styled(page.query.clone(), Style::default().fg(theme.fg)),
             Span::styled("█", Style::default().fg(theme.user)),
@@ -37,11 +41,11 @@ pub(super) fn render_resume_page(
             Style::default().fg(theme.fg)
         };
         let title = if session.title.is_empty() && page.titles_pending {
-            "(标题读取中…)"
+            crate::i18n::tr(language, "input_page.resume.title_loading")
         } else if session.title.is_empty() {
-            "(未命名会话)"
+            crate::i18n::tr(language, "input_page.resume.unnamed")
         } else {
-            session.title.as_str()
+            session.title.clone()
         };
         let shown_id = trim_to_width(&session.id, 24);
         let id_width = UnicodeWidthStr::width(shown_id.as_str());
@@ -54,7 +58,7 @@ pub(super) fn render_resume_page(
                     .fg(if session.live { theme.ok } else { theme.dim })
                     .bg(style.bg.unwrap_or(theme.bg_soft)),
             ),
-            Span::styled(trim_to_width(title, title_width), style),
+            Span::styled(trim_to_width(&title, title_width), style),
             Span::styled(
                 format!("  {shown_id}"),
                 Style::default()
@@ -65,18 +69,18 @@ pub(super) fn render_resume_page(
     }
     if page.loading && page.sessions.is_empty() {
         rows.push(Line::from(Span::styled(
-            "读取会话列表中…",
+            crate::i18n::tr(language, "input_page.resume.loading"),
             Style::default().fg(theme.dim),
         )));
     } else if filtered.is_empty() {
         rows.push(Line::from(Span::styled(
-            "（无匹配会话）",
+            crate::i18n::tr(language, "input_page.resume.no_matches"),
             Style::default().fg(theme.dim),
         )));
     }
     frame.render_widget(Paragraph::new(rows), regions.body);
     frame.render_widget(
-        Paragraph::new("输入文字筛选   ↑↓ 选择   Enter 续接   Esc 退出")
+        Paragraph::new(crate::i18n::tr(language, "input_page.resume.footer"))
             .style(Style::default().fg(theme.dim)),
         regions.footer,
     );

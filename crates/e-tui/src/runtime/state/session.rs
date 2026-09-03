@@ -28,12 +28,13 @@ impl RuntimeState {
         &mut self,
         prompt: crate::PromptInput,
     ) -> Option<AgentRequest> {
+        let language = self.config.language;
         let draft = self.session.new_conversation.as_mut()?;
         if draft.pending_input.is_some() {
             return None;
         }
         draft.pending_input = Some(prompt.clone());
-        draft.notice = Some("正在创建新对话…".into());
+        draft.notice = Some(crate::i18n::tr(language, "lifecycle.creating_conversation"));
         Some(AgentRequest::NewInput {
             mode: draft.mode.clone(),
             prompt,
@@ -67,7 +68,10 @@ impl RuntimeState {
         if truncated {
             surface = surface.split_off(surface.len().saturating_sub(FRONTEND_REPLAY_EVENT_CAP));
             self.session.snapshot_truncated = true;
-            self.push_system_message("（历史较长，仅回放最近消息）");
+            self.push_system_message(crate::i18n::tr(
+                self.config.language,
+                "history.snapshot_truncated",
+            ));
         }
         self.replaying = true;
         for event in surface {
@@ -126,9 +130,11 @@ impl RuntimeState {
                     let _ = insert_at;
                     #[cfg(test)]
                     let before = self.msgs.len();
-                    if let Some(mutations) =
-                        assistant::project(event, self.config.user_input_padding)
-                    {
+                    if let Some(mutations) = assistant::project_with_language(
+                        event,
+                        self.config.user_input_padding,
+                        self.config.language,
+                    ) {
                         self.reduce_assistant_event(event, mutations);
                     } else if let Some(mutation) = self.project_tool_family(event) {
                         self.reduce_tool_family(event, mutation);

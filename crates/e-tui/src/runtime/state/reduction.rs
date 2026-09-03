@@ -436,7 +436,7 @@ impl RuntimeState {
         let Some(id) = tail_id else {
             let mut row = ActivityRow::root(
                 DisplayId::correlated("thinking", &self.next_thinking_id.to_string()),
-                "Thinking...",
+                crate::i18n::tr(self.config.language, "transcript.thinking"),
             );
             self.next_thinking_id = self.next_thinking_id.wrapping_add(1);
             row.count = 1;
@@ -579,6 +579,7 @@ impl RuntimeState {
             .unwrap_or_else(|| incoming.content.clone());
         let theme = self.config.theme();
         let options = RenderOptions {
+            language: self.config.language,
             expanded: self.render.expanded.clone(),
             collapse_rows: self.config.atomic_collapse_rows,
             mermaid_enabled: self.config.mermaid_enabled,
@@ -1009,7 +1010,7 @@ impl RuntimeState {
     }
 
     pub(super) fn reduce_activity_families(&mut self, event: &TimelineRecord) -> bool {
-        if let Some(projection) = lifecycle::project(event) {
+        if let Some(projection) = lifecycle::project(event, self.config.language) {
             self.apply_lifecycle_projection(event, projection);
             return true;
         }
@@ -1180,11 +1181,16 @@ impl RuntimeState {
                     self.insert_transcript_item(item.clone(), None, None);
                     #[cfg(test)]
                     if let DisplayItem::Block(block) = item {
+                        let max_tokens = matches!(
+                            &event.fact,
+                            TimelineFact::TurnEnd { reason, .. }
+                                if reason.as_deref() == Some("max-tokens")
+                        );
                         if block.tone == DisplayTone::Error {
                             self.msgs.push(Msg::Error {
                                 text: block.content,
                             });
-                        } else if block.content.contains("token 上限") {
+                        } else if max_tokens {
                             self.msgs.push(Msg::Block(block));
                         } else {
                             self.msgs.push(Msg::System {

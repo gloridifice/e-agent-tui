@@ -9,6 +9,7 @@ use std::{fmt, str::FromStr};
 use ratatui::style::Color;
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::i18n::Language;
 pub use crate::theme::Theme;
 
 pub const DEFAULT_CONFIG_SOURCE: &str = include_str!("../assets/default_config.toml");
@@ -317,7 +318,8 @@ pub struct Config {
     pub plain_color: bool,
     /// Foreground-fade interpolation origin; does not replace theme surfaces.
     pub background_color: HexRgb,
-    // 行为
+    // Behavior
+    pub language: Language,
     pub remember_last_session: bool,
     /// Agent-preset mode for bare `/new` and the session a fresh TUI process
     /// opens (the bridge falls back to `standard` when this id is stale).
@@ -421,21 +423,21 @@ impl Config {
         }
     }
 
-    pub fn thinking_display_label(&self) -> &'static str {
+    /// Stable persisted value used by settings choices.
+    pub fn thinking_display_value(&self) -> &'static str {
         match self.thinking_display_mode() {
-            ThinkingDisplayMode::Compact => "Compact",
-            ThinkingDisplayMode::Lines => "Lines",
-            ThinkingDisplayMode::Full => "Full",
+            ThinkingDisplayMode::Compact => "compact",
+            ThinkingDisplayMode::Lines => "lines",
+            ThinkingDisplayMode::Full => "full",
         }
     }
 
-    /// Display label of the page horizontal alignment (居中/左对齐/右对齐).
-    /// Unknown values fall back to 居中, matching the layout behavior.
-    pub fn page_align_label(&self) -> &'static str {
+    /// Stable persisted value used by the page-alignment choice.
+    pub fn page_align_value(&self) -> &'static str {
         match self.page_align.as_str() {
-            "left" => "左对齐",
-            "right" => "右对齐",
-            _ => "居中",
+            "left" => "left",
+            "right" => "right",
+            _ => "center",
         }
     }
 }
@@ -455,6 +457,7 @@ mod tests {
         )
         .expect("partial config overlays defaults");
         assert_eq!(config.theme, "ferra");
+        assert_eq!(config.language, Language::English);
         assert_eq!(config.spinner_frame_ms, 250);
         let defaults = Config::default();
         assert_eq!(config.background_color, defaults.background_color);
@@ -472,6 +475,32 @@ mod tests {
         assert_eq!(config.thinking_display, "compact");
         assert_eq!(config.thinking_lines, 2);
         assert_eq!(config.resolved_theme.user, Theme::ferra().user);
+    }
+
+    #[test]
+    fn language_inherits_validates_round_trips_and_falls_back_safely() {
+        assert_eq!(Config::default().language, Language::English);
+        assert_eq!(
+            Config::from_user_toml("theme = \"ferra\"")
+                .unwrap()
+                .language,
+            Language::English
+        );
+
+        let chinese = Config::from_user_toml("language = \"zh-CN\"").unwrap();
+        assert_eq!(chinese.language, Language::SimplifiedChinese);
+        let persisted = toml::to_string(&chinese).unwrap();
+        assert!(persisted.contains("language = \"zh-CN\""));
+        assert_eq!(
+            Config::from_user_toml(&persisted).unwrap().language,
+            Language::SimplifiedChinese
+        );
+
+        assert!(Config::from_user_toml("language = \"fr\"").is_err());
+        assert_eq!(
+            Config::user_toml_or_default("language = \"fr\"").language,
+            Language::English
+        );
     }
 
     #[test]

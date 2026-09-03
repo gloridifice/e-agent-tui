@@ -19,6 +19,8 @@ pub mod copy;
 pub mod display;
 pub mod event;
 mod help;
+pub mod i18n;
+i18n::init_i18n!();
 pub mod input;
 pub mod input_page;
 pub mod interaction;
@@ -53,6 +55,7 @@ pub use app::{NewConversationDraft, SessionModel, SessionStatus, TuiApp};
 pub use catalog::CatalogModel;
 pub use config::{Config, HexRgb, PaneWidthPercent, RevealRate, ThinkingDisplayMode};
 pub use event::{InputEvent, PointerEvent};
+pub use i18n::Language;
 pub use interaction::{
     InteractionModel, PaneResizeDrag, PaneResizeState, ScrollState, MIN_PREVIEW_COLUMNS,
     MIN_PREVIEW_PANE_WIDTH, PREVIEW_RIGHT_MARGIN_COLUMNS, PREVIEW_SEPARATOR_COLUMNS,

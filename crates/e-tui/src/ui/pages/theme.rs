@@ -7,12 +7,16 @@ pub(super) fn render_theme_page(
     focus: &crate::input_page::FocusState,
     viewport: &mut crate::input_page::ViewportState,
     theme: &Theme,
+    language: crate::Language,
 ) {
     let regions = input_page_shell(frame, area, theme);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("❯ ", Style::default().fg(theme.user)),
-            Span::styled("主题", Style::default().fg(theme.fg)),
+            Span::styled(
+                crate::i18n::tr(language, "input_page.theme.title"),
+                Style::default().fg(theme.fg),
+            ),
         ])),
         regions.header,
     );
@@ -61,13 +65,13 @@ pub(super) fn render_theme_page(
     }
     if rows.is_empty() {
         rows.push(Line::from(Span::styled(
-            "（无可用主题）",
+            crate::i18n::tr(language, "input_page.theme.no_themes"),
             Style::default().fg(theme.dim),
         )));
     }
     frame.render_widget(Paragraph::new(rows), regions.body);
     frame.render_widget(
-        Paragraph::new("hjkl/方向键移动   Enter 应用   Esc 退出")
+        Paragraph::new(crate::i18n::tr(language, "input_page.theme.footer"))
             .style(Style::default().fg(theme.dim)),
         regions.footer,
     );

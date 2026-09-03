@@ -5,6 +5,7 @@ use super::{
     Instant, LoginView, Mutex, NewMode, QuestionBatch, RuntimeState, RuntimeUiState, ScrollState,
     UiAction,
 };
+use crate::i18n::tr_args;
 
 pub(super) fn apply_agent(
     event: AgentEvent,
@@ -321,7 +322,12 @@ pub(super) fn apply_agent_error(
             let mut app = state.lock().unwrap();
             let restored = app.restore_new_conversation_input();
             if restored.is_some() {
-                app.set_new_conversation_notice(format!("创建新对话失败：{message}"));
+                let language = app.config.language;
+                app.set_new_conversation_notice(tr_args(
+                    language,
+                    "controller.new_failed",
+                    &[("message", message.to_owned())],
+                ));
             }
             restored
         };
@@ -329,10 +335,13 @@ pub(super) fn apply_agent_error(
             ui.input.restore_prompt(prompt);
             ui.input.multiline = ui.input.buf.contains('\n');
         } else {
-            state
-                .lock()
-                .unwrap()
-                .push_error_message(format!("运行时错误 {code}: {message}"));
+            let mut app = state.lock().unwrap();
+            let language = app.config.language;
+            app.push_error_message(tr_args(
+                language,
+                "controller.runtime_error",
+                &[("code", code.to_owned()), ("message", message.to_owned())],
+            ));
         }
         return Vec::new();
     }
@@ -347,6 +356,11 @@ pub(super) fn apply_agent_error(
     ) {
         app.finish_command_execution();
     }
-    app.push_error_message(format!("运行时错误 {code}: {message}"));
+    let language = app.config.language;
+    app.push_error_message(tr_args(
+        language,
+        "controller.runtime_error",
+        &[("code", code.to_owned()), ("message", message.to_owned())],
+    ));
     Vec::new()
 }

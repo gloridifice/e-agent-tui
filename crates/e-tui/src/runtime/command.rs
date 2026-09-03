@@ -20,6 +20,7 @@ use crate::{
 };
 use crate::{
     command_catalog::{CommandAction, NewMode},
+    i18n::{tr, tr_args, Language},
     input_page::InputPageSession,
     settings, ThemeFile,
 };
@@ -37,6 +38,7 @@ pub struct CommandOutcome {
 }
 
 pub struct LocalCommandContext<'a> {
+    pub language: Language,
     pub input_page: &'a mut Option<InputPageSession>,
     pub integrated_commands: &'a [CommandDescriptor],
     pub config: &'a mut Config,
@@ -70,7 +72,14 @@ fn reject_arguments(context: &LocalCommandContext<'_>, command: &str, raw_input:
     if raw_input.trim().is_empty() {
         return false;
     }
-    push_error(context.state, format!("用法: /{command}"));
+    push_error(
+        context.state,
+        tr_args(
+            context.language,
+            "command.usage",
+            &[("command", command.to_owned())],
+        ),
+    );
     true
 }
 
@@ -152,7 +161,10 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
         // A client-only draft is not attached to an agent of its own. Never
         // let an integrated command mutate the retained old session.
         if has_new_conversation(context.state) {
-            set_new_conversation_notice(context.state, "请先发送一条消息创建新对话");
+            set_new_conversation_notice(
+                context.state,
+                tr(context.language, "command.new.must_send"),
+            );
         } else {
             let interruptible = !is_colon_skill_invocation(name);
             forward(line, &mut outcome, interruptible);
@@ -204,7 +216,7 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
                 *context.input_page = Some(InputPageSession::model());
                 outcome.outbound.push(AgentRequest::ModelGet);
             } else if reference.split_whitespace().count() != 1 {
-                push_error(context.state, "用法: /model [provider/model]");
+                push_error(context.state, tr(context.language, "command.model.usage"));
             } else if let Some((provider, model)) =
                 resolve_model_reference(context.model_providers, reference)
             {
@@ -216,7 +228,11 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
             } else {
                 push_error(
                     context.state,
-                    format!("未找到唯一模型: {reference}（输入 /model 浏览模型）"),
+                    tr_args(
+                        context.language,
+                        "command.model.not_found",
+                        &[("reference", reference.to_owned())],
+                    ),
                 );
             }
         }
@@ -238,7 +254,7 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
         }
         CommandAction::Help => {
             if !reject_arguments(&context, name, raw_input) {
-                let markdown = crate::help::markdown(context.integrated_commands);
+                let markdown = crate::help::markdown(context.language, context.integrated_commands);
                 context.state.lock().unwrap().push_local_markdown(markdown);
             }
         }
@@ -263,7 +279,7 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
                     session_id: session_id.to_owned(),
                 });
             } else {
-                push_error(context.state, "用法: /resume [会话 ID]");
+                push_error(context.state, tr(context.language, "command.resume.usage"));
             }
         }
         CommandAction::New => {
@@ -277,15 +293,18 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
                 .as_ref()
                 .is_some_and(|draft| draft.pending_input.is_some());
             if blocked {
-                push_error(context.state, "请先完成当前提问或审批，再新建对话");
+                push_error(context.state, tr(context.language, "command.new.blocked"));
             } else if materializing {
-                set_new_conversation_notice(context.state, "正在创建新对话，请稍候");
+                set_new_conversation_notice(
+                    context.state,
+                    tr(context.language, "command.new.in_progress"),
+                );
             } else if let Some(line) = new_command_line(raw_input, &context.config.default_mode) {
                 let mode = line.trim_start_matches("/new ").to_owned();
                 context.state.lock().unwrap().begin_new_conversation(mode);
                 outcome.new_conversation = true;
             } else {
-                push_error(context.state, "用法: /new [模式]");
+                push_error(context.state, tr(context.language, "command.new.usage"));
             }
         }
         // Bridge-optimized commands and known DSH commands still use the
@@ -293,7 +312,10 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
         // completion can be added without duplicating metadata elsewhere.
         CommandAction::Skill | CommandAction::Forward => {
             if has_new_conversation(context.state) {
-                set_new_conversation_notice(context.state, "请先发送一条消息创建新对话");
+                set_new_conversation_notice(
+                    context.state,
+                    tr(context.language, "command.new.must_send"),
+                );
             } else {
                 // `/skill` is injected as a model follow-up and is covered by
                 // agent status. Other forwarded commands run directly through
@@ -335,6 +357,7 @@ mod tests {
         let outcome = handle_local_command(
             "/help".into(),
             LocalCommandContext {
+                language: config.language,
                 input_page: &mut input_page,
                 integrated_commands: &integrated,
                 config: &mut config,
@@ -359,10 +382,10 @@ mod tests {
         assert_eq!(block.format, TranscriptFormat::Markdown);
         assert!(!block.streaming);
         assert!(block.unit.is_none(), "Markdown owns provenance allocation");
-        assert!(block.content.contains("# e 帮助"));
+        assert!(block.content.contains("# e help"));
         assert!(block
             .content
-            .contains("`/feedback`：record feedback <text>"));
+            .contains("`/feedback`: record feedback <text>"));
         assert_eq!(block.content.matches("`/plan`").count(), 1);
     }
 
@@ -408,6 +431,7 @@ mod tests {
         let outcome = handle_local_command(
             "/model anthropic/claude-sonnet".into(),
             LocalCommandContext {
+                language: config.language,
                 input_page: &mut input_page,
                 integrated_commands: &[],
                 config: &mut config,

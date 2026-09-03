@@ -354,32 +354,41 @@ pub(crate) fn render_main_pane_with_cursor(
         );
         if approval_rows > 0 {
             if let Some(card) = approval {
-                render_approval(frame, chunks[1], card, theme);
+                render_approval(frame, chunks[1], card, theme, state.config.language);
             }
         }
         if goal_rows > 0 {
             render_info_accessory(
                 frame,
                 chunks[2],
-                "Goal",
+                "accessory.goal",
                 state.goal.as_deref().unwrap_or(""),
                 theme,
+                state.config.language,
             );
         }
         if plan_rows > 0 {
             render_info_accessory(
                 frame,
                 chunks[3],
-                "Plan",
+                "accessory.plan",
                 state.plan_mode.as_deref().unwrap_or(""),
                 theme,
+                state.config.language,
             );
         }
         if todo_rows > 0 {
-            render_todo(frame, chunks[4], &state.todos, theme);
+            render_todo(frame, chunks[4], &state.todos, theme, state.config.language);
         }
         if queue_visible > 0 {
-            render_queue(frame, chunks[5], queue, queue_visible, theme);
+            render_queue(
+                frame,
+                chunks[5],
+                queue,
+                queue_visible,
+                theme,
+                state.config.language,
+            );
         }
         let cursor_anchor = if let Some(page) = input_page.as_mut() {
             region::input_page::render(frame, chunks[6], page, &state.config, theme)
@@ -387,7 +396,7 @@ pub(crate) fn render_main_pane_with_cursor(
             render_settings(frame, chunks[6], settings, &state.config, theme);
             None
         } else if let Some(login) = login.as_mut() {
-            render_login(frame, chunks[6], login, theme);
+            render_login(frame, chunks[6], login, theme, state.config.language);
             None
         } else {
             region::composer::render(
@@ -403,7 +412,7 @@ pub(crate) fn render_main_pane_with_cursor(
         // Slash-command suggestions float above the input bar (last draw wins).
         if !input_page_open {
             if let Some(suggest) = input.suggest.as_ref() {
-                render_suggest(frame, suggest, chunks[6], theme);
+                render_suggest(frame, suggest, chunks[6], theme, state.config.language);
             }
         }
         return cursor_anchor;
@@ -442,6 +451,7 @@ pub(crate) fn render_main_pane_with_cursor(
                 ratatui::layout::Rect::new(page.x, y, page.width, h),
                 card,
                 theme,
+                state.config.language,
             );
         }
         y = y.saturating_add(approval_rows);
@@ -451,9 +461,10 @@ pub(crate) fn render_main_pane_with_cursor(
         render_info_accessory(
             frame,
             ratatui::layout::Rect::new(page.x, y, page.width, h),
-            "Goal",
+            "accessory.goal",
             state.goal.as_deref().unwrap_or(""),
             theme,
+            state.config.language,
         );
         y = y.saturating_add(goal_rows);
     }
@@ -462,9 +473,10 @@ pub(crate) fn render_main_pane_with_cursor(
         render_info_accessory(
             frame,
             ratatui::layout::Rect::new(page.x, y, page.width, h),
-            "Plan",
+            "accessory.plan",
             state.plan_mode.as_deref().unwrap_or(""),
             theme,
+            state.config.language,
         );
         y = y.saturating_add(plan_rows);
     }
@@ -475,6 +487,7 @@ pub(crate) fn render_main_pane_with_cursor(
             ratatui::layout::Rect::new(page.x, y, page.width, h),
             &state.todos,
             theme,
+            state.config.language,
         );
         y = y.saturating_add(todo_rows);
     }
@@ -486,6 +499,7 @@ pub(crate) fn render_main_pane_with_cursor(
             queue,
             queue_visible,
             theme,
+            state.config.language,
         );
         y = y.saturating_add(queue_visible as u16);
     }
@@ -525,7 +539,7 @@ pub(crate) fn render_main_pane_with_cursor(
     }
     if let Some(suggest) = input.suggest.as_ref() {
         if let Some(rect) = input_rect {
-            render_suggest(frame, suggest, rect, theme);
+            render_suggest(frame, suggest, rect, theme, state.config.language);
         }
     }
     cursor_anchor

@@ -19,11 +19,12 @@ use crate::agent::{ModelDescriptor, ModelProvider, Skill};
 use crate::catalog::CatalogModel;
 pub use crate::command_catalog::NewMode;
 use crate::command_catalog::{
-    completion_context, match_command_catalog, CommandSource, CompletionKind,
+    completion_context, match_command_catalog, CommandSource, CommandText, CompletionKind,
 };
 use crate::{
     action::{PromptImage, PromptInput, PromptPart},
     config::Config,
+    i18n::{tr_args, Language},
 };
 
 const IMAGE_MARKER: char = '\u{fffc}';
@@ -44,6 +45,8 @@ pub struct InputState {
     draft_image_blocks: Vec<ImageBlock>,
     /// Ctrl+R history search, when active.
     pub search: Option<SearchState>,
+    /// Active language for localized stateful suggestions and placeholders.
+    pub language: Language,
     /// Paste placeholder threshold (D24, config-driven).
     pub paste_placeholder_chars: usize,
     /// Over-threshold paste ranges in expanded-buffer character offsets.
@@ -127,6 +130,29 @@ pub enum SuggestionKind {
     Skills,
 }
 
+fn command_candidate_description(
+    candidate: &crate::command_catalog::CommandCandidate,
+    language: Language,
+) -> String {
+    let (description, hint) = match &candidate.text {
+        CommandText::Builtin {
+            description_key,
+            input_hint_key,
+        } => (
+            crate::i18n::tr(language, description_key),
+            input_hint_key.map(|key| crate::i18n::tr(language, key)),
+        ),
+        CommandText::Integrated {
+            description,
+            input_hint,
+        } => (description.clone(), input_hint.clone()),
+    };
+    match hint.filter(|hint| !hint.is_empty()) {
+        Some(hint) => format!("{description}  {hint}"),
+        None => description,
+    }
+}
+
 /// Normalize terminal and system-clipboard line endings to the frontend's
 /// internal newline representation.
 pub fn normalize_paste_text(text: &str) -> String {
@@ -157,6 +183,7 @@ impl InputState {
             draft_paste_blocks: Vec::new(),
             draft_image_blocks: Vec::new(),
             search: None,
+            language: config.language,
             paste_placeholder_chars: config.paste_placeholder_chars,
             paste_blocks: Vec::new(),
             image_blocks: Vec::new(),
@@ -173,8 +200,20 @@ impl InputState {
 
     /// Rebuild any open popup after the sole catalog owner changes.
     pub fn catalog_changed(&mut self, catalogs: &CatalogModel) {
+        let selected = self
+            .suggest
+            .as_ref()
+            .and_then(|suggest| suggest.matches.get(suggest.sel))
+            .cloned();
         self.suggest = None;
         self.refresh_suggest(catalogs);
+        if let Some(selected) = selected {
+            if let Some(suggest) = self.suggest.as_mut() {
+                if let Some(index) = suggest.matches.iter().position(|line| line == &selected) {
+                    suggest.sel = index;
+                }
+            }
+        }
     }
 
     #[cfg(test)]
@@ -335,10 +374,14 @@ fn truncate_image_name(name: &str) -> String {
     format!("{head}…{}", suffix.concat())
 }
 
-fn image_placeholder(image: &PromptImage) -> String {
-    format!(
-        "[Image {}]",
-        truncate_image_name(image.name.as_deref().unwrap_or("clipboard.png"))
+fn image_placeholder(image: &PromptImage, language: Language) -> String {
+    tr_args(
+        language,
+        "composer.image",
+        &[(
+            "name",
+            truncate_image_name(image.name.as_deref().unwrap_or("clipboard.png")),
+        )],
     )
 }
 
@@ -985,7 +1028,7 @@ impl InputState {
                     .collect(),
                 descriptions: matched
                     .iter()
-                    .map(|candidate| candidate.description.clone())
+                    .map(|candidate| command_candidate_description(candidate, self.language))
                     .collect(),
                 sources: matched.iter().map(|candidate| candidate.source).collect(),
                 kind: SuggestionKind::Commands,
@@ -1314,14 +1357,20 @@ impl InputState {
                 (
                     block.start,
                     block.end,
-                    format!("[{} text pasted]", block.end - block.start),
+                    tr_args(
+                        self.language,
+                        "composer.paste",
+                        &[("count", (block.end - block.start).to_string())],
+                    ),
                 )
             })
-            .chain(
-                self.image_blocks
-                    .iter()
-                    .map(|block| (block.start, block.end, image_placeholder(&block.image))),
-            )
+            .chain(self.image_blocks.iter().map(|block| {
+                (
+                    block.start,
+                    block.end,
+                    image_placeholder(&block.image, self.language),
+                )
+            }))
             .collect::<Vec<_>>();
         blocks.sort_by_key(|(start, _, _)| *start);
         blocks

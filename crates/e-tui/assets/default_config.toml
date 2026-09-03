@@ -10,6 +10,7 @@ plain_color = false
 background_color = "#000000"
 
 # Behavior
+language = "en"
 remember_last_session = false
 default_mode = "standard"
 # Kept for compatibility with older config files; Enter always sends.

@@ -4,6 +4,7 @@ use super::{
     agent_action, paste_text, AgentRequest, ClipboardPaste, Config, EffectResult, InputState,
     Instant, Mutex, RuntimeState, TerminalUiState, ThemeFile, UiAction,
 };
+use crate::i18n::{tr, tr_args};
 
 pub(super) fn apply_reloaded_config(
     config: Config,
@@ -14,13 +15,20 @@ pub(super) fn apply_reloaded_config(
     *ui.config = config;
     *ui.themes = themes;
     *ui.theme = ui.config.theme();
+    ui.input.language = ui.config.language;
     ui.input.paste_placeholder_chars = ui.config.paste_placeholder_chars;
     ui.input.history_limit = ui.config.history_limit;
-    let mut state = state.lock().unwrap();
-    state.config = ui.config.clone();
-    state.render.markdown_layout.invalidate_all();
-    state.render.transcript_cache.invalidate();
-    state.push_system_message("已重载配置、主题与技能");
+    let catalogs = {
+        let mut state = state.lock().unwrap();
+        state.config = ui.config.clone();
+        state.render.markdown_layout.invalidate_all();
+        state.render.transcript_cache.invalidate();
+        state.preview.invalidate_layout();
+        let language = state.config.language;
+        state.push_system_message(tr(language, "controller.reload"));
+        state.catalogs.clone()
+    };
+    ui.input.catalog_changed(&catalogs);
 }
 
 pub(super) fn apply_effect_result(
@@ -49,10 +57,13 @@ pub(super) fn apply_effect_result(
             }
         }
         EffectResult::ClipboardRead(Err(error)) => {
-            state
-                .lock()
-                .unwrap()
-                .push_error_message(format!("剪贴板读取失败: {error}"));
+            let mut app = state.lock().unwrap();
+            let language = app.config.language;
+            app.push_error_message(tr_args(
+                language,
+                "controller.clipboard_read_failed",
+                &[("error", error)],
+            ));
             true
         }
         EffectResult::ClipboardWritten {
@@ -60,24 +71,31 @@ pub(super) fn apply_effect_result(
             preview,
             truncated,
         } => {
-            state
-                .lock()
-                .unwrap()
-                .interaction
+            let mut app = state.lock().unwrap();
+            let language = app.config.language;
+            app.interaction
                 .notice
-                .show_clipboard(lines, &preview, truncated, now);
+                .show_clipboard(language, lines, &preview, truncated, now);
             true
         }
         EffectResult::ConfigPersisted(Err(error)) | EffectResult::ConfigReloadFailed(error) => {
-            state
-                .lock()
-                .unwrap()
-                .push_error_message(format!("设置保存失败: {error}"));
+            let mut app = state.lock().unwrap();
+            let language = app.config.language;
+            app.push_error_message(tr_args(
+                language,
+                "controller.config_save_failed",
+                &[("error", error)],
+            ));
             true
         }
         EffectResult::ClipboardFailed(error) => {
             let mut app = state.lock().unwrap();
-            app.push_error_message(format!("剪贴板写入失败: {error}"));
+            let language = app.config.language;
+            app.push_error_message(tr_args(
+                language,
+                "controller.clipboard_write_failed",
+                &[("error", error)],
+            ));
             if app.reading.is_some() {
                 let placeholder = InputState::new(&app.config);
                 let mut input = std::mem::replace(&mut app.interaction.input, placeholder);

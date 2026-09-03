@@ -65,12 +65,30 @@ fn activity_row_parts(
 
     let mut metadata = String::new();
     if let Some(lines) = row.output_lines {
-        let noun = if lines == 1 { "line" } else { "lines" };
-        if row.output_lines_truncated {
-            metadata.push_str(&format!(" · {lines}+ {noun}"));
-        } else {
-            metadata.push_str(&format!(" · {lines} {noun}"));
-        }
+        let noun = crate::i18n::tr(
+            state.config.language,
+            if lines == 1 {
+                "transcript.line"
+            } else {
+                "transcript.lines"
+            },
+        );
+        metadata.push_str(&crate::i18n::tr_args(
+            state.config.language,
+            "transcript.output_lines",
+            &[
+                ("count", lines.to_string()),
+                (
+                    "suffix",
+                    if row.output_lines_truncated {
+                        "+".to_owned()
+                    } else {
+                        String::new()
+                    },
+                ),
+                ("noun", noun),
+            ],
+        ));
     }
     if state.config.show_tool_duration {
         let duration_ms = row.duration_ms.or_else(|| {
@@ -78,7 +96,11 @@ fn activity_row_parts(
                 .map(|started| started.elapsed().as_millis() as u64)
         });
         if let Some(duration_ms) = duration_ms {
-            metadata.push_str(&format!(" · {:.1}s", duration_ms as f64 / 1000.0));
+            metadata.push_str(&crate::i18n::tr_args(
+                state.config.language,
+                "transcript.duration",
+                &[("seconds", format!("{:.1}", duration_ms as f64 / 1000.0))],
+            ));
         }
     }
     let metadata =
@@ -254,12 +276,17 @@ fn context_injection_lines(
     state: &TuiApp,
     area_width: usize,
 ) -> Vec<Line<'static>> {
-    const LABEL: &str = "提示词注入 ";
+    let label = format!(
+        "{} ",
+        crate::i18n::tr(state.config.language, "transcript.context_injection")
+    );
     let theme = state.theme();
     let label_style = theme.activity.label.style();
     let content_style = theme.activity.detail.style();
     let avail = area_width.max(1);
-    let first_avail = avail.saturating_sub(UnicodeWidthStr::width(LABEL)).max(1);
+    let first_avail = avail
+        .saturating_sub(UnicodeWidthStr::width(label.as_str()))
+        .max(1);
 
     let mut rows: Vec<Line<'static>> = Vec::new();
     let mut truncated = false;
@@ -284,7 +311,7 @@ fn context_injection_lines(
             let head_text = head.text.clone();
             if first {
                 rows.push(Line::from(vec![
-                    Span::styled(LABEL.to_owned(), label_style),
+                    Span::styled(label.clone(), label_style),
                     Span::styled(head_text.clone(), content_style),
                 ]));
                 first = false;
@@ -301,7 +328,7 @@ fn context_injection_lines(
         }
     }
     if rows.is_empty() {
-        rows.push(Line::from(Span::styled(LABEL.to_owned(), label_style)));
+        rows.push(Line::from(Span::styled(label, label_style)));
     }
     if truncated {
         // End the final permitted row with an explicit ellipsis marker.
@@ -903,7 +930,7 @@ fn render_transcript_impl(
             screen_height.saturating_sub(bottom_rows).max(1)
         };
         let mut display = if help_visible {
-            help_overlay(theme)
+            help_overlay(state.config.language, theme)
         } else {
             draft
                 .notice
@@ -1027,20 +1054,20 @@ fn render_transcript_impl(
         .record_materialized_rows(display.len());
     if help_visible {
         if bottom_rows == 0 {
-            display.extend(help_overlay(theme));
+            display.extend(help_overlay(state.config.language, theme));
         } else {
             display.clear();
-            display.extend(help_overlay(theme));
+            display.extend(help_overlay(state.config.language, theme));
         }
     }
     // Lazy scroll-back hint at the top of the transcript (display-only).
     if show_hint {
         let hint = if state.session.history_loading {
-            "（正在加载更早的消息…）"
+            crate::i18n::tr(state.config.language, "transcript.history_loading")
         } else if state.session.history_exhausted {
-            "（已到最早的消息）"
+            crate::i18n::tr(state.config.language, "transcript.history_exhausted")
         } else {
-            "（PageUp 加载更早的消息）"
+            crate::i18n::tr(state.config.language, "transcript.history_load_hint")
         };
         display.insert(
             0,

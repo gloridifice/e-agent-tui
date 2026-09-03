@@ -24,7 +24,7 @@ pub(crate) fn render_settings(
                 theme.fg
             };
             spans.push(Span::styled(
-                format!(" {cat} "),
+                format!(" {} ", crate::i18n::tr(config.language, cat)),
                 Style::default().fg(fg).bg(theme.bg),
             ));
             spans.push(Span::styled(
@@ -78,7 +78,7 @@ pub(crate) fn render_settings(
         // Name row: fg text; the focused NAME fills with Night (the
         // description below is never selected).
         let mut name_line = Line::from(Span::styled(
-            (*item).label,
+            crate::i18n::tr(config.language, item.label),
             Style::default().fg(theme.fg).bg(name_bg),
         ));
         if focused && !editing {
@@ -93,7 +93,10 @@ pub(crate) fn render_settings(
         left_rows.push(name_line);
         // Description: Bark foreground on Ash, wrapped under the name.
         let mut height = 1usize;
-        for chunk in wrap_text(item.desc, left_width.max(1)) {
+        for chunk in wrap_text(
+            &crate::i18n::tr(config.language, item.desc),
+            left_width.max(1),
+        ) {
             left_rows.push(Line::from(Span::styled(
                 chunk,
                 Style::default().fg(theme.dim).bg(theme.bg_soft),
@@ -135,9 +138,9 @@ pub(crate) fn render_settings(
 
     // ---- key hints ----
     let hint = if settings.editing.is_some() {
-        "Enter 确认   Esc 取消修改"
+        crate::i18n::tr(config.language, "settings.footer.edit")
     } else {
-        "h/l/←/→ 切页   j/k/↑/↓ 移动   Enter 执行   Esc 退出 · 即改即存"
+        crate::i18n::tr(config.language, "settings.footer.browse")
     };
     let buffer = frame.buffer_mut();
     buffer.set_line(
@@ -177,11 +180,9 @@ fn settings_value_line(
     let line: Line<'static> = match item.kind {
         crate::settings::ItemKind::Choice { options } => {
             let current = (item.get)(config);
-            let selected = options
-                .iter()
-                .position(|o| (*o).starts_with(current.as_str()));
+            let selected = options.iter().position(|(value, _)| *value == current);
             let mut spans: Vec<Span<'static>> = Vec::new();
-            for (i, opt) in options.iter().enumerate() {
+            for (i, (_, label_key)) in options.iter().enumerate() {
                 if i > 0 {
                     spans.push(Span::styled(
                         "  ",
@@ -200,7 +201,7 @@ fn settings_value_line(
                     cell_bg
                 };
                 spans.push(Span::styled(
-                    format!("{glyph} {opt}"),
+                    format!("{glyph} {}", crate::i18n::tr(config.language, label_key)),
                     Style::default().fg(fg).bg(bg),
                 ));
             }
@@ -326,5 +327,46 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn settings_uses_explicit_language_without_changing_focus_identity() {
+        let mut config = crate::config::Config::default();
+        config.language = crate::Language::SimplifiedChinese;
+        let mut settings = SettingsState::default();
+        settings.category = 1;
+        settings.pos[1] = 1;
+        let focus_key = crate::settings::items_in(1)[1].key;
+        let theme = Theme::ferra();
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+
+        terminal
+            .draw(|frame| {
+                render_settings(
+                    frame,
+                    ratatui::layout::Rect::new(0, 0, 100, 24),
+                    &mut settings,
+                    &config,
+                    &theme,
+                );
+            })
+            .unwrap();
+
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        let compact = text
+            .chars()
+            .filter(|ch| !ch.is_whitespace())
+            .collect::<String>();
+        assert!(compact.contains("行为"));
+        assert!(compact.contains("语言"));
+        assert!(compact.contains("英语"));
+        assert_eq!(focus_key, "language");
+        assert_eq!(settings.pos[1], 1);
     }
 }

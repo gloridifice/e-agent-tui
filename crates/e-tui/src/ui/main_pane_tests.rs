@@ -130,11 +130,14 @@ fn help_overlay_advertises_application_paste_shortcut() {
 fn local_help_markdown_renders_as_styled_transcript_content() {
     let mut runtime = crate::runtime::RuntimeState::default();
     runtime.config.resolved_theme = Theme::ferra();
-    runtime.push_local_markdown(crate::help::markdown(&[crate::agent::CommandDescriptor {
-        name: "feedback".into(),
-        description: "record feedback".into(),
-        input_hint: Some("<text>".into()),
-    }]));
+    runtime.push_local_markdown(crate::help::markdown(
+        crate::Language::English,
+        &[crate::agent::CommandDescriptor {
+            name: "feedback".into(),
+            description: "record feedback".into(),
+            input_hint: Some("<text>".into()),
+        }],
+    ));
     let mut state = runtime.tui;
     force_message_only(&mut state);
     let input = InputState::new(&state.config);
@@ -910,25 +913,26 @@ fn context_injection_renders_as_plain_text_capped_at_two_lines() {
             .collect::<String>()
     };
     // Plain text (no card shell background): the first row starts with the
-    // `提示词注入` label in the activity label tone (umber in ferra) and the
-    // content in the activity detail tone (bark), with no background fill.
-    assert_eq!(label(1), '提', "label glyph starts the first row");
-    assert_eq!(label(3), '示', "label glyph on the first row");
-    assert_eq!(label(5), '词', "label glyph on the first row");
-    assert_eq!(label(7), '注', "label glyph on the first row");
-    assert_eq!(label(9), '入', "label glyph on the first row");
+    // `Prompt injection` label in the activity label tone (umber in ferra)
+    // and the content in the activity detail tone (bark), with no background
+    // fill.
+    assert_eq!(label(1), 'P', "label glyph starts the first row");
+    assert_eq!(label(2), 'r', "label glyph on the first row");
+    assert_eq!(label(3), 'o', "label glyph on the first row");
+    assert_eq!(label(4), 'm', "label glyph on the first row");
+    assert_eq!(label(5), 'p', "label glyph on the first row");
     assert_eq!(
         buffer[(1, 0)].fg,
         theme.activity.label.fg,
         "label uses the activity label tone (umber)"
     );
     assert_eq!(
-        buffer[(12, 0)].fg,
+        buffer[(18, 0)].fg,
         theme.activity.detail.fg,
         "content uses the activity detail tone (bark)"
     );
     assert_eq!(buffer[(1, 0)].bg, Color::Reset, "no card background");
-    assert_eq!(buffer[(12, 0)].bg, Color::Reset, "no card background");
+    assert_eq!(buffer[(18, 0)].bg, Color::Reset, "no card background");
     // Capped at two wrapped rows with an explicit ellipsis marker on row 2.
     assert_eq!(
         row_text(1).trim(),
@@ -976,18 +980,154 @@ fn context_injection_short_content_fits_on_one_row() {
             .map(|x| buffer[(x, y)].symbol().chars().next().unwrap_or(' '))
             .collect::<String>()
     };
-    // Each CJK glyph occupies two cells, so compare per-cell glyphs and the
-    // plain-ASCII content tail rather than a single raw substring.
-    assert_eq!(buffer[(1, 0)].symbol(), "提");
-    assert_eq!(buffer[(3, 0)].symbol(), "示");
-    assert_eq!(buffer[(5, 0)].symbol(), "词");
-    assert_eq!(buffer[(7, 0)].symbol(), "注");
-    assert_eq!(buffer[(9, 0)].symbol(), "入");
+    // The localized label and the plain-ASCII content share one row.
+    assert_eq!(buffer[(1, 0)].symbol(), "P");
+    assert_eq!(buffer[(2, 0)].symbol(), "r");
+    assert_eq!(buffer[(3, 0)].symbol(), "o");
+    assert_eq!(buffer[(4, 0)].symbol(), "m");
+    assert_eq!(buffer[(5, 0)].symbol(), "p");
     assert!(row_text(0).contains("short context"));
     assert!(row_text(1).trim().is_empty(), "one row then the gap");
     assert_eq!(buffer[(1, 0)].fg, theme.activity.label.fg);
-    assert_eq!(buffer[(12, 0)].fg, theme.activity.detail.fg);
+    assert_eq!(buffer[(18, 0)].fg, theme.activity.detail.fg);
     assert_eq!(buffer[(1, 0)].bg, Color::Reset, "no card background");
+}
+
+#[test]
+fn chinese_transcript_context_label_preserves_injected_content() {
+    let mut state = TuiApp::default();
+    state.config.language = crate::Language::SimplifiedChinese;
+    state.config.resolved_theme = Theme::ferra();
+    force_message_only(&mut state);
+    let source = "short context".to_string();
+    state.transcript.append(
+        DisplayItem::Card(ContentCard {
+            id: DisplayId::correlated("context", "localized"),
+            unit: None,
+            header: Some("Context · instructions".into()),
+            content: source.clone(),
+            role: CardRole::Context,
+            tone: DisplayTone::Dim,
+            horizontal_padding: 2,
+            copy_source: source.clone(),
+        }),
+        None,
+    );
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+
+    let flat = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>()
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>();
+    assert!(
+        flat.contains("提示词注入"),
+        "context label is not localized: {flat}"
+    );
+    assert!(
+        flat.contains("shortcontext"),
+        "injected content changed: {flat}"
+    );
+}
+
+#[test]
+fn chinese_transcript_localizes_tool_metadata() {
+    let mut state = TuiApp::default();
+    state.config.language = crate::Language::SimplifiedChinese;
+    state.config.resolved_theme = Theme::ferra();
+    force_message_only(&mut state);
+    let mut activity =
+        crate::display::ActivityRow::root(DisplayId::correlated("tool", "localized"), "bash");
+    activity.output_lines = Some(2);
+    activity.duration_ms = Some(1200);
+    state
+        .transcript
+        .append(DisplayItem::Activity(activity), None);
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+
+    let flat = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>()
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>();
+    assert!(flat.contains("bash"));
+    assert!(
+        flat.contains("2行"),
+        "line metadata is not localized: {flat}"
+    );
+    assert!(
+        flat.contains("耗时1.2s"),
+        "duration is not localized: {flat}"
+    );
+}
+
+#[test]
+fn chinese_structured_preview_localizes_chrome_and_preserves_values() {
+    let mut state = TuiApp::default();
+    state.config.language = crate::Language::SimplifiedChinese;
+    state.config.resolved_theme = Theme::ferra();
+    force_preview_only(&mut state);
+    state.preview.policy = crate::preview::PreviewPolicy::FollowReadingCursor;
+    state.preview.state = PreviewState::Ready(PreviewContent::Tool(ToolPreview {
+        name: "grep".into(),
+        primary: ToolPreviewPrimary::Command {
+            command: "grep -R table".into(),
+            metrics: ToolMetrics {
+                output_lines: 2,
+                truncated: false,
+                duration_ms: Some(1200),
+            },
+        },
+        secondary: None,
+    }));
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+
+    let flat = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>()
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>();
+    assert!(
+        flat.contains("grep-Rtable"),
+        "command value changed: {flat}"
+    );
+    assert!(
+        flat.contains("行2，耗时1.2s"),
+        "preview metrics are not localized: {flat}"
+    );
 }
 
 #[test]
@@ -1831,12 +1971,67 @@ fn overlays_paint_queue_and_approval_accessories() {
     // Cell extraction spaces wide CJK glyphs; strip whitespace for matching.
     let flat: String = text.chars().filter(|c| !c.is_whitespace()).collect();
     assert!(
-        flat.contains("审批") && flat.contains("bash"),
+        flat.contains("Approval") && flat.contains("bash"),
         "approval card painted from overlays; screen:\n{text}"
     );
     assert!(
         flat.contains("排队提示"),
         "queued prompt strip painted from overlays; screen:\n{text}"
+    );
+}
+
+#[test]
+fn chinese_approval_and_queue_accessories_localize_chrome() {
+    let mut state = TuiApp::default();
+    state.config.language = crate::Language::SimplifiedChinese;
+    state.config.resolved_theme = Theme::ferra();
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let card = crate::interaction::ApprovalCard {
+        id: "a1".into(),
+        tool_name: "bash".into(),
+        reason: "run the test".into(),
+    };
+    let queue = (1..=10)
+        .map(|index| crate::PromptInput::text(format!("queued {index}")))
+        .collect::<Vec<_>>();
+    let mut terminal = Terminal::new(TestBackend::new(80, 15)).unwrap();
+    terminal
+        .draw(|frame| {
+            render_with_cursor(
+                frame,
+                &mut state,
+                &input,
+                &mut scroll,
+                &theme,
+                RenderOverlays {
+                    approval: Some(&card),
+                    queue: &queue,
+                    ..overlays()
+                },
+            );
+        })
+        .unwrap();
+
+    let flat = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>()
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>();
+    assert!(
+        flat.contains("审批"),
+        "approval title is not localized: {flat}"
+    );
+    assert!(flat.contains("queued1"), "queued prompt changed: {flat}");
+    assert!(
+        flat.contains("还有"),
+        "queue overflow is not localized: {flat}"
     );
 }
 

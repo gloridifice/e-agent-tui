@@ -14,6 +14,7 @@ crossterm = { version = "0.29", features = ["event-stream"] }
 futures-util = "0.3"
 ratatui = "0.30"
 pulldown-cmark = "0.13"
+rust-i18n = { version = "4", default-features = false }
 serde = { version = "1", features = ["derive"] }
 syntect = { version = "5", default-features = false, features = [
     "default-syntaxes",

@@ -16,7 +16,10 @@ use ratatui::{
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::config::Theme;
+use crate::{
+    config::Theme,
+    i18n::{tr_args, Language},
+};
 
 /// Head/tail window sizes for collapsed atomic blocks.
 const CODE_HEAD_ROWS: usize = 15;
@@ -71,6 +74,8 @@ pub enum MarkdownStrength {
 /// Per-render options (config-derived, design D28).
 #[derive(Debug, Clone)]
 pub struct RenderOptions {
+    /// Language used for frontend-owned Markdown chrome.
+    pub language: Language,
     /// Units whose collapsed window is expanded (D13).
     pub expanded: HashSet<u64>,
     /// Collapse threshold for atomic blocks in rows.
@@ -90,6 +95,7 @@ pub struct RenderOptions {
 impl Default for RenderOptions {
     fn default() -> Self {
         Self {
+            language: Language::English,
             expanded: HashSet::new(),
             collapse_rows: 40,
             mermaid_enabled: true,
@@ -760,12 +766,24 @@ fn render_mermaid_block(
         raw_lines.join("\n")
     };
     let dim = theme.code.meta.style();
-    // Glow-style header: `  mermaid · N 行` on the filled block.
+    let source_lines = source.lines().count();
+    // Glow-style header: `  mermaid · N lines` on the filled block.
     out.push(RenderLine {
         line: Line::from(vec![
             Span::styled("  ", dim),
             Span::styled("mermaid", dim),
-            Span::styled(format!(" · {} 行", source.lines().count()), dim),
+            Span::styled(
+                tr_args(
+                    options.language,
+                    if source_lines == 1 {
+                        "markdown.block_line"
+                    } else {
+                        "markdown.block_lines"
+                    },
+                    &[("count", source_lines.to_string())],
+                ),
+                dim,
+            ),
         ]),
         unit,
         raw_line: Some(0),
@@ -819,7 +837,7 @@ fn render_mermaid_block(
                     emit(i, out);
                 }
                 let hidden = diagram.len() - head - CODE_TAIL_ROWS;
-                out.push(collapse_hint_row(unit, theme, hidden));
+                out.push(collapse_hint_row(unit, theme, options.language, hidden));
                 for i in (diagram.len() - CODE_TAIL_ROWS.min(diagram.len()))..diagram.len() {
                     emit(i, out);
                 }
@@ -835,7 +853,11 @@ fn render_mermaid_block(
                 line: Line::from(vec![
                     Span::styled("  ", dim),
                     Span::styled(
-                        format!("(mermaid 渲染失败: {error})"),
+                        tr_args(
+                            options.language,
+                            "markdown.mermaid_error",
+                            &[("error", error.to_string())],
+                        ),
                         theme.code.meta.style(),
                     ),
                 ]),
@@ -881,12 +903,30 @@ fn render_code_block(
         (&raw_lines[..], 0)
     };
     let dim = theme.code.meta.style();
-    // Glow-style header: `  lang · N 行` — no frame.
+    let language_key = if content.len() == 1 {
+        "markdown.block_line"
+    } else {
+        "markdown.block_lines"
+    };
+    // Glow-style header: `  lang · N lines` — no frame.
     out.push(RenderLine {
         line: Line::from(vec![
             Span::styled("  ", dim),
-            Span::styled(lang.unwrap_or("code").to_string(), dim),
-            Span::styled(format!(" · {} 行", content.len()), dim),
+            Span::styled(
+                lang.map_or_else(
+                    || crate::i18n::tr(options.language, "markdown.code"),
+                    str::to_owned,
+                ),
+                dim,
+            ),
+            Span::styled(
+                tr_args(
+                    options.language,
+                    language_key,
+                    &[("count", content.len().to_string())],
+                ),
+                dim,
+            ),
         ]),
         unit,
         raw_line: Some(0),
@@ -916,7 +956,7 @@ fn render_code_block(
             push_content(i, out);
         }
         let hidden = content.len() - CODE_HEAD_ROWS - CODE_TAIL_ROWS;
-        out.push(collapse_hint_row(unit, theme, hidden));
+        out.push(collapse_hint_row(unit, theme, options.language, hidden));
         for i in (content.len() - CODE_TAIL_ROWS)..content.len() {
             push_content(i, out);
         }
@@ -929,10 +969,14 @@ fn render_code_block(
 }
 
 /// The collapsed-window hint row (shared by code and mermaid blocks).
-fn collapse_hint_row(unit: u64, theme: &Theme, hidden: usize) -> RenderLine {
+fn collapse_hint_row(unit: u64, theme: &Theme, language: Language, hidden: usize) -> RenderLine {
     RenderLine {
         line: Line::from(Span::styled(
-            format!("  … 收起 {hidden} 行 [Enter 展开]"),
+            tr_args(
+                language,
+                "markdown.collapse_hint",
+                &[("hidden", hidden.to_string())],
+            ),
             theme.code.meta.style(),
         )),
         unit,
@@ -1063,7 +1107,11 @@ fn render_table(
             push_row(out, *idx, false);
         }
         let hidden = body_rows.len() - shown - 1 - 2;
-        let hint_content = format!(" … 收起 {hidden} 行 [Enter 展开]");
+        let hint_content = tr_args(
+            options.language,
+            "markdown.table_collapse_hint",
+            &[("hidden", hidden.to_string())],
+        );
         let total_width = 3 * widths.len() + 1 + widths.iter().sum::<usize>();
         let hint_pad =
             total_width.saturating_sub(UnicodeWidthStr::width(hint_content.as_str()) + 2);
@@ -2099,7 +2147,7 @@ mod tests {
         // Glow-style block: header row + content row, no frame.
         let header_idx = text
             .iter()
-            .position(|l| l == "  code · 1 行")
+            .position(|l| l == "  code · 1 line")
             .expect("glow header");
         assert_eq!(text[header_idx - 1], "", "blank row above code block");
         assert_eq!(text[header_idx + 1], "  code", "content row follows");
@@ -2223,11 +2271,33 @@ mod tests {
         let (lines, _) = render_full(&code);
         let text = plain(&lines);
         assert!(
-            text.iter().any(|l| l.contains("[Enter 展开]")),
+            text.iter().any(|l| l.contains("[Enter expand]")),
             "collapse hint present: {:?}",
             text
         );
         assert!(lines.len() < 40, "collapsed: {} lines", lines.len());
+    }
+
+    #[test]
+    fn chinese_code_block_uses_localized_chrome() {
+        let mut code = String::from("```\n");
+        for i in 0..100 {
+            code.push_str(&format!("line {i}\n"));
+        }
+        code.push_str("```\n");
+        let theme = Theme::ferra();
+        let mut next = 0;
+        let mut units = HashMap::new();
+        let options = RenderOptions {
+            language: Language::SimplifiedChinese,
+            ..Default::default()
+        };
+        let lines = render_markdown(&code, &theme, &mut next, &options, &mut units);
+        let text = plain(&lines);
+        assert!(text.iter().any(|line| line.contains("代码 · 100 行")));
+        assert!(text
+            .iter()
+            .any(|line| line.contains("收起 80 行 [Enter 展开]")));
     }
 
     #[test]
@@ -2255,7 +2325,7 @@ mod tests {
         let lines = render_markdown(&code, &theme, &mut 0, &options, &mut units);
         let text = plain(&lines);
         assert!(
-            !text.iter().any(|l| l.contains("[Enter 展开]")),
+            !text.iter().any(|l| l.contains("[Enter expand]")),
             "no hint when expanded"
         );
         // Glow layout: header row + 100 content rows + 1 bottom padding row.

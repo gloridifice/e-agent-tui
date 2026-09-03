@@ -168,6 +168,7 @@ fn render_resize_placeholder(
     area: Rect,
     resize: PaneResizeState,
     theme: &Theme,
+    language: crate::Language,
 ) -> Option<Position> {
     let drag = resize.drag()?;
     frame.render_widget(Block::default().style(theme.surface.base.style()), area);
@@ -196,7 +197,11 @@ fn render_resize_placeholder(
         main,
         MAIN_PAGE_MARGIN,
         main_right_padding,
-        &format!("消息栏\n{}", display_percent.display()),
+        &format!(
+            "{}\n{}",
+            crate::i18n::tr(language, "screen.message_pane"),
+            display_percent.display()
+        ),
         theme,
     );
     if !drag.pending_collapsed {
@@ -207,7 +212,10 @@ fn render_resize_placeholder(
                 preview,
                 PREVIEW_SPLIT_LEFT_PADDING,
                 PREVIEW_SPLIT_RIGHT_PADDING,
-                &format!("预览栏\n{preview_percent:.2}%"),
+                &format!(
+                    "{}\n{preview_percent:.2}%",
+                    crate::i18n::tr(language, "screen.preview_pane")
+                ),
                 theme,
             );
         }
@@ -247,7 +255,13 @@ pub(super) fn render_with_cursor(
 ) -> Option<Position> {
     let pane_resize = overlays.pane_resize;
     if pane_resize.is_active() {
-        return render_resize_placeholder(frame, frame.area(), pane_resize, theme);
+        return render_resize_placeholder(
+            frame,
+            frame.area(),
+            pane_resize,
+            theme,
+            state.config.language,
+        );
     }
     let RenderOverlays {
         help_visible,

@@ -9,6 +9,7 @@ use ratatui::{
 
 use crate::{
     config::Config,
+    i18n::{tr, tr_args, Language},
     mouse_selection::{SelectionFrame, SelectionSurface},
     preview::{
         LineSelection, PreviewContent, PreviewLayoutKey, PreviewPaneState, PreviewState,
@@ -36,13 +37,20 @@ pub fn render(
         .saturating_sub(usize::from(left_padding.saturating_add(right_padding)))
         .max(1);
     let lines = match &preview.state {
-        PreviewState::Empty => vec![Line::styled("No preview", theme.surface.muted_text.style())],
+        PreviewState::Empty => vec![Line::styled(
+            tr(config.language, "preview.empty"),
+            theme.surface.muted_text.style(),
+        )],
         PreviewState::Loading { .. } => vec![Line::styled(
-            "• Loading preview…",
+            tr(config.language, "preview.loading"),
             theme.working_status.running.style(),
         )],
         PreviewState::Error(error) => vec![Line::styled(
-            format!("Preview error: {error}"),
+            tr_args(
+                config.language,
+                "preview.error",
+                &[("error", error.clone())],
+            ),
             theme.log.error.style(),
         )],
         PreviewState::Ready(content) => {
@@ -50,7 +58,7 @@ pub fn render(
             let full = if let Some(lines) = preview.cached_layout(&layout_key) {
                 lines
             } else {
-                let lines = content_lines(content, theme, inner_width)
+                let lines = content_lines(content, theme, inner_width, config.language)
                     .into_iter()
                     .flat_map(|line| wrap_line(line, inner_width))
                     .collect::<Vec<_>>();
@@ -147,11 +155,18 @@ fn preview_layout_key(
     }
 }
 
-fn content_lines(content: &PreviewContent, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+fn content_lines(
+    content: &PreviewContent,
+    theme: &Theme,
+    width: usize,
+    language: crate::Language,
+) -> Vec<Line<'static>> {
     match content {
         PreviewContent::Link { label, url } => vec![Line::from(vec![
             Span::styled(
-                label.clone().unwrap_or_else(|| "Link".into()),
+                label
+                    .clone()
+                    .unwrap_or_else(|| tr(language, "preview.link")),
                 theme.markdown.link_text.style(),
             ),
             Span::raw(" "),
@@ -171,7 +186,7 @@ fn content_lines(content: &PreviewContent, theme: &Theme, width: usize) -> Vec<L
                 .collect()
         }
         PreviewContent::SearchResult { query, matches } => std::iter::once(Line::styled(
-            format!("Search: {query}"),
+            tr_args(language, "preview.search", &[("query", query.clone())]),
             theme.markdown.heading3.style(),
         ))
         .chain(
@@ -189,11 +204,13 @@ fn content_lines(content: &PreviewContent, theme: &Theme, width: usize) -> Vec<L
         }
         PreviewContent::Markdown(source)
         | PreviewContent::Reasoning(source)
-        | PreviewContent::MutedMarkdown(source) => weak_markdown_lines(source, theme, width),
-        PreviewContent::Tool(preview) => tool_lines(preview, theme, width),
+        | PreviewContent::MutedMarkdown(source) => {
+            weak_markdown_lines(source, theme, width, language)
+        }
+        PreviewContent::Tool(preview) => tool_lines(preview, theme, width, language),
         PreviewContent::Hunks(hunks) => hunks
             .iter()
-            .flat_map(|hunk| hunk_lines(hunk, theme, width))
+            .flat_map(|hunk| hunk_lines(hunk, theme, width, language))
             .collect(),
         PreviewContent::PlainText(text) => text
             .lines()
@@ -205,10 +222,16 @@ fn content_lines(content: &PreviewContent, theme: &Theme, width: usize) -> Vec<L
 /// Complete Preview Markdown rendered directly through the weak semantic
 /// group. Reasoning and injected context retain distinct semantic content
 /// kinds but share this presentation palette.
-fn weak_markdown_lines(source: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+fn weak_markdown_lines(
+    source: &str,
+    theme: &Theme,
+    width: usize,
+    language: crate::Language,
+) -> Vec<Line<'static>> {
     let mut next_unit = 0u64;
     let mut units = std::collections::HashMap::new();
     let options = RenderOptions {
+        language,
         collapse_rows: usize::MAX,
         mermaid_enabled: false,
         markdown_strength: MarkdownStrength::Weak,
@@ -229,7 +252,12 @@ fn weak_markdown_lines(source: &str, theme: &Theme, width: usize) -> Vec<Line<'s
         .collect()
 }
 
-fn tool_lines(preview: &ToolPreview, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+fn tool_lines(
+    preview: &ToolPreview,
+    theme: &Theme,
+    width: usize,
+    language: Language,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     lines.push(Line::styled(
         preview.name.clone(),
@@ -248,7 +276,7 @@ fn tool_lines(preview: &ToolPreview, theme: &Theme, width: usize) -> Vec<Line<'s
                 Span::styled(command.clone(), theme.surface.primary_text.style()),
             ]));
             lines.push(Line::styled(
-                metrics_text(metrics),
+                metrics_text(metrics, language),
                 theme.activity.detail.style(),
             ));
         }
@@ -259,7 +287,10 @@ fn tool_lines(preview: &ToolPreview, theme: &Theme, width: usize) -> Vec<Line<'s
             ));
             if let Some(path) = path {
                 lines.push(Line::from(vec![
-                    Span::styled("at ", theme.activity.detail.style()),
+                    Span::styled(
+                        format!("{} ", tr(language, "preview.at")),
+                        theme.activity.detail.style(),
+                    ),
                     Span::styled(format!("\"{path}\""), theme.surface.primary_text.style()),
                 ]));
             }
@@ -314,16 +345,28 @@ fn location_text(path: &str, range: &Option<LineSelection>) -> String {
     }
 }
 
-fn metrics_text(metrics: &ToolMetrics) -> String {
-    let noun = if metrics.output_lines == 1 {
-        "line"
+fn metrics_text(metrics: &ToolMetrics, language: Language) -> String {
+    let noun_key = if metrics.output_lines == 1 {
+        "preview.metric.line"
     } else {
-        "lines"
+        "preview.metric.lines"
     };
     let suffix = if metrics.truncated { "+" } else { "" };
-    let mut text = format!("{noun} {}{suffix}", metrics.output_lines);
+    let mut text = tr_args(
+        language,
+        "preview.metrics",
+        &[
+            ("noun", tr(language, noun_key)),
+            ("count", metrics.output_lines.to_string()),
+            ("suffix", suffix.to_owned()),
+        ],
+    );
     if let Some(duration_ms) = metrics.duration_ms {
-        text.push_str(&format!(", duration {:.1}s", duration_ms as f64 / 1000.0));
+        text.push_str(&tr_args(
+            language,
+            "preview.duration",
+            &[("seconds", format!("{:.1}", duration_ms as f64 / 1000.0))],
+        ));
     }
     text
 }
@@ -332,6 +375,7 @@ fn hunk_lines(
     hunk: &crate::preview::MutationHunk,
     theme: &Theme,
     width: usize,
+    language: Language,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     if let Some(path) = &hunk.path {
@@ -339,7 +383,11 @@ fn hunk_lines(
     }
     if let Some(anchor) = hunk.anchor_line {
         lines.push(Line::styled(
-            format!("@ line {anchor}"),
+            tr_args(
+                language,
+                "preview.line_anchor",
+                &[("line", anchor.to_string())],
+            ),
             theme.code.meta.style(),
         ));
     }
@@ -394,6 +442,42 @@ mod tests {
     }
 
     #[test]
+    fn preview_chrome_localizes_search_link_and_line_anchor() {
+        let theme = Theme::ferra();
+        let search = content_lines(
+            &PreviewContent::SearchResult {
+                query: "needle".into(),
+                matches: vec!["src/main.rs:10".into()],
+            },
+            &theme,
+            40,
+            Language::SimplifiedChinese,
+        );
+        assert_eq!(line_text(&search[0]), "搜索：needle");
+        assert_eq!(line_text(&search[1]), "src/main.rs:10");
+
+        let link = content_lines(
+            &PreviewContent::Link {
+                label: None,
+                url: "https://example.test".into(),
+            },
+            &theme,
+            40,
+            Language::SimplifiedChinese,
+        );
+        assert_eq!(line_text(&link[0]), "链接 https://example.test");
+
+        let hunk = MutationHunk {
+            path: Some("src/main.rs".into()),
+            old: None,
+            new: Some("new line".into()),
+            anchor_line: Some(10),
+        };
+        let anchored = hunk_lines(&hunk, &theme, 40, Language::SimplifiedChinese);
+        assert_eq!(line_text(&anchored[1]), "@ 第 10 行");
+    }
+
+    #[test]
     fn hunk_lines_number_added_rows_from_the_insert_anchor() {
         let theme = Theme::ferra();
         let hunk = MutationHunk {
@@ -402,7 +486,7 @@ mod tests {
             new: Some("line a\nline b".into()),
             anchor_line: Some(10),
         };
-        let lines = hunk_lines(&hunk, &theme, 40);
+        let lines = hunk_lines(&hunk, &theme, 40, Language::English);
         let texts: Vec<String> = lines.iter().map(line_text).collect();
         assert_eq!(texts[0], "a.rs");
         assert_eq!(texts[1], "@ line 10");
@@ -420,7 +504,7 @@ mod tests {
             new: Some("new1\nnew2".into()),
             anchor_line: None,
         };
-        let lines = hunk_lines(&hunk, &theme, 40);
+        let lines = hunk_lines(&hunk, &theme, 40, Language::English);
         let texts: Vec<String> = lines.iter().map(line_text).collect();
         assert!(texts[0].starts_with("\u{258c}    1 \u{2502} old1"));
         assert!(texts[1].starts_with("\u{258c}    2 \u{2502} old2"));

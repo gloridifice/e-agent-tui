@@ -8,23 +8,29 @@ pub(super) fn render_effort_page(
     focus: &crate::input_page::FocusState,
     viewport: &mut crate::input_page::ViewportState,
     theme: &Theme,
+    language: crate::Language,
 ) {
     let regions = input_page_shell(frame, area, theme);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("❯ ", Style::default().fg(theme.user)),
-            Span::styled("推理强度", Style::default().fg(theme.fg)),
+            Span::styled(
+                crate::i18n::tr(language, "input_page.effort.title"),
+                Style::default().fg(theme.fg),
+            ),
         ])),
         regions.header,
     );
     if page.loading {
         frame.render_widget(
-            Paragraph::new("读取推理强度中…").style(Style::default().fg(theme.dim)),
+            Paragraph::new(crate::i18n::tr(language, "input_page.effort.loading"))
+                .style(Style::default().fg(theme.dim)),
             regions.body,
         );
     } else if page.unavailable || page.efforts.is_empty() {
         frame.render_widget(
-            Paragraph::new("当前模型未提供可选择的推理强度").style(Style::default().fg(theme.dim)),
+            Paragraph::new(crate::i18n::tr(language, "input_page.effort.unavailable"))
+                .style(Style::default().fg(theme.dim)),
             regions.body,
         );
     } else {
@@ -56,7 +62,7 @@ pub(super) fn render_effort_page(
                 explicit.is_none() && page.default_effort.as_deref() == Some(effort.id.as_str());
             let mut label = effort.name.clone();
             if default {
-                label.push_str("（默认）");
+                label.push_str(&crate::i18n::tr(language, "input_page.effort.default"));
             }
             rows.push(Line::from(vec![
                 Span::styled(
@@ -75,7 +81,7 @@ pub(super) fn render_effort_page(
             rows.insert(
                 0,
                 Line::from(Span::styled(
-                    "当前：Provider Default",
+                    crate::i18n::tr(language, "input_page.effort.current_default"),
                     Style::default().fg(theme.dim),
                 )),
             );
@@ -83,7 +89,7 @@ pub(super) fn render_effort_page(
         frame.render_widget(Paragraph::new(rows), regions.body);
     }
     frame.render_widget(
-        Paragraph::new("hjkl/方向键移动   Enter 执行   Esc 退出")
+        Paragraph::new(crate::i18n::tr(language, "input_page.effort.footer"))
             .style(Style::default().fg(theme.dim)),
         regions.footer,
     );

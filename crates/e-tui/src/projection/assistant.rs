@@ -6,6 +6,7 @@ use crate::{
         CardRole, ContentCard, DisplayId, DisplayItem, DisplayTone, TranscriptBlock,
         TranscriptFormat,
     },
+    i18n::{tr, tr_args, Language},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,6 +20,14 @@ pub fn project(
     event: &TimelineRecord,
     horizontal_padding: usize,
 ) -> Option<Vec<AssistantMutation>> {
+    project_with_language(event, horizontal_padding, Language::English)
+}
+
+pub fn project_with_language(
+    event: &TimelineRecord,
+    horizontal_padding: usize,
+    language: Language,
+) -> Option<Vec<AssistantMutation>> {
     match &event.fact {
         TimelineFact::UserMessage {
             text,
@@ -29,7 +38,11 @@ pub fn project(
             let attachments = content
                 .iter()
                 .filter_map(|block| match block {
-                    ContentBlock::Image { label } => Some(format!("[Image: {label}]")),
+                    ContentBlock::Image { label } => Some(tr_args(
+                        language,
+                        "transcript.image",
+                        &[("name", label.clone())],
+                    )),
                     _ => None,
                 })
                 .collect::<Vec<_>>();
@@ -64,7 +77,7 @@ pub fn project(
                 DisplayItem::Card(ContentCard {
                     id: id("compaction-summary"),
                     unit: None,
-                    header: Some("Compaction summary".into()),
+                    header: Some(tr(language, "transcript.compaction_summary")),
                     content: displayed.clone(),
                     role: CardRole::Detail,
                     tone: DisplayTone::Dim,
@@ -86,7 +99,9 @@ pub fn project(
                 DisplayItem::Card(ContentCard {
                     id: id("context"),
                     unit: None,
-                    header: source.form.as_ref().map(|form| format!("Context · {form}")),
+                    header: source.form.as_ref().map(|form| {
+                        tr_args(language, "transcript.context", &[("form", form.clone())])
+                    }),
                     content: displayed.clone(),
                     role: if source_kind.as_deref() == Some("user") {
                         CardRole::Attachment

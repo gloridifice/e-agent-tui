@@ -2,6 +2,8 @@
 
 use std::time::{Duration, Instant};
 
+use crate::i18n::{tr_args, Language};
+
 pub const COPY_NOTICE_MIN_SECS: u64 = 3;
 
 #[derive(Debug, Clone, Default)]
@@ -23,9 +25,27 @@ impl NoticeState {
         });
     }
 
-    pub fn show_clipboard(&mut self, lines: usize, preview: &str, truncated: bool, now: Instant) {
+    pub fn show_clipboard(
+        &mut self,
+        language: Language,
+        lines: usize,
+        preview: &str,
+        truncated: bool,
+        now: Instant,
+    ) {
         let ellipsis = if truncated { "..." } else { "" };
-        self.show(format!("已复制 {lines} 行：{preview}{ellipsis}"), now);
+        self.show(
+            tr_args(
+                language,
+                "notice.copied",
+                &[
+                    ("lines", lines.to_string()),
+                    ("preview", preview.to_owned()),
+                    ("ellipsis", ellipsis.to_owned()),
+                ],
+            ),
+            now,
+        );
     }
 
     pub fn deadline(&self, configured_secs: u64) -> Option<Instant> {
@@ -65,7 +85,7 @@ mod tests {
     fn clipboard_notice_formats_and_honors_legacy_duration_floor() {
         let shown_at = Instant::now();
         let mut notice = NoticeState::default();
-        notice.show_clipboard(2, "one tw", true, shown_at);
+        notice.show_clipboard(Language::SimplifiedChinese, 2, "one tw", true, shown_at);
         assert_eq!(
             notice.visible_text(2, shown_at),
             Some("已复制 2 行：one tw...")

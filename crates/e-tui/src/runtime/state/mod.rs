@@ -370,7 +370,10 @@ impl RuntimeState {
         } else {
             let id = DisplayId::correlated("thinking", &self.next_thinking_id.to_string());
             self.next_thinking_id = self.next_thinking_id.wrapping_add(1);
-            let mut row = ActivityRow::root(id, "Thinking...");
+            let mut row = ActivityRow::root(
+                id,
+                crate::i18n::tr(self.config.language, "transcript.thinking"),
+            );
             row.count = 1;
             self.insert_transcript_item(
                 DisplayItem::Thinking(ThinkingNode {

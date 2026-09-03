@@ -6,6 +6,7 @@ use super::{
     KeyEvent, KeyModifiers, LocalCommandContext, Mutex, PointerEvent, Rect, RuntimeState,
     ScrollState, SelectionFrame, TerminalRoute, TerminalSize, TerminalUiState, UiAction,
 };
+use crate::i18n::tr;
 
 pub(super) fn apply_terminal_route(
     route: TerminalRoute,
@@ -299,7 +300,8 @@ pub(super) fn apply_ordinary_key(
         };
         outcome.effects.extend(actions);
         if !entered {
-            ui.notice.show("没有可阅读的内容", now);
+            ui.notice
+                .show(tr(ui.config.language, "terminal.no_readable_content"), now);
         }
     }
     if let Some(pending) = outcome.command {
@@ -318,12 +320,14 @@ pub(super) fn apply_ordinary_key(
             });
         if (is_builtin || is_skill_injection) && !pending.images.is_empty() {
             ui.input.restore_prompt(pending.original);
-            ui.notice.show("此命令不接受图片", now);
+            ui.notice
+                .show(tr(ui.config.language, "terminal.command_no_images"), now);
             return outcome.effects;
         }
         let command = runtime_command::handle_local_command(
             pending.line,
             LocalCommandContext {
+                language: ui.config.language,
                 input_page: ui.input_page,
                 integrated_commands: &catalogs.integrated_commands,
                 config: ui.config,
@@ -367,7 +371,8 @@ pub(super) fn apply_ordinary_key(
             };
             let mut app = state.lock().unwrap();
             if !app.enter_reading(ui.input, ui.scroll, viewport_height) {
-                ui.notice.show("没有可阅读的内容", now);
+                ui.notice
+                    .show(tr(ui.config.language, "terminal.no_readable_content"), now);
             }
             outcome.effects.extend(app.take_actions());
         }

@@ -47,18 +47,18 @@ pub enum CommandAction {
 #[derive(Debug, Clone, Copy)]
 pub struct BuiltinCommand {
     pub name: &'static str,
-    pub description: &'static str,
-    pub input_hint: Option<&'static str>,
+    pub description_key: &'static str,
+    pub input_hint_key: Option<&'static str>,
     pub completion: CompletionKind,
     pub action: CommandAction,
 }
 
 macro_rules! command {
-    ($name:literal, $description:literal, $hint:expr, $completion:ident, $action:ident) => {
+    ($name:literal, $description_key:literal, $hint_key:expr, $completion:ident, $action:ident) => {
         BuiltinCommand {
             name: $name,
-            description: $description,
-            input_hint: $hint,
+            description_key: $description_key,
+            input_hint_key: $hint_key,
             completion: CompletionKind::$completion,
             action: CommandAction::$action,
         }
@@ -67,41 +67,71 @@ macro_rules! command {
 
 /// The sole declaration site for built-in behavior and completion metadata.
 pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
-    command!("help", "显示帮助", None, None, Help),
-    command!("settings", "打开设置面板", None, None, Settings),
+    command!("help", "command.help.description", None, None, Help),
     command!(
-        "login",
-        "登录设置（API key / 账号 / proxy）",
+        "settings",
+        "command.settings.description",
         None,
         None,
-        Login
+        Settings
     ),
-    command!("new", "新建会话", Some("[模式]"), NewMode, New),
-    command!("resume", "切换或续接会话", Some("[会话 ID]"), None, Resume),
+    command!("login", "command.login.description", None, None, Login),
+    command!(
+        "new",
+        "command.new.description",
+        Some("command.new.hint"),
+        NewMode,
+        New
+    ),
+    command!(
+        "resume",
+        "command.resume.description",
+        Some("command.resume.hint"),
+        None,
+        Resume
+    ),
     command!(
         "model",
-        "选择模型（provider × model）",
-        Some("<provider/model>"),
+        "command.model.description",
+        Some("command.model.hint"),
         Model,
         Model
     ),
-    command!("effort", "选择当前模型的推理强度", None, None, Effort),
-    command!("theme", "切换主题", None, None, Theme),
-    command!("reload", "重载配置 / 主题 / 技能", None, None, Reload),
-    command!("skill", "注入技能", Some("<名称>"), Skill, Skill),
-    command!("compact", "压缩上下文", None, None, Forward),
+    command!("effort", "command.effort.description", None, None, Effort),
+    command!("theme", "command.theme.description", None, None, Theme),
+    command!("reload", "command.reload.description", None, None, Reload),
     command!(
-        "goal",
-        "目标管理",
-        Some("[目标|clear|edit|pause|resume]"),
+        "skill",
+        "command.skill.description",
+        Some("command.skill.hint"),
+        Skill,
+        Skill
+    ),
+    command!(
+        "compact",
+        "command.compact.description",
+        None,
         None,
         Forward
     ),
-    command!("plan", "计划模式", Some("[off|消息]"), None, Forward),
-    command!("read", "进入阅读视图", None, None, Reading),
-    command!("exit", "退出客户端", None, None, Quit),
-    command!("q", "退出客户端", None, None, Quit),
-    command!("quit", "退出客户端", None, None, Quit),
+    command!(
+        "goal",
+        "command.goal.description",
+        Some("command.goal.hint"),
+        None,
+        Forward
+    ),
+    command!(
+        "plan",
+        "command.plan.description",
+        Some("command.plan.hint"),
+        None,
+        Forward
+    ),
+    command!("read", "command.read.description", None, None, Reading),
+    command!("exit", "command.quit.description", None, None, Quit),
+    command!("q", "command.quit.description", None, None, Quit),
+    command!("quit", "command.quit.description", None, None, Quit),
 ];
 
 pub fn builtin_command(name: &str) -> Option<&'static BuiltinCommand> {
@@ -134,9 +164,21 @@ pub enum CommandSource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandText {
+    Builtin {
+        description_key: &'static str,
+        input_hint_key: Option<&'static str>,
+    },
+    Integrated {
+        description: String,
+        input_hint: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandCandidate {
     pub line: String,
-    pub description: String,
+    pub text: CommandText,
     pub source: CommandSource,
 }
 
@@ -156,13 +198,6 @@ fn rank(query: &str, name: &str) -> Option<u8> {
         Some(2)
     } else {
         None
-    }
-}
-
-fn discovery_description(description: &str, hint: Option<&str>) -> String {
-    match hint.filter(|hint| !hint.is_empty()) {
-        Some(hint) => format!("{description}  {hint}"),
-        None => description.to_owned(),
     }
 }
 
@@ -186,7 +221,10 @@ pub fn match_command_catalog(
             0,
             CommandCandidate {
                 line: format!("/{}", command.name),
-                description: discovery_description(command.description, command.input_hint),
+                text: CommandText::Builtin {
+                    description_key: command.description_key,
+                    input_hint_key: command.input_hint_key,
+                },
                 source: CommandSource::Builtin,
             },
         ));
@@ -206,10 +244,10 @@ pub fn match_command_catalog(
             1,
             CommandCandidate {
                 line: format!("/{}", command.name),
-                description: discovery_description(
-                    &command.description,
-                    command.input_hint.as_deref(),
-                ),
+                text: CommandText::Integrated {
+                    description: command.description.clone(),
+                    input_hint: command.input_hint.clone(),
+                },
                 source: CommandSource::Integrated,
             },
         ));
@@ -246,7 +284,10 @@ mod tests {
         assert_eq!(all.iter().filter(|item| item.line == "/plan").count(), 1);
         let feedback = all.iter().find(|item| item.line == "/feedback").unwrap();
         assert_eq!(feedback.source, CommandSource::Integrated);
-        assert!(feedback.description.contains("<text>"));
+        assert!(matches!(
+            &feedback.text,
+            CommandText::Integrated { input_hint: Some(hint), .. } if hint == "<text>"
+        ));
     }
 
     #[test]

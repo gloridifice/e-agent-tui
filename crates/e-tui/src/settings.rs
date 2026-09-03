@@ -9,13 +9,21 @@ use crate::{
     page_core::{handle_text_editor, TextEditResult, TextEditor},
 };
 
-pub const CATEGORIES: &[&str] = &["外观", "行为", "显示", "高级"];
+pub const CATEGORIES: &[&str] = &[
+    "settings.category.appearance",
+    "settings.category.behavior",
+    "settings.category.display",
+    "settings.category.advanced",
+];
 
-/// Value kinds. Booleans are just two-option choices (开/关).
+pub type ChoiceOption = (&'static str, &'static str);
+
+/// Value kinds. Choice values are stable config values; labels are translation
+/// keys resolved only by the settings renderer.
 #[derive(Clone, Copy, PartialEq)]
 pub enum ItemKind {
     Choice {
-        options: &'static [&'static str],
+        options: &'static [ChoiceOption],
     },
     /// Choice over the live agent-preset roster (`/new` modes): the options
     /// are not static — they come from `SettingsState.modes`, fed by the
@@ -30,8 +38,11 @@ pub enum ItemKind {
 
 pub struct ItemDef {
     pub category: usize,
+    /// Stable setting identity used by focus and edit reconciliation.
+    pub key: &'static str,
+    /// Translation key for the rendered label.
     pub label: &'static str,
-    /// One-sentence description; rendered dark under the label.
+    /// Translation key for the rendered description.
     pub desc: &'static str,
     pub kind: ItemKind,
     /// Read the current value as a display string (an option label for
@@ -41,11 +52,28 @@ pub struct ItemDef {
     pub apply: fn(&mut Config, value: String),
 }
 
+const BOOL_OPTIONS: &[ChoiceOption] = &[("on", "common.on"), ("off", "common.off")];
+const ALIGN_OPTIONS: &[ChoiceOption] = &[
+    ("center", "settings.choice.align.center"),
+    ("left", "settings.choice.align.left"),
+    ("right", "settings.choice.align.right"),
+];
+const THINKING_OPTIONS: &[ChoiceOption] = &[
+    ("compact", "settings.choice.thinking.compact"),
+    ("lines", "settings.choice.thinking.lines"),
+    ("full", "settings.choice.thinking.full"),
+];
+const LANGUAGE_OPTIONS: &[ChoiceOption] = &[
+    ("en", "settings.choice.language.en"),
+    ("zh-CN", "settings.choice.language.zh_cn"),
+];
+
 pub static ITEMS: &[ItemDef] = &[
     ItemDef {
         category: 0,
-        label: "主题",
-        desc: "配色主题（themes 目录下的合法主题；默认 deepseek-e）",
+        key: "theme",
+        label: "settings.item.theme.label",
+        desc: "settings.item.theme.desc",
         kind: ItemKind::ThemeChoice,
         get: |c| c.theme.clone(),
         apply: |c, v| {
@@ -56,20 +84,22 @@ pub static ITEMS: &[ItemDef] = &[
     },
     ItemDef {
         category: 0,
-        label: "纯色模式",
-        desc: "降级为纯色输出（NO_COLOR 语义）",
+        key: "plain_color",
+        label: "settings.item.plain_color.label",
+        desc: "settings.item.plain_color.desc",
         kind: ItemKind::Choice {
-            options: &["开", "关"],
+            options: BOOL_OPTIONS,
         },
-        get: |c| bool_str(c.plain_color),
+        get: |c| bool_value(c.plain_color),
         apply: |c, v| {
-            c.plain_color = v == "开";
+            c.plain_color = v == "on";
         },
     },
     ItemDef {
         category: 0,
-        label: "淡入背景颜色",
-        desc: "新文字前景淡入时使用的 #RRGGBB 背景参考色",
+        key: "background_color",
+        label: "settings.item.background_color.label",
+        desc: "settings.item.background_color.desc",
         kind: ItemKind::Input,
         get: |c| c.background_color.to_string(),
         apply: |c, v| {
@@ -80,8 +110,9 @@ pub static ITEMS: &[ItemDef] = &[
     },
     ItemDef {
         category: 0,
-        label: "消息/输入框内边距",
-        desc: "用户消息块与输入栏的水平内边距（空格数）",
+        key: "user_input_padding",
+        label: "settings.item.user_input_padding.label",
+        desc: "settings.item.user_input_padding.desc",
         kind: ItemKind::Input,
         get: |c| c.user_input_padding.to_string(),
         apply: |c, v| {
@@ -92,8 +123,9 @@ pub static ITEMS: &[ItemDef] = &[
     },
     ItemDef {
         category: 0,
-        label: "消息栏宽度比例",
-        desc: "宽屏双栏时消息栏占终端宽度的比例（25.00%-100.00%）",
+        key: "message_pane_percent",
+        label: "settings.item.message_pane_percent.label",
+        desc: "settings.item.message_pane_percent.desc",
         kind: ItemKind::Input,
         get: |c| c.message_pane_percent.display(),
         apply: |c, v| {
@@ -107,8 +139,9 @@ pub static ITEMS: &[ItemDef] = &[
     },
     ItemDef {
         category: 0,
-        label: "页面最大宽度",
-        desc: "正文列最大宽度（列），0 表示不限，配合页面对齐定位",
+        key: "page_max_width",
+        label: "settings.item.page_max_width.label",
+        desc: "settings.item.page_max_width.desc",
         kind: ItemKind::Input,
         get: |c| c.page_max_width.to_string(),
         apply: |c, v| {
@@ -119,36 +152,53 @@ pub static ITEMS: &[ItemDef] = &[
     },
     ItemDef {
         category: 0,
-        label: "页面对齐",
-        desc: "页面限宽时的水平对齐：居中/左对齐/右对齐",
+        key: "page_align",
+        label: "settings.item.page_align.label",
+        desc: "settings.item.page_align.desc",
         kind: ItemKind::Choice {
-            options: &["居中", "左对齐", "右对齐"],
+            options: ALIGN_OPTIONS,
         },
-        get: |c| c.page_align_label().to_string(),
+        get: |c| c.page_align_value().into(),
         apply: |c, v| {
             c.page_align = match v.as_str() {
-                "左对齐" => "left".into(),
-                "右对齐" => "right".into(),
+                "left" | "right" | "center" => v,
                 _ => "center".into(),
             };
         },
     },
     ItemDef {
         category: 1,
-        label: "记住上次会话",
-        desc: "启动时自动续接上次会话（默认关：新进程开新会话）",
+        key: "remember_last_session",
+        label: "settings.item.remember_last_session.label",
+        desc: "settings.item.remember_last_session.desc",
         kind: ItemKind::Choice {
-            options: &["开", "关"],
+            options: BOOL_OPTIONS,
         },
-        get: |c| bool_str(c.remember_last_session),
+        get: |c| bool_value(c.remember_last_session),
         apply: |c, v| {
-            c.remember_last_session = v == "开";
+            c.remember_last_session = v == "on";
         },
     },
     ItemDef {
         category: 1,
-        label: "默认模式",
-        desc: "裸 /new 与新开 TUI 创建会话时使用的模式（失效时回退标准模式）",
+        key: "language",
+        label: "settings.item.language.label",
+        desc: "settings.item.language.desc",
+        kind: ItemKind::Choice {
+            options: LANGUAGE_OPTIONS,
+        },
+        get: |c| c.language.to_string(),
+        apply: |c, v| {
+            if let Ok(language) = v.parse() {
+                c.language = language;
+            }
+        },
+    },
+    ItemDef {
+        category: 1,
+        key: "default_mode",
+        label: "settings.item.default_mode.label",
+        desc: "settings.item.default_mode.desc",
         kind: ItemKind::ModeChoice,
         get: |c| c.default_mode.clone(),
         apply: |c, v| {
@@ -159,8 +209,9 @@ pub static ITEMS: &[ItemDef] = &[
     },
     ItemDef {
         category: 1,
-        label: "粘贴占位阈值",
-        desc: "粘贴内容超过该字符数时折叠为原子粘贴块（光标不可进入）",
+        key: "paste_placeholder_chars",
+        label: "settings.item.paste_placeholder_chars.label",
+        desc: "settings.item.paste_placeholder_chars.desc",
         kind: ItemKind::Input,
         get: |c| c.paste_placeholder_chars.to_string(),
         apply: |c, v| {
@@ -171,8 +222,9 @@ pub static ITEMS: &[ItemDef] = &[
     },
     ItemDef {
         category: 1,
-        label: "原子块折叠阈值",
-        desc: "表格/代码/mermaid 超过该行数时折叠",
+        key: "atomic_collapse_rows",
+        label: "settings.item.atomic_collapse_rows.label",
+        desc: "settings.item.atomic_collapse_rows.desc",
         kind: ItemKind::Input,
         get: |c| c.atomic_collapse_rows.to_string(),
         apply: |c, v| {
@@ -183,8 +235,9 @@ pub static ITEMS: &[ItemDef] = &[
     },
     ItemDef {
         category: 1,
-        label: "复制提示时长",
-        desc: "复制成功弹窗的停留时间（秒，最少 3 秒）",
+        key: "copy_toast_secs",
+        label: "settings.item.copy_toast_secs.label",
+        desc: "settings.item.copy_toast_secs.desc",
         kind: ItemKind::Input,
         get: |c| c.copy_toast_secs.max(3).to_string(),
         apply: |c, v| {
@@ -195,8 +248,9 @@ pub static ITEMS: &[ItemDef] = &[
     },
     ItemDef {
         category: 1,
-        label: "历史条数",
-        desc: "输入历史保留条数",
+        key: "history_limit",
+        label: "settings.item.history_limit.label",
+        desc: "settings.item.history_limit.desc",
         kind: ItemKind::Input,
         get: |c| c.history_limit.to_string(),
         apply: |c, v| {
@@ -207,48 +261,51 @@ pub static ITEMS: &[ItemDef] = &[
     },
     ItemDef {
         category: 2,
-        label: "工具耗时显示",
-        desc: "工具卡完成时显示执行耗时",
+        key: "show_tool_duration",
+        label: "settings.item.show_tool_duration.label",
+        desc: "settings.item.show_tool_duration.desc",
         kind: ItemKind::Choice {
-            options: &["开", "关"],
+            options: BOOL_OPTIONS,
         },
-        get: |c| bool_str(c.show_tool_duration),
+        get: |c| bool_value(c.show_tool_duration),
         apply: |c, v| {
-            c.show_tool_duration = v == "开";
+            c.show_tool_duration = v == "on";
         },
     },
     ItemDef {
         category: 2,
-        label: "read/edit 合并为一行",
-        desc: "连续 read/edit 调用折叠为一行",
+        key: "read_merge",
+        label: "settings.item.read_merge.label",
+        desc: "settings.item.read_merge.desc",
         kind: ItemKind::Choice {
-            options: &["开", "关"],
+            options: BOOL_OPTIONS,
         },
-        get: |c| bool_str(c.read_merge),
+        get: |c| bool_value(c.read_merge),
         apply: |c, v| {
-            c.read_merge = v == "开";
+            c.read_merge = v == "on";
         },
     },
     ItemDef {
         category: 2,
-        label: "Thinking 显示",
-        desc: "思考内容显示：Compact 仅指示灯，Lines 前 N 行，Full 完整",
+        key: "thinking_display",
+        label: "settings.item.thinking_display.label",
+        desc: "settings.item.thinking_display.desc",
         kind: ItemKind::Choice {
-            options: &["Compact", "Lines", "Full"],
+            options: THINKING_OPTIONS,
         },
-        get: |c| c.thinking_display_label().to_string(),
+        get: |c| c.thinking_display_value().into(),
         apply: |c, v| {
             c.thinking_display = match v.as_str() {
-                "Lines" => "lines".into(),
-                "Full" => "full".into(),
+                "lines" | "full" | "compact" => v,
                 _ => "compact".into(),
             };
         },
     },
     ItemDef {
         category: 2,
-        label: "Thinking 行数",
-        desc: "Lines 模式下最多显示的行数（按折行后的显示行）",
+        key: "thinking_lines",
+        label: "settings.item.thinking_lines.label",
+        desc: "settings.item.thinking_lines.desc",
         kind: ItemKind::Input,
         get: |c| c.thinking_lines.to_string(),
         apply: |c, v| {
@@ -259,20 +316,22 @@ pub static ITEMS: &[ItemDef] = &[
     },
     ItemDef {
         category: 2,
-        label: "mermaid 渲染",
-        desc: "mermaid 代码块渲染为框图（失败时显示源码）",
+        key: "mermaid_enabled",
+        label: "settings.item.mermaid_enabled.label",
+        desc: "settings.item.mermaid_enabled.desc",
         kind: ItemKind::Choice {
-            options: &["开", "关"],
+            options: BOOL_OPTIONS,
         },
-        get: |c| bool_str(c.mermaid_enabled),
+        get: |c| bool_value(c.mermaid_enabled),
         apply: |c, v| {
-            c.mermaid_enabled = v == "开";
+            c.mermaid_enabled = v == "on";
         },
     },
     ItemDef {
         category: 2,
-        label: "消息文字速度",
-        desc: "AI Markdown 回复每秒最多出现的字符数（0-1024，0 为关闭渐显）",
+        key: "message_chars_per_second",
+        label: "settings.item.message_speed.label",
+        desc: "settings.item.message_speed.desc",
         kind: ItemKind::Input,
         get: |c| c.message_chars_per_second.to_string(),
         apply: |c, v| {
@@ -283,8 +342,9 @@ pub static ITEMS: &[ItemDef] = &[
     },
     ItemDef {
         category: 2,
-        label: "预览行速度",
-        desc: "Preview 每秒最多出现的折行显示行数（0-1024，0 为关闭渐显）",
+        key: "preview_lines_per_second",
+        label: "settings.item.preview_speed.label",
+        desc: "settings.item.preview_speed.desc",
         kind: ItemKind::Input,
         get: |c| c.preview_lines_per_second.to_string(),
         apply: |c, v| {
@@ -295,19 +355,34 @@ pub static ITEMS: &[ItemDef] = &[
     },
     ItemDef {
         category: 3,
-        label: "配置位置",
-        desc: "配置文件完整路径（只读）",
+        key: "config_path_display",
+        label: "settings.item.config_path.label",
+        desc: "settings.item.config_path.desc",
         kind: ItemKind::ReadOnly,
         get: |config| config.config_path_display.clone(),
         apply: |_, _| {},
     },
 ];
 
-fn bool_str(b: bool) -> String {
-    if b {
-        "开".into()
+fn bool_value(value: bool) -> String {
+    if value {
+        "on".into()
     } else {
-        "关".into()
+        "off".into()
+    }
+}
+
+/// Resolve a static choice value into its localized presentation label.
+pub fn option_label(def: &ItemDef, value: &str, language: crate::Language) -> String {
+    match def.kind {
+        ItemKind::Choice { options } => options
+            .iter()
+            .find(|(candidate, _)| *candidate == value)
+            .map(|(_, key)| crate::i18n::tr(language, key))
+            .unwrap_or_else(|| value.to_owned()),
+        ItemKind::ModeChoice | ItemKind::ThemeChoice | ItemKind::Input | ItemKind::ReadOnly => {
+            value.to_owned()
+        }
     }
 }
 
@@ -329,7 +404,10 @@ pub fn dynamic_options(
     themes: &[String],
 ) -> Vec<String> {
     match def.kind {
-        ItemKind::Choice { options } => options.iter().map(|o| (*o).to_string()).collect(),
+        ItemKind::Choice { options } => options
+            .iter()
+            .map(|(value, _)| (*value).to_string())
+            .collect(),
         ItemKind::ModeChoice => {
             let mut list: Vec<String> = modes.to_vec();
             if !list.iter().any(|m| *m == config.default_mode) {
@@ -505,7 +583,7 @@ impl SettingsState {
                             let current = (def.get)(config);
                             let cursor = options
                                 .iter()
-                                .position(|o| (*o).starts_with(current.as_str()))
+                                .position(|(value, _)| *value == current)
                                 .unwrap_or(0);
                             self.editing = Some(Edit::Choice { cursor });
                         }
@@ -632,7 +710,7 @@ mod tests {
         let mut s = SettingsState::default();
         let mut config = Config::default();
         s.pos[0] = 1; // 纯色模式
-        assert_eq!((ITEMS[1].get)(&config), "关");
+        assert_eq!((ITEMS[1].get)(&config), "off");
         s.handle_key(&key(KeyCode::Enter), &mut config);
         assert_eq!(s.editing, Some(Edit::Choice { cursor: 1 }), "cursor on 关");
         s.handle_key(&key(KeyCode::Right), &mut config); // wraps to 开
@@ -670,13 +748,13 @@ mod tests {
             state: &mut SettingsState,
             config: &mut Config,
             category: usize,
-            label: &str,
+            setting_key: &str,
             value: &str,
         ) {
             state.category = category;
             state.pos[category] = items_in(category)
                 .iter()
-                .position(|item| item.label == label)
+                .position(|item| item.key == setting_key)
                 .expect("setting exists");
             state.handle_key(&key(KeyCode::Enter), config);
             for character in value.chars() {
@@ -690,22 +768,34 @@ mod tests {
 
         let mut state = SettingsState::default();
         let mut config = Config::default();
-        confirm(&mut state, &mut config, 0, "淡入背景颜色", "#1A2b3C");
+        confirm(&mut state, &mut config, 0, "background_color", "#1A2b3C");
         assert_eq!(config.background_color.to_string(), "#1a2b3c");
-        confirm(&mut state, &mut config, 0, "淡入背景颜色", "black");
+        confirm(&mut state, &mut config, 0, "background_color", "black");
         assert_eq!(config.background_color.to_string(), "#1a2b3c");
-        confirm(&mut state, &mut config, 0, "消息栏宽度比例", "61.25");
+        confirm(&mut state, &mut config, 0, "message_pane_percent", "61.25");
         assert_eq!(config.message_pane_percent.display(), "61.25%");
-        confirm(&mut state, &mut config, 0, "消息栏宽度比例", "24.99");
+        confirm(&mut state, &mut config, 0, "message_pane_percent", "24.99");
         assert_eq!(config.message_pane_percent.display(), "61.25%");
 
-        confirm(&mut state, &mut config, 2, "消息文字速度", "1024");
+        confirm(
+            &mut state,
+            &mut config,
+            2,
+            "message_chars_per_second",
+            "1024",
+        );
         assert_eq!(config.message_chars_per_second.get(), 1024);
-        confirm(&mut state, &mut config, 2, "消息文字速度", "0");
+        confirm(&mut state, &mut config, 2, "message_chars_per_second", "0");
         assert_eq!(config.message_chars_per_second.get(), 0);
-        confirm(&mut state, &mut config, 2, "预览行速度", "7");
+        confirm(&mut state, &mut config, 2, "preview_lines_per_second", "7");
         assert_eq!(config.preview_lines_per_second.get(), 7);
-        confirm(&mut state, &mut config, 2, "预览行速度", "1025");
+        confirm(
+            &mut state,
+            &mut config,
+            2,
+            "preview_lines_per_second",
+            "1025",
+        );
         assert_eq!(config.preview_lines_per_second.get(), 7);
     }
 
@@ -714,10 +804,10 @@ mod tests {
         let mut s = SettingsState::default();
         let mut config = Config::default();
         assert_eq!(config.page_align, "center");
-        assert_eq!(config.page_align_label(), "居中");
+        assert_eq!(config.page_align_value(), "center");
         let index = items_in(0)
             .iter()
-            .position(|item| item.label == "页面对齐")
+            .position(|item| item.key == "page_align")
             .expect("页面对齐 item exists");
         s.pos[0] = index;
         s.handle_key(&key(KeyCode::Enter), &mut config);
@@ -731,7 +821,7 @@ mod tests {
         s.handle_key(&key(KeyCode::Right), &mut config); // 右对齐
         s.handle_key(&key(KeyCode::Enter), &mut config);
         assert_eq!(config.page_align, "right");
-        assert_eq!(config.page_align_label(), "右对齐");
+        assert_eq!(config.page_align_value(), "right");
     }
 
     #[test]
@@ -751,7 +841,7 @@ mod tests {
         s.category = 1; // 行为
         let mut config = Config::default();
         assert_eq!(config.default_mode, "standard");
-        s.pos[1] = 1; // 默认模式 (行为 category, second item)
+        s.pos[1] = 2; // 默认模式 (行为 category, third item after Language)
         s.handle_key(&key(KeyCode::Enter), &mut config);
         assert_eq!(
             s.editing,
@@ -773,7 +863,7 @@ mod tests {
 
         let mode_index = items_in(2)
             .iter()
-            .position(|item| item.label == "Thinking 显示")
+            .position(|item| item.key == "thinking_display")
             .expect("Thinking mode item exists");
         s.pos[2] = mode_index;
         s.handle_key(&key(KeyCode::Enter), &mut config);
@@ -784,7 +874,7 @@ mod tests {
 
         let lines_index = items_in(2)
             .iter()
-            .position(|item| item.label == "Thinking 行数")
+            .position(|item| item.key == "thinking_lines")
             .expect("Thinking lines item exists");
         s.pos[2] = lines_index;
         s.handle_key(&key(KeyCode::Enter), &mut config);
@@ -803,14 +893,14 @@ mod tests {
         let no_themes: Vec<String> = vec![];
         let mode_def = ITEMS
             .iter()
-            .find(|item| item.label == "默认模式")
+            .find(|item| item.key == "default_mode")
             .expect("默认模式 item exists");
         let opts = dynamic_options(mode_def, &config, &modes, &no_themes);
         assert_eq!(opts, vec!["standard", "minimal", "gone"]);
         // Static choices pass through unchanged.
         assert_eq!(
             dynamic_options(&ITEMS[1], &config, &modes, &no_themes),
-            vec!["开", "关"]
+            vec!["on", "off"]
         );
     }
 

@@ -7,11 +7,13 @@ pub(super) fn render_question_page(
     focus: &crate::input_page::FocusState,
     viewport: &mut crate::input_page::ViewportState,
     theme: &Theme,
+    language: crate::Language,
 ) -> Option<Position> {
     let regions = input_page_shell(frame, area, theme);
     let Some(question) = batch.questions.get(batch.current) else {
         frame.render_widget(
-            Paragraph::new("（没有可显示的问题）").style(Style::default().fg(theme.dim)),
+            Paragraph::new(crate::i18n::tr(language, "input_page.question.no_question"))
+                .style(Style::default().fg(theme.dim)),
             regions.body,
         );
         return None;
@@ -20,11 +22,12 @@ pub(super) fn render_question_page(
         .header
         .as_deref()
         .filter(|header| !header.is_empty())
-        .unwrap_or("问题");
+        .map(str::to_owned)
+        .unwrap_or_else(|| crate::i18n::tr(language, "input_page.question.title"));
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("❯ ", Style::default().fg(theme.user)),
-            Span::styled(title.to_owned(), Style::default().fg(theme.fg)),
+            Span::styled(title, Style::default().fg(theme.fg)),
             Span::styled(
                 format!("  ({}/{})", batch.current + 1, batch.questions.len()),
                 Style::default().fg(theme.dim),
@@ -113,19 +116,28 @@ pub(super) fn render_question_page(
     frame.render_widget(Paragraph::new(rows), regions.body);
 
     let action = if batch.current + 1 < batch.questions.len() {
-        "下一题"
+        crate::i18n::tr(language, "input_page.question.action_next")
     } else {
-        "提交"
+        crate::i18n::tr(language, "input_page.question.action_submit")
     };
     let footer = if options.is_empty() {
-        format!("输入答案   ←/→ 切换问题   Enter {action}   Esc 取消")
+        format!(
+            "{}   {}   Enter {action}   {}",
+            crate::i18n::tr(language, "input_page.question.footer_text"),
+            crate::i18n::tr(language, "input_page.question.footer_navigation"),
+            crate::i18n::tr(language, "input_page.question.footer_cancel"),
+        )
     } else {
         let select = if question.multi_select {
-            "Space 多选/取消"
+            crate::i18n::tr(language, "input_page.question.footer_multiselect")
         } else {
-            "Space 选择"
+            crate::i18n::tr(language, "input_page.question.footer_select")
         };
-        format!("h/l ←/→ 问题   j/k ↑/↓ 选项   {select}   Enter {action}   Esc 取消")
+        format!(
+            "{}   {select}   Enter {action}   {}",
+            crate::i18n::tr(language, "input_page.question.footer_navigation"),
+            crate::i18n::tr(language, "input_page.question.footer_cancel"),
+        )
     };
     frame.render_widget(
         Paragraph::new(footer).style(Style::default().fg(theme.dim)),

@@ -1,6 +1,7 @@
 use crate::{
     agent::timeline::{TimelineFact, TimelineRecord},
     display::{DisplayId, DisplayItem, DisplayTone, TranscriptBlock, TranscriptFormat},
+    i18n::Language,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,7 +18,7 @@ pub enum LifecycleProjection {
     Ignore,
 }
 
-pub fn project(event: &TimelineRecord) -> Option<LifecycleProjection> {
+pub fn project(event: &TimelineRecord, language: Language) -> Option<LifecycleProjection> {
     match &event.fact {
         TimelineFact::TurnStart => Some(LifecycleProjection::TurnStart),
         TimelineFact::TurnEnd {
@@ -26,20 +27,32 @@ pub fn project(event: &TimelineRecord) -> Option<LifecycleProjection> {
             error_code,
         } => {
             let outcome = match reason.as_deref() {
-                Some("aborted") => Some(block(event, "（已中断）", DisplayTone::Dim)),
+                Some("aborted") => Some(block(
+                    event,
+                    &crate::i18n::tr(language, "lifecycle.aborted"),
+                    DisplayTone::Dim,
+                )),
                 Some("error") => {
                     let text = match (error_message, error_code) {
                         (Some(message), Some(code)) => format!("{message} ({code})"),
                         (Some(message), None) => message.clone(),
-                        _ => "turn error".into(),
+                        _ => crate::i18n::tr(language, "lifecycle.turn_error"),
                     };
                     Some(block(event, &text, DisplayTone::Error))
                 }
-                Some("blocked") => Some(block(event, "（已阻塞）", DisplayTone::Dim)),
-                Some("interrupted") => Some(block(event, "（会话异常中断）", DisplayTone::Warning)),
+                Some("blocked") => Some(block(
+                    event,
+                    &crate::i18n::tr(language, "lifecycle.blocked"),
+                    DisplayTone::Dim,
+                )),
+                Some("interrupted") => Some(block(
+                    event,
+                    &crate::i18n::tr(language, "lifecycle.interrupted"),
+                    DisplayTone::Warning,
+                )),
                 Some("max-tokens") => Some(block(
                     event,
-                    "（达到模型输出 token 上限）",
+                    &crate::i18n::tr(language, "lifecycle.max_tokens"),
                     DisplayTone::Warning,
                 )),
                 _ => None,

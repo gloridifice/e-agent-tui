@@ -23,7 +23,10 @@ pub(super) fn render_input(
             .map(|m| m.chars().take(60).collect::<String>())
             .unwrap_or_default();
         let line = Line::from(vec![
-            Span::styled("search: ", theme.input.prompt.style()),
+            Span::styled(
+                crate::i18n::tr(input.language, "input.search"),
+                theme.input.prompt.style(),
+            ),
             Span::styled(search.query.clone(), theme.input.text.style()),
             Span::styled(" ▏ ", theme.input.hint.style()),
             Span::styled(preview, theme.input.hint.style()),

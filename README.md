@@ -30,7 +30,7 @@ Run `e`:
 dshe
 ```
 
-On first launch, `dshe` starts its dedicated DSH service automatically. Use `/login` to configure an API key or proxy, `/model [provider/model]` to select a model, and `/effort` to change the reasoning effort. Wide terminals show a themed Preview pane; drag the Bark-colored separator to resize it. Preview collapses below 16 columns, while narrow terminals keep the main conversation usable.
+On first launch, `dshe` starts its dedicated DSH service automatically. Use `/login` to configure an API key or proxy, `/model [provider/model]` to select a model, and `/effort` to change the reasoning effort. Wide terminals show a themed Preview pane; drag the Bark-colored separator to resize it. Preview collapses below 16 columns, while narrow terminals keep the main conversation usable. The interface defaults to English; Simplified Chinese is available with `language = "zh-CN"` in the config (English remains the fallback).
 
 ## Quick Start Pi
 

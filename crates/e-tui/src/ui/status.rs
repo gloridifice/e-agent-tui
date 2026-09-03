@@ -50,13 +50,28 @@ pub(super) fn render_status(
     // Reasoning effort rides after the cache-hit rate, styled identically to
     // the model and CH entries, and is omitted entirely when the current route
     // exposes no reasoning metadata.
-    if let Some(label) = state.catalogs.effort_status_label() {
+    if let Some(status) = state.catalogs.effort_status() {
+        let label = status
+            .label
+            .unwrap_or_else(|| crate::i18n::tr(state.config.language, "status.effort_default"));
         left_spans.push(Span::styled(" ", dim));
-        left_spans.push(Span::styled(label, dim));
+        left_spans.push(Span::styled(
+            format!(
+                "{}:{label}",
+                crate::i18n::tr(state.config.language, "status.effort_prefix")
+            ),
+            dim,
+        ));
     }
     let left = Line::from(left_spans);
-    let right =
-        Line::from(Span::styled("^h Help", dim)).alignment(ratatui::layout::Alignment::Right);
+    let right = Line::from(Span::styled(
+        format!(
+            "^h {}",
+            crate::i18n::tr(state.config.language, "status.help")
+        ),
+        dim,
+    ))
+    .alignment(ratatui::layout::Alignment::Right);
     // Render through the buffer directly: no wrapping, hard clip at edges.
     let buffer = frame.buffer_mut();
     buffer.set_line(area.x, area.y, &left, area.width);
@@ -86,11 +101,11 @@ pub(super) fn render_title(
     // visible. Drawn first so the path below wins any overlap (defensive:
     // the truncation already reserves the path's columns).
     let title = if state.session.new_conversation.is_some() {
-        "新对话".to_owned()
+        crate::i18n::tr(state.config.language, "status.new_conversation")
     } else {
         match state.session.session_title.as_deref() {
             Some(title) if !title.trim().is_empty() => title.trim().to_owned(),
-            _ => "新会话".to_owned(),
+            _ => crate::i18n::tr(state.config.language, "status.new_session"),
         }
     };
     // The draft overlays the still-attached session: keep rendering that
@@ -154,7 +169,7 @@ mod tests {
         // CJK glyphs occupy two cells; symbol() returns the second cell empty.
         let compact = line.replace(' ', "");
         assert!(
-            compact.starts_with("新对话"),
+            compact.starts_with("Newconversation"),
             "draft title missing: {line:?}"
         );
         assert!(
@@ -214,6 +229,63 @@ mod tests {
         assert!(
             effort_at > model_at,
             "effort must follow the model entry: {line:?}"
+        );
+    }
+
+    #[test]
+    fn status_bar_localizes_frontend_labels_without_changing_effort_names() {
+        let mut state = TuiApp::default();
+        state.config.language = crate::Language::SimplifiedChinese;
+        state.session.model = Some("gpt".into());
+        state.catalogs.current_model = Some(crate::agent::ModelSelection {
+            provider: "openai".into(),
+            model: "gpt".into(),
+            reasoning_effort: Some("high".into()),
+        });
+        state.catalogs.model_providers = vec![crate::agent::ModelProvider {
+            id: "openai".into(),
+            name: "OpenAI".into(),
+            models: vec![crate::agent::ModelDescriptor {
+                id: "gpt".into(),
+                name: "GPT".into(),
+                description: None,
+                reasoning: Some(crate::agent::ModelReasoning {
+                    efforts: vec![crate::agent::ReasoningEffort {
+                        id: "high".into(),
+                        name: "High".into(),
+                        description: None,
+                    }],
+                    default_effort: None,
+                }),
+            }],
+        }];
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 1)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_status(
+                    frame,
+                    frame.area(),
+                    &state,
+                    &ScrollState::default(),
+                    &Theme::ferra(),
+                )
+            })
+            .unwrap();
+
+        let compact = (0..80)
+            .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
+            .collect::<String>()
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+        assert!(
+            compact.contains("推理:High"),
+            "effort value changed: {compact}"
+        );
+        assert!(
+            compact.contains("帮助"),
+            "help label is not localized: {compact}"
         );
     }
 

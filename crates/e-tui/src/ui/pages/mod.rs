@@ -56,7 +56,14 @@ pub(super) fn render_input_page(
             None
         }
         InputPage::Login(login) => {
-            render_login_scrolled(frame, area, login, &mut session.viewport, theme);
+            render_login_scrolled(
+                frame,
+                area,
+                login,
+                &mut session.viewport,
+                theme,
+                config.language,
+            );
             None
         }
         InputPage::Model(model) => {
@@ -67,6 +74,7 @@ pub(super) fn render_input_page(
                 &session.focus,
                 &mut session.viewport,
                 theme,
+                config.language,
             );
             None
         }
@@ -78,6 +86,7 @@ pub(super) fn render_input_page(
                 &session.focus,
                 &mut session.viewport,
                 theme,
+                config.language,
             );
             None
         }
@@ -89,11 +98,19 @@ pub(super) fn render_input_page(
                 &session.focus,
                 &mut session.viewport,
                 theme,
+                config.language,
             );
             None
         }
         InputPage::Resume(page) => {
-            render_resume_page(frame, area, page, &mut session.viewport, theme);
+            render_resume_page(
+                frame,
+                area,
+                page,
+                &mut session.viewport,
+                theme,
+                config.language,
+            );
             None
         }
         InputPage::Question(batch) => render_question_page(
@@ -103,6 +120,7 @@ pub(super) fn render_input_page(
             &session.focus,
             &mut session.viewport,
             theme,
+            config.language,
         ),
     }
 }
@@ -132,6 +150,205 @@ pub(super) fn trim_to_width(text: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    fn page_cases() -> Vec<(InputPageSession, &'static str, &'static str)> {
+        vec![
+            (
+                InputPageSession::settings(crate::settings::SettingsState::default()),
+                "Appearance",
+                "外观",
+            ),
+            (InputPageSession::login(), "Login", "登录"),
+            (InputPageSession::model(), "Model", "模型"),
+            (InputPageSession::effort(), "Reasoning effort", "推理强度"),
+            (InputPageSession::theme(&[], "ferra"), "Theme", "主题"),
+            (InputPageSession::resume(), "Resume session", "续接会话"),
+            (
+                InputPageSession::question(crate::question::QuestionBatch::new(
+                    "rpc".into(),
+                    "session".into(),
+                    vec![crate::agent::Question {
+                        id: "question".into(),
+                        question: "Keep this question verbatim".into(),
+                        header: None,
+                        options: None,
+                        multi_select: false,
+                    }],
+                )),
+                "Question",
+                "问题",
+            ),
+        ]
+    }
+
+    fn rendered_page_text(mut page: InputPageSession, language: crate::Language) -> String {
+        let mut config = crate::Config::default();
+        config.language = language;
+        let theme = config.theme();
+        let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_input_page(frame, frame.area(), &mut page, &config, &theme);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..20)
+            .flat_map(|y| (0..100).map(move |x| buffer[(x, y)].symbol()))
+            .collect()
+    }
+
+    #[test]
+    fn input_pages_render_frontend_chrome_in_both_languages() {
+        for (page, english, chinese) in page_cases() {
+            let en = rendered_page_text(page, crate::Language::English);
+            assert!(en.contains(english), "English page text: {en:?}");
+
+            let (page, _, _) = page_cases()
+                .into_iter()
+                .find(|(_, expected_en, _)| *expected_en == english)
+                .expect("page case exists");
+            let zh = rendered_page_text(page, crate::Language::SimplifiedChinese);
+            let compact = zh
+                .chars()
+                .filter(|character| !character.is_whitespace())
+                .collect::<String>();
+            assert!(compact.contains(chinese), "Chinese page text: {zh:?}");
+        }
+    }
+
+    fn assert_page_keeps_values(
+        page: InputPageSession,
+        language: crate::Language,
+        values: &[&str],
+    ) {
+        let text = rendered_page_text(page, language);
+        let compact = text
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+        for value in values {
+            assert!(
+                text.contains(value) || compact.contains(&value.replace(' ', "")),
+                "{value:?} was lost from {language:?} Input Page: {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn populated_input_pages_keep_external_values_in_both_languages() {
+        for language in crate::Language::ALL {
+            let mut login = InputPageSession::login();
+            if let InputPage::Login(page) = &mut login.page {
+                page.page = crate::login::Page::Providers;
+                page.loading = false;
+                page.providers = vec![crate::agent::CredentialProvider {
+                    id: "provider-id".into(),
+                    name: "Provider from host".into(),
+                    api_key_configured: true,
+                    api_key_writable: true,
+                    api_key_source: Some("environment".into()),
+                    api_key_hint: Some("…1234".into()),
+                }];
+            }
+            login.rebuild_focus();
+            assert_page_keeps_values(login, language, &["Provider from host", "…1234"]);
+
+            let mut model = InputPageSession::model();
+            model.apply_model(
+                vec![crate::agent::ModelProvider {
+                    id: "provider-id".into(),
+                    name: "Provider from host".into(),
+                    models: vec![crate::agent::ModelDescriptor {
+                        id: "model-id".into(),
+                        name: "Model from host".into(),
+                        description: Some("Model description from host".into()),
+                        reasoning: None,
+                    }],
+                }],
+                Some(("provider-id".into(), "model-id".into())),
+            );
+            assert_page_keeps_values(model, language, &["Provider from host", "Model from host"]);
+
+            let mut effort = InputPageSession::effort();
+            effort.apply_effort(&crate::CatalogModel {
+                current_model: Some(crate::agent::ModelSelection {
+                    provider: "provider-id".into(),
+                    model: "model-id".into(),
+                    reasoning_effort: Some("host-effort".into()),
+                }),
+                model_providers: vec![crate::agent::ModelProvider {
+                    id: "provider-id".into(),
+                    name: "Provider from host".into(),
+                    models: vec![crate::agent::ModelDescriptor {
+                        id: "model-id".into(),
+                        name: "Model from host".into(),
+                        description: None,
+                        reasoning: Some(crate::agent::ModelReasoning {
+                            efforts: vec![crate::agent::ReasoningEffort {
+                                id: "host-effort".into(),
+                                name: "Effort from host".into(),
+                                description: None,
+                            }],
+                            default_effort: None,
+                        }),
+                    }],
+                }],
+                ..Default::default()
+            });
+            assert_page_keeps_values(effort, language, &["Effort from host"]);
+
+            let mut resume = InputPageSession::resume();
+            resume.apply_sessions(
+                vec![crate::agent::SessionSummary {
+                    id: "session-id".into(),
+                    title: "Session title from host".into(),
+                    live: false,
+                    created_at: 1,
+                }],
+                false,
+            );
+            assert_page_keeps_values(resume, language, &["Session title from host", "session-id"]);
+
+            let question = InputPageSession::question(crate::question::QuestionBatch::new(
+                "rpc".into(),
+                "session".into(),
+                vec![crate::agent::Question {
+                    id: "question-id".into(),
+                    question: "Question text from host".into(),
+                    header: Some("Question header from host".into()),
+                    options: Some(vec![crate::agent::QuestionOption {
+                        label: "Option from host".into(),
+                        description: Some("Option description from host".into()),
+                    }]),
+                    multi_select: false,
+                }],
+            ));
+            assert_page_keeps_values(
+                question,
+                language,
+                &[
+                    "Question header from host",
+                    "Question text from host",
+                    "Option from host",
+                ],
+            );
+
+            let mut settings =
+                InputPageSession::settings(crate::settings::SettingsState::default());
+            if let InputPage::Settings(page) = &mut settings.page {
+                page.category = 1;
+                page.pos[1] = 1;
+            }
+            settings.rebuild_focus();
+            let language_label = if language == crate::Language::English {
+                "Language"
+            } else {
+                "语言"
+            };
+            assert_page_keeps_values(settings, language, &[language_label]);
+        }
+    }
 
     #[test]
     fn wrap_text_splits_at_exact_display_width() {

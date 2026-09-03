@@ -205,7 +205,117 @@ impl RuntimeController {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{agent::InteractionEvent, input::InputState};
+    use crate::{
+        agent::InteractionEvent,
+        display::DisplayId,
+        input::InputState,
+        preview::{PreviewContent, PreviewLayoutKey, PreviewRef, PreviewTarget},
+        render::RenderOptions,
+        reveal::LineRevealTrack,
+        Language,
+    };
+    use ratatui::text::Line;
+
+    fn open_help_suggestion(input: &mut InputState, catalogs: &crate::CatalogModel) {
+        input.handle_key_with_catalog(
+            &KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
+            true,
+            catalogs,
+        );
+        let suggestion = input.suggest.as_mut().expect("slash opens suggestions");
+        let selected = suggestion
+            .matches
+            .iter()
+            .position(|line| line == "/help")
+            .expect("help is a built-in command");
+        suggestion.sel = selected;
+    }
+
+    fn seed_localized_presentation(
+        state: &mut RuntimeState,
+    ) -> (DisplayId, PreviewLayoutKey, usize) {
+        let id = DisplayId::correlated("controller", "markdown");
+        let theme = state.config.theme();
+        let options = RenderOptions {
+            language: state.config.language,
+            content_width: Some(80),
+            ..Default::default()
+        };
+        let source = "```rust\nx\n```";
+        let render = &mut state.render;
+        render.markdown_layout.materialize(
+            &id,
+            source,
+            &theme,
+            &mut render.next_unit,
+            &options,
+            &mut render.units,
+        );
+        render.transcript_cache.valid = true;
+
+        let target = PreviewTarget {
+            id: "preview-owner".into(),
+            reference: PreviewRef::Inline {
+                key: crate::PreviewKey("preview-owner".into()),
+                revision: crate::PreviewRevision(1),
+                content: PreviewContent::PlainText("semantic preview".into()),
+            },
+        };
+        state.preview.select(Some(target));
+        let mut reveal = LineRevealTrack::default();
+        reveal.reconcile(
+            &[Line::from("first"), Line::from("second")],
+            Instant::now(),
+            32,
+        );
+        let revealed = reveal.revealed();
+        state.preview.reveal = Some(reveal);
+        let layout_key = PreviewLayoutKey {
+            owner: Some((
+                crate::PreviewKey("preview-owner".into()),
+                crate::PreviewRevision(1),
+            )),
+            content_signature: 0,
+            width: 40,
+            theme_signature: 7,
+        };
+        state
+            .preview
+            .store_layout(layout_key.clone(), vec![Line::from("cached")]);
+        (id, layout_key, revealed)
+    }
+
+    fn terminal_ui<'a>(
+        scroll: &'a mut ScrollState,
+        input: &'a mut InputState,
+        input_page: &'a mut Option<InputPageSession>,
+        help_visible: &'a mut bool,
+        notice: &'a mut NoticeState,
+        mouse_selection: &'a mut MouseSelection,
+        pane_resize: &'a mut PaneResizeState,
+        approval: &'a mut Option<ApprovalCard>,
+        question: &'a mut Option<String>,
+        queue: &'a mut Vec<PromptInput>,
+        config: &'a mut Config,
+        themes: &'a mut Vec<ThemeFile>,
+        theme: &'a mut Theme,
+    ) -> TerminalUiState<'a> {
+        TerminalUiState {
+            scroll,
+            input,
+            input_page,
+            help_visible,
+            notice,
+            mouse_selection,
+            pane_resize,
+            approval,
+            question,
+            queue,
+            config,
+            themes,
+            theme,
+        }
+    }
 
     fn runtime_ui<'a>(
         scroll: &'a mut ScrollState,
@@ -223,6 +333,194 @@ mod tests {
             question,
             queue,
         }
+    }
+
+    #[test]
+    fn settings_language_change_updates_live_state_and_invalidates_localized_caches() {
+        let state = Arc::new(Mutex::new(RuntimeState::default()));
+        let mut config = Config::default();
+        let (markdown_id, layout_key, revealed) = {
+            let mut app = state.lock().unwrap();
+            seed_localized_presentation(&mut app)
+        };
+        let catalogs = state.lock().unwrap().catalogs.clone();
+        let mut input = InputState::new(&config);
+        open_help_suggestion(&mut input, &catalogs);
+
+        let mut page = Some(InputPageSession::settings(crate::settings::SettingsState {
+            category: 1,
+            pos: [0, 1, 0, 0],
+            ..Default::default()
+        }));
+        page.as_mut().unwrap().rebuild_focus();
+        assert_eq!(
+            page.as_ref()
+                .unwrap()
+                .focus
+                .current
+                .as_ref()
+                .map(|id| id.0.as_str()),
+            Some("settings:item:1:language")
+        );
+        let themes = Vec::new();
+        let mut theme = config.theme();
+        let mut question = None;
+
+        let mut apply_key = |key| {
+            RuntimeController::apply_input_page_key(
+                &key,
+                &state,
+                &mut InputPageUiState {
+                    input_page: &mut page,
+                    input: &mut input,
+                    config: &mut config,
+                    themes: &themes,
+                    theme: &mut theme,
+                    question: &mut question,
+                },
+            )
+        };
+        assert!(apply_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).is_empty());
+        assert!(apply_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)).is_empty());
+        let effects = apply_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        drop(apply_key);
+
+        assert_eq!(config.language, Language::SimplifiedChinese);
+        assert_eq!(
+            state.lock().unwrap().config.language,
+            Language::SimplifiedChinese
+        );
+        assert_eq!(input.language, Language::SimplifiedChinese);
+        assert!(
+            matches!(effects.as_slice(), [UiAction::PersistConfig(snapshot)] if snapshot.language == Language::SimplifiedChinese)
+        );
+        assert_eq!(
+            page.as_ref()
+                .unwrap()
+                .focus
+                .current
+                .as_ref()
+                .map(|id| id.0.as_str()),
+            Some("settings:item:1:language")
+        );
+
+        let mut app = state.lock().unwrap();
+        assert!(!app.render.transcript_cache.valid);
+        assert!(app.render.markdown_layout.lines(&markdown_id).is_some());
+        assert!(app.preview.cached_layout(&layout_key).is_none());
+        assert_eq!(app.preview.target.as_ref().unwrap().id, "preview-owner");
+        assert!(app
+            .preview
+            .cache
+            .get(
+                &crate::PreviewKey("preview-owner".into()),
+                crate::PreviewRevision(1),
+            )
+            .is_some());
+        assert_eq!(
+            app.preview.reveal.as_ref().map(LineRevealTrack::revealed),
+            Some(revealed)
+        );
+        let options = RenderOptions {
+            language: app.config.language,
+            content_width: Some(80),
+            ..Default::default()
+        };
+        let theme = app.config.theme();
+        let render = &mut app.render;
+        let lines = render
+            .markdown_layout
+            .materialize(
+                &markdown_id,
+                "```rust\nx\n```",
+                &theme,
+                &mut render.next_unit,
+                &options,
+                &mut render.units,
+            )
+            .to_vec();
+        let text = lines[0]
+            .line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(
+            text.contains("行"),
+            "localized Markdown cache was rebuilt: {text:?}"
+        );
+        assert_eq!(input.suggest.as_ref().unwrap().query, "/");
+        let suggestion = input.suggest.as_ref().unwrap();
+        let selected = suggestion
+            .matches
+            .iter()
+            .position(|line| line == "/help")
+            .unwrap();
+        assert_eq!(suggestion.sel, selected);
+        assert_eq!(suggestion.descriptions[selected], "显示帮助");
+    }
+
+    #[test]
+    fn reload_language_refreshes_suggestions_without_resetting_preview_semantics() {
+        let state = Arc::new(Mutex::new(RuntimeState::default()));
+        let mut old_config = Config::default();
+        let (markdown_id, layout_key, revealed) = {
+            let mut app = state.lock().unwrap();
+            seed_localized_presentation(&mut app)
+        };
+        let catalogs = state.lock().unwrap().catalogs.clone();
+        let mut input = InputState::new(&old_config);
+        open_help_suggestion(&mut input, &catalogs);
+        let selected_before = input.suggest.as_ref().unwrap().sel;
+
+        let mut new_config = old_config.clone();
+        new_config.language = Language::SimplifiedChinese;
+        let mut page = None;
+        let mut help_visible = false;
+        let mut notice = NoticeState::default();
+        let mut mouse_selection = MouseSelection::default();
+        let mut pane_resize = PaneResizeState::default();
+        let mut approval = None;
+        let mut question = None;
+        let mut queue = Vec::new();
+        let mut themes = Vec::new();
+        let mut theme = old_config.theme();
+        RuntimeController::apply_reloaded_config(
+            new_config,
+            Vec::new(),
+            &state,
+            &mut terminal_ui(
+                &mut ScrollState::default(),
+                &mut input,
+                &mut page,
+                &mut help_visible,
+                &mut notice,
+                &mut mouse_selection,
+                &mut pane_resize,
+                &mut approval,
+                &mut question,
+                &mut queue,
+                &mut old_config,
+                &mut themes,
+                &mut theme,
+            ),
+        );
+
+        assert_eq!(old_config.language, Language::SimplifiedChinese);
+        assert_eq!(input.language, Language::SimplifiedChinese);
+        let suggestion = input.suggest.as_ref().unwrap();
+        assert_eq!(suggestion.query, "/");
+        assert_eq!(suggestion.sel, selected_before);
+        assert_eq!(suggestion.descriptions[suggestion.sel], "显示帮助");
+        let app = state.lock().unwrap();
+        assert!(!app.render.transcript_cache.valid);
+        assert!(app.render.markdown_layout.lines(&markdown_id).is_some());
+        assert!(app.preview.cached_layout(&layout_key).is_none());
+        assert_eq!(app.preview.target.as_ref().unwrap().id, "preview-owner");
+        assert_eq!(
+            app.preview.reveal.as_ref().map(LineRevealTrack::revealed),
+            Some(revealed)
+        );
     }
 
     #[test]

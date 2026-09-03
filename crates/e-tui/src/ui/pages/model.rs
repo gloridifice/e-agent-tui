@@ -7,18 +7,23 @@ pub(super) fn render_model_page(
     focus: &crate::input_page::FocusState,
     viewport: &mut crate::input_page::ViewportState,
     theme: &Theme,
+    language: crate::Language,
 ) {
     let regions = input_page_shell(frame, area, theme);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("❯ ", Style::default().fg(theme.user)),
-            Span::styled("模型", Style::default().fg(theme.fg)),
+            Span::styled(
+                crate::i18n::tr(language, "input_page.model.title"),
+                Style::default().fg(theme.fg),
+            ),
         ])),
         regions.header,
     );
     if page.loading {
         frame.render_widget(
-            Paragraph::new("读取模型目录中…").style(Style::default().fg(theme.dim)),
+            Paragraph::new(crate::i18n::tr(language, "input_page.model.loading"))
+                .style(Style::default().fg(theme.dim)),
             regions.body,
         );
     } else {
@@ -60,7 +65,7 @@ pub(super) fn render_model_page(
         }
         if page.providers.is_empty() {
             providers.push(Line::from(Span::styled(
-                "（无可用提供商）",
+                crate::i18n::tr(language, "input_page.model.no_providers"),
                 Style::default().fg(theme.dim),
             )));
         }
@@ -101,14 +106,14 @@ pub(super) fn render_model_page(
         }
         if models.is_empty() && !page.providers.is_empty() {
             model_rows.push(Line::from(Span::styled(
-                "（该提供商无可用模型）",
+                crate::i18n::tr(language, "input_page.model.no_models"),
                 Style::default().fg(theme.dim),
             )));
         }
         frame.render_widget(Paragraph::new(model_rows), columns[2]);
     }
     frame.render_widget(
-        Paragraph::new("hjkl/方向键移动   Enter 执行   Esc 退出")
+        Paragraph::new(crate::i18n::tr(language, "input_page.model.footer"))
             .style(Style::default().fg(theme.dim)),
         regions.footer,
     );

@@ -1,41 +1,49 @@
 ## ADDED Requirements
 
 ### Requirement: Settings page text is locale-resolved with value-driven choices
-The settings Input Page's category names, row labels, descriptions, and choice option labels SHALL resolve from the active locale at render time. Choice rows SHALL match and persist locale-independent values rather than display labels, so choice round-trips (`get`/`apply`) remain correct under any language. Value-returning helpers SHALL return locale-independent values (e.g. `"center"`, `"compact"`, `"en"`) and translation SHALL happen only at presentation.
+The settings Input Page category names, row labels, descriptions, and choice labels SHALL resolve from the active language at render time. Settings metadata and choice handling SHALL use stable translation keys and locale-independent values rather than rendered labels. Value-returning helpers SHALL return values such as `left`, `compact`, or `en`, and translation SHALL occur only for presentation.
 
 #### Scenario: Settings renders in English
 - **WHEN** the settings Input Page is rendered with `Config.language = "en"`
-- **THEN** categories, labels, descriptions, and choice labels display English text
+- **THEN** its categories, labels, descriptions, and choice labels display English catalog text
 
 #### Scenario: Settings renders in Chinese
 - **WHEN** the settings Input Page is rendered with `Config.language = "zh-CN"`
-- **THEN** categories, labels, descriptions, and choice labels display the `zh-CN` catalog text
+- **THEN** its categories, labels, descriptions, and choice labels display Simplified Chinese catalog text
 
 #### Scenario: Choice round-trip survives translation
-- **WHEN** the user edits a boolean, alignment, thinking-display, or language row while the UI is displayed in either language
-- **THEN** the confirmed option maps to the same underlying config value it would map to in the other language
+- **WHEN** the user edits a boolean, alignment, thinking-display, or language row in either language
+- **THEN** the confirmed locale-independent option maps to the same underlying config value
 
-### Requirement: Language row in the settings Behavior category
-The settings Input Page SHALL include a language row in the Behavior category offering exactly the supported locales (`en`, `zh-CN`), showing the current value, and switching language on confirmation through the existing confirm-edit interaction without closing the page or discarding other settings state.
+### Requirement: Language row is available in the Behavior category
+The settings Input Page SHALL include a Language row in the Behavior category with exactly the supported `en` and `zh-CN` values. Confirming a value SHALL use the existing settings change effect, SHALL keep the page open, and SHALL preserve its active category and logical focused row while text is re-rendered.
 
 #### Scenario: Switch language and keep editing
-- **WHEN** the user confirms the other language on the language row
-- **THEN** the language is applied and persisted immediately, the settings page remains open, and subsequent rows render in the new language
+- **WHEN** the user confirms the other option on the Language row
+- **THEN** language is applied and persisted immediately, the Behavior category remains active, and focus remains on the Language row
 
-### Requirement: Other Input Pages render localized text
-Login, model, effort, theme, resume, and question pages SHALL resolve their headers, loading/empty/unavailable states, option labels they own, and key-hint footers from the active locale, using the shared Input Page shell without changing focus, navigation, or wire behavior.
+### Requirement: Every Input Page localizes frontend-owned chrome
+Settings, login, model, effort, theme, resume, and question Input Pages SHALL resolve their frontend-owned headers, loading/empty/unavailable states, owned option labels, markers, field labels, action labels, and key-hint footers from the active language. Their shared shell geometry, navigation, effects, and transport behavior SHALL remain unchanged. Provider/session/question content and adapter error bodies SHALL remain verbatim.
 
 #### Scenario: Localized loading and empty states
-- **WHEN** a model or effort page is open while its catalog has not arrived
-- **THEN** the loading state text renders in the active language
+- **WHEN** a model, effort, resume, login, or theme page displays a frontend-owned loading or empty state
+- **THEN** that state is rendered in the active language
 
-#### Scenario: Localized footers
-- **WHEN** any Input Page renders its key-hint footer
-- **THEN** the hint text renders in the active language
+#### Scenario: Localized footer preserves controls
+- **WHEN** any Input Page renders its key-hint footer in either language
+- **THEN** the displayed text is localized while the documented keys perform the same actions
 
-### Requirement: Focus identities stay locale-independent
-Input Page focus reconciliation SHALL keep identifying targets by stable logical identity (ids, provider/model names, category/value identifiers), never by localized display labels, across language switches and refreshes.
+#### Scenario: External page content remains unchanged
+- **WHEN** an Input Page combines localized chrome with provider, model, session, question, or error content
+- **THEN** only the frontend-owned chrome is translated
 
-#### Scenario: Focus survives a language switch
-- **WHEN** the language changes while a settings page is open
-- **THEN** the focused row remains the same logical item
+### Requirement: Input Page focus identity is locale-independent
+Input Page focus reconciliation SHALL identify targets by stable logical identity such as setting keys, provider/model ids, session ids, question ids, and option indices, never by localized display text. A language change SHALL not alter focus nodes, edit state, selection state, or the page effect that confirmation produces.
+
+#### Scenario: Settings focus survives a language switch
+- **WHEN** language changes while the Language setting row is focused
+- **THEN** the same setting key remains focused after labels are re-rendered
+
+#### Scenario: Dynamic roster focus survives localization
+- **WHEN** a localized roster page refresh still contains the focused provider, model, session, question, or option identity
+- **THEN** the same logical target remains focused regardless of rendered language

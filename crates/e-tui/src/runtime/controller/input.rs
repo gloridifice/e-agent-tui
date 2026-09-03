@@ -5,7 +5,7 @@ use super::{
     InputPageSession, InputPageUiState, KeyCode, KeyEvent, Mutex, PageEffect, PendingCommand,
     PromptInput, RuntimeState, UiAction,
 };
-use crate::theme;
+use crate::{i18n::tr, theme};
 
 pub(super) fn apply_action(action: ControllerAction, input_page: &mut Option<InputPageSession>) {
     match action {
@@ -37,10 +37,9 @@ pub(super) fn apply_input_action(
             }
             let is_draft = state.lock().unwrap().is_new_conversation();
             if is_draft {
-                state
-                    .lock()
-                    .unwrap()
-                    .set_new_conversation_notice("正在创建新对话，请稍候");
+                let mut app = state.lock().unwrap();
+                let language = app.config.language;
+                app.set_new_conversation_notice(tr(language, "command.new.in_progress"));
                 return outcome;
             }
             let immediate = {
@@ -127,15 +126,19 @@ pub(super) fn apply_input_page_key(
             PageEffect::Send(message) => effects.push(UiAction::Agent(message)),
             PageEffect::ConfigChanged => {
                 ui.config.resolved_theme = theme::resolve(&ui.config.theme, ui.themes);
-                {
+                let catalogs = {
                     let mut state = state.lock().unwrap();
                     state.config = ui.config.clone();
                     state.render.markdown_layout.invalidate_all();
                     state.render.transcript_cache.invalidate();
-                }
+                    state.preview.invalidate_layout();
+                    state.catalogs.clone()
+                };
                 *ui.theme = ui.config.theme();
+                ui.input.language = ui.config.language;
                 ui.input.paste_placeholder_chars = ui.config.paste_placeholder_chars;
                 ui.input.history_limit = ui.config.history_limit;
+                ui.input.catalog_changed(&catalogs);
                 effects.push(UiAction::PersistConfig(ui.config.clone()));
             }
         }

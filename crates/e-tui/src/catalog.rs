@@ -8,6 +8,12 @@ use crate::{
     command_catalog::NewMode,
 };
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffortStatus {
+    /// Provider-declared label or raw effort id. `None` means provider default.
+    pub label: Option<String>,
+}
+
 /// Catalog state for the currently attached scope. Composer and Input Pages
 /// borrow these values; they do not retain synchronized roster copies.
 #[derive(Debug, Clone, Default)]
@@ -43,11 +49,10 @@ impl CatalogModel {
             .map(|reasoning| reasoning.efforts.as_slice())
     }
 
-    /// The status-bar effort label in `Effort:<Label>` form. Returns `None`
-    /// when the current route exposes no reasoning metadata (hidden entirely).
-    /// Explicit selection wins over the adapter default; an unknown effort id
-    /// falls back to the raw id; both absent render `Effort:Default`.
-    pub fn effort_status_label(&self) -> Option<String> {
+    /// Resolve the current route's provider-neutral effort status. Returns
+    /// `None` when the route exposes no reasoning metadata; an inner `None`
+    /// label means that the provider default is active.
+    pub fn effort_status(&self) -> Option<EffortStatus> {
         let reasoning = self.current_model_reasoning()?;
         let id = self
             .current_model
@@ -55,16 +60,15 @@ impl CatalogModel {
             .reasoning_effort
             .as_deref()
             .or(reasoning.default_effort.as_deref());
-        let label = match id {
-            Some(id) => reasoning
+        let label = id.map(|id| {
+            reasoning
                 .efforts
                 .iter()
                 .find(|effort| effort.id == id)
                 .map(|effort| effort.name.clone())
-                .unwrap_or_else(|| id.to_owned()),
-            None => "Default".to_owned(),
-        };
-        Some(format!("Effort:{label}"))
+                .unwrap_or_else(|| id.to_owned())
+        });
+        Some(EffortStatus { label })
     }
 }
 
@@ -118,8 +122,10 @@ mod tests {
             Some(reasoning()),
         );
         assert_eq!(
-            explicit.effort_status_label().as_deref(),
-            Some("Effort:High")
+            explicit.effort_status(),
+            Some(EffortStatus {
+                label: Some("High".into())
+            })
         );
 
         let defaulted = catalog(
@@ -131,8 +137,10 @@ mod tests {
             Some(reasoning()),
         );
         assert_eq!(
-            defaulted.effort_status_label().as_deref(),
-            Some("Effort:Low")
+            defaulted.effort_status(),
+            Some(EffortStatus {
+                label: Some("Low".into())
+            })
         );
 
         let provider_default = catalog(
@@ -147,8 +155,8 @@ mod tests {
             }),
         );
         assert_eq!(
-            provider_default.effort_status_label().as_deref(),
-            Some("Effort:Default")
+            provider_default.effort_status(),
+            Some(EffortStatus { label: None })
         );
     }
 
@@ -162,7 +170,7 @@ mod tests {
             },
             None,
         );
-        assert_eq!(none.effort_status_label(), None);
+        assert_eq!(none.effort_status(), None);
 
         // The current route is not in the catalog: never fabricate efforts.
         let unknown = CatalogModel {
@@ -183,6 +191,6 @@ mod tests {
             }],
             ..CatalogModel::default()
         };
-        assert_eq!(unknown.effort_status_label(), None);
+        assert_eq!(unknown.effort_status(), None);
     }
 }

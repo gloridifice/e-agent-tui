@@ -26,8 +26,6 @@ use e_tui::EffectResult;
 #[cfg(test)]
 use e_tui::UiAction;
 
-const DSH_SERVER_CLOSED_MESSAGE: &str = "dsh 服务器已关闭。";
-
 fn token_path() -> PathBuf {
     e::launcher::dsh_home().join("dsh-tui.token")
 }
@@ -155,9 +153,21 @@ async fn run_tui(url: String, resume_session_id: Option<String>) -> anyhow::Resu
     phases.mark("read token");
 
     // Always release launcher ownership after a successful acquire, including
-    // token-read and connection failures before the TUI has started.
+    // token-read and connection failures before the TUI has started. Config
+    // loading happens inside `run`, so English is the safe fallback until it
+    // reports an effective language here.
+    let mut effective_language = e_tui::Language::English;
     let result = match token {
-        Ok(token) => run(url, token, resume_session_id, &mut phases).await,
+        Ok(token) => {
+            run(
+                url,
+                token,
+                resume_session_id,
+                &mut phases,
+                &mut effective_language,
+            )
+            .await
+        }
         Err(error) => Err(error),
     };
 
@@ -168,7 +178,10 @@ async fn run_tui(url: String, resume_session_id: Option<String>) -> anyhow::Resu
     let dsh_server_closed = e::launcher::release(&mut dsh_session);
 
     if dsh_server_closed {
-        println!("{DSH_SERVER_CLOSED_MESSAGE}");
+        println!(
+            "{}",
+            e_tui::i18n::tr(effective_language, "dsh.server_closed")
+        );
     }
     result
 }
@@ -200,10 +213,12 @@ async fn run(
     token: String,
     resume_session_id: Option<String>,
     phases: &mut e_tui::profile::PhaseTimers,
+    effective_language: &mut e_tui::Language,
 ) -> anyhow::Result<()> {
     // Config: persisted TOML, live-editable via /settings (D26–D30).
     let _z = e_tui::tracy_zone!("config load");
     let mut config = e::config::load();
+    *effective_language = config.language;
     // Discover the themes directory (ensuring the two defaults exist) and
     // resolve the configured theme name to a palette. `themes` is refreshed
     // by `/reload` and `/theme`; `config.resolved_theme` caches the result
@@ -500,6 +515,7 @@ async fn run(
                 },
             );
             state_r.lock().unwrap().interaction = interaction;
+            *effective_language = config.language;
             let mut agent = DshAgentPort { outbound: &tx_out };
             let execution =
                 execute_ui_actions(effects, &mut agent, &mut scheduler, &mut runtime_ports).await;
@@ -534,6 +550,7 @@ async fn run(
                             },
                         );
                         state_r.lock().unwrap().interaction = interaction;
+                        *effective_language = config.language;
                     }
                     other => {
                         let now = runtime_ports.now();
@@ -665,8 +682,15 @@ async fn run(
 mod tests {
     use super::*;
     #[test]
-    fn shutdown_confirmation_has_the_required_text() {
-        assert_eq!(DSH_SERVER_CLOSED_MESSAGE, "dsh 服务器已关闭。");
+    fn shutdown_confirmation_uses_the_explicit_language_catalog() {
+        assert_eq!(
+            e_tui::i18n::tr(e_tui::Language::English, "dsh.server_closed"),
+            "The DSH server has been closed."
+        );
+        assert_eq!(
+            e_tui::i18n::tr(e_tui::Language::SimplifiedChinese, "dsh.server_closed"),
+            "DSH 服务器已关闭。"
+        );
     }
 
     fn args<'a>(items: &'a [&'a str]) -> impl Iterator<Item = String> + 'a {

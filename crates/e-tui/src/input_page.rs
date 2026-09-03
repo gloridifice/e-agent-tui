@@ -741,7 +741,7 @@ impl InputPageSession {
         match &mut self.page {
             InputPage::Settings(settings) => {
                 for (index, item) in items_in(settings.category).iter().enumerate() {
-                    if *id == settings_item_focus(settings.category, item.label) {
+                    if *id == settings_item_focus(settings.category, item.key) {
                         settings.pos[settings.category] = index;
                         return;
                     }
@@ -821,22 +821,22 @@ fn linear_focus_nodes(ids: &[FocusId], horizontal: bool) -> Vec<FocusNode> {
         .collect()
 }
 
-fn settings_item_focus(category: usize, label: &str) -> FocusId {
-    FocusId::new(format!("settings:item:{category}:{label}"))
+fn settings_item_focus(category: usize, key: &str) -> FocusId {
+    FocusId::new(format!("settings:item:{category}:{key}"))
 }
 
 fn settings_focus_id(settings: &SettingsState) -> Option<FocusId> {
     settings
         .current_item()
         .filter(|item| item.kind != ItemKind::ReadOnly)
-        .map(|item| settings_item_focus(settings.category, item.label))
+        .map(|item| settings_item_focus(settings.category, item.key))
 }
 
 fn settings_focus_nodes(settings: &SettingsState) -> Vec<FocusNode> {
     let active_items: Vec<FocusId> = items_in(settings.category)
         .into_iter()
         .filter(|item| item.kind != ItemKind::ReadOnly)
-        .map(|item| settings_item_focus(settings.category, item.label))
+        .map(|item| settings_item_focus(settings.category, item.key))
         .collect();
     active_items
         .iter()
@@ -1100,6 +1100,160 @@ mod tests {
         page.apply_catalog(Vec::new(), None, &mut focus);
         assert!(focus.current.is_none());
         assert!(!page.loading);
+    }
+
+    #[test]
+    fn localized_page_rebuild_preserves_stable_targets_and_active_edits() {
+        let mut config = Config::default();
+
+        let mut settings = InputPageSession::settings(SettingsState::default());
+        if let InputPage::Settings(page) = &mut settings.page {
+            page.category = 1;
+            page.pos[1] = 1; // language
+            page.editing = Some(crate::settings::Edit::Choice { cursor: 1 });
+        }
+        settings.rebuild_focus();
+        config.language = crate::Language::SimplifiedChinese;
+        settings.rebuild_focus();
+        assert_eq!(
+            settings.focus.current.as_ref().map(|id| id.0.as_str()),
+            Some("settings:item:1:language")
+        );
+        assert!(
+            matches!(
+                &settings.page,
+                InputPage::Settings(page)
+                    if page.editing.as_ref()
+                        == Some(&crate::settings::Edit::Choice { cursor: 1 })
+            ),
+            "the choice cursor is not derived from its translated label"
+        );
+
+        let provider = |id: &str| crate::agent::CredentialProvider {
+            id: id.into(),
+            name: format!("Provider {id}"),
+            api_key_configured: false,
+            api_key_writable: true,
+            api_key_source: None,
+            api_key_hint: None,
+        };
+        let mut login = InputPageSession::login();
+        if let InputPage::Login(page) = &mut login.page {
+            page.page = LoginPage::Providers;
+            page.providers = vec![provider("a"), provider("b")];
+            page.pos = 1;
+            page.editing = Some("partly typed".into());
+        }
+        login.rebuild_focus();
+        login.apply_login(LoginView {
+            providers: vec![provider("b"), provider("a")],
+            ..Default::default()
+        });
+        assert_eq!(
+            login.focus.current.as_ref().map(|id| id.0.as_str()),
+            Some("login:provider:b")
+        );
+        assert!(matches!(
+            &login.page,
+            InputPage::Login(page) if page.editing.as_deref() == Some("partly typed")
+        ));
+
+        let model_provider = |id: &str| ModelProvider {
+            id: id.into(),
+            name: format!("Provider {id}"),
+            models: vec![crate::agent::ModelDescriptor {
+                id: format!("{id}-model"),
+                name: format!("Model {id}"),
+                description: None,
+                reasoning: None,
+            }],
+        };
+        let mut model = InputPageSession::model();
+        model.apply_model(
+            vec![model_provider("a"), model_provider("b")],
+            Some(("b".into(), "b-model".into())),
+        );
+        model.focus.set(FocusId::new("model:b:b-model"));
+        model.apply_model(
+            vec![model_provider("b"), model_provider("a")],
+            Some(("b".into(), "b-model".into())),
+        );
+        assert!(model.focus.is(&FocusId::new("model:b:b-model")));
+
+        let sessions = |first: &str, second: &str| {
+            vec![
+                SessionSummary {
+                    id: first.into(),
+                    title: format!("Title {first}"),
+                    live: false,
+                    created_at: 2,
+                },
+                SessionSummary {
+                    id: second.into(),
+                    title: format!("Title {second}"),
+                    live: false,
+                    created_at: 1,
+                },
+            ]
+        };
+        let mut resume = InputPageSession::resume();
+        resume.apply_sessions(sessions("s1", "s2"), false);
+        if let InputPage::Resume(page) = &mut resume.page {
+            page.sel = 1;
+        }
+        resume.apply_sessions(sessions("s2", "s1"), false);
+        assert!(matches!(
+            &resume.page,
+            InputPage::Resume(page) if page.sessions[page.sel].id == "s2"
+        ));
+
+        let mut question = InputPageSession::question(QuestionBatch::new(
+            "rpc".into(),
+            "session".into(),
+            vec![crate::agent::Question {
+                id: "question-id".into(),
+                question: "Question text".into(),
+                header: None,
+                options: Some(
+                    ["Option A", "Option B"]
+                        .into_iter()
+                        .map(|label| crate::agent::QuestionOption {
+                            label: label.into(),
+                            description: None,
+                        })
+                        .collect(),
+                ),
+                multi_select: false,
+            }],
+        ));
+        if let InputPage::Question(page) = &mut question.page {
+            page.sel = 1;
+        }
+        question.rebuild_focus();
+        assert_eq!(
+            question.focus.current.as_ref().map(|id| id.0.as_str()),
+            Some("question:question-id:option:1")
+        );
+
+        let mut free_text = InputPageSession::question(QuestionBatch::new(
+            "rpc".into(),
+            "session".into(),
+            vec![crate::agent::Question {
+                id: "free-text-id".into(),
+                question: "Why?".into(),
+                header: None,
+                options: None,
+                multi_select: false,
+            }],
+        ));
+        if let InputPage::Question(page) = &mut free_text.page {
+            page.draft = "unfinished answer".into();
+        }
+        free_text.rebuild_focus();
+        assert!(matches!(
+            &free_text.page,
+            InputPage::Question(page) if page.draft == "unfinished answer"
+        ));
     }
 
     #[test]

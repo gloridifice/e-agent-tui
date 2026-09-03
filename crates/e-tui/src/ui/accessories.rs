@@ -1,4 +1,5 @@
 use super::*;
+use crate::i18n::{tr, tr_args, Language};
 
 /// Right-hand blank gutter shared by every non-block accessory strip, so
 /// long/truncated rows (including their `…` ellipsis) never run flush into
@@ -10,13 +11,15 @@ const ACCESSORY_RIGHT_PAD: u16 = 1;
 pub(super) fn render_info_accessory(
     frame: &mut Frame,
     area: ratatui::layout::Rect,
-    label: &str,
+    label_key: &str,
     value: &str,
     theme: &Theme,
+    language: Language,
 ) {
     if area.height == 0 {
         return;
     }
+    let label = tr(language, label_key);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
@@ -26,9 +29,9 @@ pub(super) fn render_info_accessory(
             Span::styled(
                 trim_to_width(
                     value,
-                    area.width
-                        .saturating_sub(label.len() as u16 + 4 + ACCESSORY_RIGHT_PAD)
-                        as usize,
+                    area.width.saturating_sub(
+                        UnicodeWidthStr::width(label.as_str()) as u16 + 4 + ACCESSORY_RIGHT_PAD,
+                    ) as usize,
                 ),
                 Style::default().fg(theme.dim).bg(theme.bg),
             ),
@@ -43,13 +46,14 @@ pub(super) fn render_todo(
     area: ratatui::layout::Rect,
     todos: &[(String, String)],
     theme: &Theme,
+    language: Language,
 ) {
     frame.render_widget(Block::default().style(Style::default().bg(theme.bg)), area);
     if area.height == 0 {
         return;
     }
     let mut rows = vec![Line::from(Span::styled(
-        "  Todo",
+        format!("  {}", tr(language, "accessory.todo")),
         Style::default()
             .fg(theme.selection)
             .bg(theme.bg)
@@ -85,6 +89,7 @@ pub(super) fn render_queue(
     queue: &[crate::PromptInput],
     visible: usize,
     theme: &Theme,
+    language: Language,
 ) {
     frame.render_widget(Block::default().style(Style::default().bg(theme.bg)), area);
     let truncated = queue.len() > visible;
@@ -95,7 +100,10 @@ pub(super) fn render_queue(
         .take(shown)
         .map(|item| {
             Line::from(Span::styled(
-                format!("  * {}", trim_to_width(&item.display_text(), width)),
+                format!(
+                    "  * {}",
+                    trim_to_width(&item.display_text_in(language), width)
+                ),
                 Style::default().fg(theme.dim).bg(theme.bg),
             ))
         })
@@ -104,7 +112,14 @@ pub(super) fn render_queue(
         rows.push(Line::from(Span::styled(
             format!(
                 "  * {}",
-                trim_to_width(&format!("… 还有 {} 条", queue.len() - shown), width)
+                trim_to_width(
+                    &tr_args(
+                        language,
+                        "accessory.queue_more",
+                        &[("count", (queue.len() - shown).to_string())],
+                    ),
+                    width,
+                )
             ),
             Style::default().fg(theme.dim).bg(theme.bg),
         )));
@@ -121,6 +136,7 @@ pub(super) fn render_suggest(
     suggest: &Suggestion,
     input_area: ratatui::layout::Rect,
     theme: &Theme,
+    language: Language,
 ) {
     // Plugin registries are unbounded. Keep the popup inside the viewport and
     // scroll its visible window around the selected row while retaining every
@@ -151,10 +167,10 @@ pub(super) fn render_suggest(
         Span::styled("❯ ", theme.overlay.accent.style()),
         Span::styled(
             match suggest.kind {
-                SuggestionKind::Commands => "命令",
-                SuggestionKind::Modes => "模式",
-                SuggestionKind::Models => "模型",
-                SuggestionKind::Skills => "技能",
+                SuggestionKind::Commands => tr(language, "accessory.suggest.commands"),
+                SuggestionKind::Modes => tr(language, "accessory.suggest.modes"),
+                SuggestionKind::Models => tr(language, "accessory.suggest.models"),
+                SuggestionKind::Skills => tr(language, "accessory.suggest.skills"),
             },
             theme.overlay.muted.style(),
         ),
@@ -201,7 +217,7 @@ pub(super) fn render_suggest(
         ]));
     }
     lines.push(Line::from(Span::styled(
-        "↑↓ 选择 · Enter 发送 · Esc 关闭 · ↳ 插件命令",
+        tr(language, "accessory.suggest.footer"),
         theme.overlay.muted.style(),
     )));
     frame.render_widget(Paragraph::new(Text::from(lines)).style(panel), rect);
@@ -213,10 +229,11 @@ pub(super) fn render_approval(
     area: ratatui::layout::Rect,
     approval: &crate::interaction::ApprovalCard,
     theme: &Theme,
+    language: Language,
 ) {
     let title = Line::from(vec![
         Span::styled(
-            "⚠ 审批",
+            format!("⚠ {}", tr(language, "accessory.approval.title")),
             Style::default()
                 .fg(theme.running)
                 .add_modifier(Modifier::BOLD),
@@ -232,10 +249,19 @@ pub(super) fn render_approval(
         )));
     }
     rows.push(Line::from(vec![
-        Span::styled("[Y] 允许", Style::default().fg(theme.ok)),
+        Span::styled(
+            format!("[Y] {}", tr(language, "accessory.approval.allow")),
+            Style::default().fg(theme.ok),
+        ),
         Span::styled("   ", Style::default().fg(theme.dim)),
-        Span::styled("[n] 拒绝", Style::default().fg(theme.err)),
-        Span::styled("   [i] 详情", Style::default().fg(theme.dim)),
+        Span::styled(
+            format!("[n] {}", tr(language, "accessory.approval.deny")),
+            Style::default().fg(theme.err),
+        ),
+        Span::styled(
+            format!("   [i] {}", tr(language, "accessory.approval.details")),
+            Style::default().fg(theme.dim),
+        ),
     ]));
     let block = Block::default()
         .borders(ratatui::widgets::Borders::ALL)
@@ -300,6 +326,7 @@ mod tests {
                 &[crate::PromptInput::text("abcdefghijklmnop")],
                 1,
                 theme,
+                Language::English,
             );
         });
         assert_last_column_blank(&queue, 0, width);
@@ -315,13 +342,21 @@ mod tests {
                 area,
                 &[("abcdefghijklmnop".to_string(), "pending".to_string())],
                 theme,
+                Language::English,
             );
         });
         assert_last_column_blank(&todo, 1, width);
         assert!(todo[1].contains('…'), "long todo truncates: {:?}", todo[1]);
 
         let info = strip_rows(width as u16, 1, |frame, area, theme| {
-            render_info_accessory(frame, area, "Goal", "abcdefghijklmnop", theme);
+            render_info_accessory(
+                frame,
+                area,
+                "accessory.goal",
+                "abcdefghijklmnop",
+                theme,
+                Language::English,
+            );
         });
         assert_last_column_blank(&info, 0, width);
         assert!(info[0].contains('…'), "long info truncates: {:?}", info[0]);
@@ -342,6 +377,7 @@ mod tests {
                 ],
                 1,
                 theme,
+                Language::English,
             );
         });
         assert_last_column_blank(&queue, 0, width);

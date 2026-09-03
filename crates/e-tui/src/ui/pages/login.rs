@@ -5,9 +5,10 @@ pub(crate) fn render_login(
     area: ratatui::layout::Rect,
     login: &LoginState,
     theme: &Theme,
+    language: crate::Language,
 ) {
     let mut viewport = crate::input_page::ViewportState::default();
-    render_login_scrolled(frame, area, login, &mut viewport, theme);
+    render_login_scrolled(frame, area, login, &mut viewport, theme, language);
 }
 
 pub(super) fn render_login_scrolled(
@@ -16,17 +17,19 @@ pub(super) fn render_login_scrolled(
     login: &LoginState,
     viewport: &mut crate::input_page::ViewportState,
     theme: &Theme,
+    language: crate::Language,
 ) {
     let regions = input_page_shell(frame, area, theme);
     let buffer = frame.buffer_mut();
-    let title = match &login.page {
-        crate::login::Page::Menu => "登录",
-        crate::login::Page::Providers => "API key · 选择提供商",
-        crate::login::Page::ApiKey { .. } => "API key · 填写",
-        crate::login::Page::ProxyList => "Proxy · 已保存的代理",
-        crate::login::Page::ProxyForm => "Proxy · 新建代理",
-        crate::login::Page::ProxyDelete { .. } => "Proxy · 删除确认",
+    let title_key = match &login.page {
+        crate::login::Page::Menu => "input_page.login.title",
+        crate::login::Page::Providers => "input_page.login.providers_title",
+        crate::login::Page::ApiKey { .. } => "input_page.login.api_key_title",
+        crate::login::Page::ProxyList => "input_page.login.proxy_list_title",
+        crate::login::Page::ProxyForm => "input_page.login.proxy_form_title",
+        crate::login::Page::ProxyDelete { .. } => "input_page.login.proxy_delete_title",
     };
+    let title = crate::i18n::tr(language, title_key);
     buffer.set_line(
         regions.header.x,
         regions.header.y,
@@ -52,10 +55,18 @@ pub(super) fn render_login_scrolled(
     match &login.page {
         crate::login::Page::Menu => {
             let items: &[(&str, &str)] = &[
-                ("API key", "为各模型提供商填写 API key"),
-                ("Proxy", "管理自定义代理端点"),
+                (
+                    "input_page.login.api_key.label",
+                    "input_page.login.api_key.description",
+                ),
+                (
+                    "input_page.login.proxy.label",
+                    "input_page.login.proxy.description",
+                ),
             ];
-            for (i, (label, hint)) in items.iter().enumerate().skip(start) {
+            for (i, (label_key, hint_key)) in items.iter().enumerate().skip(start) {
+                let label = crate::i18n::tr(language, label_key);
+                let hint = crate::i18n::tr(language, hint_key);
                 let y = item_area.y + i.saturating_sub(start) as u16;
                 if y >= item_area.y + item_area.height {
                     break;
@@ -66,11 +77,8 @@ pub(super) fn render_login_scrolled(
                     y,
                     i == login.pos,
                     false,
-                    label,
-                    Span::styled(
-                        (*hint).to_string(),
-                        Style::default().fg(theme.dim).bg(theme.bg_soft),
-                    ),
+                    &label,
+                    Span::styled(hint, Style::default().fg(theme.dim).bg(theme.bg_soft)),
                     theme,
                 );
             }
@@ -84,12 +92,16 @@ pub(super) fn render_login_scrolled(
                 let value = if p.api_key_configured {
                     let hint = p.api_key_hint.as_deref().unwrap_or("");
                     Span::styled(
-                        format!("已配置 {hint}"),
+                        crate::i18n::tr_args(
+                            language,
+                            "input_page.login.configured",
+                            &[("hint", hint.to_owned())],
+                        ),
                         Style::default().fg(theme.ok).bg(theme.bg_soft),
                     )
                 } else {
                     Span::styled(
-                        "未配置（Enter 填写）",
+                        crate::i18n::tr(language, "input_page.login.not_configured"),
                         Style::default().fg(theme.dim).bg(theme.bg_soft),
                     )
                 };
@@ -109,7 +121,7 @@ pub(super) fn render_login_scrolled(
                     area.x,
                     item_area.y,
                     &Line::from(Span::styled(
-                        "没有可用的提供商",
+                        crate::i18n::tr(language, "input_page.login.no_providers"),
                         Style::default().fg(theme.dim).bg(theme.bg_soft),
                     )),
                     item_area.width,
@@ -158,9 +170,9 @@ pub(super) fn render_login_scrolled(
                     new_y,
                     login.pos == login.proxies.len(),
                     false,
-                    "+ New",
+                    &crate::i18n::tr(language, "input_page.login.new_proxy"),
                     Span::styled(
-                        "新建代理".to_string(),
+                        crate::i18n::tr(language, "input_page.login.new_proxy_description"),
                         Style::default().fg(theme.user).bg(theme.bg_soft),
                     ),
                     theme,
@@ -168,8 +180,14 @@ pub(super) fn render_login_scrolled(
             }
         }
         crate::login::Page::ProxyForm => {
-            let fields: &[&str] = &["base url", "api key", "协议模式", "模型名称"];
-            for (i, label) in fields.iter().enumerate().skip(start) {
+            let fields: &[&str] = &[
+                "input_page.login.field.base_url",
+                "input_page.login.field.api_key",
+                "input_page.login.field.protocol",
+                "input_page.login.field.model",
+            ];
+            for (i, label_key) in fields.iter().enumerate().skip(start) {
+                let label = crate::i18n::tr(language, label_key);
                 let y = item_area.y + i.saturating_sub(start) as u16;
                 if y >= item_area.y + item_area.height {
                     break;
@@ -201,7 +219,7 @@ pub(super) fn render_login_scrolled(
                     let shown = if i == 2 {
                         format!("◄ {v} ►")
                     } else if v.is_empty() {
-                        "（可选）".to_string()
+                        crate::i18n::tr(language, "input_page.login.optional")
                     } else if i == 1 {
                         "●".repeat(v.chars().count())
                     } else {
@@ -215,7 +233,7 @@ pub(super) fn render_login_scrolled(
                     y,
                     i == login.pos,
                     editing,
-                    label,
+                    &label,
                     value,
                     theme,
                 );
@@ -229,9 +247,9 @@ pub(super) fn render_login_scrolled(
                     save_y,
                     login.pos == crate::login::PROXY_SAVE_ROW,
                     false,
-                    "保存",
+                    &crate::i18n::tr(language, "input_page.login.save"),
                     Span::styled(
-                        "保存并创建".to_string(),
+                        crate::i18n::tr(language, "input_page.login.save_description"),
                         Style::default().fg(theme.user).bg(theme.bg_soft),
                     ),
                     theme,
@@ -243,7 +261,11 @@ pub(super) fn render_login_scrolled(
                 area.x,
                 item_area.y,
                 &Line::from(Span::styled(
-                    format!("确定删除代理“{name}”？"),
+                    crate::i18n::tr_args(
+                        language,
+                        "input_page.login.delete_prompt",
+                        &[("name", name.clone())],
+                    ),
                     Style::default().fg(theme.fg).bg(theme.bg_soft),
                 )),
                 item_area.width,
@@ -255,9 +277,9 @@ pub(super) fn render_login_scrolled(
                     item_area.y + 1,
                     login.pos == 0,
                     false,
-                    "取消",
+                    &crate::i18n::tr(language, "common.cancel"),
                     Span::styled(
-                        "保留该代理",
+                        crate::i18n::tr(language, "input_page.login.keep_proxy"),
                         Style::default().fg(theme.dim).bg(theme.bg_soft),
                     ),
                     theme,
@@ -270,8 +292,11 @@ pub(super) fn render_login_scrolled(
                     item_area.y + 2,
                     login.pos == 1,
                     false,
-                    "删除",
-                    Span::styled("永久删除", Style::default().fg(theme.err).bg(theme.bg_soft)),
+                    &crate::i18n::tr(language, "common.delete"),
+                    Span::styled(
+                        crate::i18n::tr(language, "input_page.login.delete_permanently"),
+                        Style::default().fg(theme.err).bg(theme.bg_soft),
+                    ),
                     theme,
                 );
             }
@@ -282,18 +307,24 @@ pub(super) fn render_login_scrolled(
     let footer = if let Some(error) = login.error.as_deref() {
         format!("✗ {error}")
     } else if login.loading {
-        "读取中…".to_string()
+        crate::i18n::tr(language, "input_page.login.loading")
     } else {
         match &login.page {
-            crate::login::Page::Menu => "↑/↓ 选择   Enter 进入   Esc 退出".to_string(),
-            crate::login::Page::Providers => "↑/↓ 选择   Enter 填写   Esc 返回".to_string(),
-            crate::login::Page::ApiKey { .. } => "Enter 保存   Esc 返回 · 密钥不会回显".to_string(),
-            crate::login::Page::ProxyList => "↑/↓ 选择   Enter 执行   Esc 返回".to_string(),
+            crate::login::Page::Menu => crate::i18n::tr(language, "input_page.login.footer.menu"),
+            crate::login::Page::Providers => {
+                crate::i18n::tr(language, "input_page.login.footer.providers")
+            }
+            crate::login::Page::ApiKey { .. } => {
+                crate::i18n::tr(language, "input_page.login.footer.api_key")
+            }
+            crate::login::Page::ProxyList => {
+                crate::i18n::tr(language, "input_page.login.footer.proxy_list")
+            }
             crate::login::Page::ProxyForm => {
-                "↑/↓ 选字段   Enter 编辑/切换   Enter 保存   Esc 返回".to_string()
+                crate::i18n::tr(language, "input_page.login.footer.proxy_form")
             }
             crate::login::Page::ProxyDelete { .. } => {
-                "←/→ 选择   Enter 确认   Esc 取消".to_string()
+                crate::i18n::tr(language, "input_page.login.footer.proxy_delete")
             }
         }
     };

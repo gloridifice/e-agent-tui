@@ -19,12 +19,21 @@ Historical or archived material never becomes a current requirement by itself. T
 
 ## Current documentation
 
+Repository-wide guides:
+
+- [Development](development.md) — checkout installation, build, dependency, and diagnostic entry points.
+- [Testing and validation](testing.md) — proportional validation policy, scoped tests, protocol checks, and compatibility gates.
+- [DSH integration](dsh-integration.md) — profile setup, bridge deployment, restart, and upgrade workflow.
+- [Troubleshooting](troubleshooting.md) — operational symptoms and diagnostic routes.
+
+Subsystem and contract documentation:
+
 - [Rust client](subsystem/client/README.md) — `e-dsh` / `e-tui` ownership, state, interaction, rendering, and runtime invariants.
 - [Node.js bridge](subsystem/bridge/README.md) — DSH composition, session, host-integration, and transport invariants.
 - [Performance methodology](subsystem/performance/README.md) — repeatable profiling and frame-measurement workflow.
 - [Generated wire protocol](protocol.md) — human-readable derivative of the canonical JSON contract.
 
-For installation, common commands, and user-facing key interactions, see the [root README](../README.md).
+For user installation, updates, capabilities, and key interactions, see the [root README](../README.md).
 
 ## History and archive
 
@@ -35,4 +44,6 @@ For installation, common commands, and user-facing key interactions, see the [ro
 
 Update a Current document only when a change affects a documented public workflow or interface, architecture boundary or invariant, persistent format or cross-boundary contract, or benchmark methodology. Internal refactors, private renames, mechanically derivable details, and bug fixes that restore an existing contract normally require no documentation change.
 
-Keep each fact in one authoritative location. Prefer source, tests, generated output, schema, or `--help` for exact registries, defaults, field lists, and implementation details. When an old design no longer serves as a concise current reference, freeze it in history or archive and replace it with a smaller Current document instead of continuously synchronizing the old narrative.
+Keep each fact in one authoritative location. Prefer source, tests, generated output, schema, or `--help` for exact registries, defaults, field lists, and implementation details. Current documents are maintained in place; audits, reports, experiments, history, and archive are context only. When an old design no longer serves as a concise current reference, freeze it in history or archive and replace it with a smaller Current document instead of continuously synchronizing the old narrative.
+
+Keep the root README concise. Update it only when user-facing installation/build flow, core capabilities, or the keybinding quick reference materially changes; implementation details and development records belong under `docs/`. A user-visible interaction-key change must also update the `e-tui` help overlay and the README quick reference when applicable.

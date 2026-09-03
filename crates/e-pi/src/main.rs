@@ -19,54 +19,16 @@ use e_pi::{
 };
 use e_tui::profile::{FrameMetrics, FrameSample};
 use e_tui::runtime::{
-    animation_active, route_terminal_event, tick_spinners, DirtyReason, FrameScheduler,
-    ProductionTerminalEvents, RuntimeController, RuntimeState, RuntimeUiState, TerminalEventPort,
-    TerminalFocus, TerminalLifecyclePort, TerminalOwner, TerminalUiState, UiActionPorts,
+    animation_active, animation_interval, execute_ui_actions, inbound_budget_remaining,
+    is_streaming_delta, route_terminal_event, tick_spinners, wait_for_deadline, AgentRequestPort,
+    DirtyReason, FrameScheduler, ProductionTerminalEvents, RuntimeController, RuntimeState,
+    RuntimeUiState, TerminalEventPort, TerminalFocus, TerminalLifecyclePort, TerminalOwner,
+    TerminalUiState, UiActionPorts,
 };
 use e_tui::{
-    ui::TerminalSize, AgentEvent, AgentRequest, Config, DrawPriority, EffectResult, PreviewContent,
-    PreviewRequest, ThemeFile, UiAction,
+    ui::TerminalSize, AgentEvent, AgentRequest, Config, EffectResult, PreviewContent,
+    PreviewRequest, ThemeFile,
 };
-const MIN_ANIMATION_INTERVAL: Duration = Duration::from_millis(16);
-const INBOUND_BATCH_LIMIT: usize = 64;
-const INBOUND_BATCH_BUDGET: Duration = Duration::from_millis(2);
-
-async fn wait_for_deadline(deadline: Option<Instant>) {
-    match deadline {
-        Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
-        None => std::future::pending::<()>().await,
-    }
-}
-
-fn animation_interval(state: &RuntimeState) -> Duration {
-    Duration::from_millis(
-        state
-            .config
-            .spinner_frame_ms
-            .max(MIN_ANIMATION_INTERVAL.as_millis() as u64),
-    )
-}
-
-fn inbound_budget_remaining(count: usize, elapsed: Duration) -> bool {
-    count < INBOUND_BATCH_LIMIT && elapsed < INBOUND_BATCH_BUDGET
-}
-
-/// A streamed assistant text/reasoning delta: render it as its own frame
-/// instead of batching it with the rest of the inbound queue.
-fn is_streaming_delta(event: &e_tui::AgentEvent) -> bool {
-    matches!(
-        event,
-        e_tui::AgentEvent::Timeline(e_tui::agent::TimelineEvent::Append(record))
-            if matches!(
-                &record.fact,
-                e_tui::agent::TimelineFact::AssistantChunk {
-                    text,
-                    reasoning,
-                    ..
-                } if !text.is_empty() || !reasoning.is_empty()
-            )
-    )
-}
 
 #[derive(Debug, Clone)]
 struct Cli {
@@ -157,79 +119,22 @@ impl UiActionPorts for PiRuntimePorts {
     }
 }
 
-#[derive(Default)]
-struct EffectExecution {
-    completed: Vec<EffectResult>,
-    quit: bool,
-    fatal: Option<String>,
+struct PiAgentPort<'a> {
+    requests: &'a tokio::sync::mpsc::Sender<AgentRequest>,
 }
 
-async fn execute_runtime_effects(
-    effects: Vec<UiAction>,
-    requests: &tokio::sync::mpsc::Sender<AgentRequest>,
-    scheduler: &mut FrameScheduler,
-    ports: &mut impl UiActionPorts,
-) -> EffectExecution {
-    let mut execution = EffectExecution::default();
-    for effect in effects {
-        match effect {
-            UiAction::Agent(request) => {
-                if requests.send(request).await.is_err() {
-                    execution.fatal = Some("Pi adapter request channel closed".into());
-                    break;
-                }
-            }
-            UiAction::ResolvePreview(request) => {
-                let result = ports.resolve_preview(request.clone()).await;
-                execution.completed.push(EffectResult::PreviewResolved {
-                    request_id: request.request_id,
-                    key: request.key,
-                    revision: request.revision,
-                    result,
-                });
-            }
-            UiAction::PersistConfig(config) => execution
-                .completed
-                .push(EffectResult::ConfigPersisted(ports.persist_config(&config))),
-            UiAction::ReloadConfig => execution.completed.push(match ports.load_config() {
-                Ok((config, themes)) => EffectResult::ConfigReloaded {
-                    config: Box::new(config),
-                    themes,
-                },
-                Err(error) => EffectResult::ConfigReloadFailed(error),
-            }),
-            UiAction::PersistSessionId(session_id) => ports.persist_session_id(session_id),
-            UiAction::ReadClipboard => execution
-                .completed
-                .push(EffectResult::ClipboardRead(ports.read_clipboard())),
-            UiAction::WriteClipboard(text) => {
-                let lines = text.lines().count();
-                let (preview, truncated) = e_tui::clipboard_preview(&text, 6);
-                execution.completed.push(match ports.write_clipboard(text) {
-                    Ok(()) => EffectResult::ClipboardWritten {
-                        lines,
-                        preview,
-                        truncated,
-                    },
-                    Err(error) => EffectResult::ClipboardFailed(error),
-                });
-            }
-            UiAction::RequestDraw(priority) => scheduler.request(
-                match priority {
-                    DrawPriority::Interactive => DirtyReason::Interactive,
-                    DrawPriority::Content => DirtyReason::Content,
-                    DrawPriority::Animation => DirtyReason::Animation,
-                },
-                ports.now(),
-            ),
-            UiAction::Quit => execution.quit = true,
-            UiAction::Fatal(reason) => {
-                execution.fatal = Some(reason);
-                break;
-            }
+impl AgentRequestPort for PiAgentPort<'_> {
+    fn send_agent_request(
+        &mut self,
+        request: AgentRequest,
+    ) -> impl std::future::Future<Output = Result<(), String>> + Send {
+        async move {
+            self.requests
+                .send(request)
+                .await
+                .map_err(|_| "Pi adapter request channel closed".to_owned())
         }
     }
-    execution
 }
 
 async fn route_output(
@@ -418,7 +323,7 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
                     if spinner_due {
                         redraw |= tick_spinners(&mut state, now);
                         spinner_deadline = animation_active(&state, now)
-                            .then(|| now + animation_interval(&state));
+                            .then(|| now + animation_interval(state.config.spinner_frame_ms));
                     }
                     if reveal_due {
                         redraw |= state.tick_reveals(now);
@@ -464,13 +369,12 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
                 };
                 let effects = RuntimeController::apply_agent(event, &state_r, &mut ui);
                 state_r.lock().unwrap().interaction = interaction;
-                let execution = execute_runtime_effects(
-                    effects,
-                    &request_tx,
-                    &mut scheduler,
-                    &mut runtime_ports,
-                )
-                .await;
+                let mut agent = PiAgentPort {
+                    requests: &request_tx,
+                };
+                let execution =
+                    execute_ui_actions(effects, &mut agent, &mut scheduler, &mut runtime_ports)
+                        .await;
                 if let Some(reason) = execution.fatal {
                     fatal = Some(reason);
                     break 'outer;
@@ -499,9 +403,12 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
         // ---- is idle (one at a time — each dispatch keeps it busy again).
         let queued_effects = RuntimeController::dispatch_next_queued(&state_r);
         if !queued_effects.is_empty() {
-            let execution = execute_runtime_effects(
+            let mut agent = PiAgentPort {
+                requests: &request_tx,
+            };
+            let execution = execute_ui_actions(
                 queued_effects,
-                &request_tx,
+                &mut agent,
                 &mut scheduler,
                 &mut runtime_ports,
             )
@@ -562,9 +469,11 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
                 },
             );
             state_r.lock().unwrap().interaction = interaction;
+            let mut agent = PiAgentPort {
+                requests: &request_tx,
+            };
             let execution =
-                execute_runtime_effects(effects, &request_tx, &mut scheduler, &mut runtime_ports)
-                    .await;
+                execute_ui_actions(effects, &mut agent, &mut scheduler, &mut runtime_ports).await;
             for result in execution.completed {
                 match result {
                     EffectResult::ConfigReloaded {

@@ -26,96 +26,262 @@ fn production_source(source: &str) -> &str {
     source
 }
 
-fn identifier_after(source: &str, prefix: &str, mut offset: usize) -> Option<(String, usize)> {
-    offset += prefix.len();
-    let tail = &source[offset..];
-    let len = tail
-        .char_indices()
-        .take_while(|(_, ch)| ch.is_ascii_alphanumeric() || *ch == '_')
-        .last()
-        .map_or(0, |(index, ch)| index + ch.len_utf8());
-    (len > 0).then(|| (tail[..len].to_owned(), offset + len))
+#[derive(Debug)]
+struct SourceModule {
+    id: String,
+    path: Vec<String>,
+    source: String,
 }
 
-fn grouped_roots(source: &str, prefix: &str) -> BTreeSet<String> {
-    let mut roots = BTreeSet::new();
-    let mut search = 0usize;
-    while let Some(relative) = source[search..].find(prefix) {
-        let body_start = search + relative + prefix.len();
+fn module_name(root: &Path, path: &Path) -> (String, Vec<String>) {
+    let relative = path
+        .strip_prefix(root)
+        .unwrap_or_else(|_| panic!("{} is outside {}", path.display(), root.display()));
+    let mut segments: Vec<String> = relative
+        .parent()
+        .into_iter()
+        .flat_map(|parent| parent.components())
+        .filter_map(|component| component.as_os_str().to_str())
+        .map(str::to_owned)
+        .collect();
+    let stem = relative
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_else(|| panic!("Rust source has no UTF-8 stem: {}", path.display()));
+    if stem != "mod" && !(segments.is_empty() && matches!(stem, "lib" | "main")) {
+        segments.push(stem.to_owned());
+    }
+
+    let id = if segments.is_empty() {
+        stem.to_owned()
+    } else {
+        segments.join("::")
+    };
+    (id, segments)
+}
+
+fn declared_module_name(line: &str) -> Option<String> {
+    let line = line.trim_start();
+    let line = line
+        .strip_prefix("pub(")
+        .and_then(|line| line.find(')').map(|end| &line[end + 1..]))
+        .or_else(|| line.strip_prefix("pub "))
+        .unwrap_or(line)
+        .trim_start();
+    let name = line.strip_prefix("mod ")?;
+    let name = name
+        .chars()
+        .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+        .collect::<String>();
+    (!name.is_empty()).then_some(name)
+}
+
+fn test_only_module_paths(sources: &[SourceModule]) -> BTreeSet<String> {
+    let mut paths = BTreeSet::new();
+    for module in sources {
+        let lines: Vec<_> = module.source.lines().collect();
+        for (index, line) in lines.iter().enumerate() {
+            if line.trim() != "#[cfg(test)]" {
+                continue;
+            }
+            if let Some(name) = lines
+                .iter()
+                .skip(index + 1)
+                .find_map(|line| (!line.trim().is_empty()).then(|| declared_module_name(line)))
+                .flatten()
+            {
+                let mut path = module.path.clone();
+                path.push(name);
+                paths.insert(path.join("::"));
+            }
+        }
+    }
+    paths
+}
+
+fn split_top_level(source: &str, separator: char) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (index, ch) in source.char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            _ if ch == separator && depth == 0 => {
+                parts.push(source[start..index].trim());
+                start = index + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    parts.push(source[start..].trim());
+    parts
+}
+
+fn path_segments(source: &str) -> Vec<String> {
+    source
+        .split("::")
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty() && *segment != "*")
+        .map(str::to_owned)
+        .collect()
+}
+
+fn expand_use_tree(tree: &str, prefix: &[String], paths: &mut Vec<Vec<String>>) {
+    let tree = tree.trim().trim_end_matches(';').trim();
+    let tree = tree
+        .split_once(" as ")
+        .map_or(tree, |(path, _)| path)
+        .trim();
+    if let Some(open) = tree.find('{') {
         let mut depth = 0usize;
-        let mut segment_start = body_start;
-        for (relative_index, ch) in source[body_start..].char_indices() {
-            let index = body_start + relative_index;
+        let mut close = None;
+        for (relative, ch) in tree[open..].char_indices() {
             match ch {
                 '{' => depth += 1,
-                '}' if depth == 0 => {
-                    let segment = source[segment_start..index].trim();
-                    if let Some(root) = segment
-                        .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
-                        .find(|part| !part.is_empty())
-                    {
-                        roots.insert(root.to_owned());
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(open + relative);
+                        break;
                     }
-                    search = index + 1;
-                    break;
-                }
-                '}' => depth -= 1,
-                ',' if depth == 0 => {
-                    let segment = source[segment_start..index].trim();
-                    if let Some(root) = segment
-                        .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
-                        .find(|part| !part.is_empty())
-                    {
-                        roots.insert(root.to_owned());
-                    }
-                    segment_start = index + 1;
                 }
                 _ => {}
             }
         }
+        if let Some(close) = close {
+            let mut nested_prefix = prefix.to_vec();
+            nested_prefix.extend(path_segments(tree[..open].trim_end_matches(':')));
+            for child in split_top_level(&tree[open + 1..close], ',') {
+                if !child.is_empty() {
+                    expand_use_tree(child, &nested_prefix, paths);
+                }
+            }
+            return;
+        }
     }
-    roots
+
+    let mut path = prefix.to_vec();
+    path.extend(path_segments(tree));
+    if !path.is_empty() {
+        paths.push(path);
+    }
 }
 
-fn module_references(source: &str, modules: &BTreeSet<String>) -> BTreeSet<String> {
-    let source = production_source(source);
-    let mut references = BTreeSet::new();
-    for prefix in ["crate::", "e::"] {
-        let mut search = 0usize;
-        while let Some(relative) = source[search..].find(prefix) {
-            let offset = search + relative;
-            if let Some((name, end)) = identifier_after(source, prefix, offset) {
-                if modules.contains(&name) {
-                    references.insert(name);
-                }
-                search = end;
+fn use_tree_after_prefix(line: &str) -> Option<&str> {
+    let line = line.trim_start();
+    if let Some(tree) = line.strip_prefix("use ") {
+        return Some(tree);
+    }
+    if let Some(tree) = line.strip_prefix("pub use ") {
+        return Some(tree);
+    }
+    let line = line.strip_prefix("pub(")?;
+    let end = line.find(')')?;
+    line[end + 1..].trim_start().strip_prefix("use ")
+}
+
+fn use_paths(source: &str) -> Vec<Vec<String>> {
+    let mut paths = Vec::new();
+    let mut statement = None::<String>;
+    for line in source.lines() {
+        if let Some(pending) = statement.as_mut() {
+            pending.push(' ');
+            pending.push_str(line.trim());
+            if pending.contains(';') {
+                expand_use_tree(pending, &[], &mut paths);
+                statement = None;
+            }
+            continue;
+        }
+        if let Some(tree) = use_tree_after_prefix(line) {
+            if tree.contains(';') {
+                expand_use_tree(tree, &[], &mut paths);
             } else {
-                search = offset + prefix.len();
+                statement = Some(tree.trim().to_owned());
             }
         }
     }
-    for prefix in ["use crate::{", "use e::{"] {
-        references.extend(
-            grouped_roots(source, prefix)
-                .into_iter()
-                .filter(|name| modules.contains(name)),
-        );
+    paths
+}
+
+fn qualified_paths(source: &str) -> Vec<Vec<String>> {
+    let mut paths = Vec::new();
+    for prefix in ["crate::", "self::", "super::", "e::"] {
+        let mut search = 0usize;
+        while let Some(relative) = source[search..].find(prefix) {
+            let start = search + relative;
+            let boundary = source[..start]
+                .chars()
+                .next_back()
+                .is_none_or(|ch| !(ch.is_ascii_alphanumeric() || ch == '_'));
+            if !boundary {
+                search = start + prefix.len();
+                continue;
+            }
+            let end = source[start..]
+                .char_indices()
+                .take_while(|(_, ch)| ch.is_ascii_alphanumeric() || *ch == '_' || *ch == ':')
+                .last()
+                .map_or(start + prefix.len(), |(index, ch)| {
+                    start + index + ch.len_utf8()
+                });
+            paths.push(path_segments(&source[start..end]));
+            search = end;
+        }
     }
-    references
+    paths
+}
+
+fn resolve_module_path(
+    path: &[String],
+    current: &[String],
+    modules: &BTreeMap<String, String>,
+) -> Option<String> {
+    let (mut candidate, index) = match path.first().map(String::as_str) {
+        Some("crate" | "e") => (Vec::new(), 1),
+        Some("self") => (current.to_vec(), 1),
+        Some("super") => {
+            let mut parent = current.to_vec();
+            let mut index = 0;
+            while path.get(index).is_some_and(|segment| segment == "super") {
+                parent.pop()?;
+                index += 1;
+            }
+            (parent, index)
+        }
+        Some(_) => return None,
+        None => return None,
+    };
+    candidate.extend(
+        path[index..]
+            .iter()
+            .filter(|segment| segment.as_str() != "self")
+            .cloned(),
+    );
+
+    for length in (1..=candidate.len()).rev() {
+        if let Some(module) = modules.get(&candidate[..length].join("::")) {
+            return Some(module.clone());
+        }
+    }
+    None
+}
+
+fn module_references(
+    source: &str,
+    current: &[String],
+    modules: &BTreeMap<String, String>,
+) -> BTreeSet<String> {
+    let source = production_source(source);
+    use_paths(source)
+        .into_iter()
+        .chain(qualified_paths(source))
+        .filter_map(|path| resolve_module_path(&path, current, modules))
+        .collect()
 }
 
 fn source_files(root: &Path) -> Vec<PathBuf> {
-    let mut files: Vec<_> = fs::read_dir(root)
-        .unwrap_or_else(|error| panic!("read crate source root {}: {error}", root.display()))
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
-        .collect();
-    files.sort();
-    files
-}
-
-fn rust_files_recursive(root: &Path) -> Vec<PathBuf> {
     let mut pending = vec![root.to_path_buf()];
     let mut files = Vec::new();
     while let Some(directory) = pending.pop() {
@@ -135,20 +301,53 @@ fn rust_files_recursive(root: &Path) -> Vec<PathBuf> {
     files
 }
 
+fn rust_files_recursive(root: &Path) -> Vec<PathBuf> {
+    source_files(root)
+}
+
 fn production_graph(root: &Path) -> Graph {
-    let files = source_files(root);
-    let modules: BTreeSet<_> = files
-        .iter()
-        .filter_map(|path| path.file_stem()?.to_str().map(str::to_owned))
-        .collect();
-    files
+    let mut sources: Vec<_> = source_files(root)
         .into_iter()
-        .map(|path| {
-            let name = path.file_stem().unwrap().to_str().unwrap().to_owned();
-            let source = fs::read_to_string(&path).expect("read Rust module");
-            let mut edges = module_references(&source, &modules);
-            edges.remove(&name);
-            (name, edges)
+        .map(|file| {
+            let (id, path) = module_name(root, &file);
+            SourceModule {
+                id,
+                path,
+                source: fs::read_to_string(&file).expect("read Rust module"),
+            }
+        })
+        .collect();
+    sources.sort_by(|left, right| left.id.cmp(&right.id));
+
+    let test_only = test_only_module_paths(&sources);
+    sources.retain(|module| {
+        !test_only.iter().any(|path| {
+            module.id == *path
+                || module
+                    .id
+                    .strip_prefix(path)
+                    .is_some_and(|suffix| suffix.starts_with("::"))
+        })
+    });
+
+    let mut modules = BTreeMap::new();
+    for module in &sources {
+        if module.path.is_empty() {
+            continue;
+        }
+        let path = module.path.join("::");
+        assert!(
+            modules.insert(path.clone(), module.id.clone()).is_none(),
+            "duplicate Rust module path {path}"
+        );
+    }
+
+    sources
+        .iter()
+        .map(|module| {
+            let mut edges = module_references(&module.source, &module.path, &modules);
+            edges.remove(&module.id);
+            (module.id.clone(), edges)
         })
         .collect()
 }
@@ -222,28 +421,109 @@ fn strongly_connected_components(graph: &Graph) -> Vec<Vec<String>> {
     tarjan.components
 }
 
+struct SourceFixture {
+    root: PathBuf,
+}
+
+impl SourceFixture {
+    fn new() -> Self {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "e-architecture-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).expect("create scanner fixture root");
+        Self { root }
+    }
+
+    fn write(&self, relative: &str, source: &str) {
+        let path = self.root.join(relative);
+        fs::create_dir_all(path.parent().expect("fixture source parent"))
+            .expect("create scanner fixture directory");
+        fs::write(path, source).expect("write scanner fixture source");
+    }
+}
+
+impl Drop for SourceFixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
 #[test]
-fn scanner_reads_simple_grouped_and_explicit_paths_but_not_test_modules() {
-    let modules = ["config", "model", "protocol", "ui"]
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
-    let source = r#"
-use crate::config::Config;
-use crate::{
-    model::{AppState, Msg},
-    protocol::ClientMessage,
-};
-fn layout() { let _ = crate::ui::copy_layout_rows; }
+fn scanner_discovers_nested_modules_and_resolves_relative_grouped_paths() {
+    let fixture = SourceFixture::new();
+    fixture.write(
+        "lib.rs",
+        r#"
+pub mod flat;
+pub mod nested;
 #[cfg(test)]
-mod tests { use crate::ignored::OnlyInTests; }
-"#;
+mod test_support;
+"#,
+    );
+    fixture.write(
+        "flat.rs",
+        r#"
+use crate::{
+    nested::{
+        cycle_a::CycleA,
+        sibling::{self, child::Child},
+    },
+};
+"#,
+    );
+    fixture.write("nested/mod.rs", "pub mod sibling;\n");
+    fixture.write(
+        "nested/sibling.rs",
+        "use self::child::Child;\nuse super::cycle_a::CycleA;\n",
+    );
+    fixture.write(
+        "nested/sibling/child.rs",
+        "use super::super::cycle_b::CycleB;\n",
+    );
+    fixture.write("nested/cycle_a.rs", "use super::cycle_b::CycleB;\n");
+    fixture.write("nested/cycle_b.rs", "use super::{cycle_c::CycleC};\n");
+    fixture.write("nested/cycle_c.rs", "use crate::nested::cycle_a::CycleA;\n");
+    fixture.write("test_support.rs", "use crate::nested::cycle_a::CycleA;\n");
+
+    let graph = production_graph(&fixture.root);
+    assert!(graph.contains_key("flat"));
+    assert!(graph.contains_key("nested"));
+    assert!(graph.contains_key("nested::sibling"));
+    assert!(graph.contains_key("nested::sibling::child"));
+    assert!(!graph.contains_key("test_support"));
     assert_eq!(
-        module_references(source, &modules),
-        ["config", "model", "protocol", "ui"]
-            .into_iter()
-            .map(str::to_owned)
-            .collect()
+        graph["flat"],
+        BTreeSet::from([
+            "nested::cycle_a".into(),
+            "nested::sibling".into(),
+            "nested::sibling::child".into(),
+        ])
+    );
+    assert_eq!(
+        graph["nested::sibling"],
+        BTreeSet::from(["nested::cycle_a".into(), "nested::sibling::child".into()])
+    );
+    assert_eq!(
+        graph["nested::sibling::child"],
+        BTreeSet::from(["nested::cycle_b".into()])
+    );
+
+    let cycles: Vec<_> = strongly_connected_components(&graph)
+        .into_iter()
+        .filter(|component| component.len() > 1)
+        .collect();
+    assert_eq!(
+        cycles,
+        vec![vec![
+            String::from("nested::cycle_a"),
+            String::from("nested::cycle_b"),
+            String::from("nested::cycle_c"),
+        ]]
     );
 }
 
@@ -268,8 +548,8 @@ fn single_track_transcript_has_no_legacy_production_path() {
         .parent()
         .expect("workspace crates directory")
         .join("e-tui/src");
-    let model =
-        fs::read_to_string(tui_root.join("runtime/state.rs")).expect("read shared runtime state");
+    let model = fs::read_to_string(tui_root.join("runtime/state/mod.rs"))
+        .expect("read shared runtime state");
     let app = fs::read_to_string(tui_root.join("app.rs")).expect("read app module");
     let projection =
         fs::read_to_string(tui_root.join("projection/mod.rs")).expect("read projection module");
@@ -331,8 +611,8 @@ fn lifecycle_models_are_sole_production_owners() {
         .parent()
         .expect("workspace crates directory")
         .join("e-tui/src");
-    let runtime_state =
-        fs::read_to_string(tui_root.join("runtime/state.rs")).expect("read shared runtime state");
+    let runtime_state = fs::read_to_string(tui_root.join("runtime/state/mod.rs"))
+        .expect("read shared runtime state");
     let main = fs::read_to_string(dsh_root.join("src/main.rs")).expect("read composition root");
     let app = fs::read_to_string(tui_root.join("app.rs")).expect("read app root");
 
@@ -488,7 +768,13 @@ fn preview_resolution_returns_events_without_ui_lock_access() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let resolver = fs::read_to_string(root.join("preview_resolver.rs")).expect("read resolver");
     let ports = fs::read_to_string(root.join("runtime_ports.rs")).expect("read ports");
-    let main = fs::read_to_string(root.join("main.rs")).expect("read executor");
+    let executor = fs::read_to_string(
+        root.parent()
+            .and_then(Path::parent)
+            .expect("workspace crates directory")
+            .join("e-tui/src/runtime/executor.rs"),
+    )
+    .expect("read shared executor");
     for forbidden in ["TuiApp", "AppState", "Mutex", ".lock()"] {
         assert!(
             !production_source(&resolver).contains(forbidden),
@@ -496,8 +782,8 @@ fn preview_resolution_returns_events_without_ui_lock_access() {
         );
     }
     assert!(ports.contains("fn resolve_preview("));
-    assert!(main.contains("EffectResult::PreviewResolved"));
-    assert!(main.contains("ports.resolve_preview(request.clone()).await"));
+    assert!(executor.contains("EffectResult::PreviewResolved"));
+    assert!(executor.contains("ports.resolve_preview(request.clone()).await"));
 }
 
 #[test]

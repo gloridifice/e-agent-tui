@@ -4,7 +4,7 @@ use std::{future::Future, time::Instant};
 
 use crossterm::event::Event;
 
-use crate::{ClipboardPaste, Config, PreviewContent, PreviewRequest, ThemeFile};
+use crate::{AgentRequest, ClipboardPaste, Config, PreviewContent, PreviewRequest, ThemeFile};
 
 pub trait TerminalEventPort {
     fn next_event(&mut self) -> impl Future<Output = Option<Result<Event, String>>> + Send;
@@ -12,6 +12,13 @@ pub trait TerminalEventPort {
 
 pub trait TerminalLifecyclePort {
     fn restore_terminal(&mut self) -> Result<(), String>;
+}
+
+pub trait AgentRequestPort {
+    fn send_agent_request(
+        &mut self,
+        request: AgentRequest,
+    ) -> impl Future<Output = Result<(), String>> + Send;
 }
 
 pub trait UiActionPorts {
@@ -25,6 +32,28 @@ pub trait UiActionPorts {
         request: PreviewRequest,
     ) -> impl Future<Output = Result<PreviewContent, String>> + Send;
     fn now(&self) -> Instant;
+}
+
+/// Scriptable provider-neutral agent transport for executor tests.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Default)]
+pub struct ScriptedAgentRequestPort {
+    pub requests: Vec<AgentRequest>,
+    pub failure: Option<String>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl AgentRequestPort for ScriptedAgentRequestPort {
+    fn send_agent_request(
+        &mut self,
+        request: AgentRequest,
+    ) -> impl Future<Output = Result<(), String>> + Send {
+        self.requests.push(request);
+        std::future::ready(match &self.failure {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        })
+    }
 }
 
 /// Scriptable normalized effect and clock implementation shared by adapter tests.

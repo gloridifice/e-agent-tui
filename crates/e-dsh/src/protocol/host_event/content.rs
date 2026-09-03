@@ -1,6 +1,10 @@
 use serde_json::Value;
 
-use super::{lifecycle, HostContentBlock};
+use super::HostContentBlock;
+
+fn optional_string(data: &Value, key: &str) -> Option<String> {
+    data.get(key).and_then(Value::as_str).map(str::to_owned)
+}
 
 pub(super) fn parse_content(content: Option<&Value>) -> Vec<HostContentBlock> {
     content
@@ -92,7 +96,7 @@ pub(super) fn parse(event_type: Option<&str>, data: &Value) -> super::HostEventK
             }
         }
         Some("session/title") => HostEventKind::SessionTitle {
-            title: lifecycle::optional_string(data, "title"),
+            title: optional_string(data, "title"),
         },
         Some("todo/write") => HostEventKind::TodoWrite {
             todos: data

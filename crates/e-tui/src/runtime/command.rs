@@ -14,7 +14,10 @@ pub use crate::command_catalog::{
     CommandSource, CompletionKind, BUILTIN_COMMANDS,
 };
 use crate::runtime::state::RuntimeState;
-use crate::{agent::CommandDescriptor, AgentRequest, Config, Theme};
+use crate::{
+    agent::{CommandDescriptor, ModelProvider},
+    AgentRequest, Config, Theme,
+};
 use crate::{
     command_catalog::{CommandAction, NewMode},
     input_page::InputPageSession,
@@ -39,6 +42,7 @@ pub struct LocalCommandContext<'a> {
     pub config: &'a mut Config,
     pub themes: &'a mut Vec<ThemeFile>,
     pub new_modes: &'a [NewMode],
+    pub model_providers: &'a [ModelProvider],
     pub input_paste_placeholder_chars: &'a mut usize,
     pub input_history_limit: &'a mut usize,
     pub theme: &'a mut Theme,
@@ -89,6 +93,42 @@ fn forward(line: String, outcome: &mut CommandOutcome, interruptible: bool) {
         images: Vec::new(),
     });
     outcome.starts_interruptible_command = interruptible;
+}
+
+fn resolve_model_reference(
+    providers: &[ModelProvider],
+    reference: &str,
+) -> Option<(String, String)> {
+    let reference = reference.trim();
+    if reference.is_empty() {
+        return None;
+    }
+
+    let mut canonical = providers.iter().flat_map(|provider| {
+        provider.models.iter().filter_map(move |model| {
+            format!("{}/{}", provider.id, model.id)
+                .eq_ignore_ascii_case(reference)
+                .then(|| (provider.id.clone(), model.id.clone()))
+        })
+    });
+    match (canonical.next(), canonical.next()) {
+        (Some(route), None) => return Some(route),
+        (Some(_), Some(_)) => return None,
+        (None, _) => {}
+    }
+
+    let mut bare = providers.iter().flat_map(|provider| {
+        provider.models.iter().filter_map(move |model| {
+            model
+                .id
+                .eq_ignore_ascii_case(reference)
+                .then(|| (provider.id.clone(), model.id.clone()))
+        })
+    });
+    match (bare.next(), bare.next()) {
+        (Some(route), None) => Some(route),
+        _ => None,
+    }
 }
 
 fn new_command_line(raw_input: &str, default_mode: &str) -> Option<String> {
@@ -156,14 +196,29 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
             ));
         }
         CommandAction::Model => {
-            if reject_arguments(&context, name, raw_input) {
-                return outcome;
+            let reference = raw_input.trim();
+            if reference.is_empty() {
+                // The model picker is session-independent: providers and models
+                // come from the host catalog, and a pending selection is applied
+                // to the next materialized session (including a deferred `/new`).
+                *context.input_page = Some(InputPageSession::model());
+                outcome.outbound.push(AgentRequest::ModelGet);
+            } else if reference.split_whitespace().count() != 1 {
+                push_error(context.state, "用法: /model [provider/model]");
+            } else if let Some((provider, model)) =
+                resolve_model_reference(context.model_providers, reference)
+            {
+                outcome.outbound.push(AgentRequest::ModelSet {
+                    provider,
+                    model,
+                    reasoning_effort: None,
+                });
+            } else {
+                push_error(
+                    context.state,
+                    format!("未找到唯一模型: {reference}（输入 /model 浏览模型）"),
+                );
             }
-            // The model picker is session-independent: providers and models
-            // come from the host catalog, and a pending selection is applied
-            // to the next materialized session (including a deferred `/new`).
-            *context.input_page = Some(InputPageSession::model());
-            outcome.outbound.push(AgentRequest::ModelGet);
         }
         CommandAction::Effort => {
             if reject_arguments(&context, name, raw_input) {
@@ -285,6 +340,7 @@ mod tests {
                 config: &mut config,
                 themes: &mut themes,
                 new_modes: &[],
+                model_providers: &[],
                 input_paste_placeholder_chars: &mut paste_placeholder_chars,
                 input_history_limit: &mut history_limit,
                 theme: &mut theme,
@@ -308,5 +364,72 @@ mod tests {
             .content
             .contains("`/feedback`：record feedback <text>"));
         assert_eq!(block.content.matches("`/plan`").count(), 1);
+    }
+
+    fn model_provider(id: &str, model_ids: &[&str]) -> ModelProvider {
+        ModelProvider {
+            id: id.into(),
+            name: id.into(),
+            models: model_ids
+                .iter()
+                .map(|model| crate::agent::ModelDescriptor {
+                    id: (*model).into(),
+                    name: (*model).into(),
+                    description: None,
+                    reasoning: None,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn model_argument_selects_canonical_or_unique_bare_reference() {
+        let providers = vec![
+            model_provider("anthropic", &["claude-sonnet", "shared"]),
+            model_provider("openrouter", &["shared"]),
+        ];
+        assert_eq!(
+            resolve_model_reference(&providers, "anthropic/claude-sonnet"),
+            Some(("anthropic".into(), "claude-sonnet".into()))
+        );
+        assert_eq!(
+            resolve_model_reference(&providers, "claude-sonnet"),
+            Some(("anthropic".into(), "claude-sonnet".into()))
+        );
+        assert_eq!(resolve_model_reference(&providers, "shared"), None);
+
+        let state = Arc::new(Mutex::new(RuntimeState::default()));
+        let mut input_page = None;
+        let mut config = Config::default();
+        let mut themes = Vec::new();
+        let mut paste_placeholder_chars = config.paste_placeholder_chars;
+        let mut history_limit = config.history_limit;
+        let mut theme = config.theme();
+        let outcome = handle_local_command(
+            "/model anthropic/claude-sonnet".into(),
+            LocalCommandContext {
+                input_page: &mut input_page,
+                integrated_commands: &[],
+                config: &mut config,
+                themes: &mut themes,
+                new_modes: &[],
+                model_providers: &providers,
+                input_paste_placeholder_chars: &mut paste_placeholder_chars,
+                input_history_limit: &mut history_limit,
+                theme: &mut theme,
+                question_open: false,
+                approval_open: false,
+                state: &state,
+            },
+        );
+        assert!(input_page.is_none());
+        assert!(matches!(
+            outcome.outbound.as_slice(),
+            [AgentRequest::ModelSet {
+                provider,
+                model,
+                reasoning_effort: None,
+            }] if provider == "anthropic" && model == "claude-sonnet"
+        ));
     }
 }

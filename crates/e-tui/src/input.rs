@@ -15,7 +15,7 @@ use unicode_width::UnicodeWidthStr;
 
 #[cfg(test)]
 use crate::agent::CommandDescriptor;
-use crate::agent::Skill;
+use crate::agent::{ModelDescriptor, ModelProvider, Skill};
 use crate::catalog::CatalogModel;
 pub use crate::command_catalog::NewMode;
 use crate::command_catalog::{
@@ -123,6 +123,7 @@ pub struct Suggestion {
 pub enum SuggestionKind {
     Commands,
     Modes,
+    Models,
     Skills,
 }
 
@@ -445,6 +446,39 @@ pub fn match_new_modes<'a>(query: &str, modes: &'a [NewMode]) -> Vec<&'a NewMode
     }
     // Roster order is the declared `order` — keep it stable inside each
     // group instead of re-sorting alphabetically.
+    prefix.extend(substring);
+    prefix.extend(fuzzy);
+    prefix
+}
+
+/// Fuzzy-rank model routes using the same searchable fields as Pi: model id,
+/// provider id, canonical `provider/model`, and the display name. Completion
+/// always fills the canonical route so duplicate model ids remain unambiguous.
+pub fn match_models<'a>(
+    query: &str,
+    providers: &'a [ModelProvider],
+) -> Vec<(&'a ModelProvider, &'a ModelDescriptor)> {
+    let query = query.to_lowercase();
+    let mut prefix = Vec::new();
+    let mut substring = Vec::new();
+    let mut fuzzy = Vec::new();
+    for provider in providers {
+        for model in &provider.models {
+            let fields = [
+                model.id.to_lowercase(),
+                provider.id.to_lowercase(),
+                format!("{}/{}", provider.id, model.id).to_lowercase(),
+                model.name.to_lowercase(),
+            ];
+            if query.is_empty() || fields.iter().any(|field| field.starts_with(&query)) {
+                prefix.push((provider, model));
+            } else if fields.iter().any(|field| field.contains(&query)) {
+                substring.push((provider, model));
+            } else if fields.iter().any(|field| is_subsequence(&query, field)) {
+                fuzzy.push((provider, model));
+            }
+        }
+    }
     prefix.extend(substring);
     prefix.extend(fuzzy);
     prefix
@@ -873,6 +907,36 @@ impl InputState {
                             matches,
                             descriptions,
                             kind: SuggestionKind::Modes,
+                        });
+                        return;
+                    }
+                    CompletionKind::Model => {
+                        let ranked = match_models(query, &catalogs.model_providers);
+                        if ranked.is_empty() {
+                            self.suggest = None;
+                            return;
+                        }
+                        let matches: Vec<String> = ranked
+                            .iter()
+                            .map(|(provider, model)| format!("/model {}/{}", provider.id, model.id))
+                            .collect();
+                        let descriptions: Vec<String> = ranked
+                            .iter()
+                            .map(|(provider, model)| {
+                                if model.name == model.id {
+                                    provider.name.clone()
+                                } else {
+                                    format!("{} · {}", model.name, provider.name)
+                                }
+                            })
+                            .collect();
+                        self.suggest = Some(Suggestion {
+                            query: self.buf.clone(),
+                            sel: 0,
+                            sources: vec![CommandSource::Builtin; matches.len()],
+                            matches,
+                            descriptions,
+                            kind: SuggestionKind::Models,
                         });
                         return;
                     }
@@ -1769,6 +1833,78 @@ mod tests {
         assert!(s.suggest.is_none());
         s.replace_skills(sample_skills());
         assert_eq!(s.suggest.as_ref().unwrap().kind, SuggestionKind::Skills);
+    }
+
+    fn sample_model_catalog() -> CatalogModel {
+        CatalogModel {
+            model_providers: vec![
+                ModelProvider {
+                    id: "anthropic".into(),
+                    name: "Anthropic".into(),
+                    models: vec![ModelDescriptor {
+                        id: "claude-sonnet".into(),
+                        name: "Claude Sonnet".into(),
+                        description: None,
+                        reasoning: None,
+                    }],
+                },
+                ModelProvider {
+                    id: "openrouter".into(),
+                    name: "OpenRouter".into(),
+                    models: vec![ModelDescriptor {
+                        id: "anthropic/claude-sonnet".into(),
+                        name: "Claude Sonnet (OpenRouter)".into(),
+                        description: None,
+                        reasoning: None,
+                    }],
+                },
+            ],
+            ..CatalogModel::default()
+        }
+    }
+
+    #[test]
+    fn model_space_opens_canonical_model_completion() {
+        let mut input = state();
+        let catalogs = sample_model_catalog();
+        for character in "/model ".chars() {
+            input.handle_key_with_catalog(&key(KeyCode::Char(character)), true, &catalogs);
+        }
+
+        let suggest = input
+            .suggest
+            .as_ref()
+            .expect("model popup opens after /model<space>");
+        assert_eq!(suggest.kind, SuggestionKind::Models);
+        assert_eq!(
+            suggest.matches,
+            vec![
+                "/model anthropic/claude-sonnet",
+                "/model openrouter/anthropic/claude-sonnet"
+            ]
+        );
+        assert_eq!(suggest.query, "/model ");
+    }
+
+    #[test]
+    fn model_completion_fuzzy_matches_id_provider_and_name() {
+        let catalogs = sample_model_catalog();
+        for (query, expected) in [
+            ("/model openr", "/model openrouter/anthropic/claude-sonnet"),
+            (
+                "/model (OpenRouter)",
+                "/model openrouter/anthropic/claude-sonnet",
+            ),
+        ] {
+            let mut input = state();
+            for character in query.chars() {
+                input.handle_key_with_catalog(&key(KeyCode::Char(character)), true, &catalogs);
+            }
+            assert_eq!(
+                input.suggest.as_ref().unwrap().matches,
+                vec![expected.to_owned()]
+            );
+        }
     }
 
     fn sample_modes() -> Vec<NewMode> {

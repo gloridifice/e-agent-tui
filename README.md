@@ -20,8 +20,8 @@ Before installing, make sure [Git](https://git-scm.com/), [Node.js](https://node
 Then install and setup `e` by:
 
 ```bash
-cargo install dshe
-dshe setup 
+cargo install e-dsh
+dshe setup
 ```
 
 Run `e`:
@@ -30,7 +30,7 @@ Run `e`:
 dshe
 ```
 
-On first launch, `dshe` starts its dedicated DSH service automatically. Use `/login` to configure an API key or proxy, `/model` to select a provider and model, and `/effort` to change the reasoning effort. Wide terminals show a themed Preview pane; drag the Bark-colored separator to resize it. Preview collapses below 16 columns, while narrow terminals keep the main conversation usable.
+On first launch, `dshe` starts its dedicated DSH service automatically. Use `/login` to configure an API key or proxy, `/model [provider/model]` to select a model, and `/effort` to change the reasoning effort. Wide terminals show a themed Preview pane; drag the Bark-colored separator to resize it. Preview collapses below 16 columns, while narrow terminals keep the main conversation usable.
 
 ## Quick Start Pi
 
@@ -38,7 +38,7 @@ Install Pi and the `pie` executable from source, then run it in a project direct
 
 ```bash
 npm install --global @earendil-works/pi-coding-agent
-cargo install --path crates/e-pi --locked
+cargo install e-pi
 pie
 ```
 

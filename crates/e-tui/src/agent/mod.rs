@@ -75,12 +75,7 @@ pub struct Skill {
     pub description: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CommandDescriptor {
-    pub name: String,
-    pub description: String,
-    pub input_hint: Option<String>,
-}
+pub use crate::command_catalog::CommandDescriptor;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CredentialProvider {

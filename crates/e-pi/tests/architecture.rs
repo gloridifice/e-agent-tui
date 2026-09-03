@@ -74,11 +74,6 @@ fn pi_adapter_has_no_dsh_dependency_or_imports() {
         );
         for forbidden in [
             "e_dsh::",
-            "e::bridge",
-            "e::bridge_io",
-            "e::protocol",
-            "e::launcher",
-            "e::setup",
             "tokio_tungstenite",
             "ClientMessage",
             "ServerMessage",

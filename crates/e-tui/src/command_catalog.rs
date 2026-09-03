@@ -4,7 +4,12 @@
 //! fuzzy ranking, and argument-completion metadata. It does not depend on
 //! input state, application state, pages, copy mode, or async senders.
 
-use crate::agent::CommandDescriptor;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandDescriptor {
+    pub name: String,
+    pub description: String,
+    pub input_hint: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewMode {
@@ -17,6 +22,7 @@ pub struct NewMode {
 pub enum CompletionKind {
     None,
     NewMode,
+    Model,
     Skill,
 }
 
@@ -72,7 +78,13 @@ pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
     ),
     command!("new", "新建会话", Some("[模式]"), NewMode, New),
     command!("resume", "切换或续接会话", Some("[会话 ID]"), None, Resume),
-    command!("model", "选择模型（provider × model）", None, None, Model),
+    command!(
+        "model",
+        "选择模型（provider × model）",
+        Some("<provider/model>"),
+        Model,
+        Model
+    ),
     command!("effort", "选择当前模型的推理强度", None, None, Effort),
     command!("theme", "切换主题", None, None, Theme),
     command!("reload", "重载配置 / 主题 / 技能", None, None, Reload),
@@ -243,6 +255,7 @@ mod tests {
         assert_eq!(new.completion, CompletionKind::NewMode);
         assert_eq!(new.action, CommandAction::New);
         assert_eq!(completion_context("/new m").unwrap().1, "m");
+        assert_eq!(completion_context("/model ").unwrap().1, "");
         assert_eq!(completion_context("/skill").unwrap().1, "");
     }
 

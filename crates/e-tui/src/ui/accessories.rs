@@ -153,6 +153,7 @@ pub(super) fn render_suggest(
             match suggest.kind {
                 SuggestionKind::Commands => "命令",
                 SuggestionKind::Modes => "模式",
+                SuggestionKind::Models => "模型",
                 SuggestionKind::Skills => "技能",
             },
             theme.overlay.muted.style(),

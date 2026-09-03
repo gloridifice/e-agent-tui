@@ -5,7 +5,7 @@
 
 Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.exe` artifact (with transitional library import name `e`), `crates/e-pi` owns the `pie.exe` artifact, and `crates/e-tui` is the kernel-neutral frontend library. Current ownership is determined by the code and the boundaries below, never by completed migration records.
 
-- **Current package boundary**: DSH `ServerMessage`/`ClientMessage` and raw host-event parsing remain in `e-dsh::protocol`. `e-dsh::bridge::adapter` converts inbound values to `e-tui::AgentEvent` and outbound `e-tui::AgentRequest` values back to wire messages. `e-pi` launches the official `pi --mode rpc` child and owns its bounded JSONL framing, Pi RPC DTOs, process lifecycle, native session metadata index, and `AgentEvent`/`AgentRequest` conversion. Pi remains authoritative for configuration, credentials, model behavior, resources, extensions, and session writes. Both executable adapters depend directly on `e-tui`; neither adapter may depend on or import the other.
+- **Current package boundary**: DSH `ServerMessage`/`ClientMessage` and raw host-event parsing remain in `e-dsh::protocol`. `e-dsh::bridge::adapter` converts inbound values to `e-tui::AgentEvent` and outbound `e-tui::AgentRequest` values back to wire messages. `e-pi` launches the official `pi --mode rpc` child and owns its bounded JSONL framing, Pi RPC DTOs, process lifecycle, native session metadata index, and `AgentEvent`/`AgentRequest` conversion (internally decomposed under `e_pi::adapter::{request,response,session,model,extension,tool,content}` behind the unchanged `PiAdapter` facade; raw Pi JSON never escapes that boundary). Pi remains authoritative for configuration, credentials, model behavior, resources, extensions, and session writes. Both executable adapters depend directly on `e-tui`; neither adapter may depend on or import the other.
 - **Kernel-neutral frontend and runtime**: `e-tui::TuiApp` owns `SessionModel`, `TimelineModel`, `CatalogModel`, `InteractionModel`, `RenderState`, shared Preview state/cache, Reading Document/Layout, and Reading View state. `e_tui::runtime::RuntimeState` is the normalized reduction facade around that root, while `e_tui::runtime` owns the provider-neutral controller, frame scheduler, terminal event routing/source, VT parser, terminal lifecycle, synchronized frame submission, profiling counters, and external-effect port contracts. `RuntimeController` returns owned `e-tui::UiAction` values, and runners execute or await them only after releasing state guards. `e-tui` contains no DSH or Pi wire/event names, WebSocket or child-process control, provider-specific persistence policy, filesystem-backed effects, or clipboard implementation; architecture tests enforce those boundaries.
 - **Event display model** (`crates/e-tui/src/display.rs` + `crates/e-tui/src/projection/{store,assistant,tool,lifecycle,retry,command,workflow,surface}.rs` +
   `crates/e-tui/src/transcript_layout.rs`): all visible events fall into four public surfaces: `ActivityRow` (with
@@ -130,15 +130,23 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   the active message range, streaming only splices the tail; display-row layout is cached by width/generation,
   and each frame only materializes/clones the visible window. Do not break the shared layout semantics of
   `valid/tail_dirty/dirty_messages`, history display-row anchor, and copy provenance.
-- **Runtime controller / lock discipline**: `runtime.rs::RuntimeController` receives typed `RuntimeInput`,
+- **Runtime controller / lock discipline**: `runtime::controller::RuntimeController` receives typed `RuntimeInput`,
   consumes `ControllerAction` inside a single scoped guard, and hands only complete-payload `RuntimeEffect`s
-  to the `main.rs` executor; `runtime_ports.rs` provides transport, terminal, config/state, clipboard read/write, and
-  clock production/scripted ports. The executor must not borrow UI state or silently ignore effects; do not
+  to the shared `e_tui::runtime::executor` (`execute_ui_actions`), which is the one ordered `UiAction` executor for
+  both adapters; each adapter supplies only a narrow `AgentRequestPort` (DSH wire conversion / Pi RPC channel) plus
+  its `UiActionPorts` for config, clipboard, Preview, and clock work. `runtime/ports.rs` defines those port contracts and
+  the scripted ports; `runtime/policy.rs` owns the shared scheduling policy (animation minimum, inbound count/time
+  budgets, idle deadline wait, streaming-delta classification) consumed by both runners; `runtime/controller/{terminal,agent,input,effect}.rs`
+  split the controller by responsibility behind the stable facade; `runtime/state/{session,reduction,animation}.rs` split normalized
+  reduction the same way. The executor must not borrow UI state or silently ignore effects; do not
   restore a fixed ticker. In Rust 2021, `if let`/`match` scrutinee temporaries live until the end of the whole
   expression; never write `state_r.lock()` directly into a scrutinee and then re-lock or `.await` in a branch,
   or you will self-deadlock. Compute plain values/actions in a separate scope before matching, or perform
   atomic state changes within a single guard; `main.rs` already denies `clippy::significant_drop_in_scrutinee`
-  and has queue-dispatch/copy-mode lock-release regression tests.
+  and has queue-dispatch/copy-mode lock-release regression tests. The architecture guard in
+  `crates/e-dsh/tests/architecture.rs` scans the complete nested production module trees of all three Rust
+  packages recursively and resolves `crate`/`self`/`super`/grouped import paths, so nested module cycles fail
+  the gate with fully qualified module identities.
 - **Frontend interaction ownership**:
   `e-tui::{catalog,command_catalog,input,page_core,input_page,login,settings,question,interaction}` owns composer
   state, catalog presentation/completion, Input Page focus/editing, login/settings page state, retained question
@@ -292,10 +300,12 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   `match_command_catalog` merges the `CommandInfo` sent by the bridge, with built-ins winning on name
   collision. Integrated commands come from each agent's effective `ctx.commands.list` view, and at minimum
   support fuzzy name completion and show DSH's free-form input hint; DSH currently has no typed argument
-  completion schema, so only built-ins can do argument completion like `/new `; `/skill` is another built-in
-  argument completion — typing the full `/skill` shows the current user-invocable roster and fills candidates as
-  `/skill:<name>`. On receiving a new `commands`/`skills` frame, refresh any open prompt immediately; on session
-  switch, clear the old agent-scoped catalog first. Generic execution must not pre-`start_thinking`; the result
+  completion schema, so only built-ins provide argument completion. `/new ` completes agent presets; `/model `
+  fuzzy-matches the current model catalog by model/provider id and display name, filling the unambiguous
+  `/model <provider>/<model-id>` form; `/skill` shows the current user-invocable roster and fills candidates as
+  `/skill:<name>`. A direct `/model` argument accepts that canonical form or a bare model id when it is unique
+  across providers. On receiving a new `commands`/`skills`/model-catalog frame, refresh any open prompt
+  immediately; on session switch, clear the old agent-scoped catalog first. Generic execution must not pre-`start_thinking`; the result
   is projected directly to System/Error by `command-result`.
 - **Startup and deferred `/new`**: a new process sends hello without `resumeSessionId`, and the bridge still
   creates a session in place (`hello.cwd` workspace + `hello.mode` default mode, falling back to standard on

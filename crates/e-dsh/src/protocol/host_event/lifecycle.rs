@@ -2,10 +2,6 @@
 
 use serde_json::Value;
 
-pub(super) fn optional_string(data: &Value, key: &str) -> Option<String> {
-    data.get(key).and_then(Value::as_str).map(str::to_owned)
-}
-
 pub(super) fn parse(event_type: &str, data: &Value) -> super::HostEventKind {
     use super::{
         content::{content_text, parse_content},

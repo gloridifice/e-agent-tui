@@ -10,7 +10,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
-    app::{breathing_color, TuiApp},
+    app::TuiApp,
     cache::{MessageLineRange, TranscriptRenderCache},
     command_catalog::CommandSource,
     config::{Theme, ThinkingDisplayMode},

@@ -1,5 +1,31 @@
 use super::*;
-use crate::ui::component::status;
+use crate::{app::lerp_color, ui::component::status};
+
+const WORKING_INDICATOR_PHASE_OFFSET: f64 = 0.13;
+const WORKING_INDICATOR_START_PHASE: f64 = 0.25;
+
+fn working_indicator_spans(label: &str, theme: &Theme, phase: f64) -> Vec<Span<'static>> {
+    format!("e·{label}")
+        .chars()
+        .enumerate()
+        .map(|(index, character)| {
+            let character_phase = phase + WORKING_INDICATOR_START_PHASE
+                - index as f64 * WORKING_INDICATOR_PHASE_OFFSET;
+            let level = ((character_phase * std::f64::consts::TAU).sin() + 1.0) / 2.0;
+            let color = lerp_color(
+                theme.working_status.running.fg,
+                theme.coral,
+                level,
+            );
+            Span::styled(
+                character.to_string(),
+                Style::default()
+                    .fg(color)
+                    .add_modifier(Modifier::ITALIC),
+            )
+        })
+        .collect()
+}
 
 fn format_tokens(count: u64) -> String {
     match count {
@@ -19,19 +45,18 @@ pub(super) fn render_status(
     theme: &Theme,
 ) {
     let dim = status::dim(theme);
-    // The italic frontend label breathes while the agent is working and stays dim while idle.
+    // The italic frontend label carries a left-to-right sine wave while the
+    // agent is working and stays dim while idle.
     let drafting = state.session.new_conversation.is_some();
     let indicator_text = format!("e·{}", state.frontend.label());
     let indicator =
         if !drafting && (state.session.status == AgentStatus::Running || state.session.working) {
-            Span::styled(
-                indicator_text,
-                Style::default()
-                    .fg(breathing_color(theme, state.breath_phase()))
-                    .add_modifier(Modifier::ITALIC),
-            )
+            working_indicator_spans(state.frontend.label(), theme, state.breath_phase())
         } else {
-            Span::styled(indicator_text, dim.add_modifier(Modifier::ITALIC))
+            vec![Span::styled(
+                indicator_text,
+                dim.add_modifier(Modifier::ITALIC),
+            )]
         };
     let mode = state
         .session
@@ -40,7 +65,7 @@ pub(super) fn render_status(
         .map(|draft| draft.mode.as_str())
         .or(state.session.current_mode.as_deref())
         .unwrap_or(state.config.default_mode.as_str());
-    let mut left_spans = vec![indicator];
+    let mut left_spans = indicator;
     if !mode.eq_ignore_ascii_case(state.frontend.label()) {
         left_spans.push(Span::styled(" ", dim));
         left_spans.push(Span::styled(mode.to_owned(), dim));

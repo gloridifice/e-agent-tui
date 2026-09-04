@@ -3,7 +3,7 @@
 
 # Appearance
 spinner_style = "A"
-spinner_frame_ms = 120
+spinner_frame_ms = 40
 theme = "ferra"
 plain_color = false
 # Foreground-fade interpolation origin (does not replace theme surfaces).

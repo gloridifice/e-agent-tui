@@ -16,7 +16,7 @@ use crate::{
     command_catalog::NewMode,
     input::{InputAction, InputState},
     input_page::{InputPageSession, PageEffect},
-    interaction::ApprovalCard,
+    interaction::{ApprovalCard, PendingPromptQueue},
     login::LoginView,
     question::QuestionBatch,
     runtime::{
@@ -81,7 +81,7 @@ pub struct RuntimeUiState<'a> {
     pub input_page: &'a mut Option<InputPageSession>,
     pub approval: &'a mut Option<ApprovalCard>,
     pub question: &'a mut Option<String>,
-    pub queue: &'a mut Vec<PromptInput>,
+    pub queue: &'a mut PendingPromptQueue,
 }
 
 #[derive(Default)]
@@ -116,7 +116,7 @@ pub struct TerminalUiState<'a> {
     pub pane_resize: &'a mut PaneResizeState,
     pub approval: &'a mut Option<ApprovalCard>,
     pub question: &'a mut Option<String>,
-    pub queue: &'a mut Vec<PromptInput>,
+    pub queue: &'a mut PendingPromptQueue,
     pub config: &'a mut Config,
     pub themes: &'a mut Vec<ThemeFile>,
     pub theme: &'a mut Theme,
@@ -163,7 +163,7 @@ impl RuntimeController {
     pub fn apply_input_action(
         action: InputAction,
         state: &Mutex<RuntimeState>,
-        queue: &mut Vec<PromptInput>,
+        queue: &mut PendingPromptQueue,
     ) -> InputHandlerOutcome {
         input::apply_input_action(action, state, queue)
     }
@@ -295,7 +295,7 @@ mod tests {
         pane_resize: &'a mut PaneResizeState,
         approval: &'a mut Option<ApprovalCard>,
         question: &'a mut Option<String>,
-        queue: &'a mut Vec<PromptInput>,
+        queue: &'a mut PendingPromptQueue,
         config: &'a mut Config,
         themes: &'a mut Vec<ThemeFile>,
         theme: &'a mut Theme,
@@ -323,7 +323,7 @@ mod tests {
         input_page: &'a mut Option<InputPageSession>,
         approval: &'a mut Option<ApprovalCard>,
         question: &'a mut Option<String>,
-        queue: &'a mut Vec<PromptInput>,
+        queue: &'a mut PendingPromptQueue,
     ) -> RuntimeUiState<'a> {
         RuntimeUiState {
             scroll,
@@ -482,7 +482,7 @@ mod tests {
         let mut pane_resize = PaneResizeState::default();
         let mut approval = None;
         let mut question = None;
-        let mut queue = Vec::new();
+        let mut queue = PendingPromptQueue::default();
         let mut themes = Vec::new();
         let mut theme = old_config.theme();
         RuntimeController::apply_reloaded_config(
@@ -531,7 +531,7 @@ mod tests {
         let mut page = None;
         let mut approval = None;
         let mut question = None;
-        let mut queue = Vec::new();
+        let mut queue = PendingPromptQueue::default();
         let effects = RuntimeController::apply_agent(
             AgentEvent::Interaction(InteractionEvent::SetEditorText {
                 text: "visible draft".into(),
@@ -603,7 +603,12 @@ mod tests {
     #[test]
     fn queued_prompt_is_claimed_atomically_when_idle() {
         let state = Mutex::new(RuntimeState::default());
-        state.lock().unwrap().interaction.queue.push("next".into());
+        state
+            .lock()
+            .unwrap()
+            .interaction
+            .queue
+            .push("next".into(), crate::interaction::PromptDelivery::AfterTurn);
         let effects = RuntimeController::dispatch_next_queued(&state);
         assert!(state.lock().unwrap().interaction.queue.is_empty());
         assert!(matches!(
@@ -624,14 +629,18 @@ mod tests {
         let prompt = PromptInput {
             parts: vec![crate::PromptPart::Image(image.clone())],
         };
-        let mut queue = Vec::new();
+        let mut queue = PendingPromptQueue::default();
         let outcome = RuntimeController::apply_input_action(
             InputAction::Send(prompt.clone()),
             &state,
             &mut queue,
         );
         assert!(outcome.effects.is_empty());
-        assert_eq!(queue.as_slice(), std::slice::from_ref(&prompt));
+        assert_eq!(queue.entries()[0].prompt, prompt);
+        assert_eq!(
+            queue.entries()[0].delivery,
+            crate::interaction::PromptDelivery::Asap
+        );
 
         {
             let mut app = state.lock().unwrap();
@@ -647,6 +656,97 @@ mod tests {
     }
 
     #[test]
+    fn asap_dispatches_during_a_turn_while_after_turn_waits_for_idle() {
+        let state = Mutex::new(RuntimeState::default());
+        state.lock().unwrap().session.status = crate::SessionStatus::Running;
+        let mut queue = PendingPromptQueue::default();
+
+        let asap = RuntimeController::apply_input_action(
+            InputAction::Send("asap".into()),
+            &state,
+            &mut queue,
+        );
+        let after = RuntimeController::apply_input_action(
+            InputAction::SendAfterTurn("after".into()),
+            &state,
+            &mut queue,
+        );
+        assert!(asap.effects.is_empty() && after.effects.is_empty());
+        state.lock().unwrap().interaction.queue = queue;
+
+        let effects = RuntimeController::dispatch_next_queued(&state);
+        assert!(matches!(
+            effects.as_slice(),
+            [UiAction::Agent(AgentRequest::Steer { prompt })] if prompt.plain_text() == Some("asap")
+        ));
+        assert!(RuntimeController::dispatch_next_queued(&state).is_empty());
+
+        {
+            let mut app = state.lock().unwrap();
+            app.session.status = crate::SessionStatus::Idle;
+            app.session.working = false;
+        }
+        let effects = RuntimeController::dispatch_next_queued(&state);
+        assert!(matches!(
+            effects.as_slice(),
+            [UiAction::Agent(AgentRequest::Input { prompt })] if prompt.plain_text() == Some("after")
+        ));
+    }
+
+    #[test]
+    fn escape_cancels_the_latest_candidate_before_interrupting() {
+        let state = Arc::new(Mutex::new(RuntimeState::default()));
+        state.lock().unwrap().session.status = crate::SessionStatus::Running;
+        let mut config = Config::default();
+        let mut input = InputState::new(&config);
+        let mut scroll = ScrollState::default();
+        let mut page = None;
+        let mut help_visible = false;
+        let mut notice = NoticeState::default();
+        let mut mouse_selection = MouseSelection::default();
+        let mut pane_resize = PaneResizeState::default();
+        let mut approval = None;
+        let mut question = None;
+        let mut queue = PendingPromptQueue::default();
+        queue.push("a".into(), crate::interaction::PromptDelivery::Asap);
+        queue.push("b".into(), crate::interaction::PromptDelivery::AfterTurn);
+        let mut themes = Vec::new();
+        let mut theme = config.theme();
+
+        let effects = RuntimeController::apply_terminal_route(
+            TerminalRoute::Ordinary(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            TerminalSize {
+                width: 80,
+                height: 30,
+            },
+            Instant::now(),
+            &state,
+            &SelectionFrame::default(),
+            &mut terminal_ui(
+                &mut scroll,
+                &mut input,
+                &mut page,
+                &mut help_visible,
+                &mut notice,
+                &mut mouse_selection,
+                &mut pane_resize,
+                &mut approval,
+                &mut question,
+                &mut queue,
+                &mut config,
+                &mut themes,
+                &mut theme,
+            ),
+        );
+        assert!(
+            effects.is_empty(),
+            "candidate cancellation must not interrupt"
+        );
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue.entries()[0].prompt, "a");
+    }
+
+    #[test]
     fn failed_image_draft_materialization_restores_the_atomic_block() {
         let state = Arc::new(Mutex::new(RuntimeState::default()));
         state.lock().unwrap().begin_new_conversation("standard");
@@ -658,7 +758,7 @@ mod tests {
         let prompt = PromptInput {
             parts: vec![crate::PromptPart::Image(image)],
         };
-        let mut queue = Vec::new();
+        let mut queue = PendingPromptQueue::default();
         let outcome = RuntimeController::apply_input_action(
             InputAction::Send(prompt.clone()),
             state.as_ref(),
@@ -729,7 +829,7 @@ mod tests {
         let mut page = None;
         let mut approval = None;
         let mut question = None;
-        let mut queue = Vec::new();
+        let mut queue = PendingPromptQueue::default();
         RuntimeController::apply_agent(
             AgentEvent::Timeline(crate::agent::TimelineEvent::Append(
                 crate::agent::TimelineRecord {

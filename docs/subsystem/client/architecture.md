@@ -47,10 +47,10 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   the same folded activity row; the editor's absolute path is converted to a workspace-relative path using
   `session_cwd`. create does not enter FileGroup and is shown separately as
   `<indicator> create <relative-path>`, and does not append output line count/elapsed time after completion.
-  All activity rows stay on a single display row; when too wide, `transcript_layout`/`ui::transcript`
+  All activity rows stay on a single display row and reserve one blank right-edge cell; when too wide, `transcript_layout`/`ui::transcript`
   truncate and append `…` using the resolved page content width (including `page_max_width`) — never
   pre-truncate to terminal width and then wrap inside a narrower page. Generic tool rows show output line count
-  and elapsed time as soon as they start; animation patches update elapsed time, and truncation reserves these
+  and elapsed time as soon as they start; elapsed time is rendered directly as `<seconds>s` without a localized duration label, animation patches update it, and truncation reserves these
   trailing metrics by shortening the command/summary first. Known tool schemas should use readable summaries;
   grep renders as `grep "<pattern>" at "<path>"` rather than raw JSON arguments.
 - **Surface semantics**: `HostEvent` parses the event top-level `time`, `surfaceOp`, `sourceEventSeqs`;
@@ -162,12 +162,12 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   state, catalog presentation/completion, Input Page focus/editing, login/settings page state, retained question
   batches, approval routing, scroll/follow, help, transient notice deadlines, mouse-selection reducer state, and
   prompt queues. Question, approval, and queued-prompt
-  state is session-scoped and must be cleared together on a bridge welcome that switches session identity. The old
+  state is session-scoped and must be cleared together on a bridge welcome that switches session identity. Pending prompts retain one total submission order for newest-first cancellation, while their display and dispatch projection groups as-soon-as-possible prompts above after-turn prompts without reordering either group. `Enter` queues the former during active work and `Ctrl+Enter` queues the latter; `Esc` removes the newest pending prompt before it may interrupt the agent. The old
   executable-side runtime facades have been removed; protocol DTO conversion and external action execution remain
   in each owning adapter.
 - **Input interaction and character boundaries**: `InputState.cursor` is a **character index**;
   `String::insert/remove` and slicing need byte indices — use `char_to_byte()` (`input.rs`); CJK has regression
-  tests; cursor x uses `unicode_width`. Plain input is fixed: `Enter` sends, `Shift+Enter` inserts a newline, and
+  tests; cursor x uses `unicode_width`. Plain input is fixed: `Enter` sends as soon as the active turn can accept steering, `Ctrl+Enter` waits until the turn has fully ended, `Shift+Enter` inserts a newline, and
   `Ctrl+V` requests an application clipboard read when the terminal does not already translate it into bracketed
   paste. `PromptInput` is an ordered provider-neutral sequence of owned text and image parts; queues and deferred
   new-conversation drafts retain the whole value. Composer images use one internal object marker and render as one
@@ -218,7 +218,7 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   `Ctrl+P` toggles the existing full-screen Preview fallback when the responsive split is too narrow; Preview-only
   presentation has no pane separator. Block mode uses
   `j`/`k`, `l`, `y`, and `Esc`; Item mode uses spatial `h`/`j`/`k`/`l`, with `Esc` returning to Block mode. `y`
-  always copies the complete owning Block from `ReadingCopyPayload`, never clipped terminal cells. Mouse drag
+  always copies the complete owning Block from `ReadingCopyPayload`, never clipped terminal cells. Reading navigation keeps the selected Block inside a ceiling-quarter viewport margin; direct anchoring at that safe margin avoids fractional-row page transitions bouncing back across the opposite threshold. Mouse drag
   copies only the selected visible rendered range and is intentionally separate from this complete-source
   operation. Clipboard completion is reduced into a frontend-owned generic transient notice; a successful copy
   uses a small top-layer popup (three seconds by default) showing the copied line count and a grapheme-safe

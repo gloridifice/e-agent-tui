@@ -108,7 +108,6 @@ transcript.line: "行"
 transcript.lines: "行"
 transcript.output_lines: " · %{count}%{suffix} %{noun}"
 transcript.activity_fold: "  ...（%{count} 行）"
-transcript.duration: " · 耗时 %{seconds}s"
 transcript.image: "[图片：%{name}]"
 transcript.context: "上下文 · %{form}"
 transcript.compaction_summary: "压缩摘要"
@@ -129,7 +128,6 @@ preview.at: "位于"
 preview.metric.line: "行"
 preview.metric.lines: "行"
 preview.metrics: "%{noun} %{count}%{suffix}"
-preview.duration: "，耗时 %{seconds}s"
 preview.line_anchor: "@ 第 %{line} 行"
 command.help.description: "显示帮助"
 command.settings.description: "打开设置面板"
@@ -177,12 +175,13 @@ help.body: |
 
   ## 输入与控制
 
-  - `Enter`：发送
+  - `Enter`：不打断当前工作的情况下尽快发送
+  - `Ctrl+Enter`：等待当前工作完全结束后发送
   - `Shift+Enter`：换行
   - `Ctrl+V`：粘贴图片或文本
   - `Ctrl+Backspace` / `Ctrl+W`：删除前一个词
   - `↑` / `↓`：行间移动，并在边界切换历史提示词
-  - `Esc`：中断对话或运行中的命令
+  - `Esc`：优先取消最新候选消息；没有候选消息时中断当前工作
   - `Ctrl+C`：清空输入；空闲且输入为空时退出
 
   ## 视图与导航
@@ -201,8 +200,8 @@ help.body: |
   - 提问页：`h` / `l` 切换问题，`j` / `k` 切换选项，`Space` 选择，`Enter` 提交
   - 阅读视图：`j` / `k` 块导航，`l` 进入项目，`h` / `j` / `k` / `l` 项目导航，`y` 复制完整块
 overlay.help.title: "帮助 — e"
-overlay.help.row1: "Enter 发送   Shift+Enter 换行   Ctrl+V 粘贴图片/文本   Ctrl+Backspace/Ctrl+W 删词   ↑↓ 行间移动/边界切换提示词"
-overlay.help.row2: "Esc 中断对话/运行中命令   Ctrl+C 清空输入/空闲退出   /exit /q /quit 退出"
+overlay.help.row1: "Enter 尽快发送   Ctrl+Enter 等待本轮结束后发送   Shift+Enter 换行   Ctrl+V 粘贴图片/文本   Ctrl+Backspace/Ctrl+W 删词"
+overlay.help.row2: "Esc 优先取消最新候选消息/队列空时中断   Ctrl+C 清空输入/空闲退出   /exit /q /quit 退出"
 overlay.help.row3: "Ctrl+Y 阅读视图   Ctrl+P 预览   Ctrl+N 续接会话 Input Page   Ctrl+H 帮助"
 overlay.help.row4: "输入 /：补全内置命令及当前会话自动接入的 DSH/插件命令   Tab/↑↓ 选择"
 overlay.help.row5: "/settings 设置面板   /login 登录（API key/Proxy）   /new [模式] 新建会话   PgUp/PgDn/滚轮滚动消息"

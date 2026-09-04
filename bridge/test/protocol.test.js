@@ -12,7 +12,7 @@ import {
 } from '../src/protocol.js'
 
 test('canonical contract owns protocol capacities and message roster', () => {
-  assert.equal(PROTOCOL_VERSION, 8)
+  assert.equal(PROTOCOL_VERSION, 9)
   assert.equal(SNAPSHOT_CAP, 600)
   assert.equal(HISTORY_CAP, 2000)
   assert.equal(MAX_FRAME_BYTES, 16 * 1024 * 1024)
@@ -33,7 +33,7 @@ test('canonical contract owns protocol capacities and message roster', () => {
     'package compatibility metadata follows the canonical wire contract',
   )
   const docs = readFileSync(new URL('../../docs/protocol.md', import.meta.url), 'utf8')
-  assert.match(docs, /Protocol version \| 8/)
+  assert.match(docs, /Protocol version \| 9/)
   assert.match(docs, /`commands`/)
   assert.match(docs, /`skills`/)
   assert.match(docs, /`command-result`/)

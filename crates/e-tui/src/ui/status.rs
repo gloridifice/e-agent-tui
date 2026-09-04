@@ -12,16 +12,10 @@ fn working_indicator_spans(label: &str, theme: &Theme, phase: f64) -> Vec<Span<'
             let character_phase = phase + WORKING_INDICATOR_START_PHASE
                 - index as f64 * WORKING_INDICATOR_PHASE_OFFSET;
             let level = ((character_phase * std::f64::consts::TAU).sin() + 1.0) / 2.0;
-            let color = lerp_color(
-                theme.working_status.running.fg,
-                theme.coral,
-                level,
-            );
+            let color = lerp_color(theme.working_status.running.fg, theme.coral, level);
             Span::styled(
                 character.to_string(),
-                Style::default()
-                    .fg(color)
-                    .add_modifier(Modifier::ITALIC),
+                Style::default().fg(color).add_modifier(Modifier::ITALIC),
             )
         })
         .collect()

@@ -107,17 +107,24 @@ export function createClientDispatcher({
   async function input(msg) {
     if (!conn) return
     const current = conn
+    const mode = msg.mode ?? 'queue'
     let content
     try {
+      if (mode !== 'queue' && mode !== 'steer') throw new Error('invalid input mode')
       content = normalizePromptContent(clientPromptContent(msg))
       if (content.some((part) => part.type === 'image')) {
-        await sessionPrompt.prompt(current.agent.id, content)
+        await sessionPrompt.prompt(current.agent.id, content, mode)
       } else {
-        current.agent.followup(createUserMessage({ content, source: { kind: 'user' } }))
+        const message = createUserMessage({ content, source: { kind: 'user' } })
+        if (mode === 'steer') current.agent.steer(message)
+        else current.agent.followup(message)
       }
     } catch (error) {
       if (conns.isCurrent(current, conn)) {
-        send(ws, { type: 'error', code: 'image-input-failed', message: String(error?.message ?? error) })
+        const code = Array.isArray(msg.content) && msg.content.some((part) => part?.type === 'image')
+          ? 'image-input-failed'
+          : 'input-failed'
+        send(ws, { type: 'error', code, message: String(error?.message ?? error) })
       }
     }
   }

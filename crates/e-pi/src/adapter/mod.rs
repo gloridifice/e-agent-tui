@@ -422,6 +422,21 @@ mod tests {
     }
 
     #[test]
+    fn explicit_steer_request_uses_steering_behavior() {
+        let mut adapter = PiAdapter::new(".", "sessions");
+        let output = adapter.request(AgentRequest::Steer {
+            prompt: e_tui::PromptInput::text("next"),
+        });
+        assert!(matches!(
+            output.commands.as_slice(),
+            [RpcCommand::Prompt {
+                streaming_behavior: Some(StreamingBehavior::Steer),
+                ..
+            }]
+        ));
+    }
+
+    #[test]
     fn deferred_new_waits_for_success_before_prompt() {
         let mut adapter = PiAdapter::new(".", "sessions");
         let start = adapter.request(AgentRequest::NewInput {

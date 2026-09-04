@@ -8,7 +8,7 @@ Do not edit capacities, rosters, or payload fields here by hand.
 
 | Field | Value |
 |---|---:|
-| Protocol version | 8 |
+| Protocol version | 9 |
 | Snapshot surface events | 600 |
 | History page events | 2000 |
 | Maximum normal frame | 16777216 bytes |
@@ -50,6 +50,7 @@ Do not edit capacities, rosters, or payload fields here by hand.
 | Presence | Field | Type |
 |---|---|---|
 | required | `content` | `PromptContentPart[]` |
+| optional | `mode` | `string` |
 
 ### `new-input`
 

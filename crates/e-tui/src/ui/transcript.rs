@@ -13,6 +13,7 @@ use unicode_segmentation::UnicodeSegmentation;
 /// capped at this many width-aware rows with a trailing ellipsis when
 /// overflowing. The card retains its full raw source for copying.
 const MAX_INJECTION_DISPLAY_LINES: usize = 2;
+const ACTIVITY_RIGHT_PAD: usize = 1;
 
 /// First-seen-ordered per-file counts over full paths.
 /// `foo.rs x2, bar.rs` — the `xN` suffix appears only for repeats.
@@ -99,11 +100,7 @@ fn activity_row_parts(
                 .map(|started| started.elapsed().as_millis() as u64)
         });
         if let Some(duration_ms) = duration_ms {
-            metadata.push_str(&crate::i18n::tr_args(
-                state.config.language,
-                "transcript.duration",
-                &[("seconds", format!("{:.1}", duration_ms as f64 / 1000.0))],
-            ));
+            metadata.push_str(&format!(" · {:.1}s", duration_ms as f64 / 1000.0));
         }
     }
     let metadata =
@@ -119,6 +116,7 @@ fn fitted_activity_row_line(
     color_override: Option<Color>,
     width: usize,
 ) -> Line<'static> {
+    let width = width.saturating_sub(ACTIVITY_RIGHT_PAD);
     let (prefix, metadata) = activity_row_parts(row, state, color_override);
     let Some(metadata) = metadata else {
         return truncate_activity_line(prefix, width);
@@ -1398,6 +1396,22 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn activity_rows_reserve_the_final_display_column() {
+        let state = TuiApp::default();
+        let mut row = ActivityRow::root(
+            DisplayId::correlated("activity", "wide"),
+            "读取界面宽字符并保持单行显示",
+        );
+        row.output_lines = Some(12);
+        row.duration_ms = Some(1_200);
+        let line = fitted_activity_row_line(&row, &state, None, 20);
+        assert!(
+            line.width() <= 19,
+            "activity must retain a blank right gutter"
+        );
     }
 
     #[test]

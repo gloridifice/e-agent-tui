@@ -532,36 +532,32 @@ impl RuntimeState {
         }
     }
 
-    /// Queue a prompt typed while the agent runs. Returns true when the
-    /// caller must send it immediately instead (the agent is idle). The queue
-    /// is passed in because the caller may hold the InteractionModel outside
-    /// the RuntimeState lock (main-loop take/restore); the queue must never be a
-    /// transient default.
+    /// Queue a prompt typed while work is active. As-soon-as-possible prompts
+    /// are eligible for steering during the current turn; after-turn prompts
+    /// remain local until the agent and any command are fully idle.
     pub fn enqueue_or_immediate(
         &mut self,
-        prompt: &crate::PromptInput,
-        queue: &mut Vec<crate::PromptInput>,
+        prompt: crate::PromptInput,
+        delivery: crate::interaction::PromptDelivery,
+        queue: &mut crate::interaction::PendingPromptQueue,
     ) -> bool {
-        if self.session.status == AgentStatus::Running {
-            queue.push(prompt.clone());
+        if self.session.status == AgentStatus::Running || self.has_active_command() {
+            queue.push(prompt, delivery);
             false
         } else {
             true
         }
     }
 
-    /// The agent went idle: pop the next queued prompt for auto-dispatch,
-    /// one at a time (each dispatch keeps the agent busy until it returns
-    /// to idle again).
-    pub fn take_next_queued(&mut self) -> Option<crate::PromptInput> {
-        if self.session.status == AgentStatus::Idle
-            && !self.session.working
-            && !self.interaction.queue.is_empty()
-        {
-            Some(self.interaction.queue.remove(0))
-        } else {
-            None
+    /// Claim one queued prompt. Steering prompts always outrank after-turn
+    /// prompts; the latter are eligible only after all work has settled.
+    pub fn take_next_queued(&mut self) -> Option<crate::interaction::PendingPrompt> {
+        let agent_running = self.session.status == AgentStatus::Running;
+        let fully_idle = !agent_running && !self.session.working && !self.has_active_command();
+        if self.interaction.queue.is_empty() || (!agent_running && !fully_idle) {
+            return None;
         }
+        self.interaction.queue.take_next(agent_running)
     }
 
     /// Settle everything still running when a turn ends: interrupted turns

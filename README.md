@@ -73,7 +73,7 @@ cargo build --release --features tracy
 
 - `Ctrl+Y`: enter Reading View; `j`/`k` select Blocks, `l` enters Item navigation, `y` copies the complete Block source, and `Esc` returns/exits.
 - `Ctrl+P`: toggle full-screen Preview on narrow terminals.
-- `Shift+Enter`: insert a newline; `Enter`: send; `Ctrl+Backspace`/`Ctrl+W` (or `Option+Backspace` on macOS): delete the word before the cursor.
+- `Shift+Enter`: insert a newline; `Enter`: send as soon as possible; `Ctrl+Enter`: wait until the current turn finishes; `Esc`: cancel the newest queued message before interrupting; `Ctrl+Backspace`/`Ctrl+W` (or `Option+Backspace` on macOS): delete the word before the cursor.
 - `Ctrl+H`: help; `Ctrl+N`: resume session; `PageUp`/`PageDown` or wheel: transcript scrolling; drag the pane separator to resize, or drag visible Transcript/Preview text to copy it.
 
 If PowerShell cannot find `dshe`, add `%USERPROFILE%\.cargo\bin` to `PATH`.

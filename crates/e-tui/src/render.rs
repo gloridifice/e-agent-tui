@@ -47,7 +47,7 @@ pub struct RenderLine {
 pub enum BlockKind {
     Paragraph,
     Heading,
-    CodeBlock { lang: Option<String> },
+    CodeBlock { lang: Option<String>, fenced: bool },
     Table,
     List,
     Quote,
@@ -297,6 +297,7 @@ fn top_level_kind(event: &Event) -> Option<BlockKind> {
                 }
                 pulldown_cmark::CodeBlockKind::Indented => None,
             },
+            fenced: matches!(kind, pulldown_cmark::CodeBlockKind::Fenced(_)),
         }),
         Event::Start(Tag::Table(_)) => Some(BlockKind::Table),
         Event::Start(Tag::List(_)) => Some(BlockKind::List),
@@ -413,11 +414,11 @@ fn render_block(
         BlockKind::Quote => {
             render_quote(raw, unit, theme, options, out);
         }
-        BlockKind::CodeBlock { lang } => {
+        BlockKind::CodeBlock { lang, fenced } => {
             if lang.as_deref() == Some("mermaid") && options.mermaid_enabled {
                 render_mermaid_block(raw, unit, theme, options, out);
             } else {
-                render_code_block(raw, lang.as_deref(), unit, theme, options, out);
+                render_code_block(raw, lang.as_deref(), *fenced, unit, theme, options, out);
             }
         }
         BlockKind::Table => {
@@ -752,6 +753,39 @@ fn trim_line_end(line: &mut Line<'static>) {
 // fenced source. The block stays atomic: copy mode yields the raw mermaid.
 // ---------------------------------------------------------------------------
 
+fn fenced_content<'a>(raw_lines: &'a [&'a str]) -> (&'a [&'a str], usize) {
+    let Some(opening) = raw_lines.first().map(|line| line.trim_start()) else {
+        return (&[], 0);
+    };
+    let Some(marker) = opening
+        .chars()
+        .next()
+        .filter(|marker| matches!(marker, '`' | '~'))
+    else {
+        return (raw_lines, 0);
+    };
+    let fence_len = opening
+        .chars()
+        .take_while(|character| *character == marker)
+        .count();
+    if fence_len < 3 {
+        return (raw_lines, 0);
+    }
+    let has_closing_fence = raw_lines.last().is_some_and(|line| {
+        let closing = line.trim();
+        closing
+            .chars()
+            .take_while(|character| *character == marker)
+            .count()
+            >= fence_len
+            && closing.trim_start_matches(marker).trim().is_empty()
+    });
+    let end = raw_lines
+        .len()
+        .saturating_sub(usize::from(has_closing_fence));
+    (&raw_lines[1.min(end)..end], 1)
+}
+
 fn render_mermaid_block(
     raw: &str,
     unit: u64,
@@ -760,11 +794,8 @@ fn render_mermaid_block(
     out: &mut Vec<RenderLine>,
 ) {
     let raw_lines: Vec<&str> = raw.lines().collect();
-    let source = if raw_lines.len() >= 2 {
-        raw_lines[1..raw_lines.len() - 1].join("\n")
-    } else {
-        raw_lines.join("\n")
-    };
+    let (content, _) = fenced_content(&raw_lines);
+    let source = content.join("\n");
     let dim = theme.code.meta.style();
     let source_lines = source.lines().count();
     // Glow-style header: `  mermaid · N lines` on the filled block.
@@ -866,7 +897,7 @@ fn render_mermaid_block(
                 atomic: true,
                 fill: true,
             });
-            for (i, line) in raw_lines.iter().skip(1).enumerate() {
+            for (i, line) in content.iter().enumerate() {
                 out.push(RenderLine {
                     line: Line::from(vec![
                         Span::styled("  ", dim),
@@ -890,17 +921,17 @@ fn render_mermaid_block(
 fn render_code_block(
     raw: &str,
     lang: Option<&str>,
+    fenced: bool,
     unit: u64,
     theme: &Theme,
     options: &RenderOptions,
     out: &mut Vec<RenderLine>,
 ) {
-    // raw includes the fence; content lines are raw[1..last].
     let raw_lines: Vec<&str> = raw.lines().collect();
-    let (content, fence_offset) = if raw_lines.len() >= 2 {
-        (&raw_lines[1..raw_lines.len() - 1], 1)
+    let (content, fence_offset) = if fenced {
+        fenced_content(&raw_lines)
     } else {
-        (&raw_lines[..], 0)
+        (raw_lines.as_slice(), 0)
     };
     let dim = theme.code.meta.style();
     let language_key = if content.len() == 1 {
@@ -1816,6 +1847,22 @@ mod tests {
         assert!(lines[2].fill, "padding row fills its background");
         assert_eq!(lines[2].line.width(), 1, "padding row is one space");
         assert_eq!(lines[2].raw_line, None, "padding maps to no source line");
+    }
+
+    #[test]
+    fn streaming_fenced_code_keeps_the_current_unclosed_line() {
+        let first = plain(&render("```rust\nfn main() {"));
+        assert!(first.iter().any(|line| line == "  fn main() {"));
+
+        let grown = plain(&render("```rust\nfn main() {\n    println!(\"hi\");"));
+        assert!(grown.iter().any(|line| line == "  fn main() {"));
+        assert!(grown.iter().any(|line| line.contains("println!")));
+
+        let settled = plain(&render("```rust\nfn main() {\n    println!(\"hi\");\n```"));
+        assert_eq!(
+            grown, settled,
+            "closing the fence must not repaint earlier rows"
+        );
     }
 
     #[test]

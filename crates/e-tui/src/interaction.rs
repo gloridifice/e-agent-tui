@@ -154,6 +154,60 @@ impl Default for ScrollState {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptDelivery {
+    Asap,
+    AfterTurn,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingPrompt {
+    pub prompt: crate::PromptInput,
+    pub delivery: PromptDelivery,
+}
+
+/// Pending prompts remain in insertion order so cancellation can always remove
+/// the user's most recent submission, independently of display/dispatch order.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PendingPromptQueue {
+    entries: Vec<PendingPrompt>,
+}
+
+impl PendingPromptQueue {
+    pub fn push(&mut self, prompt: crate::PromptInput, delivery: PromptDelivery) {
+        self.entries.push(PendingPrompt { prompt, delivery });
+    }
+
+    pub fn entries(&self) -> &[PendingPrompt] {
+        &self.entries
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    pub fn cancel_latest(&mut self) -> Option<PendingPrompt> {
+        self.entries.pop()
+    }
+
+    pub fn take_next(&mut self, agent_running: bool) -> Option<PendingPrompt> {
+        let index = self
+            .entries
+            .iter()
+            .position(|entry| entry.delivery == PromptDelivery::Asap)
+            .or_else(|| (!agent_running).then_some(0))?;
+        Some(self.entries.remove(index))
+    }
+}
+
 /// State whose lifetime follows local user interaction rather than a wire
 /// message family. It is the only production owner for composer, focus,
 /// blocking pages, queue, and legacy copy-navigation state.
@@ -164,7 +218,7 @@ pub struct InteractionModel {
     pub help_visible: bool,
     pub approval: Option<ApprovalCard>,
     pub question: Option<String>,
-    pub queue: Vec<crate::PromptInput>,
+    pub queue: PendingPromptQueue,
     pub notice: NoticeState,
     pub mouse_selection: MouseSelection,
     pub pane_resize: PaneResizeState,
@@ -179,7 +233,7 @@ impl InteractionModel {
             help_visible: false,
             approval: None,
             question: None,
-            queue: Vec::new(),
+            queue: PendingPromptQueue::default(),
             notice: NoticeState::default(),
             mouse_selection: MouseSelection::default(),
             pane_resize: PaneResizeState::default(),
@@ -196,6 +250,38 @@ impl Default for InteractionModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prompt_queue_prioritizes_asap_but_cancels_in_submission_order() {
+        let mut dispatch = PendingPromptQueue::default();
+        for (text, delivery) in [
+            ("a", PromptDelivery::Asap),
+            ("b", PromptDelivery::AfterTurn),
+            ("c", PromptDelivery::Asap),
+            ("d", PromptDelivery::AfterTurn),
+        ] {
+            dispatch.push(text.into(), delivery);
+        }
+        assert_eq!(dispatch.take_next(true).unwrap().prompt, "a");
+        assert_eq!(dispatch.take_next(true).unwrap().prompt, "c");
+        assert!(dispatch.take_next(true).is_none());
+        assert_eq!(dispatch.take_next(false).unwrap().prompt, "b");
+        assert_eq!(dispatch.take_next(false).unwrap().prompt, "d");
+
+        let mut cancellation = PendingPromptQueue::default();
+        for (text, delivery) in [
+            ("a", PromptDelivery::Asap),
+            ("b", PromptDelivery::AfterTurn),
+            ("c", PromptDelivery::Asap),
+            ("d", PromptDelivery::AfterTurn),
+        ] {
+            cancellation.push(text.into(), delivery);
+        }
+        let cancelled = std::iter::from_fn(|| cancellation.cancel_latest())
+            .map(|entry| entry.prompt.plain_text().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(cancelled, ["d", "c", "b", "a"]);
+    }
 
     #[test]
     fn expanded_drag_clamps_the_message_minimum_and_collapses_preview() {

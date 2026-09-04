@@ -108,7 +108,6 @@ transcript.line: "line"
 transcript.lines: "lines"
 transcript.output_lines: " · %{count}%{suffix} %{noun}"
 transcript.activity_fold: "  ... (%{count} %{noun})"
-transcript.duration: " · duration %{seconds}s"
 transcript.image: "[Image: %{name}]"
 transcript.context: "Context · %{form}"
 transcript.compaction_summary: "Compaction summary"
@@ -129,7 +128,6 @@ preview.at: "at"
 preview.metric.line: "line"
 preview.metric.lines: "lines"
 preview.metrics: "%{noun} %{count}%{suffix}"
-preview.duration: ", duration %{seconds}s"
 preview.line_anchor: "@ line %{line}"
 command.help.description: "Show help"
 command.settings.description: "Open settings"
@@ -177,12 +175,13 @@ help.body: |
 
   ## Input and control
 
-  - `Enter`: send
+  - `Enter`: send as soon as possible without interrupting the active turn
+  - `Ctrl+Enter`: wait until the active turn has fully ended
   - `Shift+Enter`: insert a newline
   - `Ctrl+V`: paste an image or text
   - `Ctrl+Backspace` / `Ctrl+W`: delete the previous word
   - `↑` / `↓`: move between lines and switch history prompts at the boundaries
-  - `Esc`: interrupt the conversation or a running command
+  - `Esc`: cancel the newest queued message, or interrupt when the queue is empty
   - `Ctrl+C`: clear input; quit when idle with an empty input
 
   ## Views and navigation
@@ -201,8 +200,8 @@ help.body: |
   - Questions: `h` / `l` switches questions, `j` / `k` switches options, `Space` selects, `Enter` submits
   - Reading View: `j` / `k` navigates blocks, `l` enters an item, spatial `h` / `j` / `k` / `l` navigates items, `y` copies the complete block
 overlay.help.title: "Help — e"
-overlay.help.row1: "Enter Send   Shift+Enter Newline   Ctrl+V Paste image/text   Ctrl+Backspace/Ctrl+W Delete word   ↑↓ Move between lines/switch prompt history"
-overlay.help.row2: "Esc Interrupt conversation/running command   Ctrl+C Clear input/quit when idle   /exit /q /quit Quit"
+overlay.help.row1: "Enter Send ASAP   Ctrl+Enter Send after turn   Shift+Enter Newline   Ctrl+V Paste image/text   Ctrl+Backspace/Ctrl+W Delete word"
+overlay.help.row2: "Esc Cancel newest queued message/interrupt when queue empty   Ctrl+C Clear input/quit when idle   /exit /q /quit Quit"
 overlay.help.row3: "Ctrl+Y Reading View   Ctrl+P Preview   Ctrl+N Resume-session Input Page   Ctrl+H Help"
 overlay.help.row4: "Type /: complete built-in and current-session DSH/plugin commands   Tab/↑↓ Select"
 overlay.help.row5: "/settings Settings   /login Login (API key/Proxy)   /new [mode] New conversation   PgUp/PgDn/mouse Scroll messages"

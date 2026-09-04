@@ -236,7 +236,7 @@ pub struct RenderOverlays<'a> {
     /// InteractionModel, which the main loop holds outside AppState while
     /// rendering, so they are passed in instead of read off `state`.
     pub approval: Option<&'a crate::interaction::ApprovalCard>,
-    pub queue: &'a [crate::PromptInput],
+    pub queue: &'a [crate::interaction::PendingPrompt],
     /// Transient separator state copied from InteractionModel for rendering.
     /// It is intentionally absent from TuiApp semantic/cache state.
     pub pane_resize: PaneResizeState,

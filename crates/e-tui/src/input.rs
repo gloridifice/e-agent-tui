@@ -292,8 +292,10 @@ impl InputState {
 #[derive(Debug, PartialEq)]
 pub enum InputAction {
     None,
-    /// Send the committed buffer as an ordinary message.
+    /// Send the committed buffer as soon as the active turn can accept it.
     Send(PromptInput),
+    /// Keep the committed buffer until the active turn has fully ended.
+    SendAfterTurn(PromptInput),
     /// Send the committed buffer as a slash command line with any image inputs.
     Command {
         line: String,
@@ -728,12 +730,14 @@ impl InputState {
             return self.toggle_multiline();
         }
 
-        // Multiline-mode send: Ctrl+Enter.
-        if self.multiline
-            && key.modifiers.contains(KeyModifiers::CONTROL)
-            && key.code == KeyCode::Enter
-        {
-            return self.commit();
+        // Ctrl+Enter deliberately queues ordinary messages until the current
+        // turn has fully ended. Slash commands keep their ordinary command
+        // behavior rather than entering the prompt queue.
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Enter {
+            return match self.commit() {
+                InputAction::Send(prompt) => InputAction::SendAfterTurn(prompt),
+                action => action,
+            };
         }
         let action = match key.code {
             // Chat-style input is fixed: Enter sends; Shift+Enter above is
@@ -2080,6 +2084,16 @@ mod tests {
             InputAction::Send("a".into())
         );
         assert!(s.buf.is_empty());
+    }
+
+    #[test]
+    fn ctrl_enter_marks_an_ordinary_prompt_for_after_turn_delivery() {
+        let mut s = state();
+        s.handle_key(&key(KeyCode::Char('a')), false);
+        assert_eq!(
+            s.handle_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL), false,),
+            InputAction::SendAfterTurn("a".into())
+        );
     }
 
     #[test]

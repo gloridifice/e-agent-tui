@@ -4,6 +4,14 @@ use serde::{Deserialize, Serialize};
 
 use super::HostEvent;
 
+fn default_input_mode() -> String {
+    "queue".into()
+}
+
+fn input_mode_is_queue(mode: &String) -> bool {
+    mode == "queue"
+}
+
 /// Client → bridge messages.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(
@@ -33,7 +41,14 @@ pub enum ClientMessage {
         protocol_version: u64,
     },
     /// Ordinary user message (enters the currently attached agent inbox).
-    Input { content: Vec<PromptContentPart> },
+    Input {
+        content: Vec<PromptContentPart>,
+        #[serde(
+            default = "default_input_mode",
+            skip_serializing_if = "input_mode_is_queue"
+        )]
+        mode: String,
+    },
     /// Atomically materialize a client-only `/new` draft and deliver its first
     /// user prompt to the newly attached agent.
     NewInput {
@@ -429,7 +444,7 @@ impl ClientMessage {
 
     pub fn has_images(&self) -> bool {
         match self {
-            Self::Input { content } | Self::NewInput { content, .. } => content
+            Self::Input { content, .. } | Self::NewInput { content, .. } => content
                 .iter()
                 .any(|part| matches!(part, PromptContentPart::Image { .. })),
             Self::Command { images, .. } => !images.is_empty(),

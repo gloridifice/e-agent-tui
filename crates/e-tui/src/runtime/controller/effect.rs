@@ -140,11 +140,23 @@ pub(super) fn apply_effect_result(
 
 pub(super) fn dispatch_next_queued(state: &Mutex<RuntimeState>) -> Vec<UiAction> {
     let mut state = state.lock().unwrap();
-    let Some(prompt) = state.take_next_queued() else {
+    let was_idle =
+        state.session.status == crate::SessionStatus::Idle && !state.has_active_command();
+    let Some(pending) = state.take_next_queued() else {
         return Vec::new();
     };
-    state.start_thinking();
-    vec![agent_action(AgentRequest::Input { prompt })]
+    if was_idle {
+        state.start_thinking();
+    }
+    let request = match pending.delivery {
+        crate::interaction::PromptDelivery::Asap if !was_idle => AgentRequest::Steer {
+            prompt: pending.prompt,
+        },
+        _ => AgentRequest::Input {
+            prompt: pending.prompt,
+        },
+    };
+    vec![agent_action(request)]
 }
 
 #[cfg(test)]

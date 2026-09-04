@@ -230,12 +230,7 @@ fn render_ruled_chrome(frame: &mut Frame, area: ratatui::layout::Rect, theme: &T
     }
 }
 
-pub(super) fn render_rule(
-    frame: &mut Frame,
-    area: ratatui::layout::Rect,
-    y: u16,
-    theme: &Theme,
-) {
+pub(super) fn render_rule(frame: &mut Frame, area: ratatui::layout::Rect, y: u16, theme: &Theme) {
     if area.width == 0 || y < area.y || y >= area.bottom() {
         return;
     }

@@ -5,7 +5,11 @@ use super::{
     InputPageSession, InputPageUiState, KeyCode, KeyEvent, Mutex, PageEffect, PendingCommand,
     PromptInput, RuntimeState, UiAction,
 };
-use crate::{i18n::tr, theme};
+use crate::{
+    i18n::tr,
+    interaction::{PendingPromptQueue, PromptDelivery},
+    theme,
+};
 
 pub(super) fn apply_action(action: ControllerAction, input_page: &mut Option<InputPageSession>) {
     match action {
@@ -14,48 +18,65 @@ pub(super) fn apply_action(action: ControllerAction, input_page: &mut Option<Inp
     }
 }
 
+fn submit_prompt(
+    prompt: PromptInput,
+    delivery: PromptDelivery,
+    state: &Mutex<RuntimeState>,
+    queue: &mut PendingPromptQueue,
+    outcome: &mut InputHandlerOutcome,
+) {
+    let new_input = {
+        let mut state = state.lock().unwrap();
+        if state.is_new_conversation() {
+            state.materialize_new_conversation(prompt.clone())
+        } else {
+            None
+        }
+    };
+    if let Some(message) = new_input {
+        outcome.effects.push(agent_action(message));
+        return;
+    }
+    let is_draft = state.lock().unwrap().is_new_conversation();
+    if is_draft {
+        let mut app = state.lock().unwrap();
+        let language = app.config.language;
+        app.set_new_conversation_notice(tr(language, "command.new.in_progress"));
+        return;
+    }
+    let immediate = {
+        let mut state = state.lock().unwrap();
+        let immediate = state.enqueue_or_immediate(prompt.clone(), delivery, queue);
+        if immediate {
+            state.start_thinking();
+        }
+        immediate
+    };
+    if immediate {
+        outcome
+            .effects
+            .push(agent_action(AgentRequest::Input { prompt }));
+    }
+}
+
 pub(super) fn apply_input_action(
     action: InputAction,
     state: &Mutex<RuntimeState>,
-    queue: &mut Vec<PromptInput>,
+    queue: &mut PendingPromptQueue,
 ) -> InputHandlerOutcome {
     let mut outcome = InputHandlerOutcome::default();
     match action {
         InputAction::None | InputAction::ToggleMultiline => {}
         InputAction::Send(prompt) => {
-            let new_input = {
-                let mut state = state.lock().unwrap();
-                if state.is_new_conversation() {
-                    state.materialize_new_conversation(prompt.clone())
-                } else {
-                    None
-                }
-            };
-            if let Some(message) = new_input {
-                outcome.effects.push(agent_action(message));
-                return outcome;
-            }
-            let is_draft = state.lock().unwrap().is_new_conversation();
-            if is_draft {
-                let mut app = state.lock().unwrap();
-                let language = app.config.language;
-                app.set_new_conversation_notice(tr(language, "command.new.in_progress"));
-                return outcome;
-            }
-            let immediate = {
-                let mut state = state.lock().unwrap();
-                let immediate = state.enqueue_or_immediate(&prompt, queue);
-                if immediate {
-                    state.start_thinking();
-                }
-                immediate
-            };
-            if immediate {
-                outcome
-                    .effects
-                    .push(agent_action(AgentRequest::Input { prompt }));
-            }
+            submit_prompt(prompt, PromptDelivery::Asap, state, queue, &mut outcome)
         }
+        InputAction::SendAfterTurn(prompt) => submit_prompt(
+            prompt,
+            PromptDelivery::AfterTurn,
+            state,
+            queue,
+            &mut outcome,
+        ),
         InputAction::Command {
             line,
             images,

@@ -113,6 +113,9 @@ pub enum AgentRequest {
     Input {
         prompt: PromptInput,
     },
+    Steer {
+        prompt: PromptInput,
+    },
     NewInput {
         mode: String,
         prompt: PromptInput,

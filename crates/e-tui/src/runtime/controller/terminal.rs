@@ -29,7 +29,7 @@ pub(super) fn apply_terminal_route(
                     ui.input,
                     ui.input_page.is_some(),
                     ui.approval.as_ref(),
-                    ui.queue,
+                    ui.queue.entries(),
                 );
                 if page {
                     scroll_page(
@@ -197,7 +197,7 @@ pub(super) fn apply_reading_key(
             ui.input,
             ui.input_page.is_some(),
             ui.approval.as_ref(),
-            ui.queue,
+            ui.queue.entries(),
         )
     };
     let item_mode = state
@@ -270,6 +270,10 @@ pub(super) fn apply_ordinary_key(
         );
         return vec![agent_action(AgentRequest::ListSessions)];
     }
+    if key.code == KeyCode::Esc && key.modifiers.is_empty() && !ui.queue.is_empty() {
+        ui.queue.cancel_latest();
+        return Vec::new();
+    }
 
     let (idle, catalogs) = {
         let app = state.lock().unwrap();
@@ -290,7 +294,7 @@ pub(super) fn apply_ordinary_key(
                 ui.input,
                 ui.input_page.is_some(),
                 ui.approval.as_ref(),
-                ui.queue,
+                ui.queue.entries(),
             )
         };
         let (entered, actions) = {
@@ -366,7 +370,7 @@ pub(super) fn apply_ordinary_key(
                     ui.input,
                     ui.input_page.is_some(),
                     ui.approval.as_ref(),
-                    ui.queue,
+                    ui.queue.entries(),
                 )
             };
             let mut app = state.lock().unwrap();

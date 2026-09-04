@@ -225,6 +225,11 @@ pub fn agent_request_to_client(request: AgentRequest) -> ClientMessage {
     match request {
         AgentRequest::Input { prompt } => ClientMessage::Input {
             content: prompt_to_wire(prompt),
+            mode: "queue".into(),
+        },
+        AgentRequest::Steer { prompt } => ClientMessage::Input {
+            content: prompt_to_wire(prompt),
+            mode: "steer".into(),
         },
         AgentRequest::NewInput { mode, prompt } => ClientMessage::NewInput {
             mode,
@@ -1034,9 +1039,10 @@ mod tests {
                 ],
             },
         });
-        let ClientMessage::Input { content } = message else {
+        let ClientMessage::Input { content, mode } = message else {
             panic!("expected input")
         };
+        assert_eq!(mode, "queue");
         assert!(matches!(&content[0], WirePromptPart::Text { text } if text == "before"));
         assert!(matches!(
             &content[1],
@@ -1044,6 +1050,21 @@ mod tests {
                 if media_type == "image/png" && data == "AAEC" && name.as_deref() == Some("clip.png")
         ));
         assert!(matches!(&content[2], WirePromptPart::Text { text } if text == "after"));
+    }
+
+    #[test]
+    fn steering_prompt_sets_the_wire_input_mode() {
+        let message = agent_request_to_client(AgentRequest::Steer {
+            prompt: PromptInput::text("now"),
+        });
+        assert_eq!(
+            serde_json::to_value(message).unwrap(),
+            serde_json::json!({
+                "type": "input",
+                "content": [{"type": "text", "text": "now"}],
+                "mode": "steer"
+            })
+        );
     }
 
     #[test]

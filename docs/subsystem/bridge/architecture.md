@@ -16,11 +16,11 @@ Architecture conventions for the Node.js (ESM) DSH host-composition plugin.
   `login.js`, `skill.js`, `model.js`, `frame.js` keep their own pure logic. Every boundary must have
   `node:test` under `bridge/test/`; new code must not pile back into `index.js`.
 - **Image prompt admission**: wire v7 `input`/`new-input` carry ordered text/image content. Pure text keeps the
-  direct `createUserMessage` + `agent.followup` path; any image requires the lazy session-prompt adapter to call
-  `apiProxy.sessions.prompt({payload:{sessionId,mode:'queue',content}})`. The Host remains authoritative for Base64,
+  direct `createUserMessage` + agent inbox path; any image requires the lazy session-prompt adapter to call
+  `apiProxy.sessions.prompt({payload:{sessionId,mode,content}})`. The Host remains authoritative for Base64,
   MIME, dimensions, count/byte limits, model modality, durable attachment creation, and message publication. A
   rejection must return a bounded error and must never fall back to constructing a durable image reference or
-  injecting encoded bytes through `agent.followup`. The Rust client rejects image-bearing frames above the
+  injecting encoded bytes through `agent.followup`. Wire v9 `input.mode` selects `queue` (the compatibility default) or `steer`; text routes to the matching `agent.followup`/`agent.steer` API and image admission forwards the same mode to `apiProxy.sessions.prompt`. The Rust client rejects image-bearing frames above the
   contract's `maxFrameBytes` before sending. New-session admission and every async result retain the normal
   current-connection guard.
 - **DSH command integration**: after attach, use `ctx.commands.list(agent)` to send handler-free

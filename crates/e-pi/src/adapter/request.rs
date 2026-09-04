@@ -48,6 +48,16 @@ pub(super) fn route(adapter: &mut PiAdapter, request: AgentRequest) -> AdapterOu
             output.events.extend(session::title_events(adapter));
             output
         }
+        AgentRequest::Steer { prompt } => {
+            let Some(text) = prompt.plain_text().map(str::to_owned) else {
+                return adapter.unsupported("Pi image prompts must be pasted as temporary file paths");
+            };
+            AdapterOutput::command(RpcCommand::Prompt {
+                id: Some(adapter.request_id("prompt")),
+                message: text,
+                streaming_behavior: Some(StreamingBehavior::Steer),
+            })
+        }
         AgentRequest::NewInput { mode: _, prompt } => {
             let Some(text) = prompt.plain_text().map(str::to_owned) else {
                 return adapter.unsupported("Pi image prompts must be pasted as temporary file paths");

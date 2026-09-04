@@ -53,15 +53,16 @@ export function normalizeCommandImages(images) {
 export function createSessionPromptAdapter(apiProxy) {
   const service = () => (typeof apiProxy === 'function' ? apiProxy() : apiProxy)
   return Object.freeze({
-    async prompt(sessionId, content) {
+    async prompt(sessionId, content, mode = 'queue') {
       const api = service()
       if (typeof api?.sessions?.prompt !== 'function') {
         throw new Error('session prompt API (apiProxy.sessions.prompt) is unavailable')
       }
+      if (mode !== 'queue' && mode !== 'steer') throw new Error('invalid prompt mode')
       const normalized = normalizePromptContent(content)
       return unwrap(await api.sessions.prompt({
         rpcId: randomUUID(),
-        payload: { sessionId, mode: 'queue', content: normalized },
+        payload: { sessionId, mode, content: normalized },
       }))
     },
   })

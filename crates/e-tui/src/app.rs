@@ -607,20 +607,28 @@ impl TuiApp {
             return;
         };
         let height = viewport_height.max(1);
-        let top_threshold = scroll.offset.saturating_add(height / 3);
-        let bottom_threshold = scroll.offset.saturating_add((height * 2) / 3);
-        let page = height.saturating_sub(1).max(1);
+        // Use the ceiling quarter as a safe margin. A floored fractional row
+        // can place the cursor just across the opposite page threshold and
+        // make the next reconciliation jump straight back.
+        let margin = height.div_ceil(4);
+        let top_threshold = scroll.offset.saturating_add(margin);
+        let bottom_threshold = scroll.offset.saturating_add(height.saturating_sub(margin));
+        let max = self
+            .render
+            .transcript_cache
+            .layout
+            .total_rows()
+            .saturating_sub(height);
         if geometry.rows.start < top_threshold {
-            scroll.offset = scroll.offset.saturating_sub(page);
+            scroll.offset = geometry.rows.start.saturating_sub(margin).min(max);
             scroll.follow = false;
         } else if geometry.rows.end > bottom_threshold {
-            let max = self
-                .render
-                .transcript_cache
-                .layout
-                .total_rows()
-                .saturating_sub(height);
-            scroll.offset = scroll.offset.saturating_add(page).min(max);
+            scroll.offset = geometry
+                .rows
+                .end
+                .saturating_add(margin)
+                .saturating_sub(height)
+                .min(max);
             scroll.follow = false;
         }
     }
@@ -666,7 +674,13 @@ impl std::ops::DerefMut for TuiApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DirtyState, UiAction};
+    use crate::{
+        reading::{
+            BlockId, ReadingBlock, ReadingBlockKind, ReadingBlockLayout, ReadingCopyPayload,
+        },
+        DirtyState, UiAction,
+    };
+    use ratatui::text::Line;
 
     #[test]
     fn activity_spinner_uses_the_requested_braille_sequence() {
@@ -677,6 +691,64 @@ mod tests {
         }
         app.render.activity_frame = ACTIVITY_SPINNER_FRAMES.len();
         assert_eq!(app.activity_spinner_frame(), ACTIVITY_SPINNER_FRAMES[0]);
+    }
+
+    #[test]
+    fn reading_page_margin_uses_a_stable_ceiling_quarter() {
+        let id = BlockId("selected".into());
+        let preview = PreviewRef::Inline {
+            key: PreviewKey("selected".into()),
+            revision: PreviewRevision(1),
+            content: PreviewContent::PlainText("selected".into()),
+        };
+        let document = ReadingDocument {
+            blocks: vec![ReadingBlock {
+                id: id.clone(),
+                owner: crate::display::DisplayId::correlated("reading", "selected"),
+                unit: None,
+                kind: ReadingBlockKind::Notice,
+                copy: ReadingCopyPayload {
+                    text: "selected".into(),
+                    atomic: false,
+                },
+                preview,
+                items: Vec::new(),
+            }],
+        };
+        let mut app = TuiApp::default();
+        app.render.transcript_cache.lines = vec![Line::from("row"); 100];
+        app.render
+            .transcript_cache
+            .ensure_layout(80, crate::transcript_layout::wrapped_rows);
+        app.reading_document = document;
+        app.reading_layout = ReadingLayout {
+            width: 80,
+            blocks: vec![ReadingBlockLayout {
+                block_id: id.clone(),
+                rows: 24..25,
+                gutter_x: 0,
+                items: Vec::new(),
+            }],
+        };
+        app.reading = ReadingViewState::enter(
+            &app.reading_document,
+            &app.reading_layout,
+            0..30,
+            &InputState::new(&app.config),
+        );
+
+        let mut scroll = ScrollState::default();
+        app.keep_reading_visible(&mut scroll, 30);
+        assert_eq!(scroll.offset, 3);
+        app.keep_reading_visible(&mut scroll, 30);
+        assert_eq!(scroll.offset, 3, "downward page placement is stable");
+
+        app.reading_layout.blocks[0].rows = 10..11;
+        scroll.offset = 10;
+        app.keep_reading_visible(&mut scroll, 30);
+        assert_eq!(scroll.offset, 2);
+        app.keep_reading_visible(&mut scroll, 30);
+        assert_eq!(scroll.offset, 2, "upward page placement is stable");
     }
 
     #[test]

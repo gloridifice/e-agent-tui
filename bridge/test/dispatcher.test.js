@@ -7,11 +7,13 @@ function harness(options = {}) {
   const modelSelections = options.modelSelections ?? new Map()
   const closes = []
   const followups = []
+  const steerings = []
   const cancellations = []
   const conn = {
     agent: {
       id: 'a1',
       followup: (message) => followups.push(message),
+      steer: (message) => steerings.push(message),
       cancel: (reason) => cancellations.push(reason),
       options: {},
     },
@@ -52,7 +54,7 @@ function harness(options = {}) {
     sessionPrompt: options.sessionPrompt,
     createUserMessage: (message) => message,
   })
-  return { dispatcher, frames, closes, followups, cancellations, conn, conns, modelSelections }
+  return { dispatcher, frames, closes, followups, steerings, cancellations, conn, conns, modelSelections }
 }
 
 test('dispatcher authenticates, attaches, and routes typed input', async () => {
@@ -66,6 +68,33 @@ test('dispatcher authenticates, attaches, and routes typed input', async () => {
   })))
   assert.equal(h.dispatcher.connection(), h.conn)
   assert.equal(h.followups[0].content[0].text, 'hello')
+})
+
+test('dispatcher routes steer input to the active turn', async () => {
+  const prompts = []
+  const h = harness({
+    sessionPrompt: {
+      prompt: async (sessionId, content, mode) => prompts.push({ sessionId, content, mode }),
+    },
+  })
+  h.dispatcher.handle(Buffer.from(JSON.stringify({
+    type: 'hello', token: 'secret', protocolVersion: 9,
+  })))
+  await new Promise((resolve) => setImmediate(resolve))
+  h.dispatcher.handle(Buffer.from(JSON.stringify({
+    type: 'input', mode: 'steer', content: [{ type: 'text', text: 'now' }],
+  })))
+  h.dispatcher.handle(Buffer.from(JSON.stringify({
+    type: 'input', mode: 'steer', content: [{ type: 'image', mediaType: 'image/png', data: 'AA==' }],
+  })))
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(h.steerings[0].content[0].text, 'now')
+  assert.deepEqual(prompts, [{
+    sessionId: 'a1',
+    content: [{ type: 'image', mediaType: 'image/png', data: 'AA==' }],
+    mode: 'steer',
+  }])
+  assert.equal(h.followups.length, 0)
 })
 
 test('dispatcher keeps legacy text input compatible while accepting protocol v7 content', async () => {

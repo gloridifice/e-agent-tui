@@ -1268,8 +1268,8 @@ fn chinese_transcript_localizes_tool_metadata() {
         "line metadata is not localized: {flat}"
     );
     assert!(
-        flat.contains("耗时1.2s"),
-        "duration is not localized: {flat}"
+        flat.contains("·1.2s") && !flat.contains("耗时"),
+        "duration should render without a label: {flat}"
     );
 }
 
@@ -1454,7 +1454,8 @@ fn tool_preview_renders_header_primary_and_secondary_with_ferra_semantics() {
     let (name_x, name_y) = find("bash").expect("tool name header renders");
     assert_eq!(name_y, 3, "short tool Preview remains vertically centered");
     let (dollar_x, dollar_y) = find("$").expect("command prompt renders");
-    let (metrics_x, metrics_y) = find("lines 2, duration 1.2s").expect("metrics render");
+    let (metrics_x, metrics_y) = find("lines 2, 1.2s").expect("metrics render");
+    assert!(find("duration").is_none(), "duration label must be omitted");
     assert!(find("grep -R table").is_some());
     assert!(
         find("plain").is_some() && find("red").is_some(),
@@ -2292,7 +2293,10 @@ fn overlays_paint_queue_and_approval_accessories() {
         tool_name: "bash".into(),
         reason: "run the test".into(),
     };
-    let queue = vec![crate::PromptInput::text("排队提示")];
+    let queue = vec![crate::interaction::PendingPrompt {
+        prompt: crate::PromptInput::text("排队提示"),
+        delivery: crate::interaction::PromptDelivery::Asap,
+    }];
     let backend = TestBackend::new(80, 40);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
@@ -2351,7 +2355,10 @@ fn chinese_approval_and_queue_accessories_localize_chrome() {
         reason: "run the test".into(),
     };
     let queue = (1..=10)
-        .map(|index| crate::PromptInput::text(format!("queued {index}")))
+        .map(|index| crate::interaction::PendingPrompt {
+            prompt: crate::PromptInput::text(format!("queued {index}")),
+            delivery: crate::interaction::PromptDelivery::AfterTurn,
+        })
         .collect::<Vec<_>>();
     let mut terminal = Terminal::new(TestBackend::new(80, 15)).unwrap();
     terminal

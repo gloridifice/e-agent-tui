@@ -448,8 +448,8 @@ async fn run(
             scheduler.request(DirtyReason::Content, Instant::now());
         }
 
-        // ---- queued prompts: auto-dispatch the next one now that the agent
-        // ---- is idle (one at a time — each dispatch keeps it busy again).
+        // ---- queued prompts: steer the next ASAP prompt during an active
+        // ---- turn, or dispatch the next candidate once fully idle.
         let queued_effects = RuntimeController::dispatch_next_queued(&state_r);
         if !queued_effects.is_empty() {
             let mut agent = DshAgentPort { outbound: &tx_out };
@@ -613,7 +613,7 @@ async fn run(
                         settings: None,
                         login: None,
                         approval: interaction.approval.as_ref(),
-                        queue: &interaction.queue,
+                        queue: interaction.queue.entries(),
                         pane_resize: interaction.pane_resize,
                     },
                     &interaction.mouse_selection,
@@ -790,7 +790,12 @@ mod tests {
     #[test]
     fn queued_dispatch_releases_the_state_lock() {
         let state = std::sync::Mutex::new(RuntimeState::default());
-        state.lock().unwrap().interaction.queue.push("next".into());
+        state
+            .lock()
+            .unwrap()
+            .interaction
+            .queue
+            .push("next".into(), e_tui::interaction::PromptDelivery::AfterTurn);
 
         let effects = RuntimeController::dispatch_next_queued(&state);
         assert!(matches!(

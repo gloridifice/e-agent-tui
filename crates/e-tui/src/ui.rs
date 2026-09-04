@@ -20,6 +20,7 @@ use crate::{
     },
     input::InputState,
     input_page::{FocusId, InputPage, InputPageSession, ModelPage, ResumePage, ThemePage},
+    interaction::PendingPrompt,
     login::LoginState,
     mouse_selection::{MouseSelection, SelectionFrame},
     projection::TranscriptNode,
@@ -60,7 +61,7 @@ pub use screen::RenderOverlays;
 fn input_accessories(
     state: &TuiApp,
     approval: Option<&crate::interaction::ApprovalCard>,
-    queue: &[crate::PromptInput],
+    queue: &[PendingPrompt],
 ) -> Vec<InputAccessory> {
     let mut accessories = Vec::new();
     if approval.is_some() {
@@ -167,7 +168,7 @@ pub fn transcript_view_height(
     input: &InputState,
     input_page_open: bool,
     approval: Option<&crate::interaction::ApprovalCard>,
-    queue: &[crate::PromptInput],
+    queue: &[PendingPrompt],
 ) -> usize {
     let bottom_rows = bottom_area_rows(
         size.height,

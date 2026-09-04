@@ -474,11 +474,7 @@ fn metrics_text(metrics: &ToolMetrics, language: Language) -> String {
         ],
     );
     if let Some(duration_ms) = metrics.duration_ms {
-        text.push_str(&tr_args(
-            language,
-            "preview.duration",
-            &[("seconds", format!("{:.1}", duration_ms as f64 / 1000.0))],
-        ));
+        text.push_str(&format!(", {:.1}s", duration_ms as f64 / 1000.0));
     }
     text
 }

@@ -400,8 +400,8 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
             scheduler.request(DirtyReason::Content, Instant::now());
         }
 
-        // ---- queued prompts: auto-dispatch the next one now that the agent
-        // ---- is idle (one at a time — each dispatch keeps it busy again).
+        // ---- queued prompts: steer the next ASAP prompt during an active
+        // ---- turn, or dispatch the next candidate once fully idle.
         let queued_effects = RuntimeController::dispatch_next_queued(&state_r);
         if !queued_effects.is_empty() {
             let mut agent = PiAgentPort {
@@ -567,7 +567,7 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
                         settings: None,
                         login: None,
                         approval: interaction.approval.as_ref(),
-                        queue: &interaction.queue,
+                        queue: interaction.queue.entries(),
                         pane_resize: interaction.pane_resize,
                     },
                     &interaction.mouse_selection,

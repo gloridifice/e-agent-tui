@@ -1,5 +1,5 @@
 {
-  "protocolVersion": 8,
+  "protocolVersion": 9,
   "limits": {
     "snapshotEvents": 600,
     "historyEvents": 2000,
@@ -260,7 +260,9 @@
         "required": {
           "content": "PromptContentPart[]"
         },
-        "optional": {}
+        "optional": {
+          "mode": "string"
+        }
       },
       "new-input": {
         "required": {

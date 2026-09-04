@@ -2,6 +2,7 @@ use super::*;
 use crate::{
     i18n::{tr, tr_args, Language},
     input::Suggestion,
+    interaction::{PendingPrompt, PromptDelivery},
 };
 
 /// Right-hand blank gutter shared by every non-block accessory strip, so
@@ -83,13 +84,13 @@ pub(super) fn render_todo(
     frame.render_widget(Paragraph::new(rows), area);
 }
 
-/// Pending-prompt queue strip above the input bar: one row per prompt, Night
-/// background with Bark text, `  * ` prefix; long prompts truncate to a
-/// single row with `…`.
+/// Pending-prompt queue strip above the input bar. Steering prompts are shown
+/// first with `⌁`, followed by after-turn prompts with `○`; insertion order is
+/// retained within each class and every prompt occupies exactly one row.
 pub(super) fn render_queue(
     frame: &mut Frame,
     area: ratatui::layout::Rect,
-    queue: &[crate::PromptInput],
+    queue: &[PendingPrompt],
     visible: usize,
     theme: &Theme,
     language: Language,
@@ -98,14 +99,25 @@ pub(super) fn render_queue(
     let truncated = queue.len() > visible;
     let shown = visible.saturating_sub(usize::from(truncated));
     let width = (area.width as usize).saturating_sub(4 + usize::from(ACCESSORY_RIGHT_PAD));
-    let mut rows: Vec<Line<'static>> = queue
+    let ordered = queue
         .iter()
+        .filter(|item| item.delivery == PromptDelivery::Asap)
+        .chain(
+            queue
+                .iter()
+                .filter(|item| item.delivery == PromptDelivery::AfterTurn),
+        );
+    let mut rows: Vec<Line<'static>> = ordered
         .take(shown)
         .map(|item| {
+            let marker = match item.delivery {
+                PromptDelivery::Asap => "⌁",
+                PromptDelivery::AfterTurn => "○",
+            };
             Line::from(Span::styled(
                 format!(
-                    "  * {}",
-                    trim_to_width(&item.display_text_in(language), width)
+                    "  {marker} {}",
+                    trim_to_width(&item.prompt.display_text_in(language), width)
                 ),
                 Style::default().fg(theme.dim).bg(theme.bg),
             ))
@@ -367,7 +379,10 @@ mod tests {
             render_queue(
                 frame,
                 area,
-                &[crate::PromptInput::text("abcdefghijklmnop")],
+                &[PendingPrompt {
+                    prompt: crate::PromptInput::text("abcdefghijklmnop"),
+                    delivery: PromptDelivery::Asap,
+                }],
                 1,
                 theme,
                 Language::English,
@@ -406,6 +421,35 @@ mod tests {
         assert!(info[0].contains('…'), "long info truncates: {:?}", info[0]);
     }
 
+    #[test]
+    fn queue_renders_asap_before_after_turn_without_losing_class_order() {
+        let queue = [
+            PendingPrompt {
+                prompt: crate::PromptInput::text("a"),
+                delivery: PromptDelivery::Asap,
+            },
+            PendingPrompt {
+                prompt: crate::PromptInput::text("b"),
+                delivery: PromptDelivery::AfterTurn,
+            },
+            PendingPrompt {
+                prompt: crate::PromptInput::text("c"),
+                delivery: PromptDelivery::Asap,
+            },
+            PendingPrompt {
+                prompt: crate::PromptInput::text("d"),
+                delivery: PromptDelivery::AfterTurn,
+            },
+        ];
+        let rows = strip_rows(20, 4, |frame, area, theme| {
+            render_queue(frame, area, &queue, 4, theme, Language::English);
+        });
+        assert!(rows[0].contains("⌁ a"));
+        assert!(rows[1].contains("⌁ c"));
+        assert!(rows[2].contains("○ b"));
+        assert!(rows[3].contains("○ d"));
+    }
+
     /// The pending-count summary row keeps the same right gutter.
     #[test]
     fn queue_summary_row_respects_right_padding() {
@@ -415,9 +459,18 @@ mod tests {
                 frame,
                 area,
                 &[
-                    crate::PromptInput::text("a"),
-                    crate::PromptInput::text("b"),
-                    crate::PromptInput::text("c"),
+                    PendingPrompt {
+                        prompt: crate::PromptInput::text("a"),
+                        delivery: PromptDelivery::Asap,
+                    },
+                    PendingPrompt {
+                        prompt: crate::PromptInput::text("b"),
+                        delivery: PromptDelivery::AfterTurn,
+                    },
+                    PendingPrompt {
+                        prompt: crate::PromptInput::text("c"),
+                        delivery: PromptDelivery::Asap,
+                    },
                 ],
                 1,
                 theme,

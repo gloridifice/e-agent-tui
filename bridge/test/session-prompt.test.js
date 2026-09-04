@@ -54,6 +54,12 @@ test('session prompt adapter resolves apiProxy lazily and unwraps Host admission
     mode: 'queue',
     content: [{ type: 'image', mediaType: 'image/png', data: 'AA==' }],
   })
+  await adapter.prompt('s1', [{ type: 'text', text: 'now' }], 'steer')
+  assert.equal(calls[1].payload.mode, 'steer')
+  await assert.rejects(
+    () => adapter.prompt('s1', [{ type: 'text', text: 'bad' }], 'later'),
+    /invalid prompt mode/,
+  )
 })
 
 test('session prompt adapter surfaces Host rejection without a fallback', async () => {

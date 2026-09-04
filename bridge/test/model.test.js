@@ -14,6 +14,7 @@ test('shapeModelFrame projects groups, models, reasoning, and the current select
             id: 'deepseek-v4-pro',
             name: 'DeepSeek V4 Pro',
             description: 'flagship',
+            contextWindow: 276000,
             reasoning: {
               efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }],
               defaultEffort: 'low',
@@ -31,6 +32,7 @@ test('shapeModelFrame projects groups, models, reasoning, and the current select
   assert.equal(frame.providers[0].name, 'DeepSeek')
   assert.equal(frame.providers[0].models.length, 2)
   assert.equal(frame.providers[0].models[0].description, 'flagship')
+  assert.equal(frame.providers[0].models[0].contextWindow, 276000)
   assert.deepEqual(frame.providers[0].models[0].reasoning, {
     efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }],
     defaultEffort: 'low',

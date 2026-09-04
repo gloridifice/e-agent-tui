@@ -17,7 +17,8 @@ function shapeReasoning(reasoning) {
  * Project the `session.models` provider groups and the current selection into
  * the `model` frame payload. Only the fields the TUI needs cross the wire; the
  * current selection (including its optional reasoning effort) rides along so
- * the picker and status bar can reflect it.
+ * the picker and status bar can reflect it. Context-window capacity remains a
+ * typed model field so the client can calculate usage without parsing prose.
  * @param groups - `session.models` `groups` entries ({id, name, models[]}).
  * @param current - `{provider, model, reasoningEffort?}` selection, or undefined.
  */
@@ -30,6 +31,7 @@ export function shapeModelFrame(groups, current) {
         id: model.id,
         name: model.name ?? model.id,
         ...(model.description !== undefined ? { description: model.description } : {}),
+        ...(model.contextWindow !== undefined ? { contextWindow: model.contextWindow } : {}),
         ...(model.reasoning !== undefined ? { reasoning: shapeReasoning(model.reasoning) } : {}),
       })),
     })),

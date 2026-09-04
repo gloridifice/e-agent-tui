@@ -79,9 +79,16 @@ pub(super) fn model_catalog(adapter: &PiAdapter, models: &[Value]) -> AdapterOut
                 .unwrap_or(model_id)
                 .to_owned(),
             description: model
-                .get("contextWindow")
-                .and_then(Value::as_u64)
-                .map(|window| format!("context {window}")),
+                .get("description")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| {
+                    model
+                        .get("contextWindow")
+                        .and_then(Value::as_u64)
+                        .map(|window| format!("context {window}"))
+                }),
+            context_window: model.get("contextWindow").and_then(Value::as_u64),
             reasoning,
         };
         if let Some(provider) = providers.iter_mut().find(|item| item.id == provider_id) {
@@ -105,4 +112,30 @@ pub(super) fn model_catalog(adapter: &PiAdapter, models: &[Value]) -> AdapterOut
         providers,
         current,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_catalog_preserves_context_window_capacity() {
+        let mut adapter = PiAdapter::new(".", "sessions");
+        let output = models_response(
+            &mut adapter,
+            Some(&serde_json::json!({
+                "models": [{
+                    "provider": "openai",
+                    "id": "gpt",
+                    "name": "GPT",
+                    "contextWindow": 276000
+                }]
+            })),
+        );
+
+        let AgentEvent::Catalog(CatalogEvent::Models { providers, .. }) = &output.events[0] else {
+            panic!("expected model catalog");
+        };
+        assert_eq!(providers[0].models[0].context_window, Some(276_000));
+    }
 }

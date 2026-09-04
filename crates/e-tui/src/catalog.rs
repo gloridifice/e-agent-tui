@@ -2,8 +2,8 @@
 
 use crate::{
     agent::{
-        CommandDescriptor, CredentialProvider, ModelProvider, ModelReasoning, ModelSelection,
-        ProxyRoute, ReasoningEffort, SessionSummary, Skill,
+        CommandDescriptor, CredentialProvider, ModelDescriptor, ModelProvider, ModelReasoning,
+        ModelSelection, ProxyRoute, ReasoningEffort, SessionSummary, Skill,
     },
     command_catalog::NewMode,
 };
@@ -29,18 +29,26 @@ pub struct CatalogModel {
 }
 
 impl CatalogModel {
-    /// The exact current provider/model route's reasoning metadata, resolved by
-    /// matching provider id then model id — never cross-provider by model id.
-    pub fn current_model_reasoning(&self) -> Option<&ModelReasoning> {
+    /// Resolve the exact current provider/model route — never cross-provider
+    /// by model id.
+    pub fn current_model_descriptor(&self) -> Option<&ModelDescriptor> {
         let current = self.current_model.as_ref()?;
         self.model_providers
             .iter()
             .find(|provider| provider.id == current.provider)?
             .models
             .iter()
-            .find(|model| model.id == current.model)?
-            .reasoning
-            .as_ref()
+            .find(|model| model.id == current.model)
+    }
+
+    pub fn current_model_reasoning(&self) -> Option<&ModelReasoning> {
+        self.current_model_descriptor()?.reasoning.as_ref()
+    }
+
+    pub fn current_model_context_window(&self) -> Option<u64> {
+        self.current_model_descriptor()?
+            .context_window
+            .filter(|window| *window > 0)
     }
 
     /// Adapter-declared efforts for the exact current route, in declared order.
@@ -86,6 +94,7 @@ mod tests {
                     id: "gpt".into(),
                     name: "GPT".into(),
                     description: None,
+                    context_window: None,
                     reasoning,
                 }],
             }],
@@ -186,6 +195,7 @@ mod tests {
                     id: "gpt".into(),
                     name: "GPT".into(),
                     description: None,
+                    context_window: None,
                     reasoning: Some(reasoning()),
                 }],
             }],

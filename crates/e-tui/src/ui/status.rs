@@ -1,6 +1,16 @@
 use super::*;
 use crate::ui::component::status;
 
+fn format_tokens(count: u64) -> String {
+    match count {
+        0..=999 => count.to_string(),
+        1_000..=9_999 => format!("{:.1}k", count as f64 / 1_000.0),
+        10_000..=999_999 => format!("{}k", count.saturating_add(500) / 1_000),
+        1_000_000..=9_999_999 => format!("{:.1}M", count as f64 / 1_000_000.0),
+        _ => format!("{}M", count.saturating_add(500_000) / 1_000_000),
+    }
+}
+
 pub(super) fn render_status(
     frame: &mut Frame,
     area: ratatui::layout::Rect,
@@ -9,18 +19,18 @@ pub(super) fn render_status(
     theme: &Theme,
 ) {
     let dim = status::dim(theme);
-    // Running bullet leads the status bar: yellow breathing while the agent
-    // is running (or has just been sent work), gray while idle. One space
-    // separates it from the elements that follow.
+    // The italic e breathes while the agent is working and stays dim while idle.
     let drafting = state.session.new_conversation.is_some();
-    let bullet =
+    let indicator =
         if !drafting && (state.session.status == AgentStatus::Running || state.session.working) {
             Span::styled(
-                "•",
-                Style::default().fg(breathing_color(theme, state.breath_phase())),
+                "e",
+                Style::default()
+                    .fg(breathing_color(theme, state.breath_phase()))
+                    .add_modifier(Modifier::ITALIC),
             )
         } else {
-            Span::styled("•", dim)
+            Span::styled("e", dim.add_modifier(Modifier::ITALIC))
         };
     let mode = state
         .session
@@ -30,7 +40,7 @@ pub(super) fn render_status(
         .or(state.session.current_mode.as_deref())
         .unwrap_or(state.config.default_mode.as_str());
     let mut left_spans = vec![
-        bullet,
+        indicator,
         Span::styled(" ", dim),
         Span::styled(mode.to_owned(), dim),
     ];
@@ -63,6 +73,17 @@ pub(super) fn render_status(
             dim,
         ));
     }
+    if let Some(context_window) = (!drafting)
+        .then(|| state.catalogs.current_model_context_window())
+        .flatten()
+    {
+        let percent = state.session.context_usage_percent(context_window);
+        left_spans.push(Span::styled(" ", dim));
+        left_spans.push(Span::styled(
+            format!("{percent}%/{}", format_tokens(context_window)),
+            dim,
+        ));
+    }
     let left = Line::from(left_spans);
     let right_text = format!(
         "^h {}",
@@ -70,9 +91,13 @@ pub(super) fn render_status(
     );
     let right_width = UnicodeWidthStr::width(right_text.as_str()).min(area.width as usize) as u16;
     let right = Line::from(Span::styled(right_text, dim));
-    // Render through the buffer directly: no wrapping, hard clip at edges.
+    // Reserve the right label before clipping the left side so wide content
+    // cannot overwrite or split the flush-right help hint.
+    let left_width = area
+        .width
+        .saturating_sub(right_width.saturating_add(u16::from(right_width < area.width)));
     let buffer = frame.buffer_mut();
-    buffer.set_line(area.x, area.y, &left, area.width);
+    buffer.set_line(area.x, area.y, &left, left_width);
     let right_x = area.x + area.width.saturating_sub(right_width);
     buffer.set_line(right_x, area.y, &right, right_width);
 }
@@ -174,9 +199,19 @@ mod tests {
     }
 
     #[test]
-    fn status_bar_renders_effort_after_the_model_with_the_same_dim_style() {
+    fn status_bar_renders_effort_and_context_after_the_model() {
         let mut state = TuiApp::default();
         state.session.model = Some("gpt".into());
+        state.session.last_usage_sample = Some((
+            Some(1),
+            Some(1),
+            crate::agent::timeline::TokenUsage {
+                input_tokens: 80_000,
+                output_tokens: 2_800,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+            },
+        ));
         state.catalogs.current_model = Some(crate::agent::ModelSelection {
             provider: "openai".into(),
             model: "gpt".into(),
@@ -189,6 +224,7 @@ mod tests {
                 id: "gpt".into(),
                 name: "GPT".into(),
                 description: None,
+                context_window: Some(276_000),
                 reasoning: Some(crate::agent::ModelReasoning {
                     efforts: vec![crate::agent::ReasoningEffort {
                         id: "high".into(),
@@ -221,9 +257,12 @@ mod tests {
         let effort_at = line
             .find("Effort:High")
             .expect("effort renders after the model");
+        let context_at = line
+            .find("30%/276k")
+            .expect("context usage renders after effort");
         assert!(
-            effort_at > model_at,
-            "effort must follow the model entry: {line:?}"
+            effort_at > model_at && context_at > effort_at,
+            "effort and context must follow the model entry: {line:?}"
         );
     }
 
@@ -244,6 +283,7 @@ mod tests {
                 id: "gpt".into(),
                 name: "GPT".into(),
                 description: None,
+                context_window: None,
                 reasoning: Some(crate::agent::ModelReasoning {
                     efforts: vec![crate::agent::ReasoningEffort {
                         id: "high".into(),
@@ -282,6 +322,28 @@ mod tests {
             compact.contains("帮助"),
             "help label is not localized: {compact}"
         );
+    }
+
+    #[test]
+    fn status_bar_uses_an_italic_e_and_flush_right_help() {
+        let state = TuiApp::default();
+        let mut terminal = Terminal::new(TestBackend::new(80, 1)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_status(
+                    frame,
+                    frame.area(),
+                    &state,
+                    &ScrollState::default(),
+                    &Theme::ferra(),
+                )
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, 0)].symbol(), "e");
+        assert!(buffer[(0, 0)].modifier.contains(Modifier::ITALIC));
+        assert_eq!(buffer[(79, 0)].symbol(), "p");
     }
 
     #[test]

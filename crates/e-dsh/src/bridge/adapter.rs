@@ -965,6 +965,7 @@ fn normalize_model(model: ModelInfo) -> ModelDescriptor {
         id: model.id,
         name: model.name,
         description: model.description,
+        context_window: model.context_window,
         reasoning: model.reasoning.map(|reasoning| ModelReasoning {
             efforts: reasoning
                 .efforts

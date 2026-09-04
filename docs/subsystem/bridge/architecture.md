@@ -131,8 +131,9 @@ Architecture conventions for the Node.js (ESM) DSH host-composition plugin.
   Write failures return to the panel via the same `login` frame's `error`, not through the transcript error
   stream.
 - **/model and /effort (bridge)**: upstream `model-get` / `model-set{provider,model,reasoningEffort?}`; downstream
-  `model{providers[{id,name,models[{id,name,description?,reasoning?}]}],current?}` where `current` is
-  `{provider,model,reasoningEffort?}` and `reasoning` is `{efforts[{id,name,description?}],defaultEffort?}`.
+  `model{providers[{id,name,models[{id,name,description?,contextWindow?,reasoning?}]}],current?}` where `current`
+  is `{provider,model,reasoningEffort?}`, `contextWindow` is the model's token capacity, and `reasoning` is
+  `{efforts[{id,name,description?}],defaultEffort?}`.
   The catalog and the authoritative current selection come from the injected `apiProxy.sessions` via
   `session-model.js` (`session.models` / `session.selectModel`), not `ctx.llm.listModels`; a provider without an
   adapter catalog returns an empty group rather than failing the whole thing. On session create/resume the

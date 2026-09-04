@@ -529,7 +529,7 @@ mod tests {
     #[test]
     fn model_frame_parses_and_serializes() {
         let msg = ServerMessage::from_wire(
-            r#"{"type":"model","providers":[{"id":"deepseek","name":"DeepSeek","models":[{"id":"deepseek-v4-pro","name":"DeepSeek V4 Pro","description":"flagship","reasoning":{"efforts":[{"id":"low","name":"Low"},{"id":"high","name":"High"}],"defaultEffort":"low"}},{"id":"deepseek-v4","name":"DeepSeek V4"}]}],"current":{"provider":"deepseek","model":"deepseek-v4","reasoningEffort":"high"}}"#,
+            r#"{"type":"model","providers":[{"id":"deepseek","name":"DeepSeek","models":[{"id":"deepseek-v4-pro","name":"DeepSeek V4 Pro","description":"flagship","contextWindow":276000,"reasoning":{"efforts":[{"id":"low","name":"Low"},{"id":"high","name":"High"}],"defaultEffort":"low"}},{"id":"deepseek-v4","name":"DeepSeek V4"}]}],"current":{"provider":"deepseek","model":"deepseek-v4","reasoningEffort":"high"}}"#,
         )
         .expect("model parses");
         match msg {
@@ -540,6 +540,7 @@ mod tests {
                     providers[0].models[0].description.as_deref(),
                     Some("flagship")
                 );
+                assert_eq!(providers[0].models[0].context_window, Some(276_000));
                 let reasoning = providers[0].models[0]
                     .reasoning
                     .as_ref()

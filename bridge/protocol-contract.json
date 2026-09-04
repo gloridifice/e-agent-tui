@@ -1,5 +1,5 @@
 {
-  "protocolVersion": 7,
+  "protocolVersion": 8,
   "limits": {
     "snapshotEvents": 600,
     "historyEvents": 2000,
@@ -212,6 +212,7 @@
       },
       "optional": {
         "description": "string",
+        "contextWindow": "integer",
         "reasoning": "ModelReasoningInfo"
       }
     },

@@ -8,7 +8,7 @@ Do not edit capacities, rosters, or payload fields here by hand.
 
 | Field | Value |
 |---|---:|
-| Protocol version | 7 |
+| Protocol version | 8 |
 | Snapshot surface events | 600 |
 | History page events | 2000 |
 | Maximum normal frame | 16777216 bytes |
@@ -432,6 +432,7 @@ Array types use the `[]` suffix. `host-event` is the bounded typed event envelop
 | required | `id` | `string` |
 | required | `name` | `string` |
 | optional | `description` | `string` |
+| optional | `contextWindow` | `integer` |
 | optional | `reasoning` | `ModelReasoningInfo` |
 
 ### `ModelReasoningInfo`

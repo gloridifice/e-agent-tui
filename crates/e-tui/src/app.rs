@@ -143,6 +143,25 @@ impl SessionModel {
         })
     }
 
+    pub fn context_usage_percent(&self, context_window: u64) -> u64 {
+        if context_window == 0 {
+            return 0;
+        }
+        let usage = self
+            .last_usage_sample
+            .map(|(_, _, usage)| usage)
+            .unwrap_or_default();
+        let context_tokens = usage
+            .input_tokens
+            .saturating_add(usage.output_tokens)
+            .saturating_add(usage.cache_read_tokens)
+            .saturating_add(usage.cache_write_tokens);
+        context_tokens
+            .saturating_mul(100)
+            .saturating_add(context_window / 2)
+            / context_window
+    }
+
     pub fn record_usage(
         &mut self,
         turn: Option<u64>,

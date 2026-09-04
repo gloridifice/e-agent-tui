@@ -1074,6 +1074,7 @@ mod tests {
                 id: model.into(),
                 name: model.into(),
                 description: None,
+                context_window: None,
                 reasoning: None,
             }],
         };
@@ -1165,6 +1166,7 @@ mod tests {
                 id: format!("{id}-model"),
                 name: format!("Model {id}"),
                 description: None,
+                context_window: None,
                 reasoning: None,
             }],
         };
@@ -1336,6 +1338,7 @@ mod tests {
                     id: "m".into(),
                     name: "Model".into(),
                     description: None,
+                    context_window: None,
                     reasoning: None,
                 }],
             }],
@@ -1371,6 +1374,7 @@ mod tests {
                     id: "gpt".into(),
                     name: "GPT".into(),
                     description: None,
+                    context_window: None,
                     reasoning: Some(crate::agent::ModelReasoning {
                         // Default is deliberately NOT first so the pre-focus
                         // assertion below cannot pass by coincidence.
@@ -1429,6 +1433,7 @@ mod tests {
                     id: "plain".into(),
                     name: "Plain".into(),
                     description: None,
+                    context_window: None,
                     reasoning: None,
                 }],
             }],

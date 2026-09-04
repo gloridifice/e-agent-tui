@@ -1,17 +1,17 @@
 {
   "generatedFrom": "bridge/protocol-contract.json",
-  "protocolVersion": 7,
+  "protocolVersion": 8,
   "client": {
     "hello": {
       "minimal": {
         "type": "hello",
         "token": "contract-token",
-        "protocolVersion": 7
+        "protocolVersion": 8
       },
       "full": {
         "type": "hello",
         "token": "contract-token",
-        "protocolVersion": 7,
+        "protocolVersion": 8,
         "resumeSessionId": "session-1",
         "cwd": "C:\\workspace",
         "mode": "standard"
@@ -248,7 +248,7 @@
         "type": "welcome",
         "sessionId": "session-1",
         "status": "idle",
-        "protocolVersion": 7,
+        "protocolVersion": 8,
         "maxFrameBytes": 16777216,
         "provider": "provider-1",
         "model": "model-1",
@@ -582,6 +582,7 @@
                 "id": "id-1",
                 "name": "sample",
                 "description": "sample description",
+                "contextWindow": 1,
                 "reasoning": {
                   "efforts": [
                     {

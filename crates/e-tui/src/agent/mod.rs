@@ -101,6 +101,7 @@ pub struct ModelDescriptor {
     pub id: String,
     pub name: String,
     pub description: Option<String>,
+    pub context_window: Option<u64>,
     pub reasoning: Option<ModelReasoning>,
 }
 

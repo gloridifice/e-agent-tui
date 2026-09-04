@@ -399,6 +399,7 @@ mod tests {
                     id: (*model).into(),
                     name: (*model).into(),
                     description: None,
+                    context_window: None,
                     reasoning: None,
                 })
                 .collect(),

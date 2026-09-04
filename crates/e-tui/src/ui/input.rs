@@ -283,14 +283,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(48, 3)).unwrap();
         terminal
             .draw(|frame| {
-                render_input(
-                    frame,
-                    frame.area(),
-                    &input,
-                    &theme,
-                    0,
-                    InputStyle::Default,
-                );
+                render_input(frame, frame.area(), &input, &theme, 0, InputStyle::Default);
             })
             .unwrap();
         let buffer = terminal.backend().buffer();

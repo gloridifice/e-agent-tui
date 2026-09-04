@@ -283,6 +283,7 @@ mod tests {
                         id: "model-id".into(),
                         name: "Model from host".into(),
                         description: Some("Model description from host".into()),
+                        context_window: None,
                         reasoning: None,
                     }],
                 }],
@@ -304,6 +305,7 @@ mod tests {
                         id: "model-id".into(),
                         name: "Model from host".into(),
                         description: None,
+                        context_window: None,
                         reasoning: Some(crate::agent::ModelReasoning {
                             efforts: vec![crate::agent::ReasoningEffort {
                                 id: "host-effort".into(),

@@ -281,12 +281,16 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
 - **Rendering layers**: production rendering lives in `e-tui` and points downward as `Screen -> Pane -> Region -> Component`. The main pane retains the characterized transcript/composer/status style; Preview reuses theme semantics without changing main-pane tokens. Provider-neutral terminal setup/restoration, synchronized output, input routing, and frame scheduling live under `e_tui::runtime`; each executable still owns its Tokio selection loop, provider transport, bounded inbound queue, and external effects.
 - **Bottom layout and two-line status bar**: the fixed bottom row order is input bar or Input Page / gap /
   status line 1 / **session title line** (the `ui.rs::render` chunks array; the `+3` in the accessory budget
-  formula matches it). Neither line sets a background color: line 1 is, left to right, the working indicator,
-  `SessionModel.current_mode`, the current model, `CH<cache-hit %>`, and the reasoning-effort label
-  `Effort:<Label>` (after CH), where the model, CH, and effort entries are omitted entirely when they have no
-  value yet (no placeholder dash) — the effort entry is hidden unless the exact current route exposes reasoning
+  formula matches it). Neither line sets a background color: line 1 is, left to right, the italic `e` working
+  indicator, `SessionModel.current_mode`, the current model, `CH<cache-hit %>`, the reasoning-effort label
+  `Effort:<Label>`, and context use `<percent>%/<window>` (for example `30%/276k`). The model, CH, and effort
+  entries are omitted when their source data is unavailable; context appears when the exact current model has a
+  typed context window, uses zero before the first assistant usage, then uses the latest sample's
+  input/output/cache-read/cache-write total, and is hidden for a deferred-new draft. The effort entry is hidden
+  unless the exact current route exposes reasoning
   metadata, resolves `current.reasoningEffort` then `reasoning.defaultEffort` then `Default`, and never
-  invalidates the transcript cache. The right side is fixed `^h Help`; line 2's
+  invalidates the transcript cache. The right side is fixed `^h Help`, reserved before left-side clipping and
+  flush with the right edge; line 2's
   left side is `SessionModel.session_title` (shows `新会话` when empty) and the right side is the absolute
   `SessionModel.session_cwd` path, with the title truncated with `…` when too long so the path is preserved.
   mode's initial value comes from `welcome.mode` (most recent selection, else the creation header), then is

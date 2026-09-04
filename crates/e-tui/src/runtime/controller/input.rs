@@ -126,19 +126,7 @@ pub(super) fn apply_input_page_key(
             PageEffect::Send(message) => effects.push(UiAction::Agent(message)),
             PageEffect::ConfigChanged => {
                 ui.config.resolved_theme = theme::resolve(&ui.config.theme, ui.themes);
-                let catalogs = {
-                    let mut state = state.lock().unwrap();
-                    state.config = ui.config.clone();
-                    state.render.markdown_layout.invalidate_all();
-                    state.render.transcript_cache.invalidate();
-                    state.preview.invalidate_layout();
-                    state.catalogs.clone()
-                };
-                *ui.theme = ui.config.theme();
-                ui.input.language = ui.config.language;
-                ui.input.paste_placeholder_chars = ui.config.paste_placeholder_chars;
-                ui.input.history_limit = ui.config.history_limit;
-                ui.input.catalog_changed(&catalogs);
+                super::effect::sync_live_config(ui.config, state, ui.input, ui.theme);
                 effects.push(UiAction::PersistConfig(ui.config.clone()));
             }
         }

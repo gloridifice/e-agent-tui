@@ -7,13 +7,51 @@ pub(super) fn render_input(
     input: &InputState,
     theme: &Theme,
     padding: u16,
+    input_style: InputStyle,
 ) -> Option<Position> {
-    let block = Block::default()
-        .style(theme.input.background.style())
-        // Configurable horizontal gutter + 1-row vertical padding.
-        .padding(Padding::new(padding, padding, 1, 1));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let bark = Style::default().fg(theme.input.hint.fg);
+    let (inner, surface_style) = match input_style {
+        InputStyle::Default => {
+            let block = Block::default()
+                .style(theme.input.background.style())
+                .padding(Padding::new(padding, padding, 1, 1));
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            (inner, theme.input.background.style())
+        }
+        InputStyle::Square | InputStyle::Rounded => {
+            let border_type = if input_style == InputStyle::Rounded {
+                BorderType::Rounded
+            } else {
+                BorderType::Plain
+            };
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(border_type)
+                .border_style(bark)
+                .padding(Padding::new(padding, padding, 0, 0));
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            (inner, Style::default())
+        }
+        InputStyle::Line => {
+            render_line_chrome(frame, area, theme);
+            let horizontal = padding.saturating_mul(2).saturating_add(1);
+            let inner = ratatui::layout::Rect::new(
+                area.x.saturating_add(padding).saturating_add(1),
+                area.y.saturating_add(1),
+                area.width.saturating_sub(horizontal),
+                area.height.saturating_sub(2),
+            );
+            if inner.height > 0 && area.width > 0 {
+                frame.render_widget(
+                    Paragraph::new("❯").style(bark),
+                    ratatui::layout::Rect::new(area.x, inner.y, 1, 1),
+                );
+            }
+            (inner, Style::default())
+        }
+    };
 
     if let Some(search) = &input.search {
         // Ctrl+R history search strip.
@@ -35,7 +73,10 @@ pub(super) fn render_input(
                 theme.input.hint.style(),
             ),
         ]);
-        frame.render_widget(Paragraph::new(Text::from(vec![line])), inner);
+        frame.render_widget(
+            Paragraph::new(Text::from(vec![line])).style(surface_style),
+            inner,
+        );
         return None;
     }
 
@@ -171,7 +212,7 @@ pub(super) fn render_input(
             rendered.push(Line::from(styled_spans(text, off)));
         }
     }
-    let paragraph = Paragraph::new(Text::from(rendered)).style(theme.input.background.style());
+    let paragraph = Paragraph::new(Text::from(rendered)).style(surface_style);
     frame.render_widget(paragraph, inner);
     if let Some((row, col)) = cursor_patch {
         let x = inner.x.saturating_add(col);
@@ -198,6 +239,32 @@ pub(super) fn render_input(
     ))
 }
 
+fn render_line_chrome(frame: &mut Frame, area: ratatui::layout::Rect, theme: &Theme) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let top = area.y;
+    let bottom = area.bottom().saturating_sub(1);
+    for y in [top, bottom] {
+        for offset in 0..area.width {
+            let color = if offset < 2 || offset >= area.width.saturating_sub(2) {
+                theme.diff.separator.fg
+            } else {
+                theme.input.hint.fg
+            };
+            if let Some(cell) = frame
+                .buffer_mut()
+                .cell_mut(Position::new(area.x.saturating_add(offset), y))
+            {
+                cell.set_symbol("─").set_fg(color);
+            }
+        }
+        if top == bottom {
+            break;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,7 +283,14 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(48, 3)).unwrap();
         terminal
             .draw(|frame| {
-                render_input(frame, frame.area(), &input, &theme, 0);
+                render_input(
+                    frame,
+                    frame.area(),
+                    &input,
+                    &theme,
+                    0,
+                    InputStyle::Default,
+                );
             })
             .unwrap();
         let buffer = terminal.backend().buffer();

@@ -31,6 +31,38 @@ impl ThinkingDisplayMode {
     }
 }
 
+/// Visual treatment of the ordinary composer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputStyle {
+    /// Existing Ash-filled composer with no visible border.
+    Default,
+    /// Bark square border with no composer fill.
+    Square,
+    /// Bark rounded border with no composer fill.
+    Rounded,
+    /// Bark horizontal rules and prompt arrow with Umber rule ends.
+    Line,
+}
+
+impl InputStyle {
+    pub const fn value(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Square => "square",
+            Self::Rounded => "rounded",
+            Self::Line => "line",
+        }
+    }
+
+    pub const fn horizontal_chrome(self) -> usize {
+        match self {
+            Self::Default => 0,
+            Self::Square | Self::Rounded => 2,
+            Self::Line => 1,
+        }
+    }
+}
+
 // ---------- validated persisted values ----------
 
 /// A persisted `#RRGGBB` color. TOML representation remains a string while
@@ -318,6 +350,8 @@ pub struct Config {
     pub plain_color: bool,
     /// Foreground-fade interpolation origin; does not replace theme surfaces.
     pub background_color: HexRgb,
+    /// Composer chrome: `default`, `square`, `rounded`, or `line`.
+    pub input_style: String,
     // Behavior
     pub language: Language,
     pub remember_last_session: bool,
@@ -421,6 +455,20 @@ impl Config {
             "full" => ThinkingDisplayMode::Full,
             _ => ThinkingDisplayMode::Compact,
         }
+    }
+
+    pub fn input_style_mode(&self) -> InputStyle {
+        match self.input_style.as_str() {
+            "square" => InputStyle::Square,
+            "rounded" => InputStyle::Rounded,
+            "line" => InputStyle::Line,
+            _ => InputStyle::Default,
+        }
+    }
+
+    /// Stable persisted value used by settings choices.
+    pub fn input_style_value(&self) -> &'static str {
+        self.input_style_mode().value()
     }
 
     /// Stable persisted value used by settings choices.

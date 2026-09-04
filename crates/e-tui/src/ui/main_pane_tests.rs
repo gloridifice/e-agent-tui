@@ -586,7 +586,7 @@ fn extracted_main_pane_preserves_status_spacing_and_hidden_cursor() {
     let main_row = |y| row(y).chars().take(48).collect::<String>();
     assert!(main_row(37).trim().is_empty());
     assert!(main_row(38).contains("• standard"));
-    assert!(main_row(38).contains("^h Help"));
+    assert!(row(38).contains("^h Help"));
     assert!(main_row(39).contains("refactor bridge"));
     assert_eq!(buffer[(1, 38)].bg, Color::Reset);
 }

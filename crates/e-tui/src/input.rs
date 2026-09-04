@@ -19,12 +19,12 @@ use crate::agent::{ModelDescriptor, ModelProvider, Skill};
 use crate::catalog::CatalogModel;
 pub use crate::command_catalog::NewMode;
 use crate::command_catalog::{
-    completion_context, match_command_catalog, CommandSource, CommandText, CompletionKind,
+    candidate_description, completion_context, match_command_catalog, CommandSource, CompletionKind,
 };
 use crate::{
     action::{PromptImage, PromptInput, PromptPart},
     config::Config,
-    i18n::{tr_args, Language},
+    i18n::{tr, tr_args, Language},
 };
 
 const IMAGE_MARKER: char = '\u{fffc}';
@@ -128,29 +128,6 @@ pub enum SuggestionKind {
     Modes,
     Models,
     Skills,
-}
-
-fn command_candidate_description(
-    candidate: &crate::command_catalog::CommandCandidate,
-    language: Language,
-) -> String {
-    let (description, hint) = match &candidate.text {
-        CommandText::Builtin {
-            description_key,
-            input_hint_key,
-        } => (
-            crate::i18n::tr(language, description_key),
-            input_hint_key.map(|key| crate::i18n::tr(language, key)),
-        ),
-        CommandText::Integrated {
-            description,
-            input_hint,
-        } => (description.clone(), input_hint.clone()),
-    };
-    match hint.filter(|hint| !hint.is_empty()) {
-        Some(hint) => format!("{description}  {hint}"),
-        None => description,
-    }
 }
 
 /// Normalize terminal and system-clipboard line endings to the frontend's
@@ -1028,7 +1005,7 @@ impl InputState {
                     .collect(),
                 descriptions: matched
                     .iter()
-                    .map(|candidate| command_candidate_description(candidate, self.language))
+                    .map(|candidate| candidate_description(candidate, |key| tr(self.language, key)))
                     .collect(),
                 sources: matched.iter().map(|candidate| candidate.source).collect(),
                 kind: SuggestionKind::Commands,

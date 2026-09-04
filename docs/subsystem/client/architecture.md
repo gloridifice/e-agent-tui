@@ -350,8 +350,10 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   `Config.theme` stores the theme name; `message_pane_percent` is the sole persisted pane-width authority, defaults
   to 60.00%, and is validated to 25.00%–100.00%; pane columns are derived from the current terminal width.
   `user_input_padding` defaults to one column so user cards and the composer match the one-column Main page edge,
-  while an explicit Settings value remains supported. The
-  obsolete `main_pane_width` key is ignored by the known-key overlay rather than migrated without a terminal width;
+  while an explicit Settings value remains supported. `input_style` defaults to `default` (the existing filled,
+  borderless composer) and also accepts `square`, `rounded`, and `line`; the two box styles use Bark borders with no
+  composer fill, while `line` uses Bark rules and prompt arrow, Umber at the two cells on each rule end, and no fill.
+  The obsolete `main_pane_width` key is ignored by the known-key overlay rather than migrated without a terminal width;
   rendering does zero disk reads. Themes are two-layer TOML: an open
   `[colors]` allows arbitrary color names, and fixed `[semantics.*]` (surface/markdown/markdown_weak/code/code_weak/diff/input/
   working_status/log/activity/card/overlay/separator) link semantic styles to color names; each style requires only `fg`,

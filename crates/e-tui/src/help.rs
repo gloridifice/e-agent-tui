@@ -2,32 +2,14 @@
 
 use crate::{
     agent::CommandDescriptor,
-    command_catalog::{match_command_catalog, CommandCandidate, CommandSource, CommandText},
+    command_catalog::{
+        candidate_description, match_command_catalog, CommandCandidate, CommandSource,
+    },
     i18n::Language,
 };
 
 fn one_line(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn candidate_description(candidate: &CommandCandidate, language: Language) -> String {
-    let (description, hint) = match &candidate.text {
-        CommandText::Builtin {
-            description_key,
-            input_hint_key,
-        } => (
-            crate::i18n::tr(language, description_key),
-            input_hint_key.map(|key| crate::i18n::tr(language, key)),
-        ),
-        CommandText::Integrated {
-            description,
-            input_hint,
-        } => (description.clone(), input_hint.clone()),
-    };
-    match hint.filter(|hint| !hint.is_empty()) {
-        Some(hint) => format!("{description}  {hint}"),
-        None => description,
-    }
 }
 
 fn append_commands(
@@ -44,7 +26,9 @@ fn append_commands(
     output.push_str("\n\n");
     for command in commands {
         let line = command.line.replace('`', "");
-        let description = one_line(&candidate_description(command, language));
+        let description = one_line(&candidate_description(command, |key| {
+            crate::i18n::tr(language, key)
+        }));
         output.push_str("- `");
         output.push_str(&line);
         output.push('`');

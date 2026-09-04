@@ -2,9 +2,31 @@
 
 use super::{
     agent_action, paste_text, AgentRequest, ClipboardPaste, Config, EffectResult, InputState,
-    Instant, Mutex, RuntimeState, TerminalUiState, ThemeFile, UiAction,
+    Instant, Mutex, RuntimeState, TerminalUiState, Theme, ThemeFile, UiAction,
 };
 use crate::i18n::{tr, tr_args};
+
+/// Apply the derived state shared by settings changes and config reloads.
+pub(super) fn sync_live_config(
+    config: &Config,
+    state: &Mutex<RuntimeState>,
+    input: &mut InputState,
+    theme: &mut Theme,
+) {
+    *theme = config.theme();
+    input.language = config.language;
+    input.paste_placeholder_chars = config.paste_placeholder_chars;
+    input.history_limit = config.history_limit;
+    let catalogs = {
+        let mut state = state.lock().unwrap();
+        state.config = config.clone();
+        state.render.markdown_layout.invalidate_all();
+        state.render.transcript_cache.invalidate();
+        state.preview.invalidate_layout();
+        state.catalogs.clone()
+    };
+    input.catalog_changed(&catalogs);
+}
 
 pub(super) fn apply_reloaded_config(
     config: Config,
@@ -14,21 +36,10 @@ pub(super) fn apply_reloaded_config(
 ) {
     *ui.config = config;
     *ui.themes = themes;
-    *ui.theme = ui.config.theme();
-    ui.input.language = ui.config.language;
-    ui.input.paste_placeholder_chars = ui.config.paste_placeholder_chars;
-    ui.input.history_limit = ui.config.history_limit;
-    let catalogs = {
-        let mut state = state.lock().unwrap();
-        state.config = ui.config.clone();
-        state.render.markdown_layout.invalidate_all();
-        state.render.transcript_cache.invalidate();
-        state.preview.invalidate_layout();
-        let language = state.config.language;
-        state.push_system_message(tr(language, "controller.reload"));
-        state.catalogs.clone()
-    };
-    ui.input.catalog_changed(&catalogs);
+    sync_live_config(ui.config, state, ui.input, ui.theme);
+    let mut state = state.lock().unwrap();
+    let language = state.config.language;
+    state.push_system_message(tr(language, "controller.reload"));
 }
 
 pub(super) fn apply_effect_result(
@@ -78,12 +89,22 @@ pub(super) fn apply_effect_result(
                 .show_clipboard(language, lines, &preview, truncated, now);
             true
         }
-        EffectResult::ConfigPersisted(Err(error)) | EffectResult::ConfigReloadFailed(error) => {
+        EffectResult::ConfigPersisted(Err(error)) => {
             let mut app = state.lock().unwrap();
             let language = app.config.language;
             app.push_error_message(tr_args(
                 language,
                 "controller.config_save_failed",
+                &[("error", error)],
+            ));
+            true
+        }
+        EffectResult::ConfigReloadFailed(error) => {
+            let mut app = state.lock().unwrap();
+            let language = app.config.language;
+            app.push_error_message(tr_args(
+                language,
+                "controller.config_reload_failed",
                 &[("error", error)],
             ));
             true
@@ -124,4 +145,43 @@ pub(super) fn dispatch_next_queued(state: &Mutex<RuntimeState>) -> Vec<UiAction>
     };
     state.start_thinking();
     vec![agent_action(AgentRequest::Input { prompt })]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{display::DisplayItem, Language};
+
+    fn last_block_text(state: &Mutex<RuntimeState>) -> String {
+        let state = state.lock().unwrap();
+        let Some(DisplayItem::Block(block)) =
+            state.transcript.nodes().last().map(|node| &node.item)
+        else {
+            panic!("expected an error block");
+        };
+        block.content.clone()
+    }
+
+    #[test]
+    fn config_failures_use_operation_specific_messages() {
+        let save_state = Mutex::new(RuntimeState::default());
+        assert!(apply_effect_result(
+            EffectResult::ConfigPersisted(Err("write failed".into())),
+            &save_state,
+            Instant::now(),
+        ));
+        assert_eq!(
+            last_block_text(&save_state),
+            "Settings save failed: write failed"
+        );
+
+        let reload_state = Mutex::new(RuntimeState::default());
+        reload_state.lock().unwrap().config.language = Language::SimplifiedChinese;
+        assert!(apply_effect_result(
+            EffectResult::ConfigReloadFailed("read failed".into()),
+            &reload_state,
+            Instant::now(),
+        ));
+        assert_eq!(last_block_text(&reload_state), "配置重载失败：read failed");
+    }
 }

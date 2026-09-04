@@ -236,6 +236,26 @@ mod tests {
     }
 
     #[test]
+    fn free_text_question_footer_omits_option_navigation() {
+        for language in crate::Language::ALL {
+            let page = page_cases()
+                .into_iter()
+                .find(|(_, english, _)| *english == "Question")
+                .expect("question page case exists")
+                .0;
+            let text = rendered_page_text(page, language);
+            assert!(
+                !text.contains("←/→"),
+                "text question has arrow navigation: {text:?}"
+            );
+            assert!(
+                !text.contains("↑/↓"),
+                "text question has option navigation: {text:?}"
+            );
+        }
+    }
+
+    #[test]
     fn populated_input_pages_keep_external_values_in_both_languages() {
         for language in crate::Language::ALL {
             let mut login = InputPageSession::login();

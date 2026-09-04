@@ -64,20 +64,15 @@ pub(super) fn render_status(
         ));
     }
     let left = Line::from(left_spans);
-    let right = Line::from(Span::styled(
-        format!(
-            "^h {}",
-            crate::i18n::tr(state.config.language, "status.help")
-        ),
-        dim,
-    ))
-    .alignment(ratatui::layout::Alignment::Right);
+    let right_text = format!(
+        "^h {}",
+        crate::i18n::tr(state.config.language, "status.help")
+    );
+    let right_width = UnicodeWidthStr::width(right_text.as_str()).min(area.width as usize) as u16;
+    let right = Line::from(Span::styled(right_text, dim));
     // Render through the buffer directly: no wrapping, hard clip at edges.
     let buffer = frame.buffer_mut();
     buffer.set_line(area.x, area.y, &left, area.width);
-    // +4 slack: Line::width() under-counts CJK by a couple of cells vs the
-    // buffer writer; without it the last characters would be clipped.
-    let right_width = (right.width() + 4).min(area.width as usize) as u16;
     let right_x = area.x + area.width.saturating_sub(right_width);
     buffer.set_line(right_x, area.y, &right, right_width);
 }
@@ -287,6 +282,32 @@ mod tests {
             compact.contains("帮助"),
             "help label is not localized: {compact}"
         );
+    }
+
+    #[test]
+    fn status_bar_right_label_is_flush_for_cjk_text() {
+        let mut state = TuiApp::default();
+        state.config.language = crate::Language::SimplifiedChinese;
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 1)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_status(
+                    frame,
+                    frame.area(),
+                    &state,
+                    &ScrollState::default(),
+                    &Theme::ferra(),
+                )
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let expected_start = 80 - UnicodeWidthStr::width("^h 帮助") as u16;
+        let actual_start = (0..80u16)
+            .find(|&x| buffer[(x, 0)].symbol() == "^")
+            .expect("help label renders");
+        assert_eq!(actual_start, expected_start);
     }
 
     #[test]

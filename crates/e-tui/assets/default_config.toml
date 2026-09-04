@@ -8,6 +8,8 @@ theme = "ferra"
 plain_color = false
 # Foreground-fade interpolation origin (does not replace theme surfaces).
 background_color = "#000000"
+# Composer chrome: default | square | rounded | line.
+input_style = "default"
 
 # Behavior
 language = "en"

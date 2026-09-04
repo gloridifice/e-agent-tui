@@ -122,9 +122,8 @@ pub(super) fn render_question_page(
     };
     let footer = if options.is_empty() {
         format!(
-            "{}   {}   Enter {action}   {}",
+            "{}   Enter {action}   {}",
             crate::i18n::tr(language, "input_page.question.footer_text"),
-            crate::i18n::tr(language, "input_page.question.footer_navigation"),
             crate::i18n::tr(language, "input_page.question.footer_cancel"),
         )
     } else {

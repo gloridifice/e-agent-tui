@@ -182,6 +182,28 @@ pub struct CommandCandidate {
     pub source: CommandSource,
 }
 
+/// Format a command candidate without coupling the catalog to localization.
+/// Built-in keys are resolved by the caller; integrated text is already local.
+pub(crate) fn candidate_description(
+    candidate: &CommandCandidate,
+    translate: impl Fn(&str) -> String,
+) -> String {
+    let (description, hint) = match &candidate.text {
+        CommandText::Builtin {
+            description_key,
+            input_hint_key,
+        } => (translate(description_key), input_hint_key.map(translate)),
+        CommandText::Integrated {
+            description,
+            input_hint,
+        } => (description.clone(), input_hint.clone()),
+    };
+    match hint.filter(|hint| !hint.is_empty()) {
+        Some(hint) => format!("{description}  {hint}"),
+        None => description,
+    }
+}
+
 fn is_subsequence(query: &str, name: &str) -> bool {
     let mut chars = name.chars();
     query

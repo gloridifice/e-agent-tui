@@ -63,6 +63,12 @@ const THINKING_OPTIONS: &[ChoiceOption] = &[
     ("lines", "settings.choice.thinking.lines"),
     ("full", "settings.choice.thinking.full"),
 ];
+const INPUT_STYLE_OPTIONS: &[ChoiceOption] = &[
+    ("default", "settings.choice.input_style.default"),
+    ("square", "settings.choice.input_style.square"),
+    ("rounded", "settings.choice.input_style.rounded"),
+    ("line", "settings.choice.input_style.line"),
+];
 const LANGUAGE_OPTIONS: &[ChoiceOption] = &[
     ("en", "settings.choice.language.en"),
     ("zh-CN", "settings.choice.language.zh_cn"),
@@ -163,6 +169,22 @@ pub static ITEMS: &[ItemDef] = &[
             c.page_align = match v.as_str() {
                 "left" | "right" | "center" => v,
                 _ => "center".into(),
+            };
+        },
+    },
+    ItemDef {
+        category: 0,
+        key: "input_style",
+        label: "settings.item.input_style.label",
+        desc: "settings.item.input_style.desc",
+        kind: ItemKind::Choice {
+            options: INPUT_STYLE_OPTIONS,
+        },
+        get: |c| c.input_style_value().into(),
+        apply: |c, v| {
+            c.input_style = match v.as_str() {
+                "square" | "rounded" | "line" | "default" => v,
+                _ => "default".into(),
             };
         },
     },

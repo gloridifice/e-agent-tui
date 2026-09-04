@@ -19,18 +19,19 @@ pub(super) fn render_status(
     theme: &Theme,
 ) {
     let dim = status::dim(theme);
-    // The italic e breathes while the agent is working and stays dim while idle.
+    // The italic frontend label breathes while the agent is working and stays dim while idle.
     let drafting = state.session.new_conversation.is_some();
+    let indicator_text = format!("e·{}", state.frontend.label());
     let indicator =
         if !drafting && (state.session.status == AgentStatus::Running || state.session.working) {
             Span::styled(
-                "e",
+                indicator_text,
                 Style::default()
                     .fg(breathing_color(theme, state.breath_phase()))
                     .add_modifier(Modifier::ITALIC),
             )
         } else {
-            Span::styled("e", dim.add_modifier(Modifier::ITALIC))
+            Span::styled(indicator_text, dim.add_modifier(Modifier::ITALIC))
         };
     let mode = state
         .session
@@ -39,11 +40,11 @@ pub(super) fn render_status(
         .map(|draft| draft.mode.as_str())
         .or(state.session.current_mode.as_deref())
         .unwrap_or(state.config.default_mode.as_str());
-    let mut left_spans = vec![
-        indicator,
-        Span::styled(" ", dim),
-        Span::styled(mode.to_owned(), dim),
-    ];
+    let mut left_spans = vec![indicator];
+    if !mode.eq_ignore_ascii_case(state.frontend.label()) {
+        left_spans.push(Span::styled(" ", dim));
+        left_spans.push(Span::styled(mode.to_owned(), dim));
+    }
     if let Some(model) = state
         .session
         .model
@@ -325,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn status_bar_uses_an_italic_e_and_flush_right_help() {
+    fn status_bar_uses_an_italic_frontend_indicator_and_flush_right_help() {
         let state = TuiApp::default();
         let mut terminal = Terminal::new(TestBackend::new(80, 1)).unwrap();
         terminal
@@ -341,9 +342,44 @@ mod tests {
             .unwrap();
 
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(0, 0)].symbol(), "e");
-        assert!(buffer[(0, 0)].modifier.contains(Modifier::ITALIC));
+        for (x, symbol) in ["e", "·", "d", "s", "h"].into_iter().enumerate() {
+            assert_eq!(buffer[(x as u16, 0)].symbol(), symbol);
+            assert!(buffer[(x as u16, 0)].modifier.contains(Modifier::ITALIC));
+        }
         assert_eq!(buffer[(79, 0)].symbol(), "p");
+    }
+
+    #[test]
+    fn pi_indicator_replaces_the_redundant_pi_mode_text() {
+        let mut state = TuiApp::default();
+        state.frontend = crate::FrontendKind::Pi;
+        state.config.default_mode = "pi".into();
+        state.session.current_mode = Some("pi".into());
+        state.session.model = Some("model".into());
+        let mut terminal = Terminal::new(TestBackend::new(40, 1)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_status(
+                    frame,
+                    frame.area(),
+                    &state,
+                    &ScrollState::default(),
+                    &Theme::ferra(),
+                )
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let line = (0..40).map(|x| buffer[(x, 0)].symbol()).collect::<String>();
+        assert!(line.starts_with("e·pi model"), "status line: {line:?}");
+        assert!(
+            !line.contains("e·pi pi"),
+            "redundant mode remains: {line:?}"
+        );
+        for x in 0..4 {
+            assert!(buffer[(x, 0)].modifier.contains(Modifier::ITALIC));
+        }
+        assert!(!buffer[(5, 0)].modifier.contains(Modifier::ITALIC));
     }
 
     #[test]

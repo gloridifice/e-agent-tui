@@ -11,7 +11,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::{
     app::{breathing_color, TuiApp},
-    cache::MessageLineRange,
+    cache::{MessageLineRange, TranscriptRenderCache},
     command_catalog::CommandSource,
     config::{InputStyle, Theme, ThinkingDisplayMode},
     display::{

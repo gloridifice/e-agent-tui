@@ -164,6 +164,7 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
     phases.mark("config load");
     let theme = config.theme();
     let mut app = RuntimeState::default();
+    app.frontend = e_tui::FrontendKind::Pi;
     app.config = config.clone();
     app.interaction = e_tui::InteractionModel::new(&config);
     let state = Arc::new(std::sync::Mutex::new(app));

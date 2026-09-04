@@ -124,6 +124,7 @@ fn fade_age_at(groups: &[FadeGroup], index: usize) -> Option<usize> {
 #[derive(Debug, Clone, Default)]
 pub struct RevealTrack {
     signature: RevealSignature,
+    source: Option<String>,
     initialized: bool,
     revealed: usize,
     admitted: usize,
@@ -163,6 +164,51 @@ impl RevealTrack {
         now: Instant,
         chars_per_second: u16,
     ) -> bool {
+        self.reconcile_admitted_with_policy(
+            signature,
+            stable_frontier,
+            finite,
+            now,
+            chars_per_second,
+            false,
+        )
+    }
+
+    pub fn reconcile_append_only_source(
+        &mut self,
+        source: &str,
+        signature: RevealSignature,
+        stable_frontier: usize,
+        finite: bool,
+        now: Instant,
+        chars_per_second: u16,
+    ) -> bool {
+        let preserve_frontier = self
+            .source
+            .as_deref()
+            .is_some_and(|previous| source.starts_with(previous));
+        if self.source.as_deref() != Some(source) {
+            self.source = Some(source.to_owned());
+        }
+        self.reconcile_admitted_with_policy(
+            signature,
+            stable_frontier,
+            finite,
+            now,
+            chars_per_second,
+            preserve_frontier,
+        )
+    }
+
+    fn reconcile_admitted_with_policy(
+        &mut self,
+        signature: RevealSignature,
+        stable_frontier: usize,
+        finite: bool,
+        now: Instant,
+        chars_per_second: u16,
+        preserve_frontier: bool,
+    ) -> bool {
         let rate = chars_per_second.min(crate::config::RevealRate::MAX);
         let target_len = signature.grapheme_count();
         let stable_frontier = stable_frontier.min(target_len);
@@ -178,11 +224,16 @@ impl RevealTrack {
             self.admitted = 0;
         } else if signature_changed {
             let common = common_prefix_graphemes(&self.signature, &signature);
-            if common < self.revealed {
-                self.revealed = common;
-                changed = true;
+            if preserve_frontier {
+                self.revealed = self.revealed.min(target_len);
+                self.admitted = self.admitted.min(target_len);
+            } else {
+                if common < self.revealed {
+                    self.revealed = common;
+                    changed = true;
+                }
+                self.admitted = self.admitted.min(common);
             }
-            self.admitted = self.admitted.min(common);
             truncate_fade_groups(&mut self.groups, self.revealed);
             self.signature = signature;
         }
@@ -348,8 +399,15 @@ impl RevealTrack {
     }
 }
 
-/// Wrapped-display-row paced Preview lane. Progress is stored as a semantic
-/// grapheme frontier, while row boundaries are refreshed for the current width.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LineRevealMode {
+    #[default]
+    Rows,
+    Block,
+}
+
+/// Preview reveal lane. Progress is stored as a semantic grapheme frontier,
+/// while row boundaries are refreshed for the current width.
 #[derive(Debug, Clone, Default)]
 pub struct LineRevealTrack {
     signature: RevealSignature,
@@ -357,6 +415,7 @@ pub struct LineRevealTrack {
     initialized: bool,
     revealed: usize,
     rate: u16,
+    mode: LineRevealMode,
     groups: Vec<FadeGroup>,
     reveal_due: Option<Instant>,
     fade_due: Option<Instant>,
@@ -368,6 +427,16 @@ impl LineRevealTrack {
         wrapped_lines: &[Line<'static>],
         now: Instant,
         lines_per_second: u16,
+    ) -> bool {
+        self.reconcile_mode(wrapped_lines, now, lines_per_second, LineRevealMode::Rows)
+    }
+
+    pub fn reconcile_mode(
+        &mut self,
+        wrapped_lines: &[Line<'static>],
+        now: Instant,
+        lines_per_second: u16,
+        mode: LineRevealMode,
     ) -> bool {
         let signature = RevealSignature::from_lines(wrapped_lines);
         let target_len = signature.grapheme_count();
@@ -388,6 +457,7 @@ impl LineRevealTrack {
             self.signature = signature;
         }
         self.row_ends = row_ends;
+        self.mode = mode;
         self.update_rate(rate, now);
 
         if rate == 0 {
@@ -399,9 +469,20 @@ impl LineRevealTrack {
             return changed;
         }
 
-        if self.reveal_due.is_none() && self.next_row_end().is_some() {
-            self.reveal_next_rows(1, now);
-            changed = true;
+        match mode {
+            LineRevealMode::Rows => {
+                if self.reveal_due.is_none() && self.next_row_end().is_some() {
+                    self.reveal_next_rows(1, now);
+                    changed = true;
+                }
+            }
+            LineRevealMode::Block => {
+                self.reveal_due = None;
+                if self.revealed < target_len {
+                    self.reveal_through(target_len, now);
+                    changed = true;
+                }
+            }
         }
         self.schedule_reveal(now);
         changed
@@ -428,7 +509,7 @@ impl LineRevealTrack {
                 self.fade_due = Some(now + MIN_REVEAL_FRAME_INTERVAL);
             }
         }
-        if self.reveal_due.is_some_and(|due| due <= now) {
+        if self.mode == LineRevealMode::Rows && self.reveal_due.is_some_and(|due| due <= now) {
             self.reveal_due = None;
             if self.next_row_end().is_some() {
                 self.reveal_next_rows(reveal_batch_size(rate), now);
@@ -478,7 +559,11 @@ impl LineRevealTrack {
             };
             target = end;
         }
-        if target == self.revealed {
+        self.reveal_through(target, now);
+    }
+
+    fn reveal_through(&mut self, target: usize, now: Instant) {
+        if target <= self.revealed {
             return;
         }
         let start = self.revealed;
@@ -494,9 +579,13 @@ impl LineRevealTrack {
     }
 
     fn schedule_reveal(&mut self, now: Instant) {
-        if self.rate > 0 && self.next_row_end().is_some() && self.reveal_due.is_none() {
+        if self.mode == LineRevealMode::Rows
+            && self.rate > 0
+            && self.next_row_end().is_some()
+            && self.reveal_due.is_none()
+        {
             self.reveal_due = Some(now + reveal_interval(self.rate));
-        } else if self.next_row_end().is_none() {
+        } else if self.mode == LineRevealMode::Block || self.next_row_end().is_none() {
             self.reveal_due = None;
         }
     }
@@ -952,5 +1041,86 @@ mod tests {
             30,
         );
         assert_eq!(track.revealed(), 4);
+    }
+
+    #[test]
+    fn preview_block_mode_reveals_the_complete_block_in_one_fade_group() {
+        let start = Instant::now();
+        let lines = vec![Line::from("abc"), Line::from("def")];
+        let mut track = LineRevealTrack::default();
+        assert!(track.reconcile_mode(&lines, start, 30, LineRevealMode::Block));
+        assert_eq!(track.revealed(), 6);
+        assert_eq!(track.next_due(), Some(start + MIN_REVEAL_FRAME_INTERVAL));
+        assert_eq!(
+            text(&apply_line_reveal(
+                lines,
+                &track,
+                Color::Black,
+                Color::White,
+                false,
+            )),
+            "abc|def"
+        );
+    }
+
+    #[test]
+    fn zero_rate_disables_preview_block_fade() {
+        let start = Instant::now();
+        let mut track = LineRevealTrack::default();
+        assert!(track.reconcile_mode(&[Line::from("complete")], start, 0, LineRevealMode::Block,));
+        assert_eq!(track.revealed(), 8);
+        assert_eq!(track.next_due(), None);
+        assert!(track.is_complete());
+    }
+
+    #[test]
+    fn streaming_code_block_growth_and_settlement_keep_the_painted_frontier() {
+        let start = Instant::now();
+        let old = RevealSignature::from_lines(&[Line::from("code · 1 line"), Line::from("a")]);
+        let mut track = RevealTrack::default();
+        track.reconcile_append_only_source("```rs\na", old, 14, false, start, 0);
+        assert_eq!(track.revealed(), 14);
+
+        let grown = RevealSignature::from_lines(&[
+            Line::from("code · 2 lines"),
+            Line::from("a"),
+            Line::from("b"),
+        ]);
+        track.reconcile_append_only_source(
+            "```rs\na\nb",
+            grown.clone(),
+            17,
+            false,
+            start + Duration::from_millis(1),
+            16,
+        );
+        assert!(track.revealed() >= 14);
+        track.reconcile_append_only_source(
+            "```rs\na\nb\n```",
+            grown,
+            17,
+            true,
+            start + Duration::from_millis(2),
+            16,
+        );
+        assert!(
+            track.revealed() >= 14,
+            "settlement does not restart early rows"
+        );
+
+        let replaced = RevealSignature::from_lines(&[Line::from("different")]);
+        track.reconcile_append_only_source(
+            "replacement",
+            replaced,
+            9,
+            false,
+            start + Duration::from_millis(3),
+            16,
+        );
+        assert_eq!(
+            track.revealed(),
+            0,
+            "replacement rolls back to its real prefix"
+        );
     }
 }

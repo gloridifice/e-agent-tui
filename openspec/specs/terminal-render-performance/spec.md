@@ -15,7 +15,7 @@ The client SHALL receive keyboard, mouse, paste, and terminal resize events thro
 - **THEN** their scroll actions are applied in order and coalesced into one frame at the next interactive deadline
 
 #### Scenario: Client has no active work
-- **WHEN** there is no input, inbound content, pending frame, running activity, or settle transition
+- **WHEN** there is no input, inbound content, pending frame, or running activity
 - **THEN** the scheduler does not wake solely to poll terminal input or repaint an unchanged frame
 
 #### Scenario: Resize arrives independently of model output
@@ -63,10 +63,10 @@ The client SHALL own terminal setup and restoration through one lifecycle, SHALL
 ### Requirement: Incremental transcript animation and content caching
 The transcript cache SHALL distinguish structural invalidation, streaming-tail updates, reveal-suffix updates, width-layout invalidation, and line-count-stable message patches. Streaming chunks SHALL update only the tail when structurally possible; stable admission, paced assistant reveal, and foreground fade SHALL splice from the earliest affected transcript message rather than rebuild unrelated earlier messages; a pure animation phase change SHALL patch only active message ranges and MUST NOT rebuild unrelated transcript messages. Preview row reveal and fade SHALL patch only Preview presentation state and MUST NOT invalidate the transcript cache.
 
-Animation scheduling SHALL compose independent spinner/settle, transcript admission, transcript content reveal, transcript fade, Preview row reveal, and Preview fade deadlines by selecting the earliest active deadline. Every positive clock SHALL respect the safe scheduler minimum, delayed turns SHALL perform bounded work without catch-up bursts, and no fixed animation ticker SHALL run when all clocks are idle.
+Animation scheduling SHALL compose independent activity-spinner, transcript admission, transcript content reveal, transcript fade, Preview row reveal, and Preview fade deadlines by selecting the earliest active deadline. Every positive clock SHALL respect the safe scheduler minimum, delayed turns SHALL perform bounded work without catch-up bursts, and no fixed animation ticker SHALL run when all clocks are idle.
 
-#### Scenario: Breathing indicator advances in a long transcript
-- **WHEN** one activity row changes only its breathing color among hundreds of settled messages
+#### Scenario: Braille indicator advances in a long transcript
+- **WHEN** one activity row advances only its Braille spinner frame among hundreds of settled messages
 - **THEN** the cache rerenders and patches that activity's recorded range without rebuilding settled message lines
 
 #### Scenario: Local patch changes line count unexpectedly
@@ -98,7 +98,7 @@ Animation scheduling SHALL compose independent spinner/settle, transcript admiss
 - **THEN** it performs at most one bounded step of each due class and bases following deadlines on the actual tick time rather than replaying elapsed intervals
 
 #### Scenario: No animated state remains
-- **WHEN** all running indicators, settle transitions, held tails, queued content units, and active fade groups have completed
+- **WHEN** all running indicators, held tails, queued content units, and active fade groups have completed
 - **THEN** animation scheduling stops and no animation-only cache invalidation occurs
 
 ### Requirement: Shared display-row layout and scroll coordinates

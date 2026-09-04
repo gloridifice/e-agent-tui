@@ -22,13 +22,16 @@ fn activity_row_parts(
     color_override: Option<Color>,
 ) -> (Line<'static>, Option<Span<'static>>) {
     let theme = state.theme();
-    let color = working::activity_color(&theme, state, row, color_override);
+    let color = working::activity_color(&theme, row, color_override);
     let mut spans = vec![
         Span::styled(
             " ".repeat(2 + usize::from(row.depth) * 2),
             theme.activity.detail.style(),
         ),
-        Span::styled("•", Style::default().fg(color)),
+        Span::styled(
+            working::activity_indicator(state, row),
+            Style::default().fg(color),
+        ),
         Span::styled(" ", theme.activity.detail.style()),
         Span::styled(row.label.clone(), theme.activity.label.style()),
     ];
@@ -187,8 +190,8 @@ fn reasoning_content_lines(content: &str, state: &TuiApp, area_width: usize) -> 
     out
 }
 
-/// Render the merged Thinking node: the breathing `• Thinking... xN`
-/// indicator row in `compact` (or while no reasoning has streamed in yet);
+/// Render the merged Thinking node: a yellow Braille `Thinking... xN`
+/// spinner in `compact` (or while no reasoning has streamed in yet);
 /// the accumulated reasoning content in `lines`/`full`.
 fn thinking_node_lines(
     node: &ThinkingNode,
@@ -461,8 +464,8 @@ fn markdown_block_lines(
         if let Some(last) = rendered.last_mut() {
             last.push_span(Span::raw(" "));
             last.push_span(Span::styled(
-                "•",
-                Style::default().fg(breathing_color(&theme, state.breath_phase())),
+                state.activity_spinner_frame(),
+                Style::default().fg(theme.working_status.running.fg),
             ));
         }
     }
@@ -508,14 +511,162 @@ fn is_hidden_node(nodes: &[TranscriptNode], index: usize, state: &TuiApp) -> boo
     is_hidden_item(&nodes[index].item, state)
 }
 
-fn next_visible_item_is_activity(state: &TuiApp, index: usize) -> bool {
+const ACTIVITY_FOLD_EDGE_ROWS: usize = 3;
+const ACTIVITY_FOLD_THRESHOLD: usize = ACTIVITY_FOLD_EDGE_ROWS * 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NodePresentation {
+    Hidden,
+    Visible,
+    ActivityFold { hidden: usize },
+}
+
+fn is_collapsible_activity(item: &DisplayItem, state: &TuiApp) -> bool {
+    match item {
+        DisplayItem::Activity(_) => true,
+        DisplayItem::Thinking(node) => {
+            !state.config.thinking_display_mode().shows_reasoning() || node.content.is_empty()
+        }
+        _ => false,
+    }
+}
+
+fn transcript_presentations(state: &TuiApp) -> Vec<NodePresentation> {
+    transcript_presentations_with_folding(state, state.reading.is_none())
+}
+
+fn is_activity_fold_trigger(item: &DisplayItem) -> bool {
+    let DisplayItem::Block(block) = item else {
+        return false;
+    };
+    block.format == TranscriptFormat::Markdown
+        || block.tone == DisplayTone::Error
+        || block.id.0.starts_with("turn-outcome:")
+        || block.id.0.ends_with(":turn-outcome")
+}
+
+fn fold_activity_run(run: &[usize], presentations: &mut [NodePresentation]) {
+    if run.len() <= ACTIVITY_FOLD_THRESHOLD {
+        return;
+    }
+    let hidden = run.len() - ACTIVITY_FOLD_THRESHOLD;
+    let middle = &run[ACTIVITY_FOLD_EDGE_ROWS..run.len() - ACTIVITY_FOLD_EDGE_ROWS];
+    presentations[middle[0]] = NodePresentation::ActivityFold { hidden };
+    for index in &middle[1..] {
+        presentations[*index] = NodePresentation::Hidden;
+    }
+}
+
+fn transcript_presentations_with_folding(
+    state: &TuiApp,
+    fold_activities: bool,
+) -> Vec<NodePresentation> {
     let nodes = state.transcript.nodes();
-    nodes
+    let mut presentations = nodes
         .iter()
         .enumerate()
+        .map(|(index, _)| {
+            if is_hidden_node(nodes, index, state) {
+                NodePresentation::Hidden
+            } else {
+                NodePresentation::Visible
+            }
+        })
+        .collect::<Vec<_>>();
+    if !fold_activities {
+        return presentations;
+    }
+
+    let mut run = Vec::new();
+    let mut pending_runs = Vec::new();
+    for (index, node) in nodes.iter().enumerate() {
+        if is_hidden_node(nodes, index, state) {
+            continue;
+        }
+        if is_collapsible_activity(&node.item, state) {
+            run.push(index);
+            continue;
+        }
+        if !run.is_empty() {
+            pending_runs.push(std::mem::take(&mut run));
+        }
+        if is_activity_fold_trigger(&node.item) {
+            for pending in pending_runs.drain(..) {
+                fold_activity_run(&pending, &mut presentations);
+            }
+        } else if !is_activity_item(&node.item) {
+            pending_runs.clear();
+        }
+    }
+    presentations
+}
+
+fn folded_activity_line(hidden: usize, state: &TuiApp) -> Line<'static> {
+    let noun = crate::i18n::tr(
+        state.config.language,
+        if hidden == 1 {
+            "transcript.line"
+        } else {
+            "transcript.lines"
+        },
+    );
+    Line::styled(
+        crate::i18n::tr_args(
+            state.config.language,
+            "transcript.activity_fold",
+            &[("count", hidden.to_string()), ("noun", noun)],
+        ),
+        state.theme().activity.detail.style(),
+    )
+}
+
+fn presentation_lines(
+    item: &DisplayItem,
+    presentation: NodePresentation,
+    state: &TuiApp,
+    width: usize,
+) -> Vec<Line<'static>> {
+    match presentation {
+        NodePresentation::Hidden => Vec::new(),
+        NodePresentation::Visible => display_item_lines(item, state, width),
+        NodePresentation::ActivityFold { hidden } => vec![folded_activity_line(hidden, state)],
+    }
+}
+
+fn presentation_is_activity(item: &DisplayItem, presentation: NodePresentation) -> bool {
+    match presentation {
+        NodePresentation::Hidden => false,
+        NodePresentation::Visible => is_activity_item(item),
+        NodePresentation::ActivityFold { .. } => true,
+    }
+}
+
+fn cached_node_presentation(cache: &TranscriptRenderCache, index: usize) -> NodePresentation {
+    if let Some(hidden) = cache
+        .activity_fold_hidden_counts
+        .get(index)
+        .copied()
+        .flatten()
+    {
+        NodePresentation::ActivityFold { hidden }
+    } else if cache.message_ranges.get(index).is_some_and(Option::is_some) {
+        NodePresentation::Visible
+    } else {
+        NodePresentation::Hidden
+    }
+}
+
+fn next_presented_item_is_activity(
+    nodes: &[TranscriptNode],
+    presentations: &[NodePresentation],
+    index: usize,
+) -> bool {
+    nodes
+        .iter()
+        .zip(presentations)
         .skip(index + 1)
-        .find(|(position, _)| !is_hidden_node(nodes, *position, state))
-        .is_some_and(|(_, node)| is_activity_item(&node.item))
+        .find(|(_, presentation)| **presentation != NodePresentation::Hidden)
+        .is_some_and(|(node, presentation)| presentation_is_activity(&node.item, *presentation))
 }
 
 /// Tool cards, Thinking nodes, and read/edit file groups are "activity"
@@ -538,62 +689,79 @@ pub fn provenance_layout_rows(state: &TuiApp) -> Vec<ProvenanceLayoutRow> {
     let mut global_row = 0usize;
     let width = state.render.transcript_cache.width.max(1);
     let nodes = state.transcript.nodes();
+    let presentations = transcript_presentations(state);
     for (index, node) in nodes.iter().enumerate() {
         let item = &node.item;
-        if is_hidden_node(nodes, index, state) {
+        let presentation = presentations[index];
+        if presentation == NodePresentation::Hidden {
             continue;
         }
-        let layout_lines = display_item_lines(item, state, width);
-        match item {
-            DisplayItem::Block(block) if block.format == TranscriptFormat::Markdown => {
-                if let Some(render_lines) = state.render.markdown_layout.lines(&block.id) {
-                    for (render_line, layout_line) in render_lines.iter().zip(layout_lines.iter()) {
-                        for wrapped in wrap_line(layout_line.clone(), width) {
-                            rows.push(ProvenanceLayoutRow {
-                                unit: render_line.unit,
-                                raw_line: render_line.raw_line,
-                                atomic: render_line.atomic,
-                                text: wrapped
-                                    .spans
-                                    .iter()
-                                    .map(|span| span.content.as_ref())
-                                    .collect(),
-                                global_row,
-                            });
-                            global_row += 1;
+        let layout_lines = presentation_lines(item, presentation, state, width);
+        if matches!(presentation, NodePresentation::ActivityFold { .. }) {
+            global_row += layout_lines
+                .iter()
+                .map(|line| wrapped_rows(line, width))
+                .sum::<usize>();
+        } else {
+            match item {
+                DisplayItem::Block(block) if block.format == TranscriptFormat::Markdown => {
+                    if let Some(render_lines) = state.render.markdown_layout.lines(&block.id) {
+                        for (render_line, layout_line) in
+                            render_lines.iter().zip(layout_lines.iter())
+                        {
+                            for wrapped in wrap_line(layout_line.clone(), width) {
+                                rows.push(ProvenanceLayoutRow {
+                                    unit: render_line.unit,
+                                    raw_line: render_line.raw_line,
+                                    atomic: render_line.atomic,
+                                    text: wrapped
+                                        .spans
+                                        .iter()
+                                        .map(|span| span.content.as_ref())
+                                        .collect(),
+                                    global_row,
+                                });
+                                global_row += 1;
+                            }
                         }
+                    } else {
+                        global_row += layout_lines
+                            .iter()
+                            .map(|line| wrapped_rows(line, width))
+                            .sum::<usize>();
                     }
-                } else {
+                }
+                DisplayItem::Block(block) => {
+                    append_unit_rows(&mut rows, &mut global_row, block.unit, &layout_lines, width);
+                }
+                DisplayItem::Card(card) => {
+                    append_unit_rows(&mut rows, &mut global_row, card.unit, &layout_lines, width);
+                }
+                DisplayItem::Thinking(node) => {
+                    append_unit_rows(&mut rows, &mut global_row, node.unit, &layout_lines, width);
+                }
+                DisplayItem::Composite { detail, .. } => {
+                    if let Some((activity, detail_lines)) = layout_lines.split_first() {
+                        global_row += wrapped_rows(activity, width);
+                        append_unit_rows(
+                            &mut rows,
+                            &mut global_row,
+                            detail.unit,
+                            detail_lines,
+                            width,
+                        );
+                    }
+                }
+                DisplayItem::Activity(_) => {
                     global_row += layout_lines
                         .iter()
                         .map(|line| wrapped_rows(line, width))
                         .sum::<usize>();
                 }
             }
-            DisplayItem::Block(block) => {
-                append_unit_rows(&mut rows, &mut global_row, block.unit, &layout_lines, width);
-            }
-            DisplayItem::Card(card) => {
-                append_unit_rows(&mut rows, &mut global_row, card.unit, &layout_lines, width);
-            }
-            DisplayItem::Thinking(node) => {
-                append_unit_rows(&mut rows, &mut global_row, node.unit, &layout_lines, width);
-            }
-            DisplayItem::Composite { detail, .. } => {
-                if let Some((activity, detail_lines)) = layout_lines.split_first() {
-                    global_row += wrapped_rows(activity, width);
-                    append_unit_rows(&mut rows, &mut global_row, detail.unit, detail_lines, width);
-                }
-            }
-            DisplayItem::Activity(_) => {
-                global_row += layout_lines
-                    .iter()
-                    .map(|line| wrapped_rows(line, width))
-                    .sum::<usize>();
-            }
         }
-        let next_is_activity = next_visible_item_is_activity(state, index);
-        if !(is_activity_item(item) && next_is_activity) {
+        let next_is_activity = next_presented_item_is_activity(nodes, &presentations, index);
+        if !(presentation_is_activity(item, presentation) && next_is_activity) {
             global_row += 1;
         }
     }
@@ -650,7 +818,7 @@ fn refresh_transcript_reveals(state: &mut TuiApp) {
             stale.push(id);
             continue;
         };
-        let (signature, last_line, streaming, settled) = {
+        let (signature, last_line, streaming, settled, source) = {
             let Some(node) = state.transcript.nodes().get(index) else {
                 stale.push(id);
                 continue;
@@ -669,6 +837,7 @@ fn refresh_transcript_reveals(state: &mut TuiApp) {
                 last_line,
                 block.streaming,
                 block.content.ends_with('\n'),
+                block.content.clone(),
             )
         };
         let admitted = if !streaming || settled {
@@ -685,7 +854,7 @@ fn refresh_transcript_reveals(state: &mut TuiApp) {
             .transcript_reveals
             .get_mut(&id)
             .expect("collected reveal track remains present");
-        if track.reconcile_admitted(signature, admitted, !streaming, now, rate) {
+        if track.reconcile_append_only_source(&source, signature, admitted, !streaming, now, rate) {
             state.render.transcript_cache.mark_reveal_dirty(index);
         }
         if track.is_complete() {
@@ -703,17 +872,19 @@ fn rebuild_transcript_cache(state: &mut TuiApp, width: usize) {
     let mut base = Vec::new();
     let mut ranges = vec![None; state.transcript.len()];
     let nodes = state.transcript.nodes();
+    let presentations = transcript_presentations(state);
     for (index, node) in nodes.iter().enumerate() {
         let item = &node.item;
-        if is_hidden_node(nodes, index, state) {
+        let presentation = presentations[index];
+        if presentation == NodePresentation::Hidden {
             continue;
         }
         let start = base.len();
-        let lines = display_item_lines(item, state, width);
+        let lines = presentation_lines(item, presentation, state, width);
         let line_count = lines.len();
         base.extend(lines);
-        let next_is_activity = next_visible_item_is_activity(state, index);
-        let gap = !(is_activity_item(item) && next_is_activity);
+        let next_is_activity = next_presented_item_is_activity(nodes, &presentations, index);
+        let gap = !(presentation_is_activity(item, presentation) && next_is_activity);
         ranges[index] = Some(MessageLineRange {
             start,
             end: start + line_count,
@@ -723,9 +894,17 @@ fn rebuild_transcript_cache(state: &mut TuiApp, width: usize) {
             base.push(Line::default());
         }
     }
+    let fold_hidden_counts = presentations
+        .into_iter()
+        .map(|presentation| match presentation {
+            NodePresentation::ActivityFold { hidden } => Some(hidden),
+            _ => None,
+        })
+        .collect();
     let cache = &mut state.render.transcript_cache;
     cache.lines = base;
     cache.message_ranges = ranges;
+    cache.activity_fold_hidden_counts = fold_hidden_counts;
     cache.valid = true;
     cache.tail_dirty = false;
     cache.reveal_dirty_from = None;
@@ -771,16 +950,30 @@ fn refresh_transcript_cache(state: &mut TuiApp, width: usize) {
         let mut suffix_lines = Vec::new();
         let mut ranges = Vec::new();
         for (index, node) in nodes.iter().enumerate().skip(suffix_index) {
-            if is_hidden_node(nodes, index, state) {
+            let presentation = cached_node_presentation(&state.render.transcript_cache, index);
+            if presentation == NodePresentation::Hidden {
                 ranges.push((index, None));
                 continue;
             }
             let start = keep + suffix_lines.len();
-            let lines = display_item_lines(&node.item, state, width);
+            let lines = presentation_lines(&node.item, presentation, state, width);
             let line_count = lines.len();
             suffix_lines.extend(lines);
-            let gap =
-                !(is_activity_item(&node.item) && next_visible_item_is_activity(state, index));
+            let next_is_activity = nodes
+                .iter()
+                .enumerate()
+                .skip(index + 1)
+                .map(|(position, node)| {
+                    (
+                        node,
+                        cached_node_presentation(&state.render.transcript_cache, position),
+                    )
+                })
+                .find(|(_, presentation)| *presentation != NodePresentation::Hidden)
+                .is_some_and(|(node, presentation)| {
+                    presentation_is_activity(&node.item, presentation)
+                });
+            let gap = !(presentation_is_activity(&node.item, presentation) && next_is_activity);
             ranges.push((
                 index,
                 Some(MessageLineRange {
@@ -823,12 +1016,16 @@ fn refresh_transcript_cache(state: &mut TuiApp, width: usize) {
             .iter()
             .filter_map(|index| {
                 let nodes = state.transcript.nodes();
-                if *index >= nodes.len() || is_hidden_node(nodes, *index, state) {
+                let presentation = cached_node_presentation(&state.render.transcript_cache, *index);
+                if presentation == NodePresentation::Hidden {
                     return None;
                 }
-                nodes
-                    .get(*index)
-                    .map(|node| (*index, display_item_lines(&node.item, state, width)))
+                nodes.get(*index).map(|node| {
+                    (
+                        *index,
+                        presentation_lines(&node.item, presentation, state, width),
+                    )
+                })
             })
             .collect::<Vec<_>>();
         let mut fallback = false;
@@ -1133,4 +1330,189 @@ pub(super) struct InputPageRegions {
     pub(super) header: ratatui::layout::Rect,
     pub(super) body: ratatui::layout::Rect,
     pub(super) footer: ratatui::layout::Rect,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::display::DisplayId;
+
+    fn activity(index: usize) -> DisplayItem {
+        DisplayItem::Activity(ActivityRow::root(
+            DisplayId::correlated("activity", &index.to_string()),
+            format!("tool-{index}"),
+        ))
+    }
+
+    fn block(id: &str, format: TranscriptFormat, tone: DisplayTone) -> DisplayItem {
+        DisplayItem::Block(TranscriptBlock {
+            id: DisplayId::correlated(id, "test"),
+            unit: None,
+            content: id.into(),
+            format,
+            tone,
+            copy_source: id.into(),
+            streaming: false,
+        })
+    }
+
+    fn markdown() -> DisplayItem {
+        block(
+            "assistant-answer",
+            TranscriptFormat::Markdown,
+            DisplayTone::Normal,
+        )
+    }
+
+    fn informational_activity(index: usize) -> DisplayItem {
+        DisplayItem::Composite {
+            activity: ActivityRow::root(
+                DisplayId::correlated("rich-activity", &index.to_string()),
+                "tool-with-information",
+            ),
+            detail: ContentCard {
+                id: DisplayId::correlated("rich-detail", &index.to_string()),
+                unit: None,
+                header: Some("Information".into()),
+                content: "complete detail".into(),
+                role: CardRole::Detail,
+                tone: DisplayTone::Info,
+                horizontal_padding: 2,
+                copy_source: "complete detail".into(),
+            },
+        }
+    }
+
+    fn append_activity_run(state: &mut TuiApp, start: usize, count: usize) {
+        for index in start..start + count {
+            state.transcript.append(activity(index), None);
+        }
+    }
+
+    fn fold_counts(presentations: &[NodePresentation]) -> Vec<usize> {
+        presentations
+            .iter()
+            .filter_map(|presentation| match presentation {
+                NodePresentation::ActivityFold { hidden } => Some(*hidden),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn activity_run_folds_only_after_markdown_and_only_above_threshold() {
+        let mut within_threshold = TuiApp::default();
+        append_activity_run(&mut within_threshold, 0, 6);
+        within_threshold.transcript.append(markdown(), None);
+        assert!(fold_counts(&transcript_presentations(&within_threshold)).is_empty());
+
+        let mut long = TuiApp::default();
+        append_activity_run(&mut long, 0, 7);
+        assert!(
+            fold_counts(&transcript_presentations(&long)).is_empty(),
+            "a live trailing run stays expanded"
+        );
+        long.transcript.append(markdown(), None);
+        let presentations = transcript_presentations(&long);
+        assert_eq!(fold_counts(&presentations), vec![1]);
+        assert_eq!(
+            presentations[3],
+            NodePresentation::ActivityFold { hidden: 1 }
+        );
+    }
+
+    #[test]
+    fn informational_activity_does_not_trigger_a_pending_fold() {
+        let mut state = TuiApp::default();
+        append_activity_run(&mut state, 0, 8);
+        state.transcript.append(informational_activity(8), None);
+        assert!(fold_counts(&transcript_presentations(&state)).is_empty());
+
+        state.transcript.append(markdown(), None);
+        let presentations = transcript_presentations(&state);
+        assert_eq!(fold_counts(&presentations), vec![2]);
+        assert_eq!(presentations[8], NodePresentation::Visible);
+    }
+
+    #[test]
+    fn interruption_and_error_outcomes_trigger_pending_folds() {
+        let mut interrupted = TuiApp::default();
+        append_activity_run(&mut interrupted, 0, 7);
+        interrupted.transcript.append(
+            DisplayItem::Block(TranscriptBlock {
+                id: DisplayId::event(9, "turn-outcome"),
+                unit: None,
+                content: "Interrupted".into(),
+                format: TranscriptFormat::Plain,
+                tone: DisplayTone::Warning,
+                copy_source: "Interrupted".into(),
+                streaming: false,
+            }),
+            None,
+        );
+        assert_eq!(
+            fold_counts(&transcript_presentations(&interrupted)),
+            vec![1]
+        );
+
+        let mut network_error = TuiApp::default();
+        append_activity_run(&mut network_error, 0, 8);
+        network_error.transcript.append(
+            block("error", TranscriptFormat::Plain, DisplayTone::Error),
+            None,
+        );
+        assert_eq!(
+            fold_counts(&transcript_presentations(&network_error)),
+            vec![2]
+        );
+    }
+
+    #[test]
+    fn ordinary_content_does_not_trigger_or_defer_a_fold_across_it() {
+        let mut state = TuiApp::default();
+        append_activity_run(&mut state, 0, 7);
+        state.transcript.append(
+            block("notice", TranscriptFormat::Plain, DisplayTone::Normal),
+            None,
+        );
+        state.transcript.append(markdown(), None);
+        assert!(fold_counts(&transcript_presentations(&state)).is_empty());
+    }
+
+    #[test]
+    fn completed_runs_fold_independently_and_reading_expands_them() {
+        let mut state = TuiApp::default();
+        append_activity_run(&mut state, 0, 7);
+        state.transcript.append(markdown(), None);
+        append_activity_run(&mut state, 10, 8);
+        state.transcript.append(
+            block("error", TranscriptFormat::Plain, DisplayTone::Error),
+            None,
+        );
+
+        assert_eq!(fold_counts(&transcript_presentations(&state)), vec![1, 2]);
+        assert!(transcript_presentations_with_folding(&state, false)
+            .iter()
+            .all(|presentation| *presentation == NodePresentation::Visible));
+    }
+
+    #[test]
+    fn hidden_reasoning_does_not_split_a_completed_activity_run() {
+        let mut state = TuiApp::default();
+        append_activity_run(&mut state, 0, 3);
+        state.transcript.append(
+            block("reasoning", TranscriptFormat::Reasoning, DisplayTone::Dim),
+            None,
+        );
+        append_activity_run(&mut state, 3, 4);
+        state.transcript.append(markdown(), None);
+
+        let presentations = transcript_presentations(&state);
+        assert_eq!(fold_counts(&presentations), vec![1]);
+        assert_eq!(presentations[3], NodePresentation::Hidden);
+        assert_eq!(
+            presentations[4],
+            NodePresentation::ActivityFold { hidden: 1 }
+        );
+    }
 }

@@ -19,8 +19,8 @@ use crate::{
     input::InputState,
     interaction::{InteractionModel, ScrollState},
     preview::{
-        PreviewContent, PreviewKey, PreviewPaneState, PreviewPolicy, PreviewRef, PreviewRevision,
-        PreviewTarget,
+        PreviewContent, PreviewKey, PreviewPaneState, PreviewPolicy, PreviewRef,
+        PreviewRevealIntent, PreviewRevision, PreviewTarget,
     },
     projection::TimelineModel,
     reading::{ReadingDirection, ReadingDocument, ReadingLayout, ReadingViewState},
@@ -29,6 +29,7 @@ use crate::{
 };
 
 pub const BREATH_CYCLE_MS: u128 = 1600;
+pub const ACTIVITY_SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 pub const SETTLE_TRANSITION_MS: u128 = 500;
 
 pub fn lerp_color(from: Color, to: Color, t: f64) -> Color {
@@ -61,6 +62,22 @@ pub fn settle_color(from: Color, to: Color, elapsed: std::time::Duration) -> Col
         to,
         elapsed.as_millis() as f64 / SETTLE_TRANSITION_MS as f64,
     )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FrontendKind {
+    #[default]
+    Dsh,
+    Pi,
+}
+
+impl FrontendKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Dsh => "dsh",
+            Self::Pi => "pi",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -205,6 +222,7 @@ impl SessionModel {
 /// forwarding methods without creating a second transcript store.
 #[derive(Default)]
 pub struct TuiApp {
+    pub frontend: FrontendKind,
     pub config: Config,
     pub session: SessionModel,
     pub timeline: TimelineModel,
@@ -300,12 +318,16 @@ impl TuiApp {
         }
     }
 
+    pub fn activity_spinner_frame(&self) -> &'static str {
+        ACTIVITY_SPINNER_FRAMES[self.render.activity_frame % ACTIVITY_SPINNER_FRAMES.len()]
+    }
+
     /// Keep normal-mode Preview on the newest eligible canonical display
     /// owner. Reading mode has a cursor-owned policy and is never stolen by
     /// live appends. History prepend preserves the newest identity.
     /// Assistant markdown answers are already rendered in the main pane and
     /// are never previewed. The merged Thinking node previews its reasoning
-    /// content while anything has streamed in (an empty, still-breathing
+    /// content while anything has streamed in (an empty, still-running
     /// indicator carries nothing worth previewing); reasoning always previews
     /// even when the main transcript collapses it
     /// (`thinking_display = compact`).
@@ -378,7 +400,13 @@ impl TuiApp {
     }
 
     fn select_preview(&mut self, target: Option<PreviewTarget>) {
-        if let Some(request) = self.preview.select(target) {
+        let intent = if self.replaying || self.preview.policy == PreviewPolicy::FollowReadingCursor
+        {
+            PreviewRevealIntent::Page
+        } else {
+            PreviewRevealIntent::FreshLive
+        };
+        if let Some(request) = self.preview.select_with_intent(target, intent) {
             self.pending_actions.push(UiAction::ResolvePreview(request));
         }
     }
@@ -430,6 +458,7 @@ impl TuiApp {
             return false;
         };
         self.reading = Some(reading);
+        self.render.transcript_cache.invalidate();
         self.preview.policy = PreviewPolicy::FollowReadingCursor;
         self.sync_reading_preview();
         self.keep_reading_visible(scroll, viewport_height);
@@ -439,6 +468,7 @@ impl TuiApp {
     pub fn exit_reading(&mut self, input: &mut InputState) {
         if let Some(reading) = self.reading.take() {
             *input = reading.saved_input;
+            self.render.transcript_cache.invalidate();
         }
         self.preview.policy = PreviewPolicy::FollowLatestBlock;
         self.reconcile_latest_preview();
@@ -601,6 +631,17 @@ impl std::ops::DerefMut for TuiApp {
 mod tests {
     use super::*;
     use crate::{DirtyState, UiAction};
+
+    #[test]
+    fn activity_spinner_uses_the_requested_braille_sequence() {
+        let mut app = TuiApp::default();
+        for (index, expected) in ACTIVITY_SPINNER_FRAMES.iter().enumerate() {
+            app.render.activity_frame = index;
+            assert_eq!(app.activity_spinner_frame(), *expected);
+        }
+        app.render.activity_frame = ACTIVITY_SPINNER_FRAMES.len();
+        assert_eq!(app.activity_spinner_frame(), ACTIVITY_SPINNER_FRAMES[0]);
+    }
 
     #[test]
     fn normalized_entry_points_return_owned_results() {

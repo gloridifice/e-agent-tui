@@ -16,7 +16,12 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   `EventProjector`; the projector first produces display/surface mutation/page state/accessory/ignore effects, which the
   state layer then applies; adding event-specific top-level rendering in `ui` that bypasses the public
   surfaces is forbidden. `LegacyTestMsg`/`Msg` alias may only appear in `#[cfg(test)]` characterization
-  fixtures and must not re-enter production transcript, renderer, cache, or copy paths.
+  fixtures and must not re-enter production transcript, renderer, cache, or copy paths. In normal mode, trailing
+  activity runs remain expanded until assistant Markdown or an interruption/error outcome closes the activity
+  phase. Each completed consecutive run of more than six collapsible one-row activities then renders its first
+  three rows, one localized omitted-row summary, and its final three rows. Rich tool activities with informational
+  detail separate one-row runs but do not trigger folding. This is an ephemeral layout projection, and Reading View
+  rebuilds the same semantic store with every original activity expanded.
 - **Reasoning output folding**: `TranscriptFormat::Reasoning` blocks are not rendered to screen in compact
   mode and do not enter copy provenance (production `ui/transcript.rs::is_hidden_item` makes layout/cache/copy
   skip them, without producing an inter-row gap); activity-row adjacency must look up the next **non-hidden**
@@ -26,10 +31,12 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   immediately preceding `Thinking...` activity row is taken over and hidden by `thinking_row_superseded`
   (not rendered, no gap). The hidden determination must be uniform across rendering/copy/adjacency/hiding
   itself (`is_hidden_node`); animation patches skip hidden nodes and must **not** fall into the full-rebuild
-  fallback. Thinking is represented by a `• Thinking... xN` breathing indicator; `assistant/chunk` carrying
-  only reasoning does not settle until the real answer text arrives, which settles to green. Therefore
-  Thinking settlement must search backwards in `TranscriptStore` for a Running Thinking activity — never
-  assume the last node is visible.
+  fallback. Thinking and other running transcript activities use the fixed-Honey Braille sequence
+  `⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏` without breathing; settled rows return to `•`, using the activity-label
+  Umber tone for success and the failure tone for failure. `assistant/chunk` carrying only reasoning does not
+  settle until the real answer text arrives. Thinking settlement must search backwards in `TranscriptStore`
+  for a Running Thinking activity — never assume the last node is visible. The status-bar frontend label keeps
+  its separate breathing treatment.
 - **Context injection text**: prompt-injection events (`CardRole::Context`) render as plain text, not a
   card shell: a `提示词注入` label in the activity label tone (umber in the ferra theme) followed by the
   injected content in the activity detail tone (bark), capped at 2 lines by post-wrap display row count;
@@ -62,8 +69,8 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   and rendering **splices the tail** and recomputes only the tail display-row suffix/prefix — never clear the
   entire layout. Paced assistant reveal records the earliest changed message and splices from that message
   through the suffix, because adding a grapheme may change wrapped/Markdown line counts; it must not fall back
-  to rebuilding earlier messages. Spinner/settle only patch the active `DisplayId` range, and settle must submit
-  one more precise target-color patch after expiry before stopping the clock. Semantic Reading geometry and
+  to rebuilding earlier messages. Spinner frames patch only active `DisplayId` ranges, and settlement paints the
+  final bullet and target color immediately. Semantic Reading geometry and
   `ProvenanceLayoutRow` values come from the same width/generation layout; Reading cursor movement and Preview
   selection must not flatten or rebuild the transcript. Wrap scanning is greedy line wrapping: rows fill
   with whole words until the next word no longer fits, the break consumes the separating whitespace, and a
@@ -79,11 +86,13 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   Live assistant Markdown remains grapheme-paced at `message_chars_per_second` (default 120), but admits only a
   stable rendered tail prefix: the shared UAX #14 wrapper retains the open trailing atom/deferred separator until
   a later break, 100ms rendered-idle timeout, 300ms absolute timeout, or stream settlement. Completed hard-wrap
-  rows of an over-wide atom remain eligible. Ready Preview is first wrapped and then row-paced at
+  rows of an over-wide atom remain eligible, and append-only source growth keeps the painted frontier monotonic
+  when generated code-block chrome changes. Fresh live reasoning Preview is first wrapped and then row-paced at
   `preview_lines_per_second` (default 30); a unit is a non-empty terminal display row, not a source line or
-  grapheme. Preview resize retains its semantic grapheme frontier while recomputing current row boundaries.
-  The first admitted grapheme/row may appear immediately; higher rates reveal `ceil(rate × 16ms)` units as one
-  visible batch and delayed deadlines advance at most one batch. Admission, content reveal, and a 16ms fade clock
+  grapheme. Other fresh live Preview content fades in as one block, while replay/resume, cached revisits, and
+  Reading selections fade the complete current page as one group. Preview resize retains its semantic grapheme
+  frontier while recomputing current row boundaries. The first admitted grapheme/row may appear immediately;
+  higher rates reveal `ceil(rate × 16ms)` units as one visible batch and delayed deadlines advance at most one batch. Admission, content reveal, and a 16ms fade clock
   have independent deadlines. Fade groups continue to restore original foregrounds even when an open stream has
   no queued content, then become deadline-idle until new content arrives. Markdown control syntax and structural
   line boundaries consume no transcript budget; semantic printable whitespace and Unicode grapheme clusters do,
@@ -277,12 +286,13 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   width, or theme-style changes rematerialize only Preview layout while preserving the semantic reveal frontier. The
   each adapter's bounded deferred Preview resolver handles legacy file/line references and returns a normalized
   completion without holding a UI lock.
-- **Structured tool Preview**: known tool calls carry a provider-neutral `PreviewContent::Tool` seed built at the DSH adapter boundary (the renderer never inspects DSH tool names or argument keys). The layout is a `theme.activity.label` tool-name header, the primary content on the next row with no blank row between, then — only when secondary content exists — one blank row and the secondary. read/view show a workspace-relative `path[:lines]` location (`start-end` for a window, `start-` for open-ended, `N` for a single line); create shows its path; filesystem search shows a quoted query and an optional `at "path"` row; command/bash/pwsh (Preview name `bash`/`pwsh`, or `cmd`/`powershell`/`sh`/`shell` when that is the tool name; `command` is the fallback) show a Coral `$` + Mist command row and a Bark `lines N, duration X.Xs` metrics row; unsupported tools show bounded pretty JSON under the original tool name. A command's settled `tool/result` enriches the same `tool:<call-id>` target with final line count/duration and a Bark/Umber two-tone terminal secondary (ANSI-colored runs map to Bark, uncolored runs to Umber, bold/italic preserved, every other control stripped via a `vte`-backed component). read/view/create/search/generic results stay primary-only. edit/replace/insert render event-supplied mutation fragments (DSH edit `meta.diffs`, str-replace `old_str/new_str`, addition-only insert) as removed/added rows — the client never reads a file or computes a diff. It may classify event-authored unified rows and coordinates, preserve an optional event path, and highlight old/new logical code streams independently. Diff syntax foregrounds use the normal `semantics.code` group; added/removed backgrounds, accents, gutters, and separators remain under `semantics.diff`. Injected context (`CardRole::Context`) previews as `MutedMarkdown`, distinct from `Reasoning`; both render through the structured `markdown_weak` hierarchy rather than a post-render forced foreground.
+- **Structured tool Preview**: known tool calls carry a provider-neutral `PreviewContent::Tool` seed built at the DSH adapter boundary (the renderer never inspects DSH tool names or argument keys). The layout is a `theme.activity.label` tool-name header, the primary content on the next row with no blank row between, then — only when secondary content exists — one blank row and the secondary. read/view show a workspace-relative `path[:lines]` location (`start-end` for a window, `start-` for open-ended, `N` for a single line); create shows its path; filesystem search shows a quoted query and an optional `at "path"` row; command/bash/pwsh (Preview name `bash`/`pwsh`, or `cmd`/`powershell`/`sh`/`shell` when that is the tool name; `command` is the fallback) show a Coral `$` + Mist command row and a Bark `lines N, duration X.Xs` metrics row; unsupported tools show bounded pretty JSON under the original tool name. A command's settled `tool/result` enriches the same `tool:<call-id>` target with final line count/duration and a Bark/Umber two-tone terminal secondary (ANSI-colored runs map to Bark, uncolored runs to Umber, bold/italic preserved, every other control stripped via a `vte`-backed component). Tool identity and primary information wrap normally; terminal secondary source rows are clipped to one display row without an added ellipsis, and once long output overflows the pane the information section stays pinned at the top while the newest output tail occupies the remaining rows. Content that still fits retains the ordinary vertically centered position. read/view/create/search/generic results stay primary-only. edit/replace/insert render event-supplied mutation fragments (DSH edit `meta.diffs`, str-replace `old_str/new_str`, addition-only insert) as removed/added rows — the client never reads a file or computes a diff. It may classify event-authored unified rows and coordinates, preserve an optional event path, and highlight old/new logical code streams independently. Diff syntax foregrounds use the normal `semantics.code` group; added/removed backgrounds, accents, gutters, and separators remain under `semantics.diff`. Injected context (`CardRole::Context`) previews as `MutedMarkdown`, distinct from `Reasoning`; both render through the structured `markdown_weak` hierarchy rather than a post-render forced foreground.
 - **Rendering layers**: production rendering lives in `e-tui` and points downward as `Screen -> Pane -> Region -> Component`. The main pane retains the characterized transcript/composer/status style; Preview reuses theme semantics without changing main-pane tokens. Provider-neutral terminal setup/restoration, synchronized output, input routing, and frame scheduling live under `e_tui::runtime`; each executable still owns its Tokio selection loop, provider transport, bounded inbound queue, and external effects.
 - **Bottom layout and two-line status bar**: the fixed bottom row order is input bar or Input Page / gap /
   status line 1 / **session title line** (the `ui.rs::render` chunks array; the `+3` in the accessory budget
-  formula matches it). Neither line sets a background color: line 1 is, left to right, the italic `e` working
-  indicator, `SessionModel.current_mode`, the current model, `CH<cache-hit %>`, the reasoning-effort label
+  formula matches it). Neither line sets a background color: line 1 is, left to right, the italic frontend-specific
+  working indicator (`e·pi` in `pie`, `e·dsh` in `dshe`), `SessionModel.current_mode` unless it duplicates the
+  frontend label, the current model, `CH<cache-hit %>`, the reasoning-effort label
   `Effort:<Label>`, and context use `<percent>%/<window>` (for example `30%/276k`). The model, CH, and effort
   entries are omitted when their source data is unavailable; context appears when the exact current model has a
   typed context window, uses zero before the first assistant usage, then uses the latest sample's
@@ -362,8 +372,9 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   `[colors]` allows arbitrary color names, and fixed `[semantics.*]` (surface/markdown/markdown_weak/code/code_weak/diff/input/
   working_status/log/activity/card/overlay/separator) link semantic styles to color names; each style requires only `fg`,
   with `bg`/`bold`/`italic`/`underline` optional; separator `bar`, `line`, and `placeholder` backgrounds are read
-  from those semantic roles when present and otherwise inherit the themed base surface; no separator fill uses a
-  hard-coded palette color. Unknown references, missing fixed fields, or illegal hex reject the
+  from those semantic roles when present. Omitted `bar` and `line` backgrounds remain terminal-transparent rather
+  than inheriting the themed base surface, while placeholder boxes retain their explicit semantic fill. Unknown
+  references, missing fixed fields, or illegal hex reject the
   whole file. An optional `padding` field on a style adds backgrounded spaces on both sides of that element: a
   scalar (`padding = 1`) sets both sides, or a table (`padding = { left = 2, right = 1 }`) sets each side
   independently. Padding defaults to zero when omitted and is opt-in per element: inline code consumes it, while

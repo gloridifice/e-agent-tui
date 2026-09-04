@@ -51,7 +51,7 @@ pub use action::{
     PromptImage, PromptInput, PromptPart, UiAction, UpdateResult,
 };
 pub use agent::AgentEvent;
-pub use app::{NewConversationDraft, SessionModel, SessionStatus, TuiApp};
+pub use app::{FrontendKind, NewConversationDraft, SessionModel, SessionStatus, TuiApp};
 pub use catalog::CatalogModel;
 pub use config::{Config, HexRgb, PaneWidthPercent, RevealRate, ThinkingDisplayMode};
 pub use event::{InputEvent, PointerEvent};
@@ -65,9 +65,9 @@ pub use mouse_selection::{MouseSelection, SelectionFrame, SelectionSurface, Sele
 pub use notice::{NoticeState, COPY_NOTICE_MIN_SECS};
 pub use preview::{
     LineSelection, MutationDiff, MutationHunk, PreviewCache, PreviewContent, PreviewKey,
-    PreviewPaneState, PreviewPolicy, PreviewRef, PreviewRequest, PreviewRequestId, PreviewRevision,
-    PreviewState, PreviewTarget, PreviewWorkStats, ToolMetrics, ToolPreview, ToolPreviewPrimary,
-    ToolPreviewSecondary,
+    PreviewPaneState, PreviewPolicy, PreviewRef, PreviewRequest, PreviewRequestId,
+    PreviewRevealIntent, PreviewRevision, PreviewState, PreviewTarget, PreviewWorkStats,
+    ToolMetrics, ToolPreview, ToolPreviewPrimary, ToolPreviewSecondary,
 };
 pub use projection::TimelineModel;
 pub use reading::{

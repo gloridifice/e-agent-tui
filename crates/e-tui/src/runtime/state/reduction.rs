@@ -95,12 +95,6 @@ impl RuntimeState {
         state: ActivityState,
         summary: Option<&str>,
     ) -> bool {
-        let was_active = self.transcript.get(id).is_some_and(
-            |node| matches!(&node.item, DisplayItem::Activity(row) if row.state.is_active()),
-        );
-        if was_active && !state.is_active() {
-            self.capture_activity_transition(id);
-        }
         let mut settled = false;
         #[cfg(test)]
         if let Some(row) = self.msgs.iter_mut().find_map(|msg| match msg {
@@ -425,7 +419,7 @@ impl RuntimeState {
         // node. The target node is the trailing one whose turn matches (live
         // nodes created by `start_thinking` carry `turn: None` and adopt the
         // first chunk's turn). When no node exists for this turn — history
-        // replay suppresses the breathing indicator — a settled one is
+        // replay suppresses the animated indicator — a settled one is
         // created so the content still travels with a node; per-turn keying
         // keeps later turns from merging into an earlier turn's node.
         let tail_id = self.transcript.nodes().iter().rev().find_map(|node| {
@@ -843,8 +837,8 @@ impl RuntimeState {
         pending_result
     }
 
-    /// Commit the settled activity row into the transcript, capture the
-    /// settle transition, and mirror the result into the legacy fixture.
+    /// Commit the settled activity row into the transcript and mirror the
+    /// result into the legacy fixture.
     fn commit_tool_activity_row(
         &mut self,
         event: &TimelineRecord,
@@ -854,12 +848,6 @@ impl RuntimeState {
     ) {
         let row_id = row.id.clone();
         let surface_seq = event.sequence.filter(|_| is_surface_node(&event.fact));
-        let was_active = self.transcript.get(&row_id).is_some_and(|node| {
-            matches!(&node.item, DisplayItem::Activity(existing) if existing.state.is_active())
-        });
-        if was_active && !row.state.is_active() {
-            self.capture_activity_transition(&row_id);
-        }
         if let Some(existing) = self.transcript.get_mut(&row_id) {
             if let DisplayItem::Activity(existing_row) = &mut existing.item {
                 let keep_label = existing_row.label.clone();

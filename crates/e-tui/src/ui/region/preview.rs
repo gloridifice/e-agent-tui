@@ -12,16 +12,19 @@ use crate::{
     i18n::{tr, tr_args, Language},
     mouse_selection::{SelectionFrame, SelectionSurface},
     preview::{
-        LineSelection, PreviewContent, PreviewLayoutKey, PreviewPaneState, PreviewState,
-        ToolMetrics, ToolPreview, ToolPreviewPrimary, ToolPreviewSecondary,
+        LineSelection, PreviewContent, PreviewLayout, PreviewLayoutKey, PreviewPaneState,
+        PreviewRevealIntent, PreviewState, ToolMetrics, ToolPreview, ToolPreviewPrimary,
+        ToolPreviewSecondary,
     },
     render::{render_markdown, MarkdownStrength, RenderOptions},
-    reveal::{apply_line_reveal, LineRevealTrack},
+    reveal::{apply_line_reveal, LineRevealMode, LineRevealTrack},
     syntax::{self, SyntaxHint},
     theme::Theme,
     transcript_layout::wrap_line,
     ui::component::{ansi, diff},
 };
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 pub fn render(
     frame: &mut Frame,
@@ -36,88 +39,139 @@ pub fn render(
     let inner_width = usize::from(area.width)
         .saturating_sub(usize::from(left_padding.saturating_add(right_padding)))
         .max(1);
-    let lines = match &preview.state {
-        PreviewState::Empty => vec![Line::styled(
-            tr(config.language, "preview.empty"),
-            theme.surface.muted_text.style(),
-        )],
-        PreviewState::Loading { .. } => vec![Line::styled(
-            tr(config.language, "preview.loading"),
-            theme.working_status.running.style(),
-        )],
-        PreviewState::Error(error) => vec![Line::styled(
-            tr_args(
-                config.language,
-                "preview.error",
-                &[("error", error.clone())],
-            ),
-            theme.log.error.style(),
-        )],
+    let (lines, pinned_rows, nowrap_from) = match &preview.state {
+        PreviewState::Empty => (
+            vec![Line::styled(
+                tr(config.language, "preview.empty"),
+                theme.surface.muted_text.style(),
+            )],
+            0,
+            None,
+        ),
+        PreviewState::Loading { .. } => (
+            vec![Line::styled(
+                tr(config.language, "preview.loading"),
+                theme.working_status.running.style(),
+            )],
+            0,
+            None,
+        ),
+        PreviewState::Error(error) => (
+            vec![Line::styled(
+                tr_args(
+                    config.language,
+                    "preview.error",
+                    &[("error", error.clone())],
+                ),
+                theme.log.error.style(),
+            )],
+            0,
+            None,
+        ),
         PreviewState::Ready(content) => {
+            let row_paced = preview.reveal_intent == PreviewRevealIntent::FreshLive
+                && matches!(content, PreviewContent::Reasoning(_));
             let layout_key = preview_layout_key(preview, content, theme, inner_width);
-            let full = if let Some(lines) = preview.cached_layout(&layout_key) {
-                lines
+            let layout = if let Some(layout) = preview.cached_layout(&layout_key) {
+                layout
             } else {
-                let lines = content_lines(content, theme, inner_width, config.language)
-                    .into_iter()
-                    .flat_map(|line| wrap_line(line, inner_width))
-                    .collect::<Vec<_>>();
-                preview.store_layout(layout_key, lines.clone());
-                lines
+                let layout = content_layout(content, theme, inner_width, config.language);
+                preview.store_preview_layout(layout_key, layout.clone());
+                layout
             };
+            let pinned_rows = layout.pinned_rows;
+            let nowrap_from = layout.nowrap_from;
             if preview.target.is_none() {
                 // Direct Ready injection is retained for renderer fixtures;
                 // production Ready content always belongs to a selected target.
-                full
+                (layout.lines, pinned_rows, nowrap_from)
             } else {
+                let mode = if row_paced {
+                    LineRevealMode::Rows
+                } else {
+                    LineRevealMode::Block
+                };
                 let track = preview.reveal.get_or_insert_with(LineRevealTrack::default);
-                track.reconcile(
-                    &full,
+                track.reconcile_mode(
+                    &layout.lines,
                     std::time::Instant::now(),
                     config.preview_lines_per_second.get(),
+                    mode,
                 );
-                apply_line_reveal(
-                    full,
-                    track,
-                    config.background_color.color(),
-                    theme.surface.primary_text.fg,
-                    !config.plain_color,
+                (
+                    apply_line_reveal(
+                        layout.lines,
+                        track,
+                        config.background_color.color(),
+                        theme.surface.primary_text.fg,
+                        !config.plain_color,
+                    ),
+                    pinned_rows,
+                    nowrap_from,
                 )
             }
         }
     };
     // Ready layouts are wrapped once before entering the cache. Immediate
     // state labels are already bounded single rows.
-    let mut lines = lines;
     let total = lines.len();
     let visible = usize::from(area.height);
-    // scroll == 0 is the "follow the latest" anchor: when content overflows
-    // the pane, bottom-anchor it so streaming reasoning keeps its newest
-    // rows visible. A positive scroll (future scroll binding) switches to
-    // manual review and keeps the historical `scroll.min(total - 1)` start.
-    let start = if preview.scroll == 0 && total > visible {
-        total - visible
+    let mut visible_lines: Vec<(usize, Line<'static>)> = Vec::new();
+    if preview.scroll == 0 && total > visible && pinned_rows > 0 {
+        let pinned = pinned_rows.min(visible).min(total);
+        visible_lines.extend(lines.iter().take(pinned).cloned().enumerate());
+        let output_rows = visible.saturating_sub(pinned);
+        let output_start = total.saturating_sub(output_rows).max(pinned_rows);
+        visible_lines.extend(
+            lines
+                .into_iter()
+                .enumerate()
+                .skip(output_start)
+                .take(output_rows),
+        );
     } else {
-        preview.scroll.min(total.saturating_sub(1))
-    };
-    lines = lines.into_iter().skip(start).take(visible).collect();
-    preview.record_materialized_rows(lines.len());
+        // scroll == 0 is the "follow the latest" anchor: when content
+        // overflows, bottom-anchor it. A positive scroll switches to manual
+        // review and keeps the historical start.
+        let start = if preview.scroll == 0 && total > visible {
+            total - visible
+        } else {
+            preview.scroll.min(total.saturating_sub(1))
+        };
+        visible_lines.extend(lines.into_iter().enumerate().skip(start).take(visible));
+    }
+    let visible_lines = visible_lines
+        .into_iter()
+        .map(|(source_index, line)| {
+            let line = if nowrap_from.is_some_and(|start| source_index >= start) {
+                clip_line(line, inner_width)
+            } else {
+                line
+            };
+            (source_index, line)
+        })
+        .collect::<Vec<_>>();
+    preview.record_materialized_rows(visible_lines.len());
     // Vertically center content that fits the pane; overflowing content is
-    // already bottom-anchored and fills the pane, so no centering applies.
-    let top_padding = usize::from(area.height).saturating_sub(lines.len()) / 2;
-    for (index, line) in lines.iter().enumerate() {
+    // anchored and fills the pane, so no centering applies.
+    let top_padding = if total <= visible {
+        visible.saturating_sub(visible_lines.len()) / 2
+    } else {
+        0
+    };
+    for (screen_index, (source_index, line)) in visible_lines.iter().enumerate() {
         crate::ui::selection::register_line(
             selection_frame,
             SelectionSurface::Preview,
-            start + index,
+            *source_index,
             area.x.saturating_add(left_padding),
-            area.y.saturating_add((top_padding + index) as u16),
+            area.y.saturating_add((top_padding + screen_index) as u16),
             line,
         );
     }
     let mut centered = Vec::with_capacity(usize::from(area.height));
     centered.extend(std::iter::repeat_n(Line::raw(""), top_padding));
-    centered.extend(lines);
+    centered.extend(visible_lines.into_iter().map(|(_, line)| line));
     frame.render_widget(
         Paragraph::new(centered).block(Block::default().padding(Padding::new(
             left_padding,
@@ -152,6 +206,45 @@ fn preview_layout_key(
         owner,
         width,
         theme_signature: hash_value(theme),
+    }
+}
+
+fn content_layout(
+    content: &PreviewContent,
+    theme: &Theme,
+    width: usize,
+    language: crate::Language,
+) -> PreviewLayout {
+    if let PreviewContent::Tool(tool) = content {
+        let (information, secondary) = tool_sections(tool, theme, language);
+        let mut lines = information
+            .into_iter()
+            .flat_map(|line| wrap_line(line, width))
+            .collect::<Vec<_>>();
+        if let Some(secondary) = secondary {
+            lines.push(Line::raw(""));
+            let pinned_rows = lines.len();
+            lines.extend(secondary);
+            return PreviewLayout {
+                lines,
+                pinned_rows,
+                nowrap_from: Some(pinned_rows),
+            };
+        }
+        return PreviewLayout {
+            lines,
+            pinned_rows: 0,
+            nowrap_from: None,
+        };
+    }
+
+    PreviewLayout {
+        lines: content_lines(content, theme, width, language)
+            .into_iter()
+            .flat_map(|line| wrap_line(line, width))
+            .collect(),
+        pinned_rows: 0,
+        nowrap_from: None,
     }
 }
 
@@ -207,7 +300,14 @@ fn content_lines(
         | PreviewContent::MutedMarkdown(source) => {
             weak_markdown_lines(source, theme, width, language)
         }
-        PreviewContent::Tool(preview) => tool_lines(preview, theme, width, language),
+        PreviewContent::Tool(preview) => {
+            let (mut information, secondary) = tool_sections(preview, theme, language);
+            if let Some(secondary) = secondary {
+                information.push(Line::raw(""));
+                information.extend(secondary);
+            }
+            information
+        }
         PreviewContent::Hunks(hunks) => hunks
             .iter()
             .flat_map(|hunk| hunk_lines(hunk, theme, width, language))
@@ -252,41 +352,40 @@ fn weak_markdown_lines(
         .collect()
 }
 
-fn tool_lines(
+fn tool_sections(
     preview: &ToolPreview,
     theme: &Theme,
-    width: usize,
     language: Language,
-) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-    lines.push(Line::styled(
+) -> (Vec<Line<'static>>, Option<Vec<Line<'static>>>) {
+    let mut information = Vec::new();
+    information.push(Line::styled(
         preview.name.clone(),
         theme.activity.label.style(),
     ));
     match &preview.primary {
         ToolPreviewPrimary::Location { path, lines: range } => {
-            lines.push(Line::styled(
+            information.push(Line::styled(
                 location_text(path, range),
                 theme.surface.primary_text.style(),
             ));
         }
         ToolPreviewPrimary::Command { command, metrics } => {
-            lines.push(Line::from(vec![
+            information.push(Line::from(vec![
                 Span::styled("$ ", theme.input.prompt.style()),
                 Span::styled(command.clone(), theme.surface.primary_text.style()),
             ]));
-            lines.push(Line::styled(
+            information.push(Line::styled(
                 metrics_text(metrics, language),
                 theme.activity.detail.style(),
             ));
         }
         ToolPreviewPrimary::Search { query, path } => {
-            lines.push(Line::styled(
+            information.push(Line::styled(
                 format!("\"{query}\""),
                 theme.surface.primary_text.style(),
             ));
             if let Some(path) = path {
-                lines.push(Line::from(vec![
+                information.push(Line::from(vec![
                     Span::styled(
                         format!("{} ", tr(language, "preview.at")),
                         theme.activity.detail.style(),
@@ -297,35 +396,48 @@ fn tool_lines(
         }
         ToolPreviewPrimary::Json { source, truncated } => {
             for line in source.lines() {
-                lines.push(Line::styled(
+                information.push(Line::styled(
                     line.to_owned(),
                     theme.surface.primary_text.style(),
                 ));
             }
             if *truncated {
-                lines.push(Line::styled("…", theme.activity.detail.style()));
+                information.push(Line::styled("…", theme.activity.detail.style()));
             }
         }
     }
-    if let Some(secondary) = &preview.secondary {
-        lines.push(Line::raw(""));
-        match secondary {
-            ToolPreviewSecondary::Terminal { output, truncated } => {
-                lines.extend(ansi::terminal_lines(
-                    output,
-                    theme.surface.muted_text.style(),
-                    theme.activity.label.style(),
-                ));
-                if *truncated {
-                    lines.push(Line::styled("…", theme.activity.detail.style()));
-                }
+    let secondary = preview.secondary.as_ref().map(|secondary| match secondary {
+        ToolPreviewSecondary::Terminal { output, .. } => ansi::terminal_lines(
+            output,
+            theme.surface.muted_text.style(),
+            theme.activity.label.style(),
+        ),
+    });
+    (information, secondary)
+}
+
+fn clip_line(line: Line<'static>, width: usize) -> Line<'static> {
+    if line.width() <= width {
+        return line;
+    }
+    let style = line.style;
+    let mut used = 0usize;
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    'spans: for span in line.spans {
+        for grapheme in span.content.graphemes(true) {
+            let grapheme_width = UnicodeWidthStr::width(grapheme);
+            if used + grapheme_width > width {
+                break 'spans;
+            }
+            used += grapheme_width;
+            if let Some(last) = spans.last_mut().filter(|last| last.style == span.style) {
+                last.content.to_mut().push_str(grapheme);
+            } else {
+                spans.push(Span::styled(grapheme.to_owned(), span.style));
             }
         }
     }
-    // Terminal output is the only section rendered as-is; everything else is
-    // already width-agnostic logical rows the caller wraps.
-    let _ = width;
-    lines
+    Line::from(spans).patch_style(style)
 }
 
 fn location_text(path: &str, range: &Option<LineSelection>) -> String {
@@ -439,6 +551,42 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect::<String>()
+    }
+
+    #[test]
+    fn terminal_output_remains_one_cached_row_until_viewport_clipping() {
+        let theme = Theme::ferra();
+        let layout = content_layout(
+            &PreviewContent::Tool(ToolPreview {
+                name: "bash".into(),
+                primary: ToolPreviewPrimary::Command {
+                    command: "x".into(),
+                    metrics: ToolMetrics {
+                        output_lines: 1,
+                        truncated: true,
+                        duration_ms: None,
+                    },
+                },
+                secondary: Some(ToolPreviewSecondary::Terminal {
+                    output: "0123456789ABCDEFGHIJ-TAIL".into(),
+                    truncated: true,
+                }),
+            }),
+            &theme,
+            8,
+            Language::English,
+        );
+        let output_start = layout.nowrap_from.expect("terminal row boundary");
+        assert_eq!(layout.lines.len(), output_start + 1);
+        assert_eq!(
+            line_text(&layout.lines[output_start]),
+            "0123456789ABCDEFGHIJ-TAIL"
+        );
+        assert_eq!(
+            line_text(&clip_line(layout.lines[output_start].clone(), 8)),
+            "01234567"
+        );
+        assert!(layout.lines.iter().all(|line| line_text(line) != "…"));
     }
 
     #[test]

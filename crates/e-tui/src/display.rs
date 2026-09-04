@@ -129,15 +129,15 @@ pub struct ContentCard {
     pub copy_source: String,
 }
 
-/// One merged Thinking-phase node. The breathing indicator row (activity
-/// semantics: `Thinking...`, `xN` counting, settle transition) and the
-/// streamed reasoning content are a single transcript node, so every surface
+/// One merged Thinking-phase node. The animated indicator row (activity
+/// semantics: `Thinking...` and `xN` counting) and the streamed reasoning
+/// content are a single transcript node, so every surface
 /// agrees on what "thinking" is: the main transcript renders the indicator
 /// in `compact` and the content in `lines`/`full`; Reading and Preview
 /// always surface the accumulated reasoning content.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThinkingNode {
-    /// Breathing indicator row (id `thinking:N`, label `Thinking...`).
+    /// Animated indicator row (id `thinking:N`, label `Thinking...`).
     pub row: ActivityRow,
     /// Copy unit for the accumulated reasoning content.
     pub unit: Option<u64>,

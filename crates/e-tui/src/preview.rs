@@ -1,6 +1,9 @@
 //! Shared normal/Reading Preview target, cache, and race reconciliation.
 
-use std::{collections::HashMap, time::Instant};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Instant,
+};
 
 use ratatui::text::Line;
 
@@ -10,6 +13,13 @@ use crate::reveal::LineRevealTrack;
 pub enum PreviewPolicy {
     FollowLatestBlock,
     FollowReadingCursor,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PreviewRevealIntent {
+    FreshLive,
+    #[default]
+    Page,
 }
 
 impl Default for PreviewPolicy {
@@ -253,10 +263,19 @@ pub(crate) struct PreviewLayoutKey {
     pub theme_signature: u64,
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PreviewLayout {
+    pub lines: Vec<Line<'static>>,
+    pub pinned_rows: usize,
+    /// First terminal-output row. These rows remain one source row each and
+    /// are clipped only at the final viewport boundary.
+    pub nowrap_from: Option<usize>,
+}
+
 #[derive(Debug, Default)]
 struct PreviewLayoutCache {
     key: Option<PreviewLayoutKey>,
-    lines: Vec<Line<'static>>,
+    layout: PreviewLayout,
 }
 
 #[derive(Debug, Default)]
@@ -269,6 +288,8 @@ pub struct PreviewPaneState {
     pub cache: PreviewCache,
     /// Presentation-only wrapped-row cursor for the selected Ready target.
     pub reveal: Option<LineRevealTrack>,
+    pub reveal_intent: PreviewRevealIntent,
+    seen_targets: HashSet<String>,
     layout: PreviewLayoutCache,
     next_request_id: u64,
     work: PreviewWorkStats,
@@ -279,12 +300,30 @@ impl PreviewPaneState {
     /// revision-only refreshes preserve it. Returns deferred work when cache
     /// reuse or inline presentation cannot satisfy the target.
     pub fn select(&mut self, target: Option<PreviewTarget>) -> Option<PreviewRequest> {
+        self.select_with_intent(target, PreviewRevealIntent::FreshLive)
+    }
+
+    pub fn select_with_intent(
+        &mut self,
+        target: Option<PreviewTarget>,
+        intent: PreviewRevealIntent,
+    ) -> Option<PreviewRequest> {
         let identity_changed = self.target.as_ref().map(|target| target.id.as_str())
             != target.as_ref().map(|target| target.id.as_str());
         let target_changed = self.target != target;
         if identity_changed {
             self.scroll = 0;
             self.reveal = None;
+            self.reveal_intent = target.as_ref().map_or(PreviewRevealIntent::Page, |target| {
+                if intent == PreviewRevealIntent::FreshLive
+                    && self.seen_targets.insert(target.id.clone())
+                {
+                    PreviewRevealIntent::FreshLive
+                } else {
+                    self.seen_targets.insert(target.id.clone());
+                    PreviewRevealIntent::Page
+                }
+            });
             self.work.rebuilds = self.work.rebuilds.saturating_add(1);
         } else if target_changed {
             self.work.patches = self.work.patches.saturating_add(1);
@@ -330,7 +369,8 @@ impl PreviewPaneState {
     /// transcript the preview referenced is dropped or hidden — a `/new`
     /// draft page must never inherit the previous session's preview.
     pub fn clear(&mut self) {
-        self.select(None);
+        self.select_with_intent(None, PreviewRevealIntent::Page);
+        self.seen_targets.clear();
     }
 
     /// Cache every bounded completion, but update visible state only when all
@@ -373,13 +413,25 @@ impl PreviewPaneState {
             .is_some_and(|track| track.tick(now, lines_per_second))
     }
 
-    pub(crate) fn cached_layout(&self, key: &PreviewLayoutKey) -> Option<Vec<Line<'static>>> {
-        (self.layout.key.as_ref() == Some(key)).then(|| self.layout.lines.clone())
+    pub(crate) fn cached_layout(&self, key: &PreviewLayoutKey) -> Option<PreviewLayout> {
+        (self.layout.key.as_ref() == Some(key)).then(|| self.layout.layout.clone())
     }
 
+    #[cfg(test)]
     pub(crate) fn store_layout(&mut self, key: PreviewLayoutKey, lines: Vec<Line<'static>>) {
+        self.store_preview_layout(
+            key,
+            PreviewLayout {
+                lines,
+                pinned_rows: 0,
+                nowrap_from: None,
+            },
+        );
+    }
+
+    pub(crate) fn store_preview_layout(&mut self, key: PreviewLayoutKey, layout: PreviewLayout) {
         self.layout.key = Some(key);
-        self.layout.lines = lines;
+        self.layout.layout = layout;
         self.work.layout_rebuilds = self.work.layout_rebuilds.saturating_add(1);
     }
 
@@ -566,5 +618,6 @@ mod tests {
             pane.state,
             PreviewState::Ready(PreviewContent::Markdown("cached".into()))
         );
+        assert_eq!(pane.reveal_intent, PreviewRevealIntent::Page);
     }
 }

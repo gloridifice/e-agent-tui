@@ -15,7 +15,7 @@ The client SHALL represent user-visible event output through exactly four shared
 - **THEN** the client composes an activity row with a content card instead of introducing another base surface
 
 ### Requirement: Activity lifecycle contract
-An activity row SHALL have stable identity, a label, a lifecycle state, optional summary and timing, and optional parent identity. Its lifecycle state SHALL distinguish running, waiting, success, failure, and cancellation, and an update SHALL modify the existing row rather than append a duplicate.
+An activity row SHALL have stable identity, a label, a lifecycle state, optional summary and timing, and optional parent identity. Its lifecycle state SHALL distinguish running, waiting, success, failure, and cancellation, and an update SHALL modify the existing row rather than append a duplicate. Running transcript activities SHALL rotate through `⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏` in the fixed running tone without brightness interpolation. Settled rows SHALL use `•`, with successful rows in the activity-label tone and failed rows in the failure tone; the status-bar working label retains its separate treatment.
 
 #### Scenario: Tool result settles its activity
 - **WHEN** a `tool/result` correlates with a displayed `tool/call`
@@ -27,7 +27,7 @@ An activity row SHALL have stable identity, a label, a lifecycle state, optional
 
 #### Scenario: Interrupted activity stops animating
 - **WHEN** a turn ends while an activity remains running
-- **THEN** the activity transitions to failure or cancellation and no longer schedules breathing animation
+- **THEN** the activity transitions to failure or cancellation, replaces its Braille spinner with a settled bullet, and no longer schedules indicator animation
 
 ### Requirement: Ordinary transcript block contract
 A transcript block SHALL render non-status content using a declared content format and tone. It SHALL support plain notices, Markdown source, reasoning content, and bounded unknown-surface fallback content while preserving the original copy source and semantic Block annotations.
@@ -97,7 +97,7 @@ Streaming updates SHALL dirty only the affected tail presentation when no struct
 - **THEN** the transcript cache is structurally invalidated once and the viewport anchor is preserved where possible
 
 #### Scenario: Animation remains dirty-driven
-- **WHEN** no activity, stream, or settle transition is animating and no state changed
+- **WHEN** no activity or stream indicator is animating and no state changed
 - **THEN** the client does not schedule a redraw solely for the display framework
 
 ### Requirement: Display surfaces provide semantic reading annotations

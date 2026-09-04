@@ -45,15 +45,15 @@ HostEvent 到 transcript mutation 的分类和关联 MUST 只通过 typed projec
 - **THEN** viewport 仅按实际新增 display rows 平移，用户当前看到的内容保持稳定
 
 ### Requirement: 增量缓存和复制语义不得退化
-The display and Reading View migration MUST preserve streaming tail splice, activity range patches, final settle-color patches, width/generation layout cache, visible-window materialization, and original Markdown copy provenance.
+The display and Reading View migration MUST preserve streaming tail splice, activity range patches, immediate settled-indicator patches, width/generation layout cache, visible-window materialization, and original Markdown copy provenance.
 
 #### Scenario: Assistant 流式 chunk
 - **WHEN** a new chunk only extends the transcript's final assistant Block
 - **THEN** the cache marks and splices only the tail without rebuilding the complete transcript
 
 #### Scenario: 活动动画
-- **WHEN** a spinner or settle transition changes an activity color
-- **THEN** the cache patches only the matching `DisplayId` range and commits the exact final color before animation stops
+- **WHEN** a Braille spinner advances for an active row
+- **THEN** the cache patches only the matching `DisplayId` range without rebuilding unrelated transcript rows
 
 #### Scenario: 原子内容复制
 - **WHEN** Reading View copies a table, code, or Mermaid Block

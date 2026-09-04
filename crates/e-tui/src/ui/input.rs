@@ -198,14 +198,14 @@ pub(super) fn render_input(
                 continue;
             }
             let before: String = text.chars().take(cur).collect();
-            let at: String = text
-                .chars()
-                .nth(cur)
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| " ".into());
+            let at = text.chars().nth(cur);
             let after: String = text.chars().skip(cur + 1).collect();
             let mut spans = styled_spans(&before, off);
-            spans.push(Span::styled(at, theme.input.cursor.style()));
+            if let Some(at) = at {
+                spans.push(Span::styled(at.to_string(), theme.input.cursor.style()));
+            } else {
+                spans.push(Span::styled("█", synthetic_cursor_style(theme)));
+            }
             spans.extend(styled_spans(&after, off + cur + 1));
             rendered.push(Line::from(spans));
         } else {
@@ -219,7 +219,8 @@ pub(super) fn render_input(
         let y = inner.y.saturating_add(row);
         if x < area.right() && y < area.bottom() {
             if let Some(cell) = frame.buffer_mut().cell_mut(Position::new(x, y)) {
-                cell.set_symbol(" ").set_style(theme.input.cursor.style());
+                cell.set_symbol("█")
+                    .set_style(synthetic_cursor_style(theme));
             }
         }
     }
@@ -237,6 +238,12 @@ pub(super) fn render_input(
         inner.x + col,
         inner.y + cursor_row.saturating_sub(start) as u16,
     ))
+}
+
+// A foreground-only glyph avoids background-color trails when the cursor moves.
+fn synthetic_cursor_style(theme: &Theme) -> Style {
+    let fill = theme.input.cursor.bg.unwrap_or(theme.input.cursor.fg);
+    Style::default().fg(fill)
 }
 
 fn render_line_chrome(frame: &mut Frame, area: ratatui::layout::Rect, theme: &Theme) {
@@ -270,6 +277,35 @@ mod tests {
     use super::*;
     use crate::{Config, PromptImage};
     use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn synthetic_cursor_uses_a_printed_cell_and_clears_after_wide_char_deletion() {
+        let theme = Theme::ferra();
+        let mut input = InputState::new(&Config::default());
+        input.buf = "你好世界".into();
+        input.cursor = input.buf.chars().count();
+        let mut terminal = Terminal::new(TestBackend::new(16, 3)).unwrap();
+
+        terminal
+            .draw(|frame| {
+                render_input(frame, frame.area(), &input, &theme, 0, InputStyle::Line);
+            })
+            .unwrap();
+        assert_eq!(terminal.backend().buffer()[(9, 1)].symbol(), "█");
+        assert_eq!(terminal.backend().buffer()[(9, 1)].bg, Color::Reset);
+
+        input.buf.pop();
+        input.cursor -= 1;
+        terminal
+            .draw(|frame| {
+                render_input(frame, frame.area(), &input, &theme, 0, InputStyle::Line);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(7, 1)].symbol(), "█");
+        assert_eq!(buffer[(9, 1)].symbol(), " ");
+        assert_ne!(buffer[(9, 1)].bg, theme.input.cursor.bg.unwrap());
+    }
 
     #[test]
     fn image_attachment_renders_as_one_placeholder_styled_block() {

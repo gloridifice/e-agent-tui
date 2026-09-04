@@ -138,10 +138,8 @@ fn paint_separator(frame: &mut Frame, area: Rect, column: u16, theme: &Theme, dr
     }
     let bar = theme.separator.bar;
     let line = theme.separator.line;
-    // Omitted separator backgrounds inherit the themed base surface (the
-    // documented behavior) instead of falling back to terminal Reset.
-    let bar_bg = bar.bg.unwrap_or(theme.bg);
-    let line_bg = line.bg.unwrap_or(theme.bg);
+    let bar_bg = bar.bg.unwrap_or(ratatui::style::Color::Reset);
+    let line_bg = line.bg.unwrap_or(ratatui::style::Color::Reset);
     let center = area.y + area.height / 2;
     let buffer = frame.buffer_mut();
     if dragging {

@@ -19,7 +19,7 @@ pub struct ActivityTransition {
 }
 
 /// Domain transcript text remains exclusively in `TimelineModel`; this owner
-/// keeps caches, provenance indexes, transitions, and stable unit allocators.
+/// keeps caches, provenance indexes, animation state, and stable unit allocators.
 pub struct RenderState {
     pub markdown_layout: MarkdownLayoutRegistry,
     pub activity_transitions: HashMap<DisplayId, ActivityTransition>,
@@ -30,7 +30,7 @@ pub struct RenderState {
     /// Live assistant Markdown paint cursors. Semantic source remains in the
     /// transcript; replay/history never create these sidecars.
     pub transcript_reveals: HashMap<DisplayId, RevealTrack>,
-    pub stream_frame: usize,
+    pub activity_frame: usize,
 }
 
 impl Default for RenderState {
@@ -46,7 +46,7 @@ impl Default for RenderState {
                 ..TranscriptRenderCache::default()
             },
             transcript_reveals: HashMap::new(),
-            stream_frame: 0,
+            activity_frame: 0,
         }
     }
 }

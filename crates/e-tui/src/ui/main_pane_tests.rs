@@ -585,10 +585,125 @@ fn extracted_main_pane_preserves_status_spacing_and_hidden_cursor() {
     };
     let main_row = |y| row(y).chars().take(48).collect::<String>();
     assert!(main_row(37).trim().is_empty());
-    assert!(main_row(38).contains("• standard"));
+    assert!(
+        main_row(38).contains("e·dsh standard"),
+        "status row: {:?}",
+        main_row(38)
+    );
     assert!(row(38).contains("^h Help"));
     assert!(main_row(39).contains("refactor bridge"));
     assert_eq!(buffer[(1, 38)].bg, Color::Reset);
+}
+
+#[test]
+fn activity_rows_use_braille_while_running_and_bullets_when_settled() {
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    force_message_only(&mut state);
+
+    let running =
+        crate::display::ActivityRow::root(DisplayId::correlated("indicator", "running"), "running");
+    let mut success =
+        crate::display::ActivityRow::root(DisplayId::correlated("indicator", "success"), "success");
+    success.state = crate::display::ActivityState::Success;
+    let mut failure =
+        crate::display::ActivityRow::root(DisplayId::correlated("indicator", "failure"), "failure");
+    failure.state = crate::display::ActivityState::Failure;
+    for row in [running, success, failure] {
+        state.transcript.append(DisplayItem::Activity(row), None);
+    }
+
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(60, 14)).unwrap();
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+
+    assert!(rendered.contains("⠋ running"));
+    assert!(rendered.contains("• success"));
+    assert!(rendered.contains("• failure"));
+}
+
+#[test]
+fn long_activity_run_folds_in_normal_mode_and_expands_in_reading_view() {
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    force_message_only(&mut state);
+    for index in 0..8 {
+        state.transcript.append(
+            DisplayItem::Activity(crate::display::ActivityRow::root(
+                DisplayId::correlated("activity-fold", &index.to_string()),
+                format!("tool-{index}"),
+            )),
+            None,
+        );
+    }
+    state.transcript.append(
+        DisplayItem::Block(crate::display::TranscriptBlock {
+            id: DisplayId::correlated("assistant-answer", "fold-boundary"),
+            unit: None,
+            content: "done".into(),
+            format: crate::display::TranscriptFormat::Markdown,
+            tone: DisplayTone::Normal,
+            copy_source: "done".into(),
+            streaming: false,
+        }),
+        None,
+    );
+    let mut input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+    let normal = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(normal.contains("... (2 lines)"));
+    assert!(!normal.contains("tool-3"));
+    assert!(!normal.contains("tool-4"));
+
+    assert!(state.enter_reading(&input, &mut scroll, 16));
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+    let reading = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(!reading.contains("... (2 lines)"));
+    assert!(reading.contains("tool-3"));
+    assert!(reading.contains("tool-4"));
+
+    state.exit_reading(&mut input);
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+    let normal_again = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(normal_again.contains("... (2 lines)"));
 }
 
 #[test]
@@ -755,7 +870,7 @@ fn paced_markdown_reveal_splices_a_non_tail_suffix_and_keeps_full_source() {
         .iter()
         .map(Line::to_string)
         .collect::<Vec<_>>();
-    assert!(admitted.iter().any(|line| line.contains("a •")));
+    assert!(admitted.iter().any(|line| line.contains("a ⠋")));
 
     let fade_due = state.transcript_reveal_deadline().expect("first fade");
     assert!(state.tick_transcript_reveals(fade_due));
@@ -771,7 +886,7 @@ fn paced_markdown_reveal_splices_a_non_tail_suffix_and_keeps_full_source() {
         .iter()
         .map(Line::to_string)
         .collect::<Vec<_>>();
-    assert!(second.iter().any(|line| line.contains("ab •")));
+    assert!(second.iter().any(|line| line.contains("ab ⠋")));
     assert!(second.iter().any(|line| line.contains("before")));
     assert!(second.iter().any(|line| line.contains("after")));
     let work = state.render.transcript_cache.take_work_stats();
@@ -1158,14 +1273,14 @@ fn wide_screen_renders_preview_without_changing_main_provenance() {
         .unwrap();
 
     let buffer = terminal.backend().buffer();
-    // Border, title, and pane background are removed. A newly selected Ready
-    // target starts with its first wrapped display row.
+    // Border, title, and pane background are removed. A newly selected
+    // non-reasoning Ready target fades in as one complete block.
     assert_ne!(buffer[(72, 0)].symbol(), "┌");
     let preview_text = (0..30)
         .flat_map(|y| (72..120).map(move |x| buffer[(x, y)].symbol()))
         .collect::<String>();
     assert!(preview_text.contains("# Preview source"));
-    assert!(!preview_text.contains("complete body"));
+    assert!(preview_text.contains("complete body"));
     let unit = state.transcript.nodes()[0]
         .unit()
         .expect("materialized unit");
@@ -1262,6 +1377,7 @@ fn tool_preview_renders_header_primary_and_secondary_with_ferra_semantics() {
         None
     };
     let (name_x, name_y) = find("bash").expect("tool name header renders");
+    assert_eq!(name_y, 3, "short tool Preview remains vertically centered");
     let (dollar_x, dollar_y) = find("$").expect("command prompt renders");
     let (metrics_x, metrics_y) = find("lines 2, duration 1.2s").expect("metrics render");
     assert!(find("grep -R table").is_some());
@@ -1281,7 +1397,7 @@ fn tool_preview_renders_header_primary_and_secondary_with_ferra_semantics() {
 }
 
 #[test]
-fn selected_tool_preview_reveals_one_wrapped_row_per_tick_without_touching_transcript_cache() {
+fn selected_tool_preview_reveals_as_one_block_without_touching_transcript_cache() {
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();
     force_preview_only(&mut state);
@@ -1317,7 +1433,7 @@ fn selected_tool_preview_reveals_one_wrapped_row_per_tick_without_touching_trans
         .map(|cell| cell.symbol())
         .collect::<String>();
     assert!(text.contains("bash"));
-    assert!(!text.contains("echo ok"));
+    assert!(text.contains("echo ok"));
     let first_cell = terminal
         .backend()
         .buffer()
@@ -1334,39 +1450,196 @@ fn selected_tool_preview_reveals_one_wrapped_row_per_tick_without_touching_trans
         )
     );
 
-    let fade_due = state
-        .preview
-        .reveal_deadline()
-        .expect("first row fade is active");
-    assert!(state
-        .preview
-        .tick_reveal(fade_due, state.config.preview_lines_per_second.get()));
-    let final_fade_due = state
-        .preview
-        .reveal_deadline()
-        .expect("first row final fade is active");
-    assert!(state
-        .preview
-        .tick_reveal(final_fade_due, state.config.preview_lines_per_second.get()));
-    let due = state
-        .preview
-        .reveal_deadline()
-        .expect("next Preview row is queued");
-    assert!(state
-        .preview
-        .tick_reveal(due, state.config.preview_lines_per_second.get()));
+    for _ in 0..2 {
+        let fade_due = state
+            .preview
+            .reveal_deadline()
+            .expect("block fade is active");
+        assert!(state
+            .preview
+            .tick_reveal(fade_due, state.config.preview_lines_per_second.get()));
+    }
+    assert_eq!(state.preview.reveal_deadline(), None);
+    assert!(state.render.transcript_cache.valid);
+}
+
+#[test]
+fn fresh_live_reasoning_preview_remains_row_paced() {
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    force_preview_only(&mut state);
+    state.preview.select(Some(crate::preview::PreviewTarget {
+        id: "reasoning:live".into(),
+        reference: crate::preview::PreviewRef::Inline {
+            key: crate::preview::PreviewKey("reasoning:live".into()),
+            revision: crate::preview::PreviewRevision(1),
+            content: PreviewContent::Reasoning("first row\nsecond row".into()),
+        },
+    }));
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
     terminal
         .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
         .unwrap();
-    let text = terminal
-        .backend()
-        .buffer()
-        .content()
-        .iter()
-        .map(|cell| cell.symbol())
-        .collect::<String>();
-    assert!(text.contains("echo ok"));
-    assert!(state.render.transcript_cache.valid);
+    assert!(find_text(terminal.backend().buffer(), "first row").is_some());
+    assert!(find_text(terminal.backend().buffer(), "second row").is_none());
+
+    for _ in 0..4 {
+        let due = state
+            .preview
+            .reveal_deadline()
+            .expect("reasoning has pending reveal");
+        state
+            .preview
+            .tick_reveal(due, state.config.preview_lines_per_second.get());
+        terminal
+            .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+            .unwrap();
+        if find_text(terminal.backend().buffer(), "second row").is_some() {
+            break;
+        }
+    }
+    assert!(find_text(terminal.backend().buffer(), "second row").is_some());
+}
+
+#[test]
+fn reading_reasoning_preview_fades_as_one_complete_page() {
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    force_preview_only(&mut state);
+    state.preview.select_with_intent(
+        Some(crate::preview::PreviewTarget {
+            id: "reasoning:history".into(),
+            reference: crate::preview::PreviewRef::Inline {
+                key: crate::preview::PreviewKey("reasoning:history".into()),
+                revision: crate::preview::PreviewRevision(1),
+                content: PreviewContent::Reasoning("first row\nsecond row".into()),
+            },
+        }),
+        crate::preview::PreviewRevealIntent::Page,
+    );
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+    assert!(find_text(terminal.backend().buffer(), "first row").is_some());
+    assert!(find_text(terminal.backend().buffer(), "second row").is_some());
+}
+
+#[test]
+fn long_tool_output_pins_information_and_shows_the_latest_tail() {
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    force_preview_only(&mut state);
+    state.preview.state = PreviewState::Ready(PreviewContent::Tool(ToolPreview {
+        name: "bash".into(),
+        primary: ToolPreviewPrimary::Command {
+            command: "echo output".into(),
+            metrics: ToolMetrics {
+                output_lines: 20,
+                truncated: false,
+                duration_ms: Some(1000),
+            },
+        },
+        secondary: Some(ToolPreviewSecondary::Terminal {
+            output: (1..=20)
+                .map(|line| format!("output-{line:02}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            truncated: false,
+        }),
+    }));
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(40, 8)).unwrap();
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    assert_eq!(find_text(buffer, "bash").map(|(_, y)| y), Some(0));
+    assert_eq!(find_text(buffer, "$ echo output").map(|(_, y)| y), Some(1));
+    assert!(find_text(buffer, "output-20").is_some());
+    assert!(find_text(buffer, "output-01").is_none());
+}
+
+#[test]
+fn terminal_output_is_clipped_without_wrap_or_ellipsis() {
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    force_preview_only(&mut state);
+    state.preview.select(Some(crate::preview::PreviewTarget {
+        id: "tool:nowrap".into(),
+        reference: crate::preview::PreviewRef::Inline {
+            key: crate::preview::PreviewKey("tool:nowrap".into()),
+            revision: crate::preview::PreviewRevision(1),
+            content: PreviewContent::Tool(ToolPreview {
+                name: "bash".into(),
+                primary: ToolPreviewPrimary::Command {
+                    command: "x".into(),
+                    metrics: ToolMetrics {
+                        output_lines: 2,
+                        truncated: true,
+                        duration_ms: None,
+                    },
+                },
+                secondary: Some(ToolPreviewSecondary::Terminal {
+                    output: "0123456789ABCDEFGHIJ-TAIL\nNEXT".into(),
+                    truncated: true,
+                }),
+            }),
+        },
+    }));
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(20, 8)).unwrap();
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let (_, first_output_y) = find_text(buffer, "0123456789").expect("first output row");
+    let (_, next_output_y) = find_text(buffer, "NEXT").expect("second output row");
+    assert_eq!(
+        next_output_y,
+        first_output_y + 1,
+        "one terminal source row must occupy exactly one display row"
+    );
+    assert!(find_text(buffer, "TAIL").is_none());
+    assert!(find_text(buffer, "…").is_none());
+}
+
+#[test]
+fn wrapped_tool_information_takes_priority_over_output() {
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    force_preview_only(&mut state);
+    state.preview.state = PreviewState::Ready(PreviewContent::Tool(ToolPreview {
+        name: "bash".into(),
+        primary: ToolPreviewPrimary::Command {
+            command: "a very long command that wraps across every available preview row".into(),
+            metrics: ToolMetrics::default(),
+        },
+        secondary: Some(ToolPreviewSecondary::Terminal {
+            output: "OUTPUT-MUST-WAIT".into(),
+            truncated: false,
+        }),
+    }));
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(20, 4)).unwrap();
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    assert_eq!(find_text(buffer, "bash").map(|(_, y)| y), Some(0));
+    assert!(find_text(buffer, "OUTPUT").is_none());
 }
 
 #[test]
@@ -1435,6 +1708,10 @@ fn reading_block_navigation_preserves_draft_preview_and_highlight_geometry() {
         .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
         .unwrap();
     assert!(state.enter_reading(&input, &mut scroll, 12));
+    assert!(
+        !state.render.transcript_cache.valid,
+        "Reading entry invalidates the folded normal-mode layout"
+    );
     let initially_selected = state.reading.as_ref().unwrap().block_cursor.clone();
     assert_eq!(
         state.preview.policy,
@@ -1445,6 +1722,7 @@ fn reading_block_navigation_preserves_draft_preview_and_highlight_geometry() {
     terminal
         .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
         .unwrap();
+    assert!(state.render.transcript_cache.valid);
     let current = state.reading.as_ref().expect("reading remains active");
     let geometry = state
         .reading_layout
@@ -1492,6 +1770,10 @@ fn reading_block_navigation_preserves_draft_preview_and_highlight_geometry() {
 
     input.buf = "mutated".into();
     state.exit_reading(&mut input);
+    assert!(
+        !state.render.transcript_cache.valid,
+        "Reading exit invalidates the expanded layout"
+    );
     assert_eq!(input.buf, original.buf);
     assert_eq!(input.cursor, original.cursor);
     assert!(input.multiline);
@@ -2312,7 +2594,7 @@ fn pane_separator_uses_explicit_background_in_normal_mode() {
 }
 
 #[test]
-fn pane_separator_without_background_inherits_base_surface() {
+fn pane_separator_without_background_remains_transparent() {
     let mut state = TuiApp::default();
     let mut theme = Theme::ferra();
     theme.bg = Color::Rgb(4, 5, 6);
@@ -2329,5 +2611,41 @@ fn pane_separator_without_background_inherits_base_surface() {
     let buffer = terminal.backend().buffer();
     let separator_x = separator_column(&state, 120) as u16;
     assert_eq!(buffer[(separator_x, 10)].symbol(), "│");
-    assert_eq!(buffer[(separator_x, 10)].bg, theme.bg);
+    assert_eq!(buffer[(separator_x, 10)].bg, Color::Reset);
+}
+
+#[test]
+fn pane_separator_drag_guide_without_background_remains_transparent() {
+    let mut state = TuiApp::default();
+    let mut theme = Theme::ferra();
+    theme.bg = Color::Rgb(4, 5, 6);
+    theme.separator.bar.bg = None;
+    theme.separator.line.bg = None;
+    state.config.resolved_theme = theme;
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let mut pane_resize = crate::interaction::PaneResizeState::default();
+    let separator_x = separator_column(&state, 120) as u16;
+    assert!(pane_resize.begin(separator_x, state.config.message_pane_percent, false));
+    let mut terminal = Terminal::new(TestBackend::new(120, 20)).unwrap();
+    terminal
+        .draw(|frame| {
+            render(
+                frame,
+                &mut state,
+                &input,
+                &mut scroll,
+                &theme,
+                RenderOverlays {
+                    pane_resize,
+                    ..overlays()
+                },
+            );
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    assert_eq!(buffer[(separator_x, 0)].symbol(), "│");
+    assert_eq!(buffer[(separator_x, 0)].bg, Color::Reset);
+    assert_eq!(buffer[(separator_x, 10)].symbol(), "┃");
+    assert_eq!(buffer[(separator_x, 10)].bg, Color::Reset);
 }

@@ -74,6 +74,9 @@ pub struct TranscriptRenderCache {
     pub width: usize,
     pub generation: u64,
     pub message_ranges: Vec<Option<MessageLineRange>>,
+    /// Omitted activity count for the node that owns a synthetic fold row.
+    /// `message_ranges` distinguishes other hidden nodes from visible nodes.
+    pub activity_fold_hidden_counts: Vec<Option<usize>>,
     pub dirty_messages: BTreeSet<usize>,
     pub layout: DisplayLayoutCache,
     pub work: CacheWorkStats,

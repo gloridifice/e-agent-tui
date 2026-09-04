@@ -15,7 +15,8 @@ mod reduction;
 mod session;
 
 pub use crate::app::{
-    breathing_color, lerp_color, settle_color, BREATH_CYCLE_MS, SETTLE_TRANSITION_MS,
+    breathing_color, lerp_color, settle_color, ACTIVITY_SPINNER_FRAMES, BREATH_CYCLE_MS,
+    SETTLE_TRANSITION_MS,
 };
 use crate::display::{
     ActivityRow, ActivityState, CardRole, DisplayId, DisplayItem, DisplayTone, ThinkingNode,
@@ -36,7 +37,7 @@ use crate::{
         MutationDiff, MutationHunk, ToolMetrics, ToolPreview, ToolPreviewPrimary,
         ToolPreviewSecondary,
     },
-    ActivityTransition, PreviewContent, PreviewKey, PreviewRef, PreviewRevision, TuiApp,
+    PreviewContent, PreviewKey, PreviewRef, PreviewRevision, TuiApp,
 };
 
 /// Test-only characterization model retained while fixtures are rewritten.
@@ -174,10 +175,10 @@ pub fn file_group_line_count(group: &FileGroup) -> usize {
             .any(|item| item.action.is_read_like() == read_like && item.ok == ok)
     };
     if any(true, None) {
-        // breathing read/view line + settled read/view failures
+        // running read/view line + settled read/view failures
         1 + failed(true)
     } else if any(false, None) {
-        // folded successful reads/views + their failures + breathing write
+        // folded successful reads/views + their failures + running write
         // line + settled write failures
         usize::from(any(true, Some(true))) + failed(true) + 1 + failed(false)
     } else {
@@ -217,8 +218,8 @@ pub enum LegacyTestMsg {
     },
     Tool(ToolCard),
     /// Model-thinking phase (between user send / tool results and the next
-    /// visible activity), rendered like a tool card: breathing bullet while
-    /// the model thinks, green once the phase completes.
+    /// visible activity), rendered like a tool card: a yellow Braille spinner
+    /// while the model thinks, then an Umber bullet once the phase completes.
     Thinking(ThinkingCard),
     /// Merged consecutive read/edit calls on one line.
     FileGroup(FileGroup),
@@ -251,8 +252,7 @@ pub struct ThinkingCard {
     /// Number of consecutive thinking phases this row represents
     /// (`Thinking... xN` when > 1).
     pub count: usize,
-    /// Settle transition: captured at completion, animated from the
-    /// breathing color to green instead of snapping.
+    /// Legacy settle-transition fields retained by characterization fixtures.
     pub done_since: Option<std::time::Instant>,
     pub done_from: Option<Color>,
     /// Accumulated reasoning content (merged Thinking+Reasoning node).
@@ -343,8 +343,8 @@ impl RuntimeState {
     }
 
     /// The model started thinking (or the user sent a message before the
-    /// turn exists): show a breathing `• Thinking...` row. Only ADJACENT
-    /// thinking phases collapse into one row with a count (`xN`) — any
+    /// turn exists): show a yellow Braille `Thinking...` spinner. Only
+    /// ADJACENT thinking phases collapse into one row with a count (`xN`) — any
     /// visible activity in between starts a fresh row. History replays
     /// update the flag without pushing rows.
     pub fn start_thinking(&mut self) {
@@ -413,22 +413,8 @@ impl RuntimeState {
         }
     }
 
-    fn capture_activity_transition(&mut self, id: &DisplayId) {
-        if self.replaying || self.render.activity_transitions.contains_key(id) {
-            return;
-        }
-        let from = breathing_color(&self.config.theme(), self.breath_phase());
-        self.render.activity_transitions.insert(
-            id.clone(),
-            ActivityTransition {
-                done_since: std::time::Instant::now(),
-                from,
-            },
-        );
-    }
-
     /// The thinking phase ended (visible activity took over, the turn
-    /// ended, or the agent went idle): settle the running Thinking row green.
+    /// ended, or the agent went idle): settle the running Thinking row.
     pub fn stop_thinking(&mut self) {
         self.session.working = false;
         if self.replaying {
@@ -441,7 +427,6 @@ impl RuntimeState {
             .then(|| node.id().clone())
         });
         if let Some(id) = running_id {
-            self.capture_activity_transition(&id);
             if let Some(node) = self.transcript.get_mut(&id) {
                 if let DisplayItem::Thinking(thinking) = &mut node.item {
                     thinking.row.state = ActivityState::Success;
@@ -581,9 +566,9 @@ impl RuntimeState {
 
     /// Settle everything still running when a turn ends: interrupted turns
     /// leave tool cards, file-group items, and Thinking rows without their
-    /// result events — without this they would keep breathing forever (the
-    /// Esc-interrupt bug). A dangling streaming tail is finalized into a
-    /// regular assistant message so its breathing bullet also stops.
+    /// result events — without this their Braille spinners would run forever
+    /// (the Esc-interrupt bug). A dangling streaming tail is finalized into a
+    /// regular assistant message so its spinner also stops.
     pub fn settle_turn(&mut self, now_ms: u64, cancelled: bool) {
         let active_ids = self
             .transcript
@@ -599,13 +584,6 @@ impl RuntimeState {
             })
             .collect::<Vec<_>>();
         for id in active_ids {
-            if self
-                .transcript
-                .get(&id)
-                .is_some_and(|node| matches!(&node.item, DisplayItem::Activity(_)))
-            {
-                self.capture_activity_transition(&id);
-            }
             if let Some(node) = self.transcript.get_mut(&id) {
                 match &mut node.item {
                     DisplayItem::Activity(row) if row.id.0.starts_with("thinking:") => {
@@ -698,6 +676,7 @@ impl RuntimeState {
         self.render.markdown_layout.clear();
         self.render.activity_transitions.clear();
         self.render.transcript_reveals.clear();
+        self.render.activity_frame = 0;
         self.preview.reveal = None;
         #[cfg(test)]
         self.msgs.clear();
@@ -734,9 +713,7 @@ impl RuntimeState {
     }
 }
 
-/// Capture the settle transition when a file group's last pending item
-/// settles: the bullet animates from the breathing color toward umber/red
-/// instead of snapping.
+/// Capture the legacy fixture's settle transition when a file group finishes.
 #[cfg(test)]
 fn settle_group(group: &mut FileGroup, from: Color) {
     if !group.pending() && group.done_since.is_none() {

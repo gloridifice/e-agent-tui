@@ -17,7 +17,7 @@ pub const DEFAULT_CONFIG_SOURCE: &str = include_str!("../assets/default_config.t
 /// How model reasoning content is displayed in the transcript.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThinkingDisplayMode {
-    /// Current behavior: only the breathing `Thinking...` row is visible.
+    /// Current behavior: only the animated `Thinking...` row is visible.
     Compact,
     /// Show at most the first `thinking_lines` lines of reasoning text.
     Lines,

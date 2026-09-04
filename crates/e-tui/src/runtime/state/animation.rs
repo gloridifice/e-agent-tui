@@ -1,8 +1,8 @@
 //! Spinner, settle, and reveal-adjacent animation state helpers.
 
-use super::{AgentStatus, DisplayItem, RuntimeState, TranscriptFormat, SETTLE_TRANSITION_MS};
+use super::{AgentStatus, DisplayItem, RuntimeState, TranscriptFormat, ACTIVITY_SPINNER_FRAMES};
 #[cfg(test)]
-use super::{Msg, ThinkState, ToolState};
+use super::{Msg, ThinkState, ToolState, SETTLE_TRANSITION_MS};
 #[cfg(test)]
 use ratatui::style::Color;
 
@@ -26,14 +26,11 @@ pub fn animation_active(state: &RuntimeState, _now: std::time::Instant) -> bool 
             DisplayItem::Thinking(node) => node.row.state.is_active(),
             DisplayItem::Card(_) => false,
         })
-        || !state.render.activity_transitions.is_empty()
         || state.session.working
         || state.session.status == AgentStatus::Running
 }
 
-/// Advance the breathing/transition animation clock and mark only the public
-/// display ranges whose colors can change. Expired transitions submit one
-/// final exact-color patch before their sidecar entry is removed.
+/// Advance the Braille spinner and mark only active public display ranges.
 pub fn tick_spinners(state: &mut RuntimeState, now: std::time::Instant) -> bool {
     #[cfg(test)]
     if state.transcript.is_empty() && !state.msgs.is_empty() {
@@ -58,36 +55,13 @@ pub fn tick_spinners(state: &mut RuntimeState, now: std::time::Instant) -> bool 
         }
     }
 
-    let transitions = state
-        .render
-        .activity_transitions
-        .iter()
-        .map(|(id, transition)| {
-            (
-                id.clone(),
-                now.saturating_duration_since(transition.done_since)
-                    .as_millis()
-                    >= SETTLE_TRANSITION_MS,
-            )
-        })
-        .collect::<Vec<_>>();
-    let mut finalized = Vec::new();
-    for (id, expired) in transitions {
-        if let Some(index) = state.transcript.position(&id) {
-            dirty.push(index);
-        }
-        if expired {
-            finalized.push(id);
-        }
-    }
-    for id in finalized {
-        state.render.activity_transitions.remove(&id);
-    }
-
     if any_pending {
         state.session.activity_epoch.get_or_insert(now);
-    } else if state.render.activity_transitions.is_empty() {
+        state.render.activity_frame =
+            (state.render.activity_frame + 1) % ACTIVITY_SPINNER_FRAMES.len();
+    } else {
         state.session.activity_epoch = None;
+        state.render.activity_frame = 0;
     }
     dirty.sort_unstable();
     dirty.dedup();
@@ -180,11 +154,37 @@ fn tick_legacy_spinners(state: &mut RuntimeState, now: std::time::Instant) -> bo
     }
     if any_pending {
         state.session.activity_epoch.get_or_insert(now);
+        state.render.activity_frame =
+            (state.render.activity_frame + 1) % ACTIVITY_SPINNER_FRAMES.len();
     } else {
         state.session.activity_epoch = None;
+        state.render.activity_frame = 0;
     }
     for index in dirty {
         state.render.transcript_cache.mark_message_dirty(index);
     }
     any_pending || animation_changed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::display::{ActivityRow, DisplayId};
+
+    #[test]
+    fn tick_advances_and_wraps_the_activity_frame() {
+        let mut state = RuntimeState::default();
+        state.transcript.append(
+            DisplayItem::Activity(ActivityRow::root(
+                DisplayId::correlated("spinner", "test"),
+                "test",
+            )),
+            None,
+        );
+        state.render.activity_frame = ACTIVITY_SPINNER_FRAMES.len() - 1;
+
+        assert!(tick_spinners(&mut state, std::time::Instant::now()));
+        assert_eq!(state.render.activity_frame, 0);
+        assert_eq!(state.activity_spinner_frame(), ACTIVITY_SPINNER_FRAMES[0]);
+    }
 }

@@ -18,7 +18,7 @@ use crate::{
         allocate_accessories, ActivityRow, CardRole, ContentCard, DisplayItem, DisplayTone,
         InputAccessory, InputAccessoryKind, ThinkingNode, TranscriptBlock, TranscriptFormat,
     },
-    input::{InputState, Suggestion, SuggestionKind},
+    input::InputState,
     input_page::{FocusId, InputPage, InputPageSession, ModelPage, ResumePage, ThemePage},
     login::LoginState,
     mouse_selection::{MouseSelection, SelectionFrame},
@@ -411,7 +411,7 @@ pub(crate) fn render_main_pane_with_cursor(
         // Slash-command suggestions float above the input bar (last draw wins).
         if !input_page_open {
             if let Some(suggest) = input.suggest.as_ref() {
-                render_suggest(frame, suggest, chunks[6], theme, state.config.language);
+                render_suggest(frame, suggest, chunks[6], theme);
             }
         }
         return cursor_anchor;
@@ -538,7 +538,7 @@ pub(crate) fn render_main_pane_with_cursor(
     }
     if let Some(suggest) = input.suggest.as_ref() {
         if let Some(rect) = input_rect {
-            render_suggest(frame, suggest, rect, theme, state.config.language);
+            render_suggest(frame, suggest, rect, theme);
         }
     }
     cursor_anchor

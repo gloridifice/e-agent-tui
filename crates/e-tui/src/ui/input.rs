@@ -224,22 +224,32 @@ fn render_ruled_chrome(frame: &mut Frame, area: ratatui::layout::Rect, theme: &T
     }
     let top = area.y;
     let bottom = area.bottom().saturating_sub(1);
-    for y in [top, bottom] {
-        for offset in 0..area.width {
-            let color = if offset < 2 || offset >= area.width.saturating_sub(2) {
-                theme.diff.separator.fg
-            } else {
-                theme.input.hint.fg
-            };
-            if let Some(cell) = frame
-                .buffer_mut()
-                .cell_mut(Position::new(area.x.saturating_add(offset), y))
-            {
-                cell.set_symbol("─").set_fg(color);
-            }
-        }
-        if top == bottom {
-            break;
+    render_rule(frame, area, top, theme);
+    if bottom != top {
+        render_rule(frame, area, bottom, theme);
+    }
+}
+
+pub(super) fn render_rule(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    y: u16,
+    theme: &Theme,
+) {
+    if area.width == 0 || y < area.y || y >= area.bottom() {
+        return;
+    }
+    for offset in 0..area.width {
+        let color = if offset < 2 || offset >= area.width.saturating_sub(2) {
+            theme.diff.separator.fg
+        } else {
+            theme.input.hint.fg
+        };
+        if let Some(cell) = frame
+            .buffer_mut()
+            .cell_mut(Position::new(area.x.saturating_add(offset), y))
+        {
+            cell.set_symbol("─").set_fg(color);
         }
     }
 }

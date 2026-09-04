@@ -1,5 +1,8 @@
 use super::*;
-use crate::i18n::{tr, tr_args, Language};
+use crate::{
+    i18n::{tr, tr_args, Language},
+    input::Suggestion,
+};
 
 /// Right-hand blank gutter shared by every non-block accessory strip, so
 /// long/truncated rows (including their `…` ellipsis) never run flush into
@@ -127,100 +130,141 @@ pub(super) fn render_queue(
     frame.render_widget(Paragraph::new(Text::from(rows)), area);
 }
 
-/// Slash-command suggestion popup, anchored right above the input bar:
-/// borderless soft-background panel with the highlighted row following the
-/// selection. `Clear` wipes the transcript cells underneath first — without
-/// it, text behind the short rows would show through the panel.
+/// Slash-command suggestion popup, anchored immediately above the input bar.
+/// The popup uses the same ruled chrome as the composer: a full-width divider,
+/// a compact four-row window, and a directional overflow marker. Commands and
+/// descriptions keep separate tones so the catalog reads as a two-column list.
 pub(super) fn render_suggest(
     frame: &mut Frame,
     suggest: &Suggestion,
     input_area: ratatui::layout::Rect,
     theme: &Theme,
-    language: Language,
 ) {
-    // Plugin registries are unbounded. Keep the popup inside the viewport and
-    // scroll its visible window around the selected row while retaining every
-    // completion in `suggest.matches` for keyboard navigation.
-    const MAX_VISIBLE_ROWS: usize = 12;
-    let available_rows = input_area.y.saturating_sub(2).max(1) as usize;
-    let visible_rows = suggest
+    // Keep the catalog compact even when a host contributes a large command
+    // registry. The selected row still scrolls through the complete list.
+    const MAX_VISIBLE_ROWS: usize = 6;
+    if input_area.width == 0 || input_area.y == 0 || suggest.matches.is_empty() {
+        return;
+    }
+
+    // Two ruled rows surround the list. If the list overflows, reserve one
+    // more row for the direction marker; on a very short terminal the list
+    // can still render without that marker rather than escaping the viewport.
+    let room = usize::from(input_area.y);
+    let without_marker = room.saturating_sub(2);
+    let with_marker = room.saturating_sub(3);
+    let mut visible_rows = suggest
         .matches
         .len()
         .min(MAX_VISIBLE_ROWS)
-        .min(available_rows);
+        .min(without_marker);
+    let has_overflow = visible_rows < suggest.matches.len();
+    if has_overflow && with_marker > 0 {
+        visible_rows = visible_rows.min(with_marker);
+    }
+    if visible_rows == 0 {
+        return;
+    }
+
     let start = suggest
         .sel
         .saturating_sub(visible_rows.saturating_sub(1))
         .min(suggest.matches.len().saturating_sub(visible_rows));
-    let width = 46u16.min(input_area.width);
+    let end = start + visible_rows;
+    let above = start > 0;
+    let below = end < suggest.matches.len();
+    let marker = match (above, below) {
+        (true, true) => Some("  ↕"),
+        (true, false) => Some("  ↑"),
+        (false, true) => Some("  ↓"),
+        (false, false) => None,
+    };
+    let marker_rows = usize::from(marker.is_some());
+    let height = visible_rows + marker_rows + 2;
     let rect = ratatui::layout::Rect {
         x: input_area.x,
-        y: input_area.y.saturating_sub(visible_rows as u16 + 2),
-        width,
-        height: visible_rows as u16 + 2,
+        y: input_area.y.saturating_sub(height as u16),
+        width: input_area.width,
+        height: height as u16,
     };
+    // The popup floats over transcript rows. Clear first so short text rows
+    // do not leak the transcript through the transparent completion area.
     frame.render_widget(ratatui::widgets::Clear, rect);
-    let panel = theme.overlay.background.style();
+    let width = usize::from(rect.width);
+    let command_width = suggest
+        .matches
+        .iter()
+        .map(|command| UnicodeWidthStr::width(command.as_str()))
+        .max()
+        .unwrap_or_default();
+    let description_column = width.min(command_width.saturating_add(4));
+    let command_budget = description_column.saturating_sub(4);
 
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    lines.push(Line::from(vec![
-        Span::styled("❯ ", theme.overlay.accent.style()),
-        Span::styled(
-            match suggest.kind {
-                SuggestionKind::Commands => tr(language, "accessory.suggest.commands"),
-                SuggestionKind::Modes => tr(language, "accessory.suggest.modes"),
-                SuggestionKind::Models => tr(language, "accessory.suggest.models"),
-                SuggestionKind::Skills => tr(language, "accessory.suggest.skills"),
-            },
-            theme.overlay.muted.style(),
-        ),
-    ]));
-    for (i, cmd) in suggest
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(height);
+    lines.push(Line::from(Span::styled(
+        "─".repeat(width),
+        theme.input.hint.style(),
+    )));
+    for (index, command) in suggest
         .matches
         .iter()
         .enumerate()
         .skip(start)
         .take(visible_rows)
     {
-        let selected = i == suggest.sel;
-        let integrated = suggest.sources.get(i).copied() == Some(CommandSource::Integrated);
-        let desc = suggest
+        let selected = index == suggest.sel;
+        let command_text = if command_budget == 0 {
+            String::new()
+        } else {
+            trim_to_width(command, command_budget)
+        };
+        let command_used = UnicodeWidthStr::width(command_text.as_str());
+        let gap = description_column.saturating_sub(2 + command_used);
+        let description = suggest
             .descriptions
-            .get(i)
+            .get(index)
             .map(String::as_str)
             .unwrap_or("");
-        let row_style = if selected {
-            theme.overlay.selection.style()
+        let description_width = width.saturating_sub(description_column);
+        let description_text = if description_width == 0 {
+            String::new()
         } else {
-            theme.overlay.text.style()
+            trim_to_width(description, description_width)
         };
-        let marker_style = if selected {
-            row_style
+        let used = 2 + command_used + gap + UnicodeWidthStr::width(description_text.as_str());
+        let tail = width.saturating_sub(used);
+        let command_style = match suggest.sources.get(index).copied() {
+            Some(CommandSource::Integrated) => Style::default().fg(theme.overlay.text.fg),
+            _ => Style::default().fg(theme.markdown.heading2.fg),
+        };
+        let command_style = if selected {
+            command_style.add_modifier(Modifier::BOLD)
         } else {
-            theme.overlay.border.style()
+            command_style
         };
+        let description_style = theme.activity.detail.style();
         lines.push(Line::from(vec![
-            Span::styled(
-                if selected { "❯ " } else { "  " },
-                theme.overlay.accent.style(),
-            ),
-            Span::styled(if integrated { "↳ " } else { "" }, marker_style),
-            Span::styled(cmd.clone(), row_style),
-            Span::styled(
-                format!("  {desc}"),
-                if selected {
-                    row_style
-                } else {
-                    theme.overlay.muted.style()
-                },
-            ),
+            Span::raw("  "),
+            Span::styled(command_text, command_style),
+            Span::raw(" ".repeat(gap)),
+            Span::styled(description_text, description_style),
+            Span::raw(" ".repeat(tail)),
         ]));
     }
+    if let Some(marker) = marker {
+        let marker_width = UnicodeWidthStr::width(marker);
+        lines.push(Line::from(Span::styled(
+            format!("{marker}{}", " ".repeat(width.saturating_sub(marker_width))),
+            theme.input.hint.style(),
+        )));
+    }
     lines.push(Line::from(Span::styled(
-        tr(language, "accessory.suggest.footer"),
-        theme.overlay.muted.style(),
+        "─".repeat(width),
+        theme.input.hint.style(),
     )));
-    frame.render_widget(Paragraph::new(Text::from(lines)).style(panel), rect);
+    frame.render_widget(Paragraph::new(Text::from(lines)), rect);
+    super::input::render_rule(frame, rect, rect.y, theme);
+    super::input::render_rule(frame, rect, rect.bottom().saturating_sub(1), theme);
 }
 
 /// Pending approval card: fixed above the input bar (design §4.4).

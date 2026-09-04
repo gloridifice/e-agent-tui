@@ -215,6 +215,13 @@ impl SessionModel {
     }
 }
 
+#[derive(Debug)]
+struct ReadingLayoutAnchor {
+    block: crate::reading::BlockId,
+    screen_row: usize,
+    viewport_height: usize,
+}
+
 /// Kernel-neutral frontend application root.
 ///
 /// Additional lifecycle models are introduced here one at a time. Keeping the
@@ -233,6 +240,7 @@ pub struct TuiApp {
     pub reading_document: ReadingDocument,
     pub reading_layout: ReadingLayout,
     pub reading: Option<ReadingViewState>,
+    reading_layout_anchor: Option<ReadingLayoutAnchor>,
     pending_actions: Vec<UiAction>,
 }
 
@@ -457,15 +465,23 @@ impl TuiApp {
         ) else {
             return false;
         };
+        self.reading_layout_anchor =
+            self.reading_layout
+                .block(&reading.block_cursor)
+                .map(|geometry| ReadingLayoutAnchor {
+                    block: reading.block_cursor.clone(),
+                    screen_row: geometry.rows.start.saturating_sub(scroll.offset),
+                    viewport_height,
+                });
         self.reading = Some(reading);
         self.render.transcript_cache.invalidate();
         self.preview.policy = PreviewPolicy::FollowReadingCursor;
         self.sync_reading_preview();
-        self.keep_reading_visible(scroll, viewport_height);
         true
     }
 
     pub fn exit_reading(&mut self, input: &mut InputState) {
+        self.reading_layout_anchor = None;
         if let Some(reading) = self.reading.take() {
             *input = reading.saved_input;
             self.render.transcript_cache.invalidate();
@@ -560,6 +576,26 @@ impl TuiApp {
                 })
         });
         self.select_preview(target);
+    }
+
+    pub(crate) fn clear_reading_layout_anchor(&mut self) {
+        self.reading_layout_anchor = None;
+    }
+
+    pub(crate) fn reconcile_reading_layout_anchor(&mut self, scroll: &mut ScrollState) {
+        let Some(anchor) = self.reading_layout_anchor.take() else {
+            return;
+        };
+        if self
+            .reading
+            .as_ref()
+            .is_some_and(|reading| reading.block_cursor == anchor.block)
+        {
+            if let Some(geometry) = self.reading_layout.block(&anchor.block) {
+                scroll.offset = geometry.rows.start.saturating_sub(anchor.screen_row);
+            }
+        }
+        self.keep_reading_visible(scroll, anchor.viewport_height);
     }
 
     fn keep_reading_visible(&self, scroll: &mut ScrollState, viewport_height: usize) {

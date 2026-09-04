@@ -311,10 +311,8 @@ impl PreviewPaneState {
         let identity_changed = self.target.as_ref().map(|target| target.id.as_str())
             != target.as_ref().map(|target| target.id.as_str());
         let target_changed = self.target != target;
-        if identity_changed {
-            self.scroll = 0;
-            self.reveal = None;
-            self.reveal_intent = target.as_ref().map_or(PreviewRevealIntent::Page, |target| {
+        let reveal_intent = target.as_ref().map_or(PreviewRevealIntent::Page, |target| {
+            if identity_changed {
                 if intent == PreviewRevealIntent::FreshLive
                     && self.seen_targets.insert(target.id.clone())
                 {
@@ -323,11 +321,25 @@ impl PreviewPaneState {
                     self.seen_targets.insert(target.id.clone());
                     PreviewRevealIntent::Page
                 }
-            });
+            } else if intent == PreviewRevealIntent::Page
+                || self.reveal_intent == PreviewRevealIntent::Page
+            {
+                PreviewRevealIntent::Page
+            } else {
+                PreviewRevealIntent::FreshLive
+            }
+        });
+        let reveal_mode_changed = self.reveal_intent != reveal_intent;
+        if identity_changed {
+            self.scroll = 0;
             self.work.rebuilds = self.work.rebuilds.saturating_add(1);
         } else if target_changed {
             self.work.patches = self.work.patches.saturating_add(1);
         }
+        if identity_changed || reveal_mode_changed {
+            self.reveal = None;
+        }
+        self.reveal_intent = reveal_intent;
         if target_changed {
             self.invalidate_layout();
         }
@@ -370,6 +382,8 @@ impl PreviewPaneState {
     /// draft page must never inherit the previous session's preview.
     pub fn clear(&mut self) {
         self.select_with_intent(None, PreviewRevealIntent::Page);
+        self.cache = PreviewCache::default();
+        self.invalidate_layout();
         self.seen_targets.clear();
     }
 
@@ -588,6 +602,26 @@ mod tests {
     }
 
     #[test]
+    fn page_intent_restarts_the_same_live_target_as_one_page() {
+        let mut pane = PreviewPaneState::default();
+        let target = PreviewTarget {
+            id: "reasoning".into(),
+            reference: PreviewRef::Inline {
+                key: PreviewKey("reasoning".into()),
+                revision: PreviewRevision(1),
+                content: PreviewContent::Reasoning("first\nsecond".into()),
+            },
+        };
+        pane.select_with_intent(Some(target.clone()), PreviewRevealIntent::FreshLive);
+        pane.reveal = Some(LineRevealTrack::default());
+
+        pane.select_with_intent(Some(target), PreviewRevealIntent::Page);
+
+        assert_eq!(pane.reveal_intent, PreviewRevealIntent::Page);
+        assert!(pane.reveal.is_none());
+    }
+
+    #[test]
     fn clear_discards_target_and_shows_empty_pane() {
         let mut pane = PreviewPaneState::default();
         pane.select(Some(deferred("a", "a", 1)));
@@ -600,6 +634,27 @@ mod tests {
             pane.scroll, 0,
             "clear resets scroll like an identity change"
         );
+        assert_eq!(
+            pane.reveal_intent,
+            PreviewRevealIntent::Page,
+            "empty Preview uses page intent"
+        );
+    }
+
+    #[test]
+    fn clear_discards_cached_session_content() {
+        let mut pane = PreviewPaneState::default();
+        let request = pane.select(Some(deferred("a", "a", 1))).unwrap();
+        pane.complete(
+            request.request_id,
+            request.key,
+            request.revision,
+            Ok(PreviewContent::PlainText("old".into())),
+        );
+
+        pane.clear();
+
+        assert!(pane.select(Some(deferred("a", "a", 1))).is_some());
     }
 
     #[test]

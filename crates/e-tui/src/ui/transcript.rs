@@ -1163,6 +1163,7 @@ fn render_transcript_impl(
             .saturating_sub(anchor);
         scroll.offset = scroll.offset.saturating_add(delta);
     }
+    state.reconcile_reading_layout_anchor(scroll);
     let len = state.render.transcript_cache.layout.total_rows();
     let bottom_rows = bottom_rows.min(screen_height);
     let follow = scroll.follow;

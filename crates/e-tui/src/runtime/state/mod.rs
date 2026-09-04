@@ -677,7 +677,11 @@ impl RuntimeState {
         self.render.activity_transitions.clear();
         self.render.transcript_reveals.clear();
         self.render.activity_frame = 0;
-        self.preview.reveal = None;
+        self.preview.clear();
+        self.clear_reading_layout_anchor();
+        self.reading = None;
+        self.reading_document = crate::ReadingDocument::default();
+        self.reading_layout = crate::ReadingLayout::default();
         #[cfg(test)]
         self.msgs.clear();
         self.projector = EventProjector::default();
@@ -879,6 +883,39 @@ mod tests {
             items: Vec::new(),
             preview: None,
         }
+    }
+
+    #[test]
+    fn session_reset_clears_preview_identity_and_freshness() {
+        let mut state = RuntimeState::default();
+        let target = crate::preview::PreviewTarget {
+            id: "shared-id".into(),
+            reference: PreviewRef::Deferred {
+                key: PreviewKey("shared-key".into()),
+                revision: PreviewRevision(1),
+            },
+        };
+        let request = state.preview.select(Some(target.clone())).unwrap();
+        state.preview.complete(
+            request.request_id,
+            request.key,
+            request.revision,
+            Ok(PreviewContent::Reasoning("old session".into())),
+        );
+        assert_eq!(
+            state.preview.reveal_intent,
+            crate::PreviewRevealIntent::FreshLive
+        );
+
+        state.reset_transcript();
+
+        assert!(state.preview.target.is_none());
+        assert_eq!(state.preview.state, crate::PreviewState::Empty);
+        assert!(state.preview.select(Some(target)).is_some());
+        assert_eq!(
+            state.preview.reveal_intent,
+            crate::PreviewRevealIntent::FreshLive
+        );
     }
 
     #[test]

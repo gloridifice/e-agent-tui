@@ -707,6 +707,63 @@ fn long_activity_run_folds_in_normal_mode_and_expands_in_reading_view() {
 }
 
 #[test]
+fn entering_reading_keeps_the_selected_block_anchored_when_a_fold_expands() {
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    force_message_only(&mut state);
+    for index in 0..20 {
+        state.transcript.append(
+            DisplayItem::Activity(crate::display::ActivityRow::root(
+                DisplayId::correlated("activity-anchor", &index.to_string()),
+                format!("tool-{index}"),
+            )),
+            None,
+        );
+    }
+    state.transcript.append(
+        DisplayItem::Block(crate::display::TranscriptBlock {
+            id: DisplayId::correlated("assistant-answer", "anchor"),
+            unit: None,
+            content: "done".into(),
+            format: crate::display::TranscriptFormat::Markdown,
+            tone: DisplayTone::Normal,
+            copy_source: "done".into(),
+            streaming: false,
+        }),
+        None,
+    );
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(80, 14)).unwrap();
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+
+    scroll.follow = false;
+    scroll.offset = 4;
+    assert!(state.enter_reading(&input, &mut scroll, 6));
+    let selected = state.reading.as_ref().unwrap().block_cursor.clone();
+    let folded_row = state.reading_layout.block(&selected).unwrap().rows.start;
+    let screen_row = folded_row.saturating_sub(scroll.offset);
+
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+
+    let expanded_row = state.reading_layout.block(&selected).unwrap().rows.start;
+    assert!(
+        expanded_row > folded_row,
+        "the selected block moves after expansion"
+    );
+    assert_eq!(
+        expanded_row.saturating_sub(scroll.offset),
+        screen_row,
+        "Reading entry preserves the selected block's viewport anchor"
+    );
+}
+
+#[test]
 fn streaming_tail_splice_replaces_the_whole_growing_markdown_suffix() {
     fn streaming_block(id: DisplayId, content: &str) -> DisplayItem {
         DisplayItem::Block(crate::display::TranscriptBlock {

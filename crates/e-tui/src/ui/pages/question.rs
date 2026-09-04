@@ -26,7 +26,7 @@ pub(super) fn render_question_page(
         .unwrap_or_else(|| crate::i18n::tr(language, "input_page.question.title"));
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("❯ ", Style::default().fg(theme.user)),
+            Span::styled("❯ ", Style::default().fg(theme.input.hint.fg)),
             Span::styled(title, Style::default().fg(theme.fg)),
             Span::styled(
                 format!("  ({}/{})", batch.current + 1, batch.questions.len()),
@@ -65,7 +65,7 @@ pub(super) fn render_question_page(
         rows.push(Line::from(vec![
             Span::styled(prefix, Style::default().fg(theme.user)),
             Span::styled(batch.draft.clone(), Style::default().fg(theme.fg)),
-            Span::styled(" ", Style::default().fg(theme.bg).bg(theme.fg)),
+            Span::styled("█", Style::default().fg(theme.user)),
         ]));
         if regions.body.width > 0 && regions.body.height > 0 {
             let y = regions.body.y + rows.len().saturating_sub(1) as u16;
@@ -87,11 +87,7 @@ pub(super) fn render_question_page(
             let id = FocusId::new(format!("question:{}:option:{index}", question.id));
             let focused = focus.is(&id);
             let selected = batch.is_option_selected(index);
-            let style = if focused {
-                Style::default().fg(theme.fg).bg(theme.bg)
-            } else {
-                Style::default().fg(theme.fg)
-            };
+            let style = input_page_item_style(theme, focused, selected);
             let marker = if selected { "● " } else { "○ " };
             let mut text = option.label.clone();
             if let Some(description) = option
@@ -103,12 +99,7 @@ pub(super) fn render_question_page(
                 text.push_str(description);
             }
             rows.push(Line::from(vec![
-                Span::styled(
-                    marker,
-                    Style::default()
-                        .fg(if selected { theme.ok } else { theme.dim })
-                        .bg(style.bg.unwrap_or(theme.bg_soft)),
-                ),
+                Span::styled(marker, style),
                 Span::styled(trim_to_width(&text, width.saturating_sub(2)), style),
             ]));
         }

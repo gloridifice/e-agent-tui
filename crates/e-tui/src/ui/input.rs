@@ -7,51 +7,23 @@ pub(super) fn render_input(
     input: &InputState,
     theme: &Theme,
     padding: u16,
-    input_style: InputStyle,
 ) -> Option<Position> {
     let bark = Style::default().fg(theme.input.hint.fg);
-    let (inner, surface_style) = match input_style {
-        InputStyle::Default => {
-            let block = Block::default()
-                .style(theme.input.background.style())
-                .padding(Padding::new(padding, padding, 1, 1));
-            let inner = block.inner(area);
-            frame.render_widget(block, area);
-            (inner, theme.input.background.style())
-        }
-        InputStyle::Square | InputStyle::Rounded => {
-            let border_type = if input_style == InputStyle::Rounded {
-                BorderType::Rounded
-            } else {
-                BorderType::Plain
-            };
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .border_type(border_type)
-                .border_style(bark)
-                .padding(Padding::new(padding, padding, 0, 0));
-            let inner = block.inner(area);
-            frame.render_widget(block, area);
-            (inner, Style::default())
-        }
-        InputStyle::Line => {
-            render_line_chrome(frame, area, theme);
-            let horizontal = padding.saturating_mul(2).saturating_add(1);
-            let inner = ratatui::layout::Rect::new(
-                area.x.saturating_add(padding).saturating_add(1),
-                area.y.saturating_add(1),
-                area.width.saturating_sub(horizontal),
-                area.height.saturating_sub(2),
-            );
-            if inner.height > 0 && area.width > 0 {
-                frame.render_widget(
-                    Paragraph::new("❯").style(bark),
-                    ratatui::layout::Rect::new(area.x, inner.y, 1, 1),
-                );
-            }
-            (inner, Style::default())
-        }
-    };
+    render_ruled_chrome(frame, area, theme);
+    let horizontal = padding.saturating_mul(2).saturating_add(1);
+    let inner = ratatui::layout::Rect::new(
+        area.x.saturating_add(padding).saturating_add(1),
+        area.y.saturating_add(1),
+        area.width.saturating_sub(horizontal),
+        area.height.saturating_sub(2),
+    );
+    if inner.height > 0 && area.width > 0 {
+        frame.render_widget(
+            Paragraph::new("❯").style(bark),
+            ratatui::layout::Rect::new(area.x, inner.y, 1, 1),
+        );
+    }
+    let surface_style = Style::default();
 
     if let Some(search) = &input.search {
         // Ctrl+R history search strip.
@@ -246,7 +218,7 @@ fn synthetic_cursor_style(theme: &Theme) -> Style {
     Style::default().fg(fill)
 }
 
-fn render_line_chrome(frame: &mut Frame, area: ratatui::layout::Rect, theme: &Theme) {
+fn render_ruled_chrome(frame: &mut Frame, area: ratatui::layout::Rect, theme: &Theme) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -288,7 +260,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                render_input(frame, frame.area(), &input, &theme, 0, InputStyle::Line);
+                render_input(frame, frame.area(), &input, &theme, 0);
             })
             .unwrap();
         assert_eq!(terminal.backend().buffer()[(9, 1)].symbol(), "█");
@@ -298,7 +270,7 @@ mod tests {
         input.cursor -= 1;
         terminal
             .draw(|frame| {
-                render_input(frame, frame.area(), &input, &theme, 0, InputStyle::Line);
+                render_input(frame, frame.area(), &input, &theme, 0);
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
@@ -319,14 +291,17 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(48, 3)).unwrap();
         terminal
             .draw(|frame| {
-                render_input(frame, frame.area(), &input, &theme, 0, InputStyle::Default);
+                render_input(frame, frame.area(), &input, &theme, 1);
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
         let row = (0..48).map(|x| buffer[(x, 1)].symbol()).collect::<String>();
-        assert!(row.starts_with("[Image clip.png]"), "rendered row: {row:?}");
+        assert!(
+            row.starts_with("❯ [Image clip.png]"),
+            "rendered row: {row:?}"
+        );
         assert_eq!(
-            buffer[(0, 1)].fg,
+            buffer[(2, 1)].fg,
             theme.input.placeholder.fg,
             "the complete block uses the atomic-placeholder role"
         );

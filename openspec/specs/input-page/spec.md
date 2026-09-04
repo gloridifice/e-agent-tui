@@ -14,12 +14,16 @@ The client SHALL represent `/settings`, `/login`, `/model`, and `/theme` as mutu
 - **WHEN** the active Input Page is closed
 - **THEN** the ordinary input area returns with its prior buffer and the transcript and scroll state unchanged
 
-### Requirement: Shared replacement layout
-Every Input Page SHALL render without a floating window or border in the bottom page area used in place of the input bar. It SHALL use exactly one blank row of top and bottom inner padding and exactly two blank columns of left and right inner padding around all page content.
+### Requirement: Shared ruled replacement layout
+Every Input Page SHALL render in the bottom page area used in place of the input bar, without a floating window, `Clear`, or background fill. A shared full-width ruled shell SHALL place a prompt-style command header between horizontal rules; page-internal dividers SHALL use the Umber semantic tone.
 
 #### Scenario: Render a page at normal terminal size
 - **WHEN** any Input Page is rendered
-- **THEN** its background fills the replacement area, its content begins after two horizontal columns and one vertical row of padding, and no border or centered overlay is drawn
+- **THEN** the terminal background remains visible, full-width rules frame the prompt-style header and page, and no floating or centered overlay is drawn
+
+#### Scenario: Render page interaction states
+- **WHEN** an actionable item is focused or a value is selected
+- **THEN** focused text uses the Sage semantic tone, selected text uses the Coral semantic tone, and neither state adds a background fill
 
 #### Scenario: Render on a small terminal
 - **WHEN** an Input Page is rendered in a terminal too small for all body rows
@@ -100,7 +104,7 @@ The login Input Page SHALL retain the API key, Account, and Proxy subflows while
 - **THEN** the client sends the existing `LoginProxyDelete` message for that proxy and returns to the proxy list
 
 ### Requirement: Model page interaction
-The model Input Page SHALL render providers and models as a borderless two-column page governed by one focus. Activating a provider SHALL display that provider's models and move focus to its current or first available model. Activating a model SHALL send the existing model-selection message and close the page. The active model marker SHALL be visually distinct from focus.
+The model Input Page SHALL render providers and models as a transparent two-column page with an Umber divider, governed by one focus. Activating a provider SHALL display that provider's models and move focus to its current or first available model. Activating a model SHALL send the existing model-selection message and close the page. The active model marker SHALL be visually distinct from focus.
 
 #### Scenario: Choose provider and model
 - **WHEN** the user activates a provider and then activates one of its models

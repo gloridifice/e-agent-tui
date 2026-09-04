@@ -1,10 +1,10 @@
-//! Ratatui rendering: status bar, transcript, and configurable input bar.
+//! Ratatui rendering: status bar, transcript, and ruled input bar.
 
 use ratatui::{
     layout::{Constraint, Layout, Position},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, BorderType, Borders, Padding, Paragraph},
+    widgets::{Block, Padding, Paragraph},
     Frame,
 };
 use unicode_width::UnicodeWidthStr;
@@ -13,7 +13,7 @@ use crate::{
     app::{breathing_color, TuiApp},
     cache::{MessageLineRange, TranscriptRenderCache},
     command_catalog::CommandSource,
-    config::{InputStyle, Theme, ThinkingDisplayMode},
+    config::{Theme, ThinkingDisplayMode},
     display::{
         allocate_accessories, ActivityRow, CardRole, ContentCard, DisplayItem, DisplayTone,
         InputAccessory, InputAccessoryKind, ThinkingNode, TranscriptBlock, TranscriptFormat,
@@ -122,12 +122,11 @@ fn bottom_area_rows(
     input: &InputState,
     input_page_open: bool,
     padding: usize,
-    input_style: InputStyle,
 ) -> u16 {
     if input_page_open {
         ((area_height as u32) * 2 / 3).min(area_height.saturating_sub(3) as u32) as u16
     } else {
-        (input_rows_for_style(input, area_width as usize, padding, input_style) + 2) as u16
+        (input_rows(input, area_width as usize, padding) + 2) as u16
     }
 }
 
@@ -176,7 +175,6 @@ pub fn transcript_view_height(
         input,
         input_page_open,
         state.config.user_input_padding,
-        state.config.input_style_mode(),
     );
     let accessory_budget = size.height.saturating_sub(1 + bottom_rows + 3);
     let accessory_rows: u16 =
@@ -309,7 +307,6 @@ pub(crate) fn render_main_pane_with_cursor(
         input,
         input_page_open,
         state.config.user_input_padding,
-        state.config.input_style_mode(),
     );
     let bottom = Constraint::Length(bottom_rows);
     let accessories = if drafting {
@@ -407,7 +404,6 @@ pub(crate) fn render_main_pane_with_cursor(
                 input,
                 theme,
                 state.config.user_input_padding as u16,
-                state.config.input_style_mode(),
             )
         };
         region::status::render(frame, chunks[8], state, scroll, theme);
@@ -516,7 +512,6 @@ pub(crate) fn render_main_pane_with_cursor(
             input,
             theme,
             state.config.user_input_padding as u16,
-            state.config.input_style_mode(),
         );
         y = y.saturating_add(bottom_rows);
     }
@@ -557,18 +552,9 @@ mod main_pane_tests;
 /// can occupy several rows), and `render_input`'s window scrolls within it
 /// once the content exceeds the cap.
 fn input_rows(input: &InputState, wrap_width: usize, padding: usize) -> usize {
-    input_rows_for_style(input, wrap_width, padding, InputStyle::Default)
-}
-
-fn input_rows_for_style(
-    input: &InputState,
-    wrap_width: usize,
-    padding: usize,
-    input_style: InputStyle,
-) -> usize {
     let inner = wrap_width
         .saturating_sub(padding.saturating_mul(2))
-        .saturating_sub(input_style.horizontal_chrome())
+        .saturating_sub(1)
         .max(1);
     let display = input.display_text();
     display

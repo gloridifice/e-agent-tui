@@ -12,10 +12,11 @@ pub(super) fn render_model_page(
     let regions = input_page_shell(frame, area, theme);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("❯ ", Style::default().fg(theme.user)),
+            Span::styled("❯ ", Style::default().fg(theme.input.hint.fg)),
+            Span::styled("/model", Style::default().fg(theme.fg)),
             Span::styled(
-                crate::i18n::tr(language, "input_page.model.title"),
-                Style::default().fg(theme.fg),
+                format!("  {}", crate::i18n::tr(language, "input_page.model.title")),
+                Style::default().fg(theme.dim),
             ),
         ])),
         regions.header,
@@ -29,7 +30,7 @@ pub(super) fn render_model_page(
     } else {
         let columns = Layout::horizontal([
             Constraint::Percentage(38),
-            Constraint::Length(2),
+            Constraint::Length(1),
             Constraint::Min(1),
         ])
         .split(regions.body);
@@ -45,18 +46,9 @@ pub(super) fn render_model_page(
         for provider in page.providers.iter().skip(viewport.start).take(visible) {
             let id = FocusId::new(format!("provider:{}", provider.id));
             let active = page.active_provider.as_deref() == Some(provider.id.as_str());
-            let style = if focus.is(&id) {
-                Style::default().fg(theme.fg).bg(theme.bg)
-            } else {
-                Style::default().fg(theme.fg)
-            };
+            let style = input_page_item_style(theme, focus.is(&id), active);
             providers.push(Line::from(vec![
-                Span::styled(
-                    if active { "● " } else { "○ " },
-                    Style::default()
-                        .fg(if active { theme.ok } else { theme.dim })
-                        .bg(style.bg.unwrap_or(theme.bg_soft)),
-                ),
+                Span::styled(if active { "● " } else { "○ " }, style),
                 Span::styled(
                     trim_to_width(&provider.name, columns[0].width.saturating_sub(2) as usize),
                     style,
@@ -86,18 +78,9 @@ pub(super) fn render_model_page(
             let selected = page.current.as_ref().is_some_and(|(provider, current)| {
                 provider == active_provider && current == &model.id
             });
-            let style = if focus.is(&id) {
-                Style::default().fg(theme.fg).bg(theme.bg)
-            } else {
-                Style::default().fg(theme.fg)
-            };
+            let style = input_page_item_style(theme, focus.is(&id), selected);
             model_rows.push(Line::from(vec![
-                Span::styled(
-                    if selected { "● " } else { "○ " },
-                    Style::default()
-                        .fg(if selected { theme.ok } else { theme.dim })
-                        .bg(style.bg.unwrap_or(theme.bg_soft)),
-                ),
+                Span::styled(if selected { "● " } else { "○ " }, style),
                 Span::styled(
                     trim_to_width(&model.name, columns[2].width.saturating_sub(2) as usize),
                     style,
@@ -111,6 +94,11 @@ pub(super) fn render_model_page(
             )));
         }
         frame.render_widget(Paragraph::new(model_rows), columns[2]);
+        for y in regions.body.y..regions.body.bottom() {
+            if let Some(cell) = frame.buffer_mut().cell_mut(Position::new(columns[1].x, y)) {
+                cell.set_symbol("│").set_fg(theme.diff.separator.fg);
+            }
+        }
     }
     frame.render_widget(
         Paragraph::new(crate::i18n::tr(language, "input_page.model.footer"))

@@ -210,10 +210,10 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
 - **Overlays and Input Page rendering**: a command prompt that truly draws over the transcript must first call
   `frame.render_widget(Clear, rect)` before drawing the background, otherwise underlying text bleeds through
   (there is a test `suggest_popup_is_opaque_over_transcript`). `/settings` `/login` `/model` `/theme` `/resume`
-  are not overlays: they are uniformly handled by `InputPageSession` replacing the input area, no border, no
-  `Clear`, with the shared shell fixed at 1 row top/bottom and 2 columns left/right padding. Within the Ash shell,
-  settings paints the full category strip and right-side value pane with the base (Night) surface; the strip is
-  display-only, while value edit focus on the Night pane uses the panel (Ash) surface for contrast.
+  are not overlays: they are uniformly handled by `InputPageSession` replacing the input area, with no `Clear` or
+  background fill. The shared shell uses full-width Bark rules with Umber ends around a prompt-style command header;
+  page-internal dividers are Umber, focused text is Sage, and selected text is Coral. Settings keeps its category
+  strip display-only and renders labels/descriptions and values as a transparent two-column ruled grid.
 - **Reading View and copy semantics**: `Ctrl+Y` enters Reading View (`Ctrl+V` remains reserved for paste);
   `Ctrl+P` toggles the existing full-screen Preview fallback when the responsive split is too narrow; Preview-only
   presentation has no pane separator. Block mode uses
@@ -364,9 +364,8 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   `Config.theme` stores the theme name; `message_pane_percent` is the sole persisted pane-width authority, defaults
   to 60.00%, and is validated to 25.00%–100.00%; pane columns are derived from the current terminal width.
   `user_input_padding` defaults to one column so user cards and the composer match the one-column Main page edge,
-  while an explicit Settings value remains supported. `input_style` defaults to `default` (the existing filled,
-  borderless composer) and also accepts `square`, `rounded`, and `line`; the two box styles use Bark borders with no
-  composer fill, while `line` uses Bark rules and prompt arrow, Umber at the two cells on each rule end, and no fill.
+  while an explicit Settings value remains supported. The composer always uses the transparent ruled-prompt chrome:
+  Bark horizontal rules and prompt arrow with Umber at the two cells on each rule end.
   The obsolete `main_pane_width` key is ignored by the known-key overlay rather than migrated without a terminal width;
   rendering does zero disk reads. Themes are two-layer TOML: an open
   `[colors]` allows arbitrary color names, and fixed `[semantics.*]` (surface/markdown/markdown_weak/code/code_weak/diff/input/

@@ -13,10 +13,11 @@ pub(super) fn render_effort_page(
     let regions = input_page_shell(frame, area, theme);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("❯ ", Style::default().fg(theme.user)),
+            Span::styled("❯ ", Style::default().fg(theme.input.hint.fg)),
+            Span::styled("/effort", Style::default().fg(theme.fg)),
             Span::styled(
-                crate::i18n::tr(language, "input_page.effort.title"),
-                Style::default().fg(theme.fg),
+                format!("  {}", crate::i18n::tr(language, "input_page.effort.title")),
+                Style::default().fg(theme.dim),
             ),
         ])),
         regions.header,
@@ -52,12 +53,8 @@ pub(super) fn render_effort_page(
         let mut rows = Vec::new();
         for effort in page.efforts.iter().skip(viewport.start).take(visible) {
             let id = FocusId::new(format!("effort:{}", effort.id));
-            let style = if focus.is(&id) {
-                Style::default().fg(theme.fg).bg(theme.bg)
-            } else {
-                Style::default().fg(theme.fg)
-            };
             let selected = explicit == Some(effort.id.as_str());
+            let style = input_page_item_style(theme, focus.is(&id), selected);
             let default =
                 explicit.is_none() && page.default_effort.as_deref() == Some(effort.id.as_str());
             let mut label = effort.name.clone();
@@ -65,12 +62,7 @@ pub(super) fn render_effort_page(
                 label.push_str(&crate::i18n::tr(language, "input_page.effort.default"));
             }
             rows.push(Line::from(vec![
-                Span::styled(
-                    if selected { "● " } else { "○ " },
-                    Style::default()
-                        .fg(if selected { theme.ok } else { theme.dim })
-                        .bg(style.bg.unwrap_or(theme.bg_soft)),
-                ),
+                Span::styled(if selected { "● " } else { "○ " }, style),
                 Span::styled(
                     trim_to_width(&label, regions.body.width.saturating_sub(2) as usize),
                     style,

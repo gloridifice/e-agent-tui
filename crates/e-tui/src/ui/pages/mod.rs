@@ -24,23 +24,49 @@ fn input_page_shell(
     area: ratatui::layout::Rect,
     theme: &Theme,
 ) -> InputPageRegions {
-    let block = Block::default()
-        .style(Style::default().bg(theme.bg_soft))
-        .padding(Padding::new(2, 2, 1, 1));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
     let rows = Layout::vertical([
+        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Min(0),
         Constraint::Length(1),
+        Constraint::Length(1),
     ])
-    .split(inner);
+    .split(area);
+    render_ruled_line(frame, rows[0], theme);
+    render_ruled_line(frame, rows[2], theme);
+    render_ruled_line(frame, rows[5], theme);
     InputPageRegions {
-        header: rows[0],
-        body: rows[2],
-        footer: rows[3],
+        header: rows[1],
+        body: rows[3],
+        footer: rows[4],
     }
+}
+
+fn render_ruled_line(frame: &mut Frame, area: ratatui::layout::Rect, theme: &Theme) {
+    for offset in 0..area.width {
+        let color = if offset < 2 || offset >= area.width.saturating_sub(2) {
+            theme.diff.separator.fg
+        } else {
+            theme.input.hint.fg
+        };
+        if let Some(cell) = frame
+            .buffer_mut()
+            .cell_mut(Position::new(area.x.saturating_add(offset), area.y))
+        {
+            cell.set_symbol("─").set_fg(color);
+        }
+    }
+}
+
+fn input_page_item_style(theme: &Theme, focused: bool, selected: bool) -> Style {
+    Style::default().fg(if selected {
+        theme.coral
+    } else if focused {
+        theme.ok
+    } else {
+        theme.fg
+    })
 }
 
 pub(super) fn render_input_page(

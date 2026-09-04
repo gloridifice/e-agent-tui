@@ -12,10 +12,11 @@ pub(super) fn render_theme_page(
     let regions = input_page_shell(frame, area, theme);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("❯ ", Style::default().fg(theme.user)),
+            Span::styled("❯ ", Style::default().fg(theme.input.hint.fg)),
+            Span::styled("/theme", Style::default().fg(theme.fg)),
             Span::styled(
-                crate::i18n::tr(language, "input_page.theme.title"),
-                Style::default().fg(theme.fg),
+                format!("  {}", crate::i18n::tr(language, "input_page.theme.title")),
+                Style::default().fg(theme.dim),
             ),
         ])),
         regions.header,
@@ -36,18 +37,9 @@ pub(super) fn render_theme_page(
     {
         let id = FocusId::new(format!("theme:{}", option.name));
         let selected = option.name == page.current;
-        let style = if focus.is(&id) {
-            Style::default().fg(theme.fg).bg(theme.bg)
-        } else {
-            Style::default().fg(theme.fg)
-        };
+        let style = input_page_item_style(theme, focus.is(&id), selected);
         let mut spans = vec![
-            Span::styled(
-                if selected { "● " } else { "○ " },
-                Style::default()
-                    .fg(if selected { theme.ok } else { theme.dim })
-                    .bg(style.bg.unwrap_or(theme.bg_soft)),
-            ),
+            Span::styled(if selected { "● " } else { "○ " }, style),
             Span::styled(format!("{:<18}", option.name), style),
         ];
         for color in [
@@ -58,7 +50,7 @@ pub(super) fn render_theme_page(
             option.palette.err,
             option.palette.running,
         ] {
-            spans.push(Span::styled("  ", Style::default().bg(color)));
+            spans.push(Span::styled("██", Style::default().fg(color)));
             spans.push(Span::raw(" "));
         }
         rows.push(Line::from(spans));

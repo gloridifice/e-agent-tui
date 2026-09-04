@@ -34,8 +34,9 @@ pub(super) fn render_login_scrolled(
         regions.header.x,
         regions.header.y,
         &Line::from(vec![
-            Span::styled("❯ ", Style::default().fg(theme.user).bg(theme.bg_soft)),
-            Span::styled(title, Style::default().fg(theme.fg).bg(theme.bg_soft)),
+            Span::styled("❯ ", Style::default().fg(theme.input.hint.fg)),
+            Span::styled("/login", Style::default().fg(theme.fg)),
+            Span::styled(format!("  {title}"), Style::default().fg(theme.dim)),
         ]),
         regions.header.width,
     );
@@ -78,7 +79,7 @@ pub(super) fn render_login_scrolled(
                     i == login.pos,
                     false,
                     &label,
-                    Span::styled(hint, Style::default().fg(theme.dim).bg(theme.bg_soft)),
+                    Span::styled(hint, Style::default().fg(theme.dim)),
                     theme,
                 );
             }
@@ -97,12 +98,12 @@ pub(super) fn render_login_scrolled(
                             "input_page.login.configured",
                             &[("hint", hint.to_owned())],
                         ),
-                        Style::default().fg(theme.ok).bg(theme.bg_soft),
+                        Style::default().fg(theme.ok),
                     )
                 } else {
                     Span::styled(
                         crate::i18n::tr(language, "input_page.login.not_configured"),
-                        Style::default().fg(theme.dim).bg(theme.bg_soft),
+                        Style::default().fg(theme.dim),
                     )
                 };
                 login_list_row(
@@ -122,7 +123,7 @@ pub(super) fn render_login_scrolled(
                     item_area.y,
                     &Line::from(Span::styled(
                         crate::i18n::tr(language, "input_page.login.no_providers"),
-                        Style::default().fg(theme.dim).bg(theme.bg_soft),
+                        Style::default().fg(theme.dim),
                     )),
                     item_area.width,
                 );
@@ -134,10 +135,7 @@ pub(super) fn render_login_scrolled(
             buffer.set_line(
                 area.x,
                 item_area.y,
-                &Line::from(Span::styled(
-                    shown,
-                    Style::default().fg(theme.ok).bg(theme.bg),
-                )),
+                &Line::from(Span::styled(shown, Style::default().fg(theme.ok))),
                 item_area.width,
             );
         }
@@ -154,10 +152,7 @@ pub(super) fn render_login_scrolled(
                     i == login.pos,
                     false,
                     &p.name,
-                    Span::styled(
-                        p.base_url.clone(),
-                        Style::default().fg(theme.dim).bg(theme.bg_soft),
-                    ),
+                    Span::styled(p.base_url.clone(), Style::default().fg(theme.dim)),
                     theme,
                 );
             }
@@ -173,7 +168,7 @@ pub(super) fn render_login_scrolled(
                     &crate::i18n::tr(language, "input_page.login.new_proxy"),
                     Span::styled(
                         crate::i18n::tr(language, "input_page.login.new_proxy_description"),
-                        Style::default().fg(theme.user).bg(theme.bg_soft),
+                        Style::default().fg(theme.user),
                     ),
                     theme,
                 );
@@ -200,10 +195,7 @@ pub(super) fn render_login_scrolled(
                     } else {
                         buf.to_string()
                     };
-                    Span::styled(
-                        format!("{shown}█"),
-                        Style::default().fg(theme.ok).bg(theme.bg),
-                    )
+                    Span::styled(format!("{shown}█"), Style::default().fg(theme.ok))
                 } else {
                     let v = match i {
                         2 => crate::login::PROTOCOLS
@@ -225,7 +217,7 @@ pub(super) fn render_login_scrolled(
                     } else {
                         v
                     };
-                    Span::styled(shown, Style::default().fg(theme.dim).bg(theme.bg_soft))
+                    Span::styled(shown, Style::default().fg(theme.dim))
                 };
                 login_list_row(
                     buffer,
@@ -250,7 +242,7 @@ pub(super) fn render_login_scrolled(
                     &crate::i18n::tr(language, "input_page.login.save"),
                     Span::styled(
                         crate::i18n::tr(language, "input_page.login.save_description"),
-                        Style::default().fg(theme.user).bg(theme.bg_soft),
+                        Style::default().fg(theme.user),
                     ),
                     theme,
                 );
@@ -266,7 +258,7 @@ pub(super) fn render_login_scrolled(
                         "input_page.login.delete_prompt",
                         &[("name", name.clone())],
                     ),
-                    Style::default().fg(theme.fg).bg(theme.bg_soft),
+                    Style::default().fg(theme.fg),
                 )),
                 item_area.width,
             );
@@ -280,7 +272,7 @@ pub(super) fn render_login_scrolled(
                     &crate::i18n::tr(language, "common.cancel"),
                     Span::styled(
                         crate::i18n::tr(language, "input_page.login.keep_proxy"),
-                        Style::default().fg(theme.dim).bg(theme.bg_soft),
+                        Style::default().fg(theme.dim),
                     ),
                     theme,
                 );
@@ -295,7 +287,7 @@ pub(super) fn render_login_scrolled(
                     &crate::i18n::tr(language, "common.delete"),
                     Span::styled(
                         crate::i18n::tr(language, "input_page.login.delete_permanently"),
-                        Style::default().fg(theme.err).bg(theme.bg_soft),
+                        Style::default().fg(theme.err),
                     ),
                     theme,
                 );
@@ -336,10 +328,7 @@ pub(super) fn render_login_scrolled(
     buffer.set_line(
         regions.footer.x,
         regions.footer.y,
-        &Line::from(Span::styled(
-            footer,
-            Style::default().fg(fg).bg(theme.bg_soft),
-        )),
+        &Line::from(Span::styled(footer, Style::default().fg(fg))),
         regions.footer.width,
     );
 }
@@ -355,21 +344,15 @@ fn login_list_row(
     value: Span<'static>,
     theme: &Theme,
 ) {
-    let name_bg = if focused && !editing {
-        theme.bg
-    } else {
-        theme.bg_soft
-    };
+    let style = input_page_item_style(theme, focused, false);
     let label_width = UnicodeWidthStr::width(label);
-    let mut spans: Vec<Span<'static>> = vec![Span::styled(
-        label.to_string(),
-        Style::default().fg(theme.fg).bg(name_bg),
-    )];
+    let mut spans: Vec<Span<'static>> = vec![Span::styled(label.to_string(), style)];
     if label_width < 12 {
-        spans.push(Span::styled(
-            " ".repeat(12 - label_width),
-            Style::default().fg(theme.fg).bg(name_bg),
-        ));
+        spans.push(Span::styled(" ".repeat(12 - label_width), style));
+    }
+    let mut value = value;
+    if focused || editing {
+        value.style = value.style.fg(theme.ok);
     }
     spans.push(value);
     let line = Line::from(spans);

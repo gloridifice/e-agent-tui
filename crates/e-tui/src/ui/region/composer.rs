@@ -3,7 +3,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::{config::InputStyle, input::InputState, theme::Theme};
+use crate::{input::InputState, theme::Theme};
 
 pub(crate) fn render(
     frame: &mut Frame,
@@ -11,7 +11,6 @@ pub(crate) fn render(
     input: &InputState,
     theme: &Theme,
     horizontal_padding: u16,
-    input_style: InputStyle,
 ) -> Option<Position> {
-    super::super::input::render_input(frame, area, input, theme, horizontal_padding, input_style)
+    super::super::input::render_input(frame, area, input, theme, horizontal_padding)
 }

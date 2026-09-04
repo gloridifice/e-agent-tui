@@ -36,12 +36,13 @@ fn overlays() -> RenderOverlays<'static> {
 
 /// Layout inputs of the composer text area for a terminal of `width`
 /// columns, derived from the live pane configuration instead of a hardcoded
-/// default percentage: the page starts two columns in (page margin + input
-/// gutter) and the editable text spans `page_width - 2` columns.
+/// default percentage: the page starts three columns in (page margin,
+/// prompt, and input gutter) and the editable text spans `page_width - 3`
+/// columns.
 fn composer_text_area(state: &TuiApp, width: u16) -> (usize, usize) {
     let page = usize::from(crate::ui::input_bar_width(width, state));
-    let inner = page.saturating_sub(2);
-    (2, inner)
+    let inner = page.saturating_sub(3);
+    (3, inner)
 }
 
 /// Column of the pane separator for a terminal of `width` columns under the
@@ -98,6 +99,10 @@ fn find_text(buffer: &Buffer, needle: &str) -> Option<(u16, u16)> {
         }
     }
     None
+}
+
+fn row_slice(row: &str, start: usize, width: usize) -> String {
+    row.chars().skip(start).take(width).collect()
 }
 
 #[test]
@@ -247,8 +252,9 @@ fn input_bar_paste_block_renders_placeholder_between_editable_text() {
                 (15u16..22).map(row).collect::<Vec<_>>()
             )
         });
-    let text = row(text_row);
-    let start_x = text.len() - text.trim_start().len();
+    let start_x = find_text(buffer, expected)
+        .expect("placeholder content is visible")
+        .0 as usize;
     // Placeholder characters use the Rose placeholder tone; typed text Mist.
     let placeholder_fg = theme.input.placeholder.fg;
     let text_fg = theme.input.text.fg;
@@ -311,33 +317,38 @@ fn input_bar_box_grows_with_wrapped_rows_and_keeps_cursor_visible() {
     for offset in 0..(200 / inner).min(4) {
         let y = box_top + 1 + offset as u16;
         assert_eq!(
-            &row(y)[text_x..text_x + inner],
+            row_slice(&row(y), text_x, inner),
             "x".repeat(inner),
             "full text row {y}"
         );
     }
     assert_eq!(
-        &row(last_y)[text_x..text_x + tail],
+        row_slice(&row(last_y), text_x, tail),
         "x".repeat(tail),
         "cursor row shows the tail chunk"
     );
-    assert_eq!(row(last_y + 1).trim(), "", "bottom padding row of the box");
+    assert!(
+        row(last_y + 1)
+            .trim()
+            .chars()
+            .all(|character| character == '─'),
+        "bottom rule of the composer"
+    );
     assert_eq!(
         anchor,
         Some(Position::new((text_x + tail) as u16, last_y)),
         "IME anchor sits on the cursor row inside the text area"
     );
-    // The reverse-video-style cursor block is drawn at the end of the tail
-    // chunk (ferra cursor = fg night / bg mist).
     assert_eq!(
-        buffer[((text_x + tail) as u16, last_y)].bg,
+        buffer[((text_x + tail) as u16, last_y)].fg,
         theme
             .input
             .cursor
             .bg
-            .expect("ferra cursor has a background"),
+            .expect("ferra cursor has a fill color"),
         "drawn cursor on the wrapped cursor row"
     );
+    assert_eq!(buffer[((text_x + tail) as u16, last_y)].bg, Color::Reset);
 }
 
 #[test]
@@ -373,27 +384,34 @@ fn input_bar_full_final_row_keeps_cursor_out_of_bottom_padding() {
     for offset in 0..180 / inner {
         let y = box_top + 1 + offset as u16;
         assert_eq!(
-            &row(y)[text_x..text_x + inner],
+            row_slice(&row(y), text_x, inner),
             "x".repeat(inner),
             "full text row {y}"
         );
     }
     assert_eq!(
-        &row(last_y)[text_x..text_x + tail],
+        row_slice(&row(last_y), text_x, tail),
         "x".repeat(tail),
         "tail row stays inside the text area"
     );
-    assert_eq!(row(last_y + 1).trim(), "", "bottom padding row stays blank");
+    assert!(
+        row(last_y + 1)
+            .trim()
+            .chars()
+            .all(|character| character == '─'),
+        "bottom rule stays intact"
+    );
     assert_eq!(anchor, Some(Position::new((text_x + tail) as u16, last_y)));
     assert_eq!(
-        buffer[((text_x + tail) as u16, last_y)].bg,
+        buffer[((text_x + tail) as u16, last_y)].fg,
         theme
             .input
             .cursor
             .bg
-            .expect("ferra cursor has a background"),
+            .expect("ferra cursor has a fill color"),
         "cursor block is patched into the right gutter on the last text row"
     );
+    assert_eq!(buffer[((text_x + tail) as u16, last_y)].bg, Color::Reset);
 }
 
 #[test]
@@ -429,13 +447,13 @@ fn input_bar_multiline_wrapped_rows_keep_cursor_row_in_box() {
     for offset in 0..4 {
         let y = box_top + 1 + offset as u16;
         assert_eq!(
-            &row(y)[text_x..text_x + inner],
+            row_slice(&row(y), text_x, inner),
             "y".repeat(inner),
             "visible row {y}"
         );
     }
     assert_eq!(
-        &row(last_y)[text_x..text_x + tail],
+        row_slice(&row(last_y), text_x, tail),
         "y".repeat(tail),
         "cursor row shows the tail chunk"
     );
@@ -478,17 +496,17 @@ fn input_bar_fits_all_wrapped_rows_when_they_fit_the_box() {
     let box_top = geo.box_top;
     let last_y = geo.last_y;
     assert_eq!(
-        &row(box_top + 1)[text_x..text_x + inner],
+        row_slice(&row(box_top + 1), text_x, inner),
         "z".repeat(inner),
         "row 1 from the top"
     );
     assert_eq!(
-        &row(box_top + 2)[text_x..text_x + inner],
+        row_slice(&row(box_top + 2), text_x, inner),
         "z".repeat(inner),
         "row 2 from the top"
     );
     assert_eq!(
-        &row(last_y)[text_x..text_x + tail],
+        row_slice(&row(last_y), text_x, tail),
         "z".repeat(tail),
         "row 3 from the top"
     );
@@ -499,11 +517,11 @@ fn input_bar_fits_all_wrapped_rows_when_they_fit_the_box() {
 fn input_box_rows_follow_wrapped_content() {
     let config = crate::config::Config::default();
     let mut input = InputState::new(&config);
-    // 40-column bar with a 2-column gutter on each side → inner 36.
+    // 40-column bar with 2-column gutters and one prompt column → inner 35.
     assert_eq!(input_rows(&input, 40, 2), 1, "empty input is one row");
-    input.buf = "x".repeat(36);
+    input.buf = "x".repeat(35);
     assert_eq!(input_rows(&input, 40, 2), 1, "exactly one row fits");
-    input.buf = "x".repeat(37);
+    input.buf = "x".repeat(36);
     assert_eq!(input_rows(&input, 40, 2), 2, "one overflow column wraps");
     input.buf = "x".repeat(200);
     assert_eq!(input_rows(&input, 40, 2), INPUT_MAX_ROWS, "cap at 5 rows");
@@ -542,18 +560,18 @@ fn input_bar_word_wrap_keeps_cursor_anchored_after_consumed_space() {
             .collect::<String>()
     };
     assert_eq!(
-        &row(18)[2..46],
+        row_slice(&row(18), 3, 44),
         "aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa",
         "first wrapped row keeps the nine fitting words"
     );
     assert_eq!(
-        &row(19)[2..6],
+        row_slice(&row(19), 3, 4),
         "aaaa",
         "second wrapped row starts with the next whole word"
     );
     assert_eq!(
         anchor,
-        Some(Position::new(36, 18)),
+        Some(Position::new(37, 18)),
         "IME anchor sits after the first wrapped row at the consumed space"
     );
 }
@@ -575,7 +593,7 @@ fn extracted_main_pane_preserves_status_spacing_and_hidden_cursor() {
         })
         .unwrap();
 
-    assert_eq!(anchor, Some(Position::new(2, 35)));
+    assert_eq!(anchor, Some(Position::new(3, 35)));
     assert_eq!(terminal.get_cursor_position().unwrap(), Position::new(0, 0));
     let buffer = terminal.backend().buffer();
     let row = |y| {

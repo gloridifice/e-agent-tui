@@ -11,10 +11,14 @@ pub(super) fn render_resume_page(
     let regions = input_page_shell(frame, area, theme);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("❯ ", Style::default().fg(theme.user)),
+            Span::styled("❯ ", Style::default().fg(theme.input.hint.fg)),
+            Span::styled("/resume", Style::default().fg(theme.fg)),
             Span::styled(
-                format!("{}  ", crate::i18n::tr(language, "input_page.resume.title")),
-                Style::default().fg(theme.fg),
+                format!(
+                    "  {}  ",
+                    crate::i18n::tr(language, "input_page.resume.title")
+                ),
+                Style::default().fg(theme.dim),
             ),
             Span::styled("> ", Style::default().fg(theme.dim)),
             Span::styled(page.query.clone(), Style::default().fg(theme.fg)),
@@ -34,12 +38,8 @@ pub(super) fn render_resume_page(
         .take(regions.body.height as usize)
     {
         let session = &page.sessions[*session_index];
-        let selected = filtered_index == page.sel;
-        let style = if selected {
-            Style::default().fg(theme.fg).bg(theme.bg)
-        } else {
-            Style::default().fg(theme.fg)
-        };
+        let focused = filtered_index == page.sel;
+        let style = input_page_item_style(theme, focused, false);
         let title = if session.title.is_empty() && page.titles_pending {
             crate::i18n::tr(language, "input_page.resume.title_loading")
         } else if session.title.is_empty() {
@@ -51,19 +51,23 @@ pub(super) fn render_resume_page(
         let id_width = UnicodeWidthStr::width(shown_id.as_str());
         let title_width = width.saturating_sub(id_width + 5);
         rows.push(Line::from(vec![
-            Span::styled(if selected { "› " } else { "  " }, style),
+            Span::styled(if focused { "› " } else { "  " }, style),
             Span::styled(
                 if session.live { "● " } else { "  " },
-                Style::default()
-                    .fg(if session.live { theme.ok } else { theme.dim })
-                    .bg(style.bg.unwrap_or(theme.bg_soft)),
+                if focused {
+                    style
+                } else {
+                    Style::default().fg(if session.live { theme.ok } else { theme.dim })
+                },
             ),
             Span::styled(trim_to_width(&title, title_width), style),
             Span::styled(
                 format!("  {shown_id}"),
-                Style::default()
-                    .fg(theme.dim)
-                    .bg(style.bg.unwrap_or(theme.bg_soft)),
+                if focused {
+                    style
+                } else {
+                    Style::default().fg(theme.dim)
+                },
             ),
         ]));
     }

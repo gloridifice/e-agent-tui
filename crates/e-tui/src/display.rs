@@ -33,6 +33,12 @@ impl ActivityState {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivityKind {
+    General,
+    Tool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivityContinuation {
     pub separator: String,
@@ -43,6 +49,7 @@ pub struct ActivityContinuation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivityRow {
     pub id: DisplayId,
+    pub kind: ActivityKind,
     pub label: String,
     pub summary: String,
     pub continuations: Vec<ActivityContinuation>,
@@ -65,6 +72,7 @@ impl ActivityRow {
     pub fn root(id: DisplayId, label: impl Into<String>) -> Self {
         Self {
             id,
+            kind: ActivityKind::General,
             label: label.into(),
             summary: String::new(),
             continuations: Vec::new(),
@@ -77,6 +85,13 @@ impl ActivityRow {
             parent_id: None,
             depth: 0,
             count: 1,
+        }
+    }
+
+    pub fn tool(id: DisplayId, label: impl Into<String>) -> Self {
+        Self {
+            kind: ActivityKind::Tool,
+            ..Self::root(id, label)
         }
     }
 }
@@ -112,6 +127,7 @@ pub struct TranscriptBlock {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CardRole {
     User,
+    Skill,
     Context,
     Detail,
     Attachment,

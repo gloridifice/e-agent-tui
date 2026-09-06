@@ -367,10 +367,10 @@ impl RuntimeState {
             .flatten();
         self.insert_transcript_item(item.clone(), surface_seq, preferred);
 
-        // Injected context previews as complete muted Markdown (prompt
-        // injection reads as a distinct content kind, never plain text).
+        // Injected context previews as complete muted Markdown, including the
+        // full instructions hidden behind a compact skill invocation row.
         if let DisplayItem::Card(card) = &item {
-            if card.role == CardRole::Context {
+            if matches!(card.role, CardRole::Skill | CardRole::Context) {
                 let id = card.id.clone();
                 let generation = self.transcript.generation();
                 self.preview_refs.insert(

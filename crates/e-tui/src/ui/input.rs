@@ -230,21 +230,42 @@ fn render_ruled_chrome(frame: &mut Frame, area: ratatui::layout::Rect, theme: &T
     }
 }
 
+fn rule_color(offset: u16, width: u16, theme: &Theme) -> Color {
+    if offset < 2 || offset >= width.saturating_sub(2) {
+        theme.diff.separator.fg
+    } else {
+        theme.input.hint.fg
+    }
+}
+
+pub(super) fn ruled_line(width: usize, theme: &Theme) -> Line<'static> {
+    if width <= 4 {
+        return Line::from(Span::styled(
+            "─".repeat(width),
+            Style::default().fg(theme.diff.separator.fg),
+        ));
+    }
+    Line::from(vec![
+        Span::styled("──", Style::default().fg(theme.diff.separator.fg)),
+        Span::styled(
+            "─".repeat(width - 4),
+            Style::default().fg(theme.input.hint.fg),
+        ),
+        Span::styled("──", Style::default().fg(theme.diff.separator.fg)),
+    ])
+}
+
 pub(super) fn render_rule(frame: &mut Frame, area: ratatui::layout::Rect, y: u16, theme: &Theme) {
     if area.width == 0 || y < area.y || y >= area.bottom() {
         return;
     }
     for offset in 0..area.width {
-        let color = if offset < 2 || offset >= area.width.saturating_sub(2) {
-            theme.diff.separator.fg
-        } else {
-            theme.input.hint.fg
-        };
         if let Some(cell) = frame
             .buffer_mut()
             .cell_mut(Position::new(area.x.saturating_add(offset), y))
         {
-            cell.set_symbol("─").set_fg(color);
+            cell.set_symbol("─")
+                .set_fg(rule_color(offset, area.width, theme));
         }
     }
 }

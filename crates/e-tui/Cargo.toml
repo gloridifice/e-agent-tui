@@ -32,5 +32,5 @@ unicode-script = "0.5"
 unicode-segmentation = "1.13"
 unicode-width = "0.2"
 tui-syntax-highlight = { version = "0.2", default-features = false, features = ["regex-fancy"] }
-vte = "0.13"
-wasmi = "1.1"
+vte = "0.15"
+wasmi = "2"

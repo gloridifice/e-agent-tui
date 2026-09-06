@@ -84,6 +84,22 @@ pub fn project_with_language(
                     horizontal_padding,
                     copy_source: displayed,
                 })
+            } else if source_kind.as_deref() == Some("skill-invocation")
+                && source
+                    .summary
+                    .as_deref()
+                    .is_some_and(|name| !name.trim().is_empty())
+            {
+                DisplayItem::Card(ContentCard {
+                    id: id("skill"),
+                    unit: None,
+                    header: None,
+                    content: source.summary.clone().unwrap_or_default(),
+                    role: CardRole::Skill,
+                    tone: DisplayTone::Normal,
+                    horizontal_padding,
+                    copy_source: displayed,
+                })
             } else if source.form.as_deref() == Some("notice") {
                 let notice = source.summary.as_deref().unwrap_or(&displayed);
                 DisplayItem::Block(TranscriptBlock {
@@ -204,5 +220,42 @@ fn answer_block(
         tone: DisplayTone::Normal,
         copy_source: text.to_owned(),
         streaming,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::timeline::{MessageSource, TimelineRecord};
+
+    #[test]
+    fn skill_invocation_projects_to_compact_skill_card() {
+        let injected = "<skill name=\"code-review\">instructions</skill>";
+        let event = TimelineRecord {
+            sequence: Some(7),
+            time_ms: None,
+            surface: None,
+            source_sequences: Vec::new(),
+            fact: TimelineFact::UserMessage {
+                text: injected.into(),
+                source_kind: Some("skill-invocation".into()),
+                content: vec![ContentBlock::Text(injected.into())],
+                source: MessageSource {
+                    kind: Some("skill-invocation".into()),
+                    form: Some("instructions".into()),
+                    summary: Some("code-review".into()),
+                    producer: Some("pi".into()),
+                },
+            },
+        };
+
+        let mutations = project(&event, 2).expect("user message projects");
+        assert!(matches!(
+            mutations.as_slice(),
+            [AssistantMutation::Append(DisplayItem::Card(card))]
+                if card.role == CardRole::Skill
+                    && card.content == "code-review"
+                    && card.copy_source == injected
+        ));
     }
 }

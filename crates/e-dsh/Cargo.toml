@@ -36,7 +36,7 @@ pulldown-cmark = "0.13"
 arboard = "3"
 png = "0.18"
 base64 = "0.22"
-wasmi = "1.1"
+wasmi = "2"
 toml = "1.1"
 directories = "6"
 # Windows console input mode + native modifier sampling for the raw-input path.

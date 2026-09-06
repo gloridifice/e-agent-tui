@@ -1,8 +1,8 @@
 //! Input-line state and key handling (design §4.1, D23/D24).
 //!
-//! The input bar is a borderless Ash block: one margin row above, the text
-//! area (1 row, or up to 5 scrolling rows in multiline mode), one margin row
-//! below. Each paste over the placeholder threshold is an independent atomic
+//! The input bar uses transparent horizontal rules around a text area (1 row,
+//! or up to 5 scrolling rows in multiline mode). Each paste over the placeholder
+//! threshold is an independent atomic
 //! block that renders as `[N text pasted]` (like pi's paste markers); typed
 //! text around blocks stays editable and the cursor skips blocks whole.
 

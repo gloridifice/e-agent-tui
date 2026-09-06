@@ -7,11 +7,9 @@ use crate::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
-/// Prompt-injection events render as plain text (no card shell): the
-/// `提示词注入` label in the activity label tone (umber in the ferra theme)
-/// followed by the injected content in the activity detail tone (bark),
+/// Generic prompt-injection events render as plain text (no card shell),
 /// capped at this many width-aware rows with a trailing ellipsis when
-/// overflowing. The card retains its full raw source for copying.
+/// overflowing. Skill invocations use their own compact identity row.
 const MAX_INJECTION_DISPLAY_LINES: usize = 2;
 const ACTIVITY_RIGHT_PAD: usize = 1;
 
@@ -24,40 +22,32 @@ fn activity_row_parts(
 ) -> (Line<'static>, Option<Span<'static>>) {
     let theme = state.theme();
     let color = working::activity_color(&theme, row, color_override);
-    let mut spans = vec![
-        Span::styled(
-            " ".repeat(2 + usize::from(row.depth) * 2),
-            theme.activity.detail.style(),
+    let (label_style, detail_style) = match row.kind {
+        ActivityKind::General => (theme.activity.label.style(), theme.activity.detail.style()),
+        ActivityKind::Tool => (
+            theme.activity.label.style().fg(theme.activity.detail.fg),
+            theme.activity.detail.style().fg(theme.activity.label.fg),
         ),
+    };
+    let mut spans = vec![
+        Span::styled(" ".repeat(2 + usize::from(row.depth) * 2), detail_style),
         Span::styled(
             working::activity_indicator(state, row),
             Style::default().fg(color),
         ),
-        Span::styled(" ", theme.activity.detail.style()),
-        Span::styled(row.label.clone(), theme.activity.label.style()),
+        Span::styled(" ", detail_style),
+        Span::styled(row.label.clone(), label_style),
     ];
     if !row.summary.is_empty() {
-        spans.push(Span::styled(" ", theme.activity.detail.style()));
-        spans.push(Span::styled(
-            row.summary.clone(),
-            theme.activity.detail.style(),
-        ));
+        spans.push(Span::styled(" ", detail_style));
+        spans.push(Span::styled(row.summary.clone(), detail_style));
     }
     for continuation in &row.continuations {
-        spans.push(Span::styled(
-            continuation.separator.clone(),
-            theme.activity.detail.style(),
-        ));
-        spans.push(Span::styled(
-            continuation.label.clone(),
-            theme.activity.label.style(),
-        ));
+        spans.push(Span::styled(continuation.separator.clone(), detail_style));
+        spans.push(Span::styled(continuation.label.clone(), label_style));
         if !continuation.summary.is_empty() {
-            spans.push(Span::styled(" ", theme.activity.detail.style()));
-            spans.push(Span::styled(
-                continuation.summary.clone(),
-                theme.activity.detail.style(),
-            ));
+            spans.push(Span::styled(" ", detail_style));
+            spans.push(Span::styled(continuation.summary.clone(), detail_style));
         }
     }
     if row.count > 1 {
@@ -203,7 +193,54 @@ fn thinking_node_lines(
     }
 }
 
+fn user_message_lines(card: &ContentCard, state: &TuiApp, area_width: usize) -> Vec<Line<'static>> {
+    let theme = state.theme();
+    let padding = card.horizontal_padding.min(area_width);
+    let gutter = padding.saturating_add(1).min(area_width);
+    let avail = area_width
+        .saturating_sub(gutter)
+        .saturating_sub(padding)
+        .max(1);
+    let text_style = theme.input.text.style();
+    let content_row = |content: String, bold: bool| {
+        Line::from(vec![
+            Span::raw(" ".repeat(gutter)),
+            Span::styled(
+                content,
+                if bold {
+                    text_style.add_modifier(Modifier::BOLD)
+                } else {
+                    text_style
+                },
+            ),
+        ])
+    };
+
+    let mut out = vec![super::input::ruled_line(area_width, &theme)];
+    if let Some(header) = &card.header {
+        out.push(content_row(header.clone(), true));
+    }
+    for line in card.content.lines() {
+        let chunks = if line.is_empty() {
+            vec![String::new()]
+        } else {
+            wrap_text(line, avail)
+        };
+        for chunk in chunks {
+            out.push(content_row(chunk, false));
+        }
+    }
+    out.push(super::input::ruled_line(area_width, &theme));
+    out
+}
+
 fn content_card_lines(card: &ContentCard, state: &TuiApp, area_width: usize) -> Vec<Line<'static>> {
+    if card.role == CardRole::User {
+        return user_message_lines(card, state, area_width);
+    }
+    if card.role == CardRole::Skill {
+        return skill_invocation_lines(card, state);
+    }
     if card.role == CardRole::Context {
         return context_injection_lines(card, state, area_width);
     }
@@ -266,12 +303,19 @@ fn content_card_lines(card: &ContentCard, state: &TuiApp, area_width: usize) -> 
     out
 }
 
-/// Prompt-injection events render as plain text instead of a card shell: a
-/// `提示词注入` label in the activity label tone (umber in the ferra theme)
-/// followed by the injected content in the activity detail tone (bark),
-/// capped at `MAX_INJECTION_DISPLAY_LINES` wrapped rows with a trailing `…`
-/// marker when the content overflows. The card's `copy_source` keeps the full
-/// original text.
+fn skill_invocation_lines(card: &ContentCard, state: &TuiApp) -> Vec<Line<'static>> {
+    let theme = state.theme();
+    vec![Line::from(vec![
+        Span::styled("[Skill] ", Style::default().fg(theme.input.placeholder.fg)),
+        Span::styled(
+            card.content.clone(),
+            Style::default().fg(theme.input.text.fg),
+        ),
+    ])]
+}
+
+/// Generic prompt-injection events render as plain text instead of a card
+/// shell. The card's `copy_source` keeps the full original text.
 fn context_injection_lines(
     card: &ContentCard,
     state: &TuiApp,
@@ -672,8 +716,8 @@ fn next_presented_item_is_activity(
 /// them. Whether the next visible message is another activity row. Hidden
 /// messages are transparent to layout adjacency, just as they are to
 /// rendering/copy.
-/// One message rendered to transcript lines, including the full-width soft
-/// background of user blocks and of `fill`-flagged code/mermaid rows. Shared
+/// One message rendered to transcript lines, including ruled user blocks and
+/// full-width soft backgrounds on `fill`-flagged code/mermaid rows. Shared
 /// by the full cache rebuild and the incremental tail splice so both produce
 /// identical rows.
 /// Copy/navigation provenance derived from the exact same message layout used

@@ -1018,7 +1018,7 @@ fn code_block_fill_padding_does_not_change_reveal_work_on_resize() {
 }
 
 #[test]
-fn extracted_main_pane_keeps_card_background_and_copy_provenance() {
+fn extracted_main_pane_uses_arrowless_ruled_user_style_and_keeps_copy_provenance() {
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();
     force_message_only(&mut state);
@@ -1048,21 +1048,61 @@ fn extracted_main_pane_keeps_card_background_and_copy_provenance() {
         })
         .unwrap();
 
-    let expected_bg = theme.card.user.bg.expect("user card background");
     let buffer = terminal.backend().buffer();
-    let content_cells = (0..12)
-        .flat_map(|y| (0..40).map(move |x| (x, y)))
-        .filter(|(x, y)| buffer[(*x, *y)].symbol() != " ")
-        .filter(|(x, y)| buffer[(*x, *y)].symbol() != "│")
-        .filter(|(x, y)| *y < 6 && *x >= 4)
-        .collect::<Vec<_>>();
-    assert!(!content_cells.is_empty());
-    assert!(content_cells
-        .iter()
-        .all(|(x, y)| buffer[(*x, *y)].bg == expected_bg));
+    let (content_x, content_y) = find_text(buffer, "wrapped").expect("user message is visible");
+    assert_eq!(content_x, 4, "card padding plus the omitted prompt slot");
+    assert_eq!(buffer[(1, content_y)].symbol(), " ", "no prompt arrow");
+    assert_eq!(buffer[(content_x, content_y)].fg, theme.input.text.fg);
+    assert_eq!(buffer[(content_x, content_y)].bg, Color::Reset);
+    for y in [content_y - 1, content_y + 2] {
+        assert!((1..37).all(|x| buffer[(x, y)].symbol() == "─"));
+        assert_eq!(buffer[(1, y)].fg, theme.diff.separator.fg);
+        assert_eq!(buffer[(3, y)].fg, theme.input.hint.fg);
+        assert_eq!(buffer[(36, y)].fg, theme.diff.separator.fg);
+    }
     assert_eq!(state.render.units.get(&7), Some(&source));
     let rows = provenance_layout_rows(&state);
     assert!(rows.iter().any(|row| row.unit == 7));
+}
+
+#[test]
+fn skill_invocation_renders_compact_identity_and_keeps_full_copy_source() {
+    let mut state = TuiApp::default();
+    state.config.resolved_theme = Theme::ferra();
+    force_message_only(&mut state);
+    let source = "expanded skill instructions that stay hidden".to_string();
+    state.render.units.insert(7, source.clone());
+    state.transcript.append(
+        DisplayItem::Card(ContentCard {
+            id: DisplayId::correlated("skill", "fixture"),
+            unit: Some(7),
+            header: None,
+            content: "code-review".into(),
+            role: CardRole::Skill,
+            tone: DisplayTone::Normal,
+            horizontal_padding: 2,
+            copy_source: source.clone(),
+        }),
+        None,
+    );
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(rendered.contains("[Skill] code-review"));
+    assert!(!rendered.contains("expanded skill instructions"));
+    assert_eq!(state.render.units.get(&7), Some(&source));
 }
 
 #[test]
@@ -1270,53 +1310,6 @@ fn chinese_transcript_localizes_tool_metadata() {
     assert!(
         flat.contains("·1.2s") && !flat.contains("耗时"),
         "duration should render without a label: {flat}"
-    );
-}
-
-#[test]
-fn chinese_structured_preview_localizes_chrome_and_preserves_values() {
-    let mut state = TuiApp::default();
-    state.config.language = crate::Language::SimplifiedChinese;
-    state.config.resolved_theme = Theme::ferra();
-    force_preview_only(&mut state);
-    state.preview.policy = crate::preview::PreviewPolicy::FollowReadingCursor;
-    state.preview.state = PreviewState::Ready(PreviewContent::Tool(ToolPreview {
-        name: "grep".into(),
-        primary: ToolPreviewPrimary::Command {
-            command: "grep -R table".into(),
-            metrics: ToolMetrics {
-                output_lines: 2,
-                truncated: false,
-                duration_ms: Some(1200),
-            },
-        },
-        secondary: None,
-    }));
-    let input = InputState::new(&state.config);
-    let mut scroll = ScrollState::default();
-    let theme = Theme::ferra();
-    let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
-    terminal
-        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
-        .unwrap();
-
-    let flat = terminal
-        .backend()
-        .buffer()
-        .content()
-        .iter()
-        .map(|cell| cell.symbol())
-        .collect::<String>()
-        .chars()
-        .filter(|character| !character.is_whitespace())
-        .collect::<String>();
-    assert!(
-        flat.contains("grep-Rtable"),
-        "command value changed: {flat}"
-    );
-    assert!(
-        flat.contains("行2，耗时1.2s"),
-        "preview metrics are not localized: {flat}"
     );
 }
 

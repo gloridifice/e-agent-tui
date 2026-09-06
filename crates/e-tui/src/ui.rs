@@ -15,8 +15,9 @@ use crate::{
     command_catalog::CommandSource,
     config::{Theme, ThinkingDisplayMode},
     display::{
-        allocate_accessories, ActivityRow, CardRole, ContentCard, DisplayItem, DisplayTone,
-        InputAccessory, InputAccessoryKind, ThinkingNode, TranscriptBlock, TranscriptFormat,
+        allocate_accessories, ActivityKind, ActivityRow, CardRole, ContentCard, DisplayItem,
+        DisplayTone, InputAccessory, InputAccessoryKind, ThinkingNode, TranscriptBlock,
+        TranscriptFormat,
     },
     input::InputState,
     input_page::{FocusId, InputPage, InputPageSession, ModelPage, ResumePage, ThemePage},

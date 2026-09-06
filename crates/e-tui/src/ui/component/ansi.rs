@@ -127,9 +127,7 @@ pub fn terminal_lines(output: &str, colored: Style, plain: Style) -> Vec<Line<'s
         lines: Vec::new(),
     };
     let mut parser = vte::Parser::new();
-    for byte in normalized.bytes() {
-        parser.advance(&mut performer, byte);
-    }
+    parser.advance(&mut performer, normalized.as_bytes());
     // Flush a final unterminated line.
     performer.lines.push(performer.line.finish_line());
     performer.lines

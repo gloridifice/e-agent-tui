@@ -170,7 +170,7 @@ impl ToolProjectionState {
                 create,
             },
         );
-        let mut row = ActivityRow::root(id, label);
+        let mut row = ActivityRow::tool(id, label);
         row.summary = summary;
         row.start_ms = Some(now_ms);
         if !create {
@@ -209,7 +209,7 @@ impl ToolProjectionState {
             return Some(ToolMutation::Upsert(file_group_row(group, now_ms)));
         }
 
-        let mut row = ActivityRow::root(call.row_id, "tool");
+        let mut row = ActivityRow::tool(call.row_id, "tool");
         // The existing row supplies label/summary during merge in AppState.
         row.state = if ok {
             ActivityState::Success
@@ -246,7 +246,7 @@ impl ToolProjectionState {
 }
 
 fn file_group_row(group: &FileGroupState, now_ms: u64) -> ActivityRow {
-    let mut row = ActivityRow::root(group.id.clone(), "files");
+    let mut row = ActivityRow::tool(group.id.clone(), "files");
     row.start_ms = Some(group.start_ms);
     let mut items = group.items.iter();
     if let Some(first) = items.next() {

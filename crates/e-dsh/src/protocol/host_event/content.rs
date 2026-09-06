@@ -78,7 +78,7 @@ pub(super) fn parse(event_type: Option<&str>, data: &Value) -> super::HostEventK
                 source_kind: source_kind.clone(),
                 content,
                 source: HostMessageSource {
-                    kind: source_kind,
+                    kind: source_kind.clone(),
                     form: source_value
                         .get("form")
                         .and_then(Value::as_str)
@@ -86,6 +86,11 @@ pub(super) fn parse(event_type: Option<&str>, data: &Value) -> super::HostEventK
                     summary: source_value
                         .get("summary")
                         .and_then(Value::as_str)
+                        .or_else(|| {
+                            (source_kind.as_deref() == Some("skill-invocation"))
+                                .then(|| source_value.get("name").and_then(Value::as_str))
+                                .flatten()
+                        })
                         .map(str::to_owned),
                     producer: source_value
                         .get("plugin")
@@ -165,5 +170,31 @@ pub(super) fn parse(event_type: Option<&str>, data: &Value) -> super::HostEventK
         _ => HostEventKind::Unknown {
             event_type: event_type.map(|event_type| event_type.chars().take(160).collect()),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skill_source_name_normalizes_as_summary() {
+        let event = parse(
+            Some("user/message"),
+            &serde_json::json!({
+                "content": [{ "type": "text", "text": "expanded instructions" }],
+                "source": {
+                    "kind": "skill-invocation",
+                    "name": "code-review",
+                    "form": "instructions"
+                }
+            }),
+        );
+
+        assert!(matches!(
+            event,
+            super::super::HostEventKind::UserMessage { source, .. }
+                if source.summary.as_deref() == Some("code-review")
+        ));
     }
 }

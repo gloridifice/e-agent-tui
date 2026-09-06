@@ -380,7 +380,9 @@ impl TuiApp {
                         _ => PreviewContent::PlainText(block.copy_source),
                     },
                     DisplayItem::Card(card) => match card.role {
-                        CardRole::Context => PreviewContent::MutedMarkdown(card.copy_source),
+                        CardRole::Skill | CardRole::Context => {
+                            PreviewContent::MutedMarkdown(card.copy_source)
+                        }
                         _ => PreviewContent::PlainText(card.copy_source),
                     },
                     DisplayItem::Activity(row) => PreviewContent::PlainText(

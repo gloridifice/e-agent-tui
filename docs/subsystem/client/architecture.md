@@ -11,8 +11,9 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
 - **Event display model** (`crates/e-tui/src/display.rs` + `crates/e-tui/src/projection/{store,assistant,tool,lifecycle,retry,command,workflow,surface}.rs` +
   `crates/e-tui/src/transcript_layout.rs`): all visible events fall into four public surfaces: `ActivityRow` (with
   Waiting/Running/Success/Failure/Cancelled state, optionally with parent/depth), `TranscriptBlock`
-  (plain/markdown/reasoning/unknown fallback), `ContentCard` (uniform padding/background/copy source), and
-  `InputAccessory` (above the input bar). Production `TimelineModel` holds the sole `TranscriptStore` and
+  (plain/markdown/reasoning/unknown fallback), `ContentCard` (role-specific shell/copy source; user cards reuse
+  the composer's transparent ruled chrome without its prompt arrow), and `InputAccessory` (above the input bar).
+  Production `TimelineModel` holds the sole `TranscriptStore` and
   `EventProjector`; the projector first produces display/surface mutation/page state/accessory/ignore effects, which the
   state layer then applies; adding event-specific top-level rendering in `ui` that bypasses the public
   surfaces is forbidden. `LegacyTestMsg`/`Msg` alias may only appear in `#[cfg(test)]` characterization
@@ -37,11 +38,12 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   settle until the real answer text arrives. Thinking settlement must search backwards in `TranscriptStore`
   for a Running Thinking activity — never assume the last node is visible. The status-bar frontend label keeps
   its separate breathing treatment.
-- **Context injection text**: prompt-injection events (`CardRole::Context`) render as plain text, not a
-  card shell: a `提示词注入` label in the activity label tone (umber in the ferra theme) followed by the
-  injected content in the activity detail tone (bark), capped at 2 lines by post-wrap display row count;
-  if it overflows, the 2nd line ends with `…`. The card's `copy_source`/copy unit must preserve the
-  complete original text and must not be truncated by the display clip.
+- **Context injection text**: generic prompt-injection events (`CardRole::Context`) render as plain text, not a
+  card shell: a localized prompt-injection label in the activity label tone followed by the injected content in
+  the activity detail tone, capped at 2 lines by post-wrap display row count; if it overflows, the 2nd line ends
+  with `…`. User-explicit skill invocations (`CardRole::Skill`) instead render one compact `[Skill] <name>` row,
+  with `[Skill]` in Rose and the skill name in Mist. Both roles preserve the complete original injection in the
+  card's `copy_source`/copy unit rather than truncating it to the displayed summary.
 - **File activity folding**: `FileGroup` keeps the `read/view/edit/replace/insert` labels via a unified
   `FileItem + FileAction`; consecutive `str_replace_editor` view/str_replace/insert and read/edit calls enter
   the same folded activity row; the editor's absolute path is converted to a workspace-relative path using
@@ -365,7 +367,8 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   to 60.00%, and is validated to 25.00%–100.00%; pane columns are derived from the current terminal width.
   `user_input_padding` defaults to one column so user cards and the composer match the one-column Main page edge,
   while an explicit Settings value remains supported. The composer always uses the transparent ruled-prompt chrome:
-  Bark horizontal rules and prompt arrow with Umber at the two cells on each rule end.
+  Bark horizontal rules and prompt arrow with Umber at the two cells on each rule end. User message cards reuse the
+  same rules and text geometry but leave the prompt-arrow cell blank.
   The obsolete `main_pane_width` key is ignored by the known-key overlay rather than migrated without a terminal width;
   rendering does zero disk reads. Themes are two-layer TOML: an open
   `[colors]` allows arbitrary color names, and fixed `[semantics.*]` (surface/markdown/markdown_weak/code/code_weak/diff/input/

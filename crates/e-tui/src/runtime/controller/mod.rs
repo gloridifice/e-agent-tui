@@ -658,7 +658,11 @@ mod tests {
     #[test]
     fn asap_dispatches_during_a_turn_while_after_turn_waits_for_idle() {
         let state = Mutex::new(RuntimeState::default());
-        state.lock().unwrap().session.status = crate::SessionStatus::Running;
+        {
+            let mut app = state.lock().unwrap();
+            app.session.status = crate::SessionStatus::Running;
+            app.session.working = true;
+        }
         let mut queue = PendingPromptQueue::default();
 
         let asap = RuntimeController::apply_input_action(
@@ -690,6 +694,30 @@ mod tests {
         assert!(matches!(
             effects.as_slice(),
             [UiAction::Agent(AgentRequest::Input { prompt })] if prompt.plain_text() == Some("after")
+        ));
+    }
+
+    #[test]
+    fn enter_after_turn_end_dispatches_directly_once_status_settles() {
+        let state = Mutex::new(RuntimeState::default());
+        state.lock().unwrap().session.status = crate::SessionStatus::Running;
+        let mut queue = PendingPromptQueue::default();
+
+        let outcome = RuntimeController::apply_input_action(
+            InputAction::Send("next turn".into()),
+            &state,
+            &mut queue,
+        );
+        assert!(outcome.effects.is_empty());
+        state.lock().unwrap().interaction.queue = queue;
+
+        assert!(RuntimeController::dispatch_next_queued(&state).is_empty());
+        state.lock().unwrap().session.status = crate::SessionStatus::Idle;
+        let effects = RuntimeController::dispatch_next_queued(&state);
+        assert!(matches!(
+            effects.as_slice(),
+            [UiAction::Agent(AgentRequest::Input { prompt })]
+                if prompt.plain_text() == Some("next turn")
         ));
     }
 

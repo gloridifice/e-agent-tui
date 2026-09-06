@@ -244,6 +244,18 @@ pub struct TuiApp {
     pending_actions: Vec<UiAction>,
 }
 
+fn is_normal_preview_eligible(item: &DisplayItem) -> bool {
+    match item {
+        DisplayItem::Block(block) => !matches!(
+            block.format,
+            TranscriptFormat::Markdown | TranscriptFormat::Plain
+        ),
+        DisplayItem::Card(card) => !matches!(card.role, CardRole::User | CardRole::Attachment),
+        DisplayItem::Thinking(node) => !node.content.trim().is_empty(),
+        DisplayItem::Activity(_) | DisplayItem::Composite { .. } => true,
+    }
+}
+
 impl TuiApp {
     pub fn theme(&self) -> Theme {
         self.config.theme()
@@ -333,12 +345,13 @@ impl TuiApp {
     /// Keep normal-mode Preview on the newest eligible canonical display
     /// owner. Reading mode has a cursor-owned policy and is never stolen by
     /// live appends. History prepend preserves the newest identity.
-    /// Assistant markdown answers are already rendered in the main pane and
-    /// are never previewed. The merged Thinking node previews its reasoning
-    /// content while anything has streamed in (an empty, still-running
-    /// indicator carries nothing worth previewing); reasoning always previews
-    /// even when the main transcript collapses it
-    /// (`thinking_display = compact`).
+    /// Assistant Markdown, plain system/error output, and user-owned cards are
+    /// already complete in the main pane and are never followed automatically.
+    /// The merged Thinking node previews its reasoning content while anything
+    /// has streamed in (an empty, still-running indicator carries nothing worth
+    /// previewing); reasoning always previews even when the main transcript
+    /// collapses it (`thinking_display = compact`). Reading View keeps its
+    /// explicit selected-block Preview policy.
     pub fn reconcile_latest_preview(&mut self) {
         if self.hold_draft_preview_empty() {
             return;
@@ -352,21 +365,13 @@ impl TuiApp {
             .nodes()
             .iter()
             .rev()
-            .find(|node| {
-                !matches!(
-                    &node.item,
-                    DisplayItem::Block(block) if block.format == TranscriptFormat::Markdown
-                ) && !matches!(
-                    &node.item,
-                    DisplayItem::Thinking(node) if node.content.trim().is_empty()
-                )
-            })
-            .map(|node| (node.id().clone(), node.item.clone()));
-        let Some((id, item)) = candidate else {
+            .find(|node| is_normal_preview_eligible(&node.item))
+            .map(|node| (node.id().clone(), node.revision(), node.item.clone()));
+        let Some((id, node_revision, item)) = candidate else {
             self.select_preview(None);
             return;
         };
-        let revision = PreviewRevision(self.timeline.transcript.generation());
+        let revision = PreviewRevision(node_revision);
         let reference = self
             .timeline
             .preview_refs
@@ -683,6 +688,91 @@ mod tests {
         DirtyState, UiAction,
     };
     use ratatui::text::Line;
+
+    #[test]
+    fn normal_preview_ignores_plain_and_user_owned_content() {
+        let mut app = TuiApp::default();
+        app.timeline.transcript.append(
+            DisplayItem::Activity(crate::display::ActivityRow::root(
+                crate::display::DisplayId::correlated("command", "build"),
+                "/build",
+            )),
+            None,
+        );
+        app.reconcile_latest_preview();
+        app.preview.scroll = 4;
+        let target = app.preview.target.clone();
+        let state = app.preview.state.clone();
+
+        app.timeline.transcript.append(
+            DisplayItem::Block(crate::display::TranscriptBlock {
+                id: crate::display::DisplayId::correlated("system", "plain"),
+                unit: None,
+                content: "plain system output".into(),
+                format: TranscriptFormat::Plain,
+                tone: crate::display::DisplayTone::Error,
+                copy_source: "plain system output".into(),
+                streaming: false,
+            }),
+            None,
+        );
+        for (role, id) in [
+            (CardRole::User, "user"),
+            (CardRole::Attachment, "attachment"),
+        ] {
+            app.timeline.transcript.append(
+                DisplayItem::Card(crate::display::ContentCard {
+                    id: crate::display::DisplayId::correlated("message", id),
+                    unit: None,
+                    header: None,
+                    content: id.into(),
+                    role,
+                    tone: crate::display::DisplayTone::Normal,
+                    horizontal_padding: 1,
+                    copy_source: id.into(),
+                }),
+                None,
+            );
+        }
+        app.reconcile_latest_preview();
+
+        assert_eq!(app.preview.target, target);
+        assert_eq!(app.preview.state, state);
+        assert_eq!(app.preview.scroll, 4);
+    }
+
+    #[test]
+    fn ignored_content_is_empty_normally_but_remains_available_to_reading() {
+        let mut app = TuiApp::default();
+        app.timeline.transcript.append(
+            DisplayItem::Card(crate::display::ContentCard {
+                id: crate::display::DisplayId::correlated("message", "user"),
+                unit: Some(1),
+                header: None,
+                content: "user prompt".into(),
+                role: CardRole::User,
+                tone: crate::display::DisplayTone::Normal,
+                horizontal_padding: 1,
+                copy_source: "user prompt".into(),
+            }),
+            None,
+        );
+        app.reconcile_latest_preview();
+        assert!(app.preview.target.is_none());
+        assert_eq!(app.preview.state, crate::PreviewState::Empty);
+
+        let document = ReadingDocument::derive(&app.timeline, &app.render, &app.config);
+        assert!(matches!(
+            document.blocks.as_slice(),
+            [ReadingBlock {
+                preview: PreviewRef::Inline {
+                    content: PreviewContent::PlainText(text),
+                    ..
+                },
+                ..
+            }] if text == "user prompt"
+        ));
+    }
 
     #[test]
     fn activity_spinner_uses_the_requested_braille_sequence() {

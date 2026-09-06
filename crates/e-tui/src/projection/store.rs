@@ -8,6 +8,7 @@ use crate::display::{DisplayId, DisplayItem};
 pub struct TranscriptNode {
     pub item: DisplayItem,
     pub surface_seq: Option<u64>,
+    revision: u64,
 }
 
 impl TranscriptNode {
@@ -23,6 +24,10 @@ impl TranscriptNode {
             DisplayItem::Composite { detail, .. } => detail.unit,
             DisplayItem::Thinking(node) => node.unit,
         }
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 }
 
@@ -100,10 +105,16 @@ impl TranscriptStore {
             self.remove(existing);
         }
         let index = index.min(self.nodes.len());
-        self.nodes
-            .insert(index, TranscriptNode { item, surface_seq });
-        self.reindex();
         self.generation = self.generation.wrapping_add(1);
+        self.nodes.insert(
+            index,
+            TranscriptNode {
+                item,
+                surface_seq,
+                revision: self.generation,
+            },
+        );
+        self.reindex();
         index
     }
 
@@ -194,6 +205,7 @@ impl TranscriptStore {
             self.surface_owners.insert(seq, id.clone());
         }
         self.generation = self.generation.wrapping_add(1);
+        self.nodes[index].revision = self.generation;
         true
     }
 
@@ -240,6 +252,25 @@ mod tests {
         assert_eq!(store.unit_owner(1), Some(&DisplayId("a".into())));
         assert_eq!(store.surface_owner(9), Some(&DisplayId("b".into())));
         assert_eq!(store.generation(), 2);
+    }
+
+    #[test]
+    fn node_revision_changes_only_when_that_node_changes() {
+        let mut store = TranscriptStore::default();
+        store.append(block("a", 1), None);
+        let initial = store.get(&DisplayId("a".into())).unwrap().revision();
+
+        store.append(block("b", 2), None);
+        assert_eq!(
+            store.get(&DisplayId("a".into())).unwrap().revision(),
+            initial
+        );
+
+        store.touch(&DisplayId("a".into()));
+        assert_ne!(
+            store.get(&DisplayId("a".into())).unwrap().revision(),
+            initial
+        );
     }
 
     #[test]

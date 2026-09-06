@@ -281,7 +281,7 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   Drag frames paint only margin-inset Bark placeholder boxes, a full-height thin guide, and a thick grip; they do
   not render real panes, Reading geometry, selection, toasts, or transcript/Preview cache work. Release commits and
   persists the percentage once; focus loss or terminal resize cancels without changing it, so a temporary
-  responsive collapse reopens when the terminal grows. Normal mode follows the latest semantic Block; Reading View follows Item then Block. Preview
+  responsive collapse reopens when the terminal grows. Normal-mode automatic following skips assistant Markdown, plain/system/error blocks, user cards, user attachments, and empty Thinking nodes; Reading View still previews its explicitly selected Item or Block. Eligible fallback targets use node-local revisions so unrelated ignored appends do not refresh their reveal or scroll, and direct command-result settlement reconciles the same activity target immediately. Preview
   has independent scroll, visible-row materialization, one shared semantic cache, request-id/key/revision stale-result
   checks, a width/theme-aware styled-layout cache, and a selected-target reveal sidecar that never enters semantic
   cache keys or invalidates the transcript. Stable redraw/reveal/scroll frames reuse styled syntax rows; key/revision,

@@ -520,7 +520,9 @@ impl RuntimeState {
     /// durable command/run↔command/done activity already seen on the log.
     pub fn apply_command_result(&mut self, command_id: &str, kind: &str, text: Option<&str>) {
         if let Some(id) = self.projector.commands.get(command_id).cloned() {
-            self.settle_activity(&id, kind != "error", text);
+            if self.settle_activity(&id, kind != "error", text) {
+                self.reconcile_latest_preview();
+            }
             return;
         }
         if let Some(text) = text.filter(|text| !text.is_empty()) {
@@ -532,6 +534,16 @@ impl RuntimeState {
         }
     }
 
+    pub fn is_fully_idle(&self) -> bool {
+        self.session.status == AgentStatus::Idle
+            && !self.session.working
+            && !self.has_active_command()
+    }
+
+    fn has_active_turn(&self) -> bool {
+        self.session.status == AgentStatus::Running && self.session.working
+    }
+
     /// Queue a prompt typed while work is active. As-soon-as-possible prompts
     /// are eligible for steering during the current turn; after-turn prompts
     /// remain local until the agent and any command are fully idle.
@@ -541,23 +553,22 @@ impl RuntimeState {
         delivery: crate::interaction::PromptDelivery,
         queue: &mut crate::interaction::PendingPromptQueue,
     ) -> bool {
-        if self.session.status == AgentStatus::Running || self.has_active_command() {
+        if self.is_fully_idle() {
+            true
+        } else {
             queue.push(prompt, delivery);
             false
-        } else {
-            true
         }
     }
 
     /// Claim one queued prompt. Steering prompts always outrank after-turn
     /// prompts; the latter are eligible only after all work has settled.
     pub fn take_next_queued(&mut self) -> Option<crate::interaction::PendingPrompt> {
-        let agent_running = self.session.status == AgentStatus::Running;
-        let fully_idle = !agent_running && !self.session.working && !self.has_active_command();
-        if self.interaction.queue.is_empty() || (!agent_running && !fully_idle) {
+        let active_turn = self.has_active_turn();
+        if self.interaction.queue.is_empty() || (!active_turn && !self.is_fully_idle()) {
             return None;
         }
-        self.interaction.queue.take_next(agent_running)
+        self.interaction.queue.take_next(active_turn)
     }
 
     /// Settle everything still running when a turn ends: interrupted turns
@@ -969,6 +980,41 @@ mod tests {
                 ..
             } if key == "tool:edit-1" && source == patch
         )));
+    }
+
+    #[test]
+    fn direct_command_result_refreshes_the_same_preview_target() {
+        let mut state = RuntimeState::default();
+        state.apply_host_event(&record(
+            1,
+            TimelineFact::CommandStarted {
+                id: "build-1".into(),
+                name: "build".into(),
+                args: Some("--release".into()),
+            },
+        ));
+        let before = state
+            .preview
+            .target
+            .clone()
+            .expect("command preview target");
+        let before_revision = before.reference.revision();
+
+        state.apply_command_result("build-1", "success", Some("completed"));
+
+        let after = state
+            .preview
+            .target
+            .as_ref()
+            .expect("settled preview target");
+        assert_eq!(after.id, before.id);
+        assert_eq!(after.reference.key(), before.reference.key());
+        assert_ne!(after.reference.revision(), before_revision);
+        assert!(matches!(
+            &state.preview.state,
+            crate::PreviewState::Ready(PreviewContent::PlainText(text))
+                if text == "/build completed"
+        ));
     }
 
     #[test]

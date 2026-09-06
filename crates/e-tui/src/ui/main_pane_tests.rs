@@ -1324,7 +1324,7 @@ fn wide_screen_renders_preview_without_changing_main_provenance() {
             id: DisplayId::correlated("assistant", "preview"),
             unit: Some(11),
             content: source.clone(),
-            format: crate::display::TranscriptFormat::Plain,
+            format: crate::display::TranscriptFormat::UnknownFallback,
             tone: DisplayTone::Normal,
             copy_source: source.clone(),
             streaming: false,

@@ -48,7 +48,7 @@ fn submit_prompt(
         let mut state = state.lock().unwrap();
         let immediate = state.enqueue_or_immediate(prompt.clone(), delivery, queue);
         if immediate {
-            state.start_thinking();
+            state.admit_submission(&prompt, true);
         }
         immediate
     };
@@ -90,6 +90,7 @@ pub(super) fn apply_input_action(
         }
         InputAction::Interrupt => {
             queue.clear();
+            state.lock().unwrap().pending_submissions.clear();
             outcome.effects.push(agent_action(AgentRequest::Interrupt));
         }
         InputAction::Quit => outcome.effects.push(UiAction::Quit),

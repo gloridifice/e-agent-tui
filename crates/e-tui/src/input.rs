@@ -15,7 +15,7 @@ use unicode_width::UnicodeWidthStr;
 
 #[cfg(test)]
 use crate::agent::CommandDescriptor;
-use crate::agent::{ModelDescriptor, ModelProvider, Skill};
+use crate::agent::{ModelDescriptor, ModelProvider, ReasoningEffort, Skill};
 use crate::catalog::CatalogModel;
 pub use crate::command_catalog::NewMode;
 use crate::command_catalog::{
@@ -127,6 +127,7 @@ pub enum SuggestionKind {
     Commands,
     Modes,
     Models,
+    Efforts,
     Skills,
 }
 
@@ -499,6 +500,28 @@ pub fn match_models<'a>(
             } else if fields.iter().any(|field| is_subsequence(&query, field)) {
                 fuzzy.push((provider, model));
             }
+        }
+    }
+    prefix.extend(substring);
+    prefix.extend(fuzzy);
+    prefix
+}
+
+/// Fuzzy-rank the exact current model route's effort ids and display names.
+/// Completion always fills the provider-declared id and keeps roster order.
+pub fn match_efforts<'a>(query: &str, efforts: &'a [ReasoningEffort]) -> Vec<&'a ReasoningEffort> {
+    let query = query.to_lowercase();
+    let mut prefix = Vec::new();
+    let mut substring = Vec::new();
+    let mut fuzzy = Vec::new();
+    for effort in efforts {
+        let fields = [effort.id.to_lowercase(), effort.name.to_lowercase()];
+        if query.is_empty() || fields.iter().any(|field| field.starts_with(&query)) {
+            prefix.push(effort);
+        } else if fields.iter().any(|field| field.contains(&query)) {
+            substring.push(effort);
+        } else if fields.iter().any(|field| is_subsequence(&query, field)) {
+            fuzzy.push(effort);
         }
     }
     prefix.extend(substring);
@@ -883,9 +906,9 @@ impl InputState {
             .collect()
     }
 
-    /// Recompute the suggestion popup from the buffer. Three contexts feed it:
-    /// a slash-prefixed word lists commands, `/new ` lists agent presets, and
-    /// `/skill`/`/skill:` lists user-invocable skills.
+    /// Recompute the suggestion popup from the buffer. A slash-prefixed word
+    /// lists commands; declared argument contexts list modes, models, efforts,
+    /// or user-invocable skills.
     /// While the user navigates (the buffer equals one of the listed rows)
     /// the list and its query stay pinned, so the highlight follows the
     /// filled value and Esc can still restore the typed query.
@@ -961,6 +984,29 @@ impl InputState {
                             matches,
                             descriptions,
                             kind: SuggestionKind::Models,
+                        });
+                        return;
+                    }
+                    CompletionKind::Effort => {
+                        let ranked =
+                            match_efforts(query, catalogs.current_efforts().unwrap_or_default());
+                        if ranked.is_empty() {
+                            self.suggest = None;
+                            return;
+                        }
+                        let matches: Vec<String> = ranked
+                            .iter()
+                            .map(|effort| format!("/effort {}", effort.id))
+                            .collect();
+                        let descriptions =
+                            ranked.iter().map(|effort| effort.name.clone()).collect();
+                        self.suggest = Some(Suggestion {
+                            query: self.buf.clone(),
+                            sel: 0,
+                            sources: vec![CommandSource::Builtin; matches.len()],
+                            matches,
+                            descriptions,
+                            kind: SuggestionKind::Efforts,
                         });
                         return;
                     }
@@ -1927,6 +1973,85 @@ mod tests {
                 "/model (OpenRouter)",
                 "/model openrouter/anthropic/claude-sonnet",
             ),
+        ] {
+            let mut input = state();
+            for character in query.chars() {
+                input.handle_key_with_catalog(&key(KeyCode::Char(character)), true, &catalogs);
+            }
+            assert_eq!(
+                input.suggest.as_ref().unwrap().matches,
+                vec![expected.to_owned()]
+            );
+        }
+    }
+
+    fn sample_effort_catalog() -> CatalogModel {
+        CatalogModel {
+            current_model: Some(crate::agent::ModelSelection {
+                provider: "openai".into(),
+                model: "gpt".into(),
+                reasoning_effort: Some("medium".into()),
+            }),
+            model_providers: vec![ModelProvider {
+                id: "openai".into(),
+                name: "OpenAI".into(),
+                models: vec![ModelDescriptor {
+                    id: "gpt".into(),
+                    name: "GPT".into(),
+                    description: None,
+                    context_window: None,
+                    reasoning: Some(crate::agent::ModelReasoning {
+                        efforts: vec![
+                            ReasoningEffort {
+                                id: "low".into(),
+                                name: "Low".into(),
+                                description: None,
+                            },
+                            ReasoningEffort {
+                                id: "medium".into(),
+                                name: "Balanced".into(),
+                                description: None,
+                            },
+                            ReasoningEffort {
+                                id: "xhigh".into(),
+                                name: "Maximum".into(),
+                                description: None,
+                            },
+                        ],
+                        default_effort: Some("medium".into()),
+                    }),
+                }],
+            }],
+            ..CatalogModel::default()
+        }
+    }
+
+    #[test]
+    fn effort_space_opens_current_model_effort_completion() {
+        let catalogs = sample_effort_catalog();
+        let mut input = state();
+        for character in "/effort ".chars() {
+            input.handle_key_with_catalog(&key(KeyCode::Char(character)), true, &catalogs);
+        }
+
+        let suggest = input
+            .suggest
+            .as_ref()
+            .expect("effort popup opens after /effort<space>");
+        assert_eq!(suggest.kind, SuggestionKind::Efforts);
+        assert_eq!(
+            suggest.matches,
+            vec!["/effort low", "/effort medium", "/effort xhigh"]
+        );
+        assert_eq!(suggest.descriptions, vec!["Low", "Balanced", "Maximum"]);
+    }
+
+    #[test]
+    fn effort_completion_fuzzy_matches_id_and_display_name() {
+        let catalogs = sample_effort_catalog();
+        for (query, expected) in [
+            ("/effort xh", "/effort xhigh"),
+            ("/effort max", "/effort xhigh"),
         ] {
             let mut input = state();
             for character in query.chars() {

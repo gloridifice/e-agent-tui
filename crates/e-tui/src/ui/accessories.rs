@@ -210,7 +210,6 @@ pub(super) fn render_suggest(
         .max()
         .unwrap_or_default();
     let description_column = width.min(command_width.saturating_add(4));
-    let command_budget = description_column.saturating_sub(4);
 
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(height);
     lines.push(Line::from(Span::styled(
@@ -225,11 +224,10 @@ pub(super) fn render_suggest(
         .take(visible_rows)
     {
         let selected = index == suggest.sel;
-        let command_text = if command_budget == 0 {
-            String::new()
-        } else {
-            trim_to_width(command, command_budget)
-        };
+        // Keep the fill-in command intact. On narrow rows the description
+        // yields all remaining space before the command is clipped by the
+        // terminal viewport.
+        let command_text = command.clone();
         let command_used = UnicodeWidthStr::width(command_text.as_str());
         let gap = description_column.saturating_sub(2 + command_used);
         let description = suggest
@@ -419,6 +417,35 @@ mod tests {
         });
         assert_last_column_blank(&info, 0, width);
         assert!(info[0].contains('…'), "long info truncates: {:?}", info[0]);
+    }
+
+    #[test]
+    fn suggestion_keeps_the_command_and_omits_the_description_when_narrow() {
+        let backend = TestBackend::new(8, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = Theme::ferra();
+        let suggestion = Suggestion {
+            query: "/model".into(),
+            sel: 0,
+            matches: vec!["/model".into()],
+            descriptions: vec!["Select a model".into()],
+            sources: vec![CommandSource::Builtin],
+            kind: crate::input::SuggestionKind::Commands,
+        };
+
+        terminal
+            .draw(|frame| {
+                render_suggest(frame, &suggestion, Rect::new(0, 4, 8, 1), &theme)
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let row = (0..8)
+            .map(|x| buffer[(x, 2)].symbol())
+            .collect::<String>();
+
+        assert_eq!(row, "  /model");
+        assert!(!row.contains('…'));
+        assert!(!row.contains("Select"));
     }
 
     #[test]

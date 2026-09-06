@@ -284,6 +284,13 @@ pub(super) fn apply_ordinary_key(
         )
     };
     let action = ui.input.handle_key_with_catalog(&key, idle, &catalogs);
+    if matches!(
+        action,
+        super::InputAction::Send(_) | super::InputAction::SendAfterTurn(_)
+    ) {
+        *ui.scroll = ScrollState::default();
+        ui.mouse_selection.clear();
+    }
     let mut outcome = super::input::apply_input_action(action, state, ui.queue);
     if outcome.activate_reading {
         let viewport_height = {
@@ -338,6 +345,7 @@ pub(super) fn apply_ordinary_key(
                 themes: ui.themes,
                 new_modes: &catalogs.new_modes,
                 model_providers: &catalogs.model_providers,
+                current_model: catalogs.current_model.as_ref(),
                 input_paste_placeholder_chars: &mut ui.input.paste_placeholder_chars,
                 input_history_limit: &mut ui.input.history_limit,
                 theme: ui.theme,
@@ -348,6 +356,10 @@ pub(super) fn apply_ordinary_key(
         );
         if command.starts_interruptible_command {
             state.lock().unwrap().begin_command_execution();
+        }
+        if is_skill_injection && !command.outbound.is_empty() {
+            *ui.scroll = ScrollState::default();
+            ui.mouse_selection.clear();
         }
         outcome
             .effects

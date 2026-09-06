@@ -319,9 +319,11 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   support fuzzy name completion and show DSH's free-form input hint; DSH currently has no typed argument
   completion schema, so only built-ins provide argument completion. `/new ` completes agent presets; `/model `
   fuzzy-matches the current model catalog by model/provider id and display name, filling the unambiguous
-  `/model <provider>/<model-id>` form; `/skill` shows the current user-invocable roster and fills candidates as
-  `/skill:<name>`. A direct `/model` argument accepts that canonical form or a bare model id when it is unique
-  across providers. On receiving a new `commands`/`skills`/model-catalog frame, refresh any open prompt
+  `/model <provider>/<model-id>` form; `/effort ` fuzzy-matches the exact current route's declared effort ids and
+  display names, filling `/effort <effort-id>`; `/skill` shows the current user-invocable roster and fills candidates
+  as `/skill:<name>`. A direct `/model` argument accepts that canonical form or a bare model id when it is unique
+  across providers, while a direct `/effort` argument accepts a declared id for the exact current route. On
+  receiving a new `commands`/`skills`/model-catalog frame, refresh any open prompt
   immediately; on session switch, clear the old agent-scoped catalog first. Generic execution must not pre-`start_thinking`; the result
   is projected directly to System/Error by `command-result`.
 - **Startup and deferred `/new`**: a new process sends hello without `resumeSessionId`, and the bridge still
@@ -329,14 +331,21 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   failure); only a CLI session id and "remember last session" (default off) resume. `/resume` opens the resume
   Input Page, `/resume <id>` attaches directly. A bare `/new` while interactive only creates a client-side
   `NewConversationDraft` (display name `新对话`) — it does not send to the bridge or replace the real session
-  id/TranscriptStore; only the first plain input sends the atomic `new-input{mode,text}` to create and deliver.
+  id/TranscriptStore; the first plain input or explicit skill invocation sends atomic `new-input` to create and deliver.
   During the draft, old-session frames keep reducing but are not displayed, and the Preview pane is cleared and
   held empty (the draft page must not inherit the previous session's preview, and late old-session frames must
   not repopulate it); on create failure restore the input; `/model` and `/effort` stay usable during the draft;
   the provider/model catalog is session-independent and a selection made during the draft is applied to the
-  materialized session through `/new`'s provider/model/reasoningEffort mirror, while `/skill` and integrated
-  commands must not be
-  misrouted to the old session.
+  materialized session through `/new`'s provider/model/reasoningEffort mirror. A skill invocation materializes
+  the draft before running on its new session; other integrated commands must not be misrouted to the old session.
+  Pi serializes model/effort changes before dependent submissions and restores both selections after its native
+  new-session operation, before admitting the opening prompt.
+- **Immediate submission feedback**: dispatched prompts and explicit skills enter the public card surface locally
+  before transport completion, followed by Thinking and an active working indicator; explicit submission resumes
+  transcript following so feedback is visible even after scrolling back. Live user/skill echoes replace
+  their pending cards in place with authoritative source/copy content rather than appending duplicates. Queued
+  prompts retain their existing accessory until dispatch. A materializing draft displays its pending public card
+  and working indicator without exposing the retained old transcript; admission failure restores the draft prompt.
 - **Input Page controller** (`input_page.rs` + `settings.rs` + `login.rs`): the main loop holds a single
   `Option<InputPageSession>` with the closed variant set Settings/Login/Model/Effort/Theme/Resume/Question; page keys only
   return `PageOutcome`/`PageEffect`, and the caller saves or `.await`s sending only after releasing the page borrow

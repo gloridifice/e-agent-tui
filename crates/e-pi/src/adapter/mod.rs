@@ -52,6 +52,12 @@ enum PendingExtensionUi {
     Editor,
 }
 
+struct NewSubmission {
+    text: String,
+    model: Option<Value>,
+    thinking_level: Option<String>,
+}
+
 pub struct PiAdapter {
     cwd: PathBuf,
     session_root: PathBuf,
@@ -74,8 +80,10 @@ pub struct PiAdapter {
     available_models: Vec<Value>,
     thinking_level: Option<String>,
     thinking_levels: Vec<String>,
-    pending_new: HashMap<String, String>,
+    pending_new: HashMap<String, NewSubmission>,
     pending_model_effort: HashMap<String, Option<String>>,
+    configuration_request: Option<String>,
+    deferred_requests: std::collections::VecDeque<AgentRequest>,
     /// Pi emits both `tool_execution_end` and the durable `message_end` for
     /// one result. Retain the id only until that duplicate message arrives.
     pending_tool_result_messages: HashSet<String>,
@@ -103,6 +111,8 @@ impl PiAdapter {
             thinking_levels: vec!["off".into()],
             pending_new: HashMap::new(),
             pending_model_effort: HashMap::new(),
+            configuration_request: None,
+            deferred_requests: std::collections::VecDeque::new(),
             pending_tool_result_messages: HashSet::new(),
             extension_ui: HashMap::new(),
         }
@@ -113,6 +123,33 @@ impl PiAdapter {
     }
 
     pub fn request(&mut self, request: AgentRequest) -> AdapterOutput {
+        if self.configuration_request.is_some()
+            && matches!(
+                request,
+                AgentRequest::Input { .. }
+                    | AgentRequest::Steer { .. }
+                    | AgentRequest::Command { .. }
+                    | AgentRequest::NewInput { .. }
+                    | AgentRequest::ModelSet { .. }
+                    | AgentRequest::ModelGet
+                    | AgentRequest::Ping
+                    | AgentRequest::Attach { .. }
+            )
+        {
+            if self.deferred_requests.len() >= 64 {
+                return AdapterOutput::event(AgentEvent::Interaction(InteractionEvent::Error {
+                    code: if matches!(request, AgentRequest::NewInput { .. }) {
+                        "new-failed"
+                    } else {
+                        "input-failed"
+                    }
+                    .into(),
+                    message: "Too many requests waiting for the model/session change".into(),
+                }));
+            }
+            self.deferred_requests.push_back(request);
+            return AdapterOutput::default();
+        }
         request::route(self, request)
     }
 
@@ -436,6 +473,14 @@ mod tests {
         ));
     }
 
+    fn reply_first(adapter: &mut PiAdapter, output: &AdapterOutput, data: Value) -> AdapterOutput {
+        let command = serde_json::to_value(&output.commands[0]).unwrap();
+        adapter.record(record(serde_json::json!({
+            "type": "response", "id": command["id"], "command": command["type"],
+            "success": true, "data": data,
+        })))
+    }
+
     #[test]
     fn deferred_new_waits_for_success_before_prompt() {
         let mut adapter = PiAdapter::new(".", "sessions");
@@ -450,9 +495,104 @@ mod tests {
             "type":"response", "id":id, "command":"new_session", "success":true,
             "data":{"cancelled":false}
         })));
-        assert!(done.commands.iter().any(
+        assert!(!done
+            .commands
+            .iter()
+            .any(|command| matches!(command, RpcCommand::Prompt { .. })));
+        let ready = reply_first(&mut adapter, &done, serde_json::json!({"sessionId":"new"}));
+        assert!(ready.commands.iter().any(
             |command| matches!(command, RpcCommand::Prompt { message, .. } if message == "first")
         ));
+    }
+
+    #[test]
+    fn model_and_effort_settle_before_first_skill_materializes() {
+        let mut adapter = PiAdapter::new(".", "sessions");
+        adapter.current_model = Some(serde_json::json!({"provider":"p", "id":"B"}));
+        adapter.thinking_level = Some("low".into());
+        let selected = adapter.request(AgentRequest::ModelSet {
+            provider: "p".into(),
+            model: "A".into(),
+            reasoning_effort: Some("high".into()),
+        });
+        let queued = adapter.request(AgentRequest::NewInput {
+            mode: "pi".into(),
+            prompt: PromptInput::text("/skill review"),
+        });
+        assert!(queued.commands.is_empty());
+        let effort = reply_first(
+            &mut adapter,
+            &selected,
+            serde_json::json!({"provider":"p", "id":"A"}),
+        );
+        assert!(
+            matches!(effort.commands.as_slice(), [RpcCommand::SetThinkingLevel { level, .. }] if level == "high")
+        );
+        let refresh = reply_first(&mut adapter, &effort, Value::Null);
+        let create = reply_first(
+            &mut adapter,
+            &refresh,
+            serde_json::json!({
+                "sessionId":"old", "model":{"provider":"p", "id":"A"}, "thinkingLevel":"high"
+            }),
+        );
+        assert!(matches!(
+            create.commands.as_slice(),
+            [RpcCommand::NewSession { .. }]
+        ));
+        adapter.record(record(serde_json::json!({
+            "type":"response", "id":"late-state", "command":"get_state", "success":true,
+            "data":{"sessionId":"old", "model":{"provider":"p", "id":"B"}, "thinkingLevel":"low"}
+        })));
+        let restore_model = reply_first(
+            &mut adapter,
+            &create,
+            serde_json::json!({"cancelled":false}),
+        );
+        assert!(
+            matches!(restore_model.commands.as_slice(), [RpcCommand::SetModel { model_id, .. }] if model_id == "A")
+        );
+        let restore_effort = reply_first(
+            &mut adapter,
+            &restore_model,
+            serde_json::json!({"provider":"p", "id":"A"}),
+        );
+        assert!(
+            matches!(restore_effort.commands.as_slice(), [RpcCommand::SetThinkingLevel { level, .. }] if level == "high")
+        );
+        let refresh = reply_first(&mut adapter, &restore_effort, Value::Null);
+        assert!(!refresh
+            .commands
+            .iter()
+            .any(|command| matches!(command, RpcCommand::Prompt { .. })));
+        let prompt = reply_first(
+            &mut adapter,
+            &refresh,
+            serde_json::json!({
+                "sessionId":"new", "model":{"provider":"p", "id":"A"}, "thinkingLevel":"high"
+            }),
+        );
+        assert!(
+            matches!(prompt.commands.as_slice(), [RpcCommand::Prompt { message, .. }] if message == "/skill:review")
+        );
+        assert_eq!(adapter.current_model.as_ref().unwrap()["id"], "A");
+        assert_eq!(adapter.thinking_level.as_deref(), Some("high"));
+        assert!(adapter.configuration_request.is_none());
+    }
+
+    #[test]
+    fn cancelled_new_session_never_sends_the_skill() {
+        let mut adapter = PiAdapter::new(".", "sessions");
+        let create = adapter.request(AgentRequest::NewInput {
+            mode: "pi".into(),
+            prompt: PromptInput::text("/skill:review"),
+        });
+        let cancelled = reply_first(&mut adapter, &create, serde_json::json!({"cancelled":true}));
+        assert!(cancelled.commands.is_empty());
+        assert!(
+            matches!(cancelled.events.as_slice(), [AgentEvent::Interaction(InteractionEvent::Error { code, .. })] if code == "new-failed")
+        );
+        assert!(adapter.configuration_request.is_none());
     }
 
     #[test]
@@ -855,23 +995,35 @@ mod tests {
             [RpcCommand::NewSession { .. }]
         ));
 
-        // new_session response: refresh + the opening prompt; no Title event
-        // yet because the follow-up `Attached` would overwrite it.
         let output = adapter.record(record(serde_json::json!({
             "type":"response", "id":"pie-new-1", "command":"new_session", "success":true
         })));
         assert_eq!(title_event(&output), None);
         assert!(matches!(
             output.commands.first(),
+            Some(RpcCommand::SetModel { .. })
+        ));
+        let refresh = reply_first(
+            &mut adapter,
+            &output,
+            serde_json::json!({"provider":"openai", "id":"gpt-5"}),
+        );
+        assert!(matches!(
+            refresh.commands.first(),
             Some(RpcCommand::GetState { .. })
         ));
+        let attached = reply_first(
+            &mut adapter,
+            &refresh,
+            serde_json::json!({
+                "sessionId":"s2", "sessionFile":"sessions/b.jsonl", "isStreaming":false,
+                "model":{"provider":"openai", "id":"gpt-5"}
+            }),
+        );
         assert!(matches!(
-            output.commands.last(),
+            attached.commands.first(),
             Some(RpcCommand::Prompt { .. })
         ));
-
-        // The switch refresh attaches the fresh unnamed session...
-        let attached = adapter.record(unnamed_get_state("s2", "sessions/b.jsonl"));
         assert!(matches!(
             attached.events.first(),
             Some(AgentEvent::Session(SessionEvent::Attached(attached)))

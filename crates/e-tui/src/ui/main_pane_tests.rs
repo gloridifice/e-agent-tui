@@ -106,6 +106,51 @@ fn row_slice(row: &str, start: usize, width: usize) -> String {
 }
 
 #[test]
+fn pending_submissions_render_before_any_agent_echo() {
+    for drafting in [false, true] {
+        for (prompt, visible) in [
+            ("submitted text", "submitted text"),
+            ("/skill:review", "[Skill] review"),
+        ] {
+            let mut state = crate::runtime::RuntimeState::default();
+            force_message_only(&mut state.tui);
+            if drafting {
+                state.push_system_message("old session content");
+                state.begin_new_conversation("standard");
+                state.materialize_new_conversation(crate::PromptInput::text(prompt));
+            } else {
+                state.admit_submission(&crate::PromptInput::text(prompt), true);
+            }
+            let input = InputState::new(&state.config);
+            let theme = state.theme();
+            let mut scroll = ScrollState::default();
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+            terminal
+                .draw(|frame| {
+                    render_with_cursor(
+                        frame,
+                        &mut state.tui,
+                        &input,
+                        &mut scroll,
+                        &theme,
+                        overlays(),
+                    );
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let (_, card_y) =
+                find_text(buffer, visible).expect("submission must be visible before echo");
+            if drafting {
+                assert!(find_text(buffer, "old session content").is_none());
+            } else {
+                let (_, thinking_y) = find_text(buffer, "Thinking").expect("pending thinking");
+                assert!(thinking_y > card_y);
+            }
+        }
+    }
+}
+
+#[test]
 fn help_overlay_advertises_application_paste_shortcut() {
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();

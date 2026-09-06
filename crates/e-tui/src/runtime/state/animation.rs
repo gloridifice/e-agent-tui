@@ -9,6 +9,9 @@ use ratatui::style::Color;
 /// Whether an animation deadline is needed. This is separate from advancing
 /// the clock so the event-driven main loop can remain asleep when idle.
 pub fn animation_active(state: &RuntimeState, _now: std::time::Instant) -> bool {
+    if let Some(draft) = &state.session.new_conversation {
+        return draft.pending_input.is_some();
+    }
     #[cfg(test)]
     if state.transcript.is_empty() && !state.msgs.is_empty() {
         return legacy_animation_active(state);
@@ -32,6 +35,13 @@ pub fn animation_active(state: &RuntimeState, _now: std::time::Instant) -> bool 
 
 /// Advance the Braille spinner and mark only active public display ranges.
 pub fn tick_spinners(state: &mut RuntimeState, now: std::time::Instant) -> bool {
+    if let Some(draft) = &state.session.new_conversation {
+        if draft.pending_input.is_some() {
+            state.session.activity_epoch.get_or_insert(now);
+            return true;
+        }
+        return false;
+    }
     #[cfg(test)]
     if state.transcript.is_empty() && !state.msgs.is_empty() {
         return tick_legacy_spinners(state, now);

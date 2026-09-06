@@ -67,6 +67,7 @@ pub struct TimelineModel {
     pub next_thinking_id: u64,
     pub next_local_display_id: u64,
     pub pending_transcript_insert: Option<usize>,
+    pub pending_submissions: Vec<DisplayId>,
     /// Stable display ids already present in the newer page while older
     /// history is replayed.
     pub replay_newer_display_ids: HashSet<DisplayId>,

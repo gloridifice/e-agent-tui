@@ -74,7 +74,8 @@ Architecture conventions for the Node.js (ESM) DSH host-composition plugin.
   (the TUI's launch directory, validated on the bridge side with `isExistingDirectory`) > current session
   `header.cwd` > `process.cwd()` — `/new` lands in the workspace of whichever directory the TUI launched in.
 - **`/new <mode>` and mode prompts**: `/new` is a client draft command; the first input materializes atomically
-  as wire v5 `new-input`; the bridge still keeps the `/new` command handler for older clients (it is not in the
+  as `new-input`; an opening explicit skill command is resolved and injected only after the new session attaches.
+  The bridge still keeps the `/new` command handler for older clients (it is not in the
   DSH command registry). dshe's bare `/new` builds a draft using client `Config.default_mode`; when the bridge
   receives a genuinely bare `/new` from an older client, it compatibly inherits the current session preset
   (`agentPresets.composedPreset(current.ctx)`, falling back to `header.agentPreset`, then the roster default).
@@ -141,7 +142,9 @@ Architecture conventions for the Node.js (ESM) DSH host-composition plugin.
   resumed session's own triple from `session.models` before `welcome`. `model-set` is async: `session.selectModel`
   must succeed before the bridge mutates `selection.current` / `agent.options`, then it replies with a `model`
   frame to refresh the status bar; a rejected effort/model mutates nothing and returns a `model-failed` error.
-  `/model` omits `reasoningEffort` (clearing the old model's effort); `/effort` sends the full triple. The model
+  `/model` omits `reasoningEffort` (clearing the old model's effort); `/effort` sends the full triple. Per-socket
+  model changes settle in submission order, and dependent prompts, skill invocations, and new-session creation
+  wait for preceding changes before admission. The model
   frame is re-pushed on `llm/adapters-updated` and `settings/document-updated`.
 - **/skill (bridge)**: `/skill:<name>` or `/skill <name>` is intercepted by the bridge (`skill.js`'s
   `parseSkillCommand`). After each attach and `skills/change`, call `ctx.skills.list` by session cwd/scope and

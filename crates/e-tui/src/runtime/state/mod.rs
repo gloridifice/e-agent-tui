@@ -534,14 +534,16 @@ impl RuntimeState {
         }
     }
 
+    pub fn is_agent_idle(&self) -> bool {
+        self.session.status == AgentStatus::Idle && !self.session.working
+    }
+
     pub fn is_fully_idle(&self) -> bool {
-        self.session.status == AgentStatus::Idle
-            && !self.session.working
-            && !self.has_active_command()
+        self.is_agent_idle() && !self.has_active_command()
     }
 
     fn has_active_turn(&self) -> bool {
-        self.session.status == AgentStatus::Running && self.session.working
+        self.session.status == AgentStatus::Running
     }
 
     /// Queue a prompt typed while work is active. As-soon-as-possible prompts
@@ -553,7 +555,9 @@ impl RuntimeState {
         delivery: crate::interaction::PromptDelivery,
         queue: &mut crate::interaction::PendingPromptQueue,
     ) -> bool {
-        if self.is_fully_idle() {
+        if self.is_fully_idle()
+            || (delivery == crate::interaction::PromptDelivery::Asap && self.is_agent_idle())
+        {
             true
         } else {
             queue.push(prompt, delivery);
@@ -565,10 +569,11 @@ impl RuntimeState {
     /// prompts; the latter are eligible only after all work has settled.
     pub fn take_next_queued(&mut self) -> Option<crate::interaction::PendingPrompt> {
         let active_turn = self.has_active_turn();
-        if self.interaction.queue.is_empty() || (!active_turn && !self.is_fully_idle()) {
+        if self.interaction.queue.is_empty() || (!active_turn && !self.is_agent_idle()) {
             return None;
         }
-        self.interaction.queue.take_next(active_turn)
+        let asap_only = !self.is_fully_idle();
+        self.interaction.queue.take_next(asap_only)
     }
 
     /// Settle everything still running when a turn ends: interrupted turns
@@ -706,6 +711,7 @@ impl RuntimeState {
         self.next_thinking_id = 0;
         self.next_local_display_id = 0;
         self.pending_transcript_insert = None;
+        self.pending_submissions.clear();
         self.replay_newer_display_ids.clear();
         self.session.snapshot_truncated = false;
         self.render.transcript_cache.reset();

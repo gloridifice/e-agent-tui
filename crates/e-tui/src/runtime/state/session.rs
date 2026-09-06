@@ -9,11 +9,57 @@ use super::{
 use super::{Msg, ThinkingCard};
 use crate::projection::assistant;
 
+#[cfg(test)]
+#[path = "submission_tests.rs"]
+mod tests;
+
 impl RuntimeState {
+    fn submission_card(&mut self, prompt: &crate::PromptInput) -> crate::display::ContentCard {
+        use crate::display::{CardRole, ContentCard, DisplayId, DisplayTone};
+        let id = DisplayId::correlated("submission", &self.next_local_display_id.to_string());
+        self.next_local_display_id = self.next_local_display_id.wrapping_add(1);
+        ContentCard {
+            id,
+            unit: None,
+            header: None,
+            content: prompt
+                .skill_name()
+                .map(str::to_owned)
+                .unwrap_or_else(|| prompt.display_text_in(self.config.language)),
+            role: if prompt.skill_name().is_some() {
+                CardRole::Skill
+            } else if prompt.has_images() {
+                CardRole::Attachment
+            } else {
+                CardRole::User
+            },
+            tone: DisplayTone::Normal,
+            horizontal_padding: self.config.user_input_padding,
+            copy_source: prompt.display_text_in(self.config.language),
+        }
+    }
+
+    pub fn admit_submission(&mut self, prompt: &crate::PromptInput, start_work: bool) {
+        let mut card = self.submission_card(prompt);
+        card.unit = Some(self.allocate_copy_unit(&card.copy_source));
+        self.pending_submissions.push(card.id.clone());
+        self.insert_transcript_item(DisplayItem::Card(card), None, None);
+        self.projector.tool_family.close_group();
+        self.render.transcript_cache.invalidate();
+        if start_work {
+            self.session
+                .activity_epoch
+                .get_or_insert_with(std::time::Instant::now);
+            self.start_thinking();
+        }
+    }
+
     pub fn begin_new_conversation(&mut self, mode: impl Into<String>) {
         self.session.new_conversation = Some(NewConversationDraft {
             mode: mode.into(),
             pending_input: None,
+            pending_card: None,
+            attached: false,
             notice: None,
         });
         // The `/new` page starts empty: the previous session's preview must
@@ -29,11 +75,14 @@ impl RuntimeState {
         prompt: crate::PromptInput,
     ) -> Option<AgentRequest> {
         let language = self.config.language;
+        let card = self.submission_card(&prompt);
         let draft = self.session.new_conversation.as_mut()?;
         if draft.pending_input.is_some() {
             return None;
         }
         draft.pending_input = Some(prompt.clone());
+        draft.pending_card = Some(card);
+        draft.attached = false;
         draft.notice = Some(crate::i18n::tr(language, "lifecycle.creating_conversation"));
         Some(AgentRequest::NewInput {
             mode: draft.mode.clone(),
@@ -44,6 +93,7 @@ impl RuntimeState {
     pub fn restore_new_conversation_input(&mut self) -> Option<crate::PromptInput> {
         let draft = self.session.new_conversation.as_mut()?;
         draft.notice = None;
+        draft.pending_card = None;
         draft.pending_input.take()
     }
 

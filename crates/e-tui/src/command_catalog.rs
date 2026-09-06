@@ -23,6 +23,7 @@ pub enum CompletionKind {
     None,
     NewMode,
     Model,
+    Effort,
     Skill,
 }
 
@@ -97,7 +98,13 @@ pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
         Model,
         Model
     ),
-    command!("effort", "command.effort.description", None, None, Effort),
+    command!(
+        "effort",
+        "command.effort.description",
+        Some("command.effort.hint"),
+        Effort,
+        Effort
+    ),
     command!("theme", "command.theme.description", None, None, Theme),
     command!("reload", "command.reload.description", None, None, Reload),
     command!(
@@ -319,6 +326,7 @@ mod tests {
         assert_eq!(new.action, CommandAction::New);
         assert_eq!(completion_context("/new m").unwrap().1, "m");
         assert_eq!(completion_context("/model ").unwrap().1, "");
+        assert_eq!(completion_context("/effort h").unwrap().1, "h");
         assert_eq!(completion_context("/skill").unwrap().1, "");
     }
 

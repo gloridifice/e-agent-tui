@@ -43,15 +43,20 @@ pub(super) fn render_status(
     // agent is working and stays dim while idle.
     let drafting = state.session.new_conversation.is_some();
     let indicator_text = format!("e·{}", state.frontend.label());
-    let indicator =
-        if !drafting && (state.session.status == AgentStatus::Running || state.session.working) {
-            working_indicator_spans(state.frontend.label(), theme, state.breath_phase())
-        } else {
-            vec![Span::styled(
-                indicator_text,
-                dim.add_modifier(Modifier::ITALIC),
-            )]
-        };
+    let indicator = if state
+        .session
+        .new_conversation
+        .as_ref()
+        .is_some_and(|draft| draft.pending_input.is_some())
+        || (!drafting && (state.session.status == AgentStatus::Running || state.session.working))
+    {
+        working_indicator_spans(state.frontend.label(), theme, state.breath_phase())
+    } else {
+        vec![Span::styled(
+            indicator_text,
+            dim.add_modifier(Modifier::ITALIC),
+        )]
+    };
     let mode = state
         .session
         .new_conversation
@@ -194,6 +199,8 @@ mod tests {
         state.session.new_conversation = Some(crate::app::NewConversationDraft {
             mode: "code".into(),
             pending_input: None,
+            pending_card: None,
+            attached: false,
             notice: None,
         });
 

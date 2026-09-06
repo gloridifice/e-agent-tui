@@ -10,9 +10,11 @@ use crate::{
     session_index,
 };
 
-use super::{extension, session, AdapterOutput, PendingExtensionUi, PiAdapter};
+use super::{extension, session, AdapterOutput, NewSubmission, PendingExtensionUi, PiAdapter};
 
 fn command_line(adapter: &mut PiAdapter, line: String) -> AdapterOutput {
+    let line = normalize_skill_line(line);
+    let skill = line.starts_with("/skill:");
     if let Some(rest) = line.strip_prefix("/compact") {
         return AdapterOutput::command(RpcCommand::Compact {
             id: Some(adapter.request_id("compact")),
@@ -26,8 +28,14 @@ fn command_line(adapter: &mut PiAdapter, line: String) -> AdapterOutput {
     AdapterOutput::command(RpcCommand::Prompt {
         id: Some(id),
         message: line,
-        streaming_behavior: None,
+        streaming_behavior: (skill && adapter.is_streaming).then_some(StreamingBehavior::Steer),
     })
+}
+
+fn normalize_skill_line(line: String) -> String {
+    line.strip_prefix("/skill ")
+        .map(|name| format!("/skill:{}", name.trim_start()))
+        .unwrap_or(line)
 }
 
 pub(super) fn route(adapter: &mut PiAdapter, request: AgentRequest) -> AdapterOutput {
@@ -63,7 +71,12 @@ pub(super) fn route(adapter: &mut PiAdapter, request: AgentRequest) -> AdapterOu
                 return adapter.unsupported("Pi image prompts must be pasted as temporary file paths");
             };
             let id = adapter.request_id("new");
-            adapter.pending_new.insert(id.clone(), text);
+            adapter.configuration_request = Some(id.clone());
+            adapter.pending_new.insert(id.clone(), NewSubmission {
+                text: normalize_skill_line(text),
+                model: adapter.current_model.clone(),
+                thinking_level: adapter.thinking_level.clone(),
+            });
             AdapterOutput::command(RpcCommand::NewSession { id: Some(id) })
         }
         AgentRequest::Command { line, images } => {
@@ -157,6 +170,7 @@ pub(super) fn route(adapter: &mut PiAdapter, request: AgentRequest) -> AdapterOu
             reasoning_effort,
         } => {
             let id = adapter.request_id("model");
+            adapter.configuration_request = Some(id.clone());
             adapter.pending_model_effort
                 .insert(id.clone(), reasoning_effort);
             AdapterOutput::command(RpcCommand::SetModel {

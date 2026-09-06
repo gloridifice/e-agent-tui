@@ -38,7 +38,7 @@ function harness(options = {}) {
       createNewSession: async () => conn,
       resumePersistedSession: async () => undefined,
     },
-    injectSkill: () => {},
+    injectSkill: options.injectSkill ?? (() => {}),
     historyEvents: () => ({ events: [], hasMore: false }),
     listSessions: options.listSessions ?? (async () => []),
     apiProxy: options.apiProxy,
@@ -56,6 +56,64 @@ function harness(options = {}) {
   })
   return { dispatcher, frames, closes, followups, steerings, cancellations, conn, conns, modelSelections }
 }
+
+test('first new-input skill is invoked on the materialized session, not sent literally', async () => {
+  const skills = []
+  const h = harness({
+    injectSkill: async (_ws, conn, name) => skills.push([conn.agent.id, name]),
+    sessionService: {
+      createNewSession: async (_ws, current) => {
+        if (!current) return h.conn
+        const next = { ...current, agent: { ...current.agent, id: 'new' } }
+        h.conns.delete(current)
+        h.conns.add(next)
+        return next
+      },
+    },
+  })
+  const send = (message) => h.dispatcher.handle(Buffer.from(JSON.stringify(message)))
+  send({ type: 'hello', token: 'secret' })
+  await new Promise((resolve) => setImmediate(resolve))
+  send({ type: 'new-input', mode: 'standard', content: [{ type: 'text', text: '/skill:review' }] })
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(skills, [['new', 'review']])
+  assert.equal(h.followups.length, 0)
+})
+
+test('model and effort changes settle in order before the first prompt or skill', async () => {
+  const selections = new Map([['a1', { current: { provider: 'p', model: 'B', reasoningEffort: 'low' } }]])
+  const gates = []
+  const skills = []
+  const h = harness({
+    modelSelections: selections,
+    sessionModel: {
+      selectModel: ({ sessionId: _id, ...selected }) => new Promise((resolve) => {
+        gates.push(() => resolve({ selected }))
+      }),
+    },
+    injectSkill: async () => skills.push({ ...selections.get('a1').current }),
+  })
+  const send = (message) => h.dispatcher.handle(Buffer.from(JSON.stringify(message)))
+  const tick = () => new Promise((resolve) => setImmediate(resolve))
+  send({ type: 'hello', token: 'secret' })
+  await tick()
+  send({ type: 'model-set', provider: 'p', model: 'A' })
+  send({ type: 'model-set', provider: 'p', model: 'A', reasoningEffort: 'high' })
+  send({ type: 'input', text: 'hello' })
+  send({ type: 'command', line: '/skill:review' })
+  await tick()
+  assert.equal(gates.length, 1)
+  assert.equal(h.followups.length, 0)
+  assert.equal(skills.length, 0)
+  gates.shift()()
+  await tick()
+  assert.deepEqual(selections.get('a1').current, { provider: 'p', model: 'A' })
+  assert.equal(h.followups.length, 0)
+  gates.shift()()
+  await tick()
+  assert.equal(h.followups.length, 1)
+  assert.deepEqual(skills, [{ provider: 'p', model: 'A', reasoningEffort: 'high' }])
+})
 
 test('dispatcher authenticates, attaches, and routes typed input', async () => {
   const h = harness()

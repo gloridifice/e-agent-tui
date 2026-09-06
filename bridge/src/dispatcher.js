@@ -28,6 +28,7 @@ export function createClientDispatcher({
   createUserMessage,
 }) {
   let conn = null
+  let modelUpdates = null
 
   async function hello(msg) {
     if (msg.token !== token) {
@@ -77,6 +78,8 @@ export function createClientDispatcher({
       return
     }
     const current = conn
+    if (modelUpdates) await modelUpdates
+    if (!conns.isCurrent(current, conn)) return
     let next
     try {
       next = await sessionService.createNewSession(ws, current, mode)
@@ -91,6 +94,8 @@ export function createClientDispatcher({
     try {
       if (content.some((part) => part.type === 'image')) {
         await sessionPrompt.prompt(next.agent.id, content)
+      } else if (content.length === 1 && parseSkillCommand(content[0].text) !== undefined) {
+        await injectSkill(ws, next, parseSkillCommand(content[0].text))
       } else {
         next.agent.followup(createUserMessage({
           content,
@@ -107,6 +112,8 @@ export function createClientDispatcher({
   async function input(msg) {
     if (!conn) return
     const current = conn
+    if (modelUpdates) await modelUpdates
+    if (!conns.isCurrent(current, conn)) return
     const mode = msg.mode ?? 'queue'
     let content
     try {
@@ -163,7 +170,14 @@ export function createClientDispatcher({
         send(ws, { type: 'error', code: 'command-failed', message: '/skill does not accept images' })
         return
       }
-      injectSkill(ws, conn, skillName)
+      const current = conn
+      if (modelUpdates) {
+        void modelUpdates.then(() => {
+          if (conns.isCurrent(current, conn)) return injectSkill(ws, current, skillName)
+        })
+      } else {
+        void injectSkill(ws, current, skillName)
+      }
       return
     }
     const commands = host.commands()
@@ -288,9 +302,8 @@ export function createClientDispatcher({
     }
   }
 
-  async function setModel(msg) {
-    const current = conn
-    if (!current || typeof msg.provider !== 'string' || typeof msg.model !== 'string') return
+  async function setModel(msg, current) {
+    if (!current || !conns.isCurrent(current, conn) || typeof msg.provider !== 'string' || typeof msg.model !== 'string') return
     const reasoningEffort = typeof msg.reasoningEffort === 'string' && msg.reasoningEffort !== ''
       ? msg.reasoningEffort
       : undefined
@@ -370,7 +383,15 @@ export function createClientDispatcher({
           send(ws, { type: 'error', code: 'model-failed', message: String(error?.message ?? error) })
         })
         break
-      case 'model-set': void setModel(msg); break
+      case 'model-set': {
+        const current = conn
+        const update = (modelUpdates ?? Promise.resolve()).then(() => setModel(msg, current))
+        modelUpdates = update
+        void update.finally(() => {
+          if (modelUpdates === update) modelUpdates = null
+        })
+        break
+      }
       case 'interrupt':
         if (conn) {
           for (const commandAbort of conn.commandAborts ?? []) commandAbort.abort()

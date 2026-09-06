@@ -698,7 +698,7 @@ mod tests {
     }
 
     #[test]
-    fn enter_after_turn_end_dispatches_directly_once_status_settles() {
+    fn asap_dispatches_between_turns_before_status_settles() {
         let state = Mutex::new(RuntimeState::default());
         state.lock().unwrap().session.status = crate::SessionStatus::Running;
         let mut queue = PendingPromptQueue::default();
@@ -711,14 +711,55 @@ mod tests {
         assert!(outcome.effects.is_empty());
         state.lock().unwrap().interaction.queue = queue;
 
-        assert!(RuntimeController::dispatch_next_queued(&state).is_empty());
-        state.lock().unwrap().session.status = crate::SessionStatus::Idle;
         let effects = RuntimeController::dispatch_next_queued(&state);
         assert!(matches!(
             effects.as_slice(),
-            [UiAction::Agent(AgentRequest::Input { prompt })]
+            [UiAction::Agent(AgentRequest::Steer { prompt })]
                 if prompt.plain_text() == Some("next turn")
         ));
+    }
+
+    #[test]
+    fn idle_agent_accepts_enter_while_command_is_pending() {
+        let state = Mutex::new(RuntimeState::default());
+        state.lock().unwrap().begin_command_execution();
+        let mut queue = PendingPromptQueue::default();
+        let after = RuntimeController::apply_input_action(
+            InputAction::SendAfterTurn("after".into()),
+            &state,
+            &mut queue,
+        );
+        assert!(after.effects.is_empty());
+        let enter = RuntimeController::apply_input_action(
+            InputAction::Send("confirmation".into()),
+            &state,
+            &mut queue,
+        );
+        assert!(matches!(enter.effects.as_slice(),
+            [UiAction::Agent(AgentRequest::Input { prompt })]
+                if prompt.plain_text() == Some("confirmation")));
+        assert_eq!(queue.len(), 1);
+    }
+
+    #[test]
+    fn queued_asap_reaches_idle_agent_while_command_is_pending() {
+        let state = Mutex::new(RuntimeState::default());
+        {
+            let mut app = state.lock().unwrap();
+            app.begin_command_execution();
+            app.interaction.queue.push("after".into(), crate::interaction::PromptDelivery::AfterTurn);
+            app.interaction.queue.push("confirmation".into(), crate::interaction::PromptDelivery::Asap);
+        }
+        let effects = RuntimeController::dispatch_next_queued(&state);
+        assert!(matches!(effects.as_slice(),
+            [UiAction::Agent(AgentRequest::Input { prompt })]
+                if prompt.plain_text() == Some("confirmation")));
+        state.lock().unwrap().stop_thinking();
+        assert!(RuntimeController::dispatch_next_queued(&state).is_empty());
+        state.lock().unwrap().finish_command_execution();
+        assert!(matches!(RuntimeController::dispatch_next_queued(&state).as_slice(),
+            [UiAction::Agent(AgentRequest::Input { prompt })]
+                if prompt.plain_text() == Some("after")));
     }
 
     #[test]
@@ -772,6 +813,47 @@ mod tests {
         );
         assert_eq!(queue.len(), 1);
         assert_eq!(queue.entries()[0].prompt, "a");
+    }
+
+    #[test]
+    fn rejected_submission_clears_pending_work() {
+        for (prompt, code) in [
+            ("hello", "input-failed"),
+            ("/skill:review", "skill-unknown"),
+            ("/skill:review", "pi-rpc-prompt"),
+        ] {
+            let state = Arc::new(Mutex::new(RuntimeState::default()));
+            state
+                .lock()
+                .unwrap()
+                .admit_submission(&PromptInput::text(prompt), true);
+            let mut scroll = ScrollState::default();
+            let mut input = InputState::new(&Config::default());
+            let mut page = None;
+            let mut approval = None;
+            let mut question = None;
+            let mut queue = PendingPromptQueue::default();
+            agent::apply_agent_error(
+                code,
+                "rejected",
+                &state,
+                &mut runtime_ui(
+                    &mut scroll,
+                    &mut input,
+                    &mut page,
+                    &mut approval,
+                    &mut question,
+                    &mut queue,
+                ),
+            );
+            let app = state.lock().unwrap();
+            assert!(app.pending_submissions.is_empty());
+            assert!(!app.session.working);
+            assert!(
+                matches!(&app.transcript.nodes().last().unwrap().item, crate::display::DisplayItem::Block(block)
+                if block.content.contains("rejected"))
+            );
+        }
     }
 
     #[test]
@@ -858,31 +940,51 @@ mod tests {
         let mut approval = None;
         let mut question = None;
         let mut queue = PendingPromptQueue::default();
+        let mut ui = runtime_ui(
+            &mut scroll,
+            &mut input,
+            &mut page,
+            &mut approval,
+            &mut question,
+            &mut queue,
+        );
+        let echo = AgentEvent::Timeline(crate::agent::TimelineEvent::Append(
+            crate::agent::TimelineRecord {
+                sequence: Some(1),
+                time_ms: None,
+                surface: Some(crate::agent::SurfaceOperation::Append),
+                source_sequences: Vec::new(),
+                fact: crate::agent::TimelineFact::UserMessage {
+                    text: "first".into(),
+                    source_kind: Some("user".into()),
+                    content: vec![crate::agent::ContentBlock::Text("first".into())],
+                    source: Default::default(),
+                },
+            },
+        ));
+        RuntimeController::apply_agent(echo.clone(), &state, &mut ui);
+        assert!(
+            state.lock().unwrap().is_new_conversation(),
+            "old-session echo cannot commit the draft"
+        );
         RuntimeController::apply_agent(
-            AgentEvent::Timeline(crate::agent::TimelineEvent::Append(
-                crate::agent::TimelineRecord {
-                    sequence: Some(1),
-                    time_ms: None,
-                    surface: Some(crate::agent::SurfaceOperation::Append),
-                    source_sequences: Vec::new(),
-                    fact: crate::agent::TimelineFact::UserMessage {
-                        text: "first".into(),
-                        source_kind: Some("user".into()),
-                        content: vec![crate::agent::ContentBlock::Text("first".into())],
-                        source: Default::default(),
-                    },
+            AgentEvent::Session(crate::agent::SessionEvent::Attached(
+                crate::agent::AttachedSession {
+                    protocol_version: None,
+                    max_frame_bytes: None,
+                    id: "new".into(),
+                    status: crate::agent::AgentStatus::Idle,
+                    provider: None,
+                    model: None,
+                    mode: None,
+                    title: None,
+                    workspace: None,
                 },
             )),
             &state,
-            &mut runtime_ui(
-                &mut scroll,
-                &mut input,
-                &mut page,
-                &mut approval,
-                &mut question,
-                &mut queue,
-            ),
+            &mut ui,
         );
+        RuntimeController::apply_agent(echo, &state, &mut ui);
         assert!(!state.lock().unwrap().is_new_conversation());
     }
 

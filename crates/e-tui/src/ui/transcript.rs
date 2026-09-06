@@ -1171,16 +1171,18 @@ fn render_transcript_impl(
         let mut display = if help_visible {
             help_overlay(state.config.language, theme)
         } else {
-            draft
-                .notice
+            let mut lines = draft
+                .pending_card
                 .as_ref()
-                .map(|notice| {
-                    vec![Line::from(Span::styled(
-                        notice.clone(),
-                        theme.log.warning.style(),
-                    ))]
-                })
-                .unwrap_or_default()
+                .map(|card| display_item_lines(&DisplayItem::Card(card.clone()), state, width))
+                .unwrap_or_default();
+            if let Some(notice) = &draft.notice {
+                lines.push(Line::from(Span::styled(
+                    notice.clone(),
+                    theme.log.warning.style(),
+                )));
+            }
+            lines
         };
         display.truncate(bottom_y);
         frame.render_widget(

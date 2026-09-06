@@ -280,7 +280,7 @@ impl RuntimeState {
             TimelineFact::UserMessage { .. } => {
                 self.projector.tool_family.close_group();
                 self.render.transcript_cache.invalidate();
-                if self.session.status == AgentStatus::Idle {
+                if self.session.status == AgentStatus::Idle && self.pending_submissions.is_empty() {
                     self.stop_thinking();
                 }
             }
@@ -355,7 +355,40 @@ impl RuntimeState {
             _ => {}
         }
         let surface_seq = event.sequence.filter(|_| is_surface_node(&event.fact));
-        let preferred = matches!(&item, DisplayItem::Card(card) if card.role == CardRole::User)
+        let echoed = if self.replaying {
+            None
+        } else if let DisplayItem::Card(card) = &item {
+            self.pending_submissions.iter().position(|id| {
+                self.transcript.get(id).is_some_and(|node| {
+                    matches!(&node.item, DisplayItem::Card(pending)
+                        if (pending.role == card.role && pending.content == card.content)
+                            || (pending.role == CardRole::Attachment && card.role == CardRole::Attachment)
+                            || (pending.role == CardRole::Skill && card.role == CardRole::User
+                                && pending.copy_source == card.content))
+                })
+            })
+        } else {
+            None
+        };
+        let echoed_position = echoed.and_then(|index| {
+            let id = self.pending_submissions.remove(index);
+            let position = self
+                .transcript
+                .nodes()
+                .iter()
+                .position(|node| node.id() == &id)?;
+            if let Some(node) = self.transcript.remove(position) {
+                if let DisplayItem::Card(card) = node.item {
+                    if let Some(unit) = card.unit {
+                        self.render.units.remove(&unit);
+                    }
+                }
+            }
+            Some(position)
+        });
+        let preferred = echoed_position.or_else(|| {
+            matches!(&item, DisplayItem::Card(card)
+                if matches!(card.role, CardRole::User | CardRole::Skill | CardRole::Attachment))
             .then(|| {
                 self.transcript.nodes().last().and_then(|node| {
                     matches!(&node.item, DisplayItem::Thinking(node)
@@ -364,7 +397,8 @@ impl RuntimeState {
                     .then(|| self.transcript.len().saturating_sub(1))
                 })
             })
-            .flatten();
+            .flatten()
+        });
         self.insert_transcript_item(item.clone(), surface_seq, preferred);
 
         // Injected context previews as complete muted Markdown, including the

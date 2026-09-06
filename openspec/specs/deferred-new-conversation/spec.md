@@ -15,11 +15,16 @@ The client MUST handle `/new [mode]` without sending a session-creation command,
 - **THEN** the existing draft is replaced locally and no server session is created
 
 ### Requirement: First prompt atomically materializes the draft
-The first ordinary prompt submitted in a new-conversation draft MUST emit one typed materialization message carrying the draft mode and complete prompt text. The prompt MUST NOT enter the old session queue or be sent as an ordinary input to the old agent.
+The first ordinary prompt or explicit skill invocation submitted in a new-conversation draft MUST emit one typed materialization message carrying the draft mode and complete prompt. The submission MUST NOT enter the old session queue or be sent to the old agent. The client SHALL immediately display the pending user/skill card and activate its working indicator while retaining the complete submission for failure recovery.
 
 #### Scenario: Submit the first prompt
 - **WHEN** the user sends `hello` from a standard-mode draft
 - **THEN** the client emits one `new-input{mode:"standard",text:"hello"}` and retains the prompt until creation succeeds
+
+#### Scenario: A skill opens the conversation
+- **WHEN** the user sends `/skill:review` from a draft with no prior message
+- **THEN** the client displays the skill immediately and requests materialization; the adapter invokes the skill only on the newly attached session
+- **AND** the authoritative skill echo replaces the pending visual card without duplication and appears before Thinking
 
 #### Scenario: Bridge materializes the prompt
 - **WHEN** the bridge accepts a valid `new-input`
@@ -30,7 +35,7 @@ The first ordinary prompt submitted in a new-conversation draft MUST emit one ty
 - **THEN** the client remains in the draft, restores the complete prompt to the editor, and exposes the bounded bridge error
 
 ### Requirement: Real session state remains isolated behind a draft
-While a draft is visible, inbound frames for the still-attached real session MUST continue updating its retained state without becoming visible in the draft transcript. A successful welcome for a different session SHALL commit the normal session switch and clear the draft.
+While a draft is visible, inbound frames for the still-attached real session MUST continue updating its retained state without becoming visible in the draft transcript. A successful welcome for a different session SHALL commit the normal session switch. During materialization, the pending draft card SHALL remain visible until the opening user/skill echo arrives or admission fails.
 
 #### Scenario: Old session event arrives
 - **WHEN** an old-session event arrives while the local draft is ready
@@ -38,14 +43,18 @@ While a draft is visible, inbound frames for the still-attached real session MUS
 
 #### Scenario: New welcome arrives
 - **WHEN** materialization produces a welcome with a session ID different from the retained ID
-- **THEN** the client resets through the existing session-switch path, clears the draft, and persists only the real new ID
+- **THEN** the client resets through the existing session-switch path and persists only the real new ID, retaining pending submission feedback until its authoritative echo arrives
 
 ### Requirement: Draft commands cannot mutate the old session
-Commands that are local or navigational MAY operate while a draft exists, but session-scoped model, skill, and integrated commands MUST NOT be forwarded to the old session. `/resume` SHALL remain available and a repeated `/new` SHALL remain local.
+Commands that are local or navigational MAY operate while a draft exists. `/model` and `/effort` SHALL remain usable, and their selected provider/model/effort SHALL apply to the materialized session before its first submission. A skill invocation SHALL materialize the draft rather than execute on the retained old session. Other integrated commands MUST NOT be forwarded to the old session. `/resume` SHALL remain available and a repeated `/new` SHALL remain local.
 
-#### Scenario: Session-scoped command in a draft
-- **WHEN** the user invokes `/model`, `/skill:name`, or an integrated session command before the first prompt
+#### Scenario: Integrated command in a draft
+- **WHEN** the user invokes an integrated session command before the first prompt
 - **THEN** the client sends no session-scoped frame and reports that the draft must first be materialized
+
+#### Scenario: Model and effort selection before materialization
+- **WHEN** the user changes model or effort and then immediately submits the first prompt or skill
+- **THEN** selection settles before admission, and native session creation does not revert either selection to the previous/default value
 
 #### Scenario: Resume from a draft
 - **WHEN** the user opens `/resume` from a draft and attaches a listed session

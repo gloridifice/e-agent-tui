@@ -15,7 +15,7 @@ pub use crate::command_catalog::{
 };
 use crate::runtime::state::RuntimeState;
 use crate::{
-    agent::{CommandDescriptor, ModelProvider},
+    agent::{CommandDescriptor, ModelProvider, ModelSelection},
     AgentRequest, Config, Theme,
 };
 use crate::{
@@ -45,6 +45,7 @@ pub struct LocalCommandContext<'a> {
     pub themes: &'a mut Vec<ThemeFile>,
     pub new_modes: &'a [NewMode],
     pub model_providers: &'a [ModelProvider],
+    pub current_model: Option<&'a ModelSelection>,
     pub input_paste_placeholder_chars: &'a mut usize,
     pub input_history_limit: &'a mut usize,
     pub theme: &'a mut Theme,
@@ -104,6 +105,21 @@ fn forward(line: String, outcome: &mut CommandOutcome, interruptible: bool) {
     outcome.starts_interruptible_command = interruptible;
 }
 
+fn submit_skill(line: String, context: &LocalCommandContext<'_>, outcome: &mut CommandOutcome) {
+    let prompt = crate::PromptInput::text(line.clone());
+    let mut state = context.state.lock().unwrap();
+    if state.is_new_conversation() {
+        if let Some(request) = state.materialize_new_conversation(prompt) {
+            outcome.outbound.push(request);
+        } else {
+            state.set_new_conversation_notice(tr(context.language, "command.new.in_progress"));
+        }
+    } else {
+        state.admit_submission(&prompt, true);
+        forward(line, outcome, false);
+    }
+}
+
 fn resolve_model_reference(
     providers: &[ModelProvider],
     reference: &str,
@@ -140,6 +156,30 @@ fn resolve_model_reference(
     }
 }
 
+fn resolve_effort_reference(
+    providers: &[ModelProvider],
+    current: Option<&ModelSelection>,
+    reference: &str,
+) -> Option<(String, String, String)> {
+    let current = current?;
+    let effort = providers
+        .iter()
+        .find(|provider| provider.id == current.provider)?
+        .models
+        .iter()
+        .find(|model| model.id == current.model)?
+        .reasoning
+        .as_ref()?
+        .efforts
+        .iter()
+        .find(|effort| effort.id.eq_ignore_ascii_case(reference.trim()))?;
+    Some((
+        current.provider.clone(),
+        current.model.clone(),
+        effort.id.clone(),
+    ))
+}
+
 fn new_command_line(raw_input: &str, default_mode: &str) -> Option<String> {
     let mode = raw_input.trim();
     if mode.is_empty() {
@@ -157,6 +197,10 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
     let Some((name, raw_input)) = parse_line(&line) else {
         return outcome;
     };
+    if is_colon_skill_invocation(name) || (name == "skill" && !raw_input.trim().is_empty()) {
+        submit_skill(line, &context, &mut outcome);
+        return outcome;
+    }
     let Some(command) = builtin_command(name) else {
         // A client-only draft is not attached to an agent of its own. Never
         // let an integrated command mutate the retained old session.
@@ -237,14 +281,33 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
             }
         }
         CommandAction::Effort => {
-            if reject_arguments(&context, name, raw_input) {
-                return outcome;
+            let reference = raw_input.trim();
+            if reference.is_empty() {
+                // The effort picker reads the exact current route's adapter-declared
+                // efforts from the same model catalog; the selected effort is applied
+                // to the materialized session (including a deferred `/new`).
+                *context.input_page = Some(InputPageSession::effort());
+                outcome.outbound.push(AgentRequest::ModelGet);
+            } else if reference.split_whitespace().count() != 1 {
+                push_error(context.state, tr(context.language, "command.effort.usage"));
+            } else if let Some((provider, model, reasoning_effort)) =
+                resolve_effort_reference(context.model_providers, context.current_model, reference)
+            {
+                outcome.outbound.push(AgentRequest::ModelSet {
+                    provider,
+                    model,
+                    reasoning_effort: Some(reasoning_effort),
+                });
+            } else {
+                push_error(
+                    context.state,
+                    tr_args(
+                        context.language,
+                        "command.effort.not_found",
+                        &[("reference", reference.to_owned())],
+                    ),
+                );
             }
-            // The effort picker reads the exact current route's adapter-declared
-            // efforts from the same model catalog; the selected effort is applied
-            // to the materialized session (including a deferred `/new`).
-            *context.input_page = Some(InputPageSession::effort());
-            outcome.outbound.push(AgentRequest::ModelGet);
         }
         CommandAction::Reload => {
             if reject_arguments(&context, name, raw_input) {
@@ -333,6 +396,69 @@ mod tests {
     use crate::display::{DisplayItem, TranscriptFormat};
 
     #[test]
+    fn skill_can_be_the_first_submission_with_immediate_feedback() {
+        for drafting in [false, true] {
+            for line in ["/skill:review", "/skill review"] {
+                let state = Arc::new(Mutex::new(RuntimeState::default()));
+                if drafting {
+                    state.lock().unwrap().begin_new_conversation("standard");
+                }
+                let mut input_page = None;
+                let mut config = Config::default();
+                let mut paste = config.paste_placeholder_chars;
+                let mut history = config.history_limit;
+                let mut theme = config.theme();
+                let outcome = handle_local_command(
+                    line.into(),
+                    LocalCommandContext {
+                        language: config.language,
+                        input_page: &mut input_page,
+                        integrated_commands: &[],
+                        config: &mut config,
+                        themes: &mut Vec::new(),
+                        new_modes: &[],
+                        model_providers: &[],
+                        current_model: None,
+                        input_paste_placeholder_chars: &mut paste,
+                        input_history_limit: &mut history,
+                        theme: &mut theme,
+                        question_open: false,
+                        approval_open: false,
+                        state: &state,
+                    },
+                );
+                assert!(!outcome.starts_interruptible_command);
+                let app = state.lock().unwrap();
+                if drafting {
+                    assert!(
+                        matches!(outcome.outbound.as_slice(), [AgentRequest::NewInput { prompt, .. }] if prompt == &line)
+                    );
+                    assert_eq!(
+                        app.session
+                            .new_conversation
+                            .as_ref()
+                            .unwrap()
+                            .pending_card
+                            .as_ref()
+                            .unwrap()
+                            .content,
+                        "review"
+                    );
+                } else {
+                    assert!(matches!(
+                        outcome.outbound.as_slice(),
+                        [AgentRequest::Command { .. }]
+                    ));
+                    assert!(
+                        matches!(&app.transcript.nodes()[0].item, DisplayItem::Card(card) if card.content == "review")
+                    );
+                    assert!(app.session.working);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn help_appends_local_markdown_without_an_agent_request() {
         let state = Arc::new(Mutex::new(RuntimeState::default()));
         let integrated = vec![
@@ -364,6 +490,7 @@ mod tests {
                 themes: &mut themes,
                 new_modes: &[],
                 model_providers: &[],
+                current_model: None,
                 input_paste_placeholder_chars: &mut paste_placeholder_chars,
                 input_history_limit: &mut history_limit,
                 theme: &mut theme,
@@ -439,6 +566,7 @@ mod tests {
                 themes: &mut themes,
                 new_modes: &[],
                 model_providers: &providers,
+                current_model: None,
                 input_paste_placeholder_chars: &mut paste_placeholder_chars,
                 input_history_limit: &mut history_limit,
                 theme: &mut theme,
@@ -455,6 +583,73 @@ mod tests {
                 model,
                 reasoning_effort: None,
             }] if provider == "anthropic" && model == "claude-sonnet"
+        ));
+    }
+
+    #[test]
+    fn effort_argument_selects_current_models_declared_effort() {
+        let current = ModelSelection {
+            provider: "openai".into(),
+            model: "gpt".into(),
+            reasoning_effort: Some("low".into()),
+        };
+        let providers = vec![ModelProvider {
+            id: "openai".into(),
+            name: "OpenAI".into(),
+            models: vec![crate::agent::ModelDescriptor {
+                id: "gpt".into(),
+                name: "GPT".into(),
+                description: None,
+                context_window: None,
+                reasoning: Some(crate::agent::ModelReasoning {
+                    efforts: vec![crate::agent::ReasoningEffort {
+                        id: "high".into(),
+                        name: "High".into(),
+                        description: None,
+                    }],
+                    default_effort: None,
+                }),
+            }],
+        }];
+        assert_eq!(
+            resolve_effort_reference(&providers, Some(&current), "HIGH"),
+            Some(("openai".into(), "gpt".into(), "high".into()))
+        );
+
+        let state = Arc::new(Mutex::new(RuntimeState::default()));
+        let mut input_page = None;
+        let mut config = Config::default();
+        let mut themes = Vec::new();
+        let mut paste_placeholder_chars = config.paste_placeholder_chars;
+        let mut history_limit = config.history_limit;
+        let mut theme = config.theme();
+        let outcome = handle_local_command(
+            "/effort high".into(),
+            LocalCommandContext {
+                language: config.language,
+                input_page: &mut input_page,
+                integrated_commands: &[],
+                config: &mut config,
+                themes: &mut themes,
+                new_modes: &[],
+                model_providers: &providers,
+                current_model: Some(&current),
+                input_paste_placeholder_chars: &mut paste_placeholder_chars,
+                input_history_limit: &mut history_limit,
+                theme: &mut theme,
+                question_open: false,
+                approval_open: false,
+                state: &state,
+            },
+        );
+        assert!(input_page.is_none());
+        assert!(matches!(
+            outcome.outbound.as_slice(),
+            [AgentRequest::ModelSet {
+                provider,
+                model,
+                reasoning_effort: Some(effort),
+            }] if provider == "openai" && model == "gpt" && effort == "high"
         ));
     }
 }

@@ -67,6 +67,14 @@ impl PromptInput {
         }
     }
 
+    pub fn skill_name(&self) -> Option<&str> {
+        let text = self.plain_text()?.trim();
+        let name = text
+            .strip_prefix("/skill:")
+            .or_else(|| text.strip_prefix("/skill "))?;
+        name.split_whitespace().next()
+    }
+
     pub fn display_text(&self) -> String {
         self.display_text_in(Language::English)
     }

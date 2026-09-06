@@ -93,6 +93,8 @@ pub struct NewConversationDraft {
     /// The first prompt remains owned across attachment until its direct user
     /// message commits the new session or admission reports a failure.
     pub pending_input: Option<crate::PromptInput>,
+    pub pending_card: Option<crate::display::ContentCard>,
+    pub attached: bool,
     pub notice: Option<String>,
 }
 

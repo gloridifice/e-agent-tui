@@ -28,9 +28,15 @@ pub(super) fn apply_agent(
                 crate::agent::timeline::TimelineFact::UserMessage {
                     source_kind: Some(kind),
                     ..
-                } if kind == "user"
+                } if kind == "user" || kind == "skill-invocation"
             );
-            if commits_new_conversation {
+            if commits_new_conversation
+                && app
+                    .session
+                    .new_conversation
+                    .as_ref()
+                    .is_some_and(|draft| draft.attached && draft.pending_input.is_some())
+            {
                 app.session.new_conversation = None;
             }
             app.apply_host_event(&record);
@@ -106,6 +112,10 @@ pub(super) fn apply_session(
                     .is_some_and(|draft| draft.pending_input.is_some());
                 if !materialization_pending {
                     app.session.new_conversation = None;
+                } else if switched {
+                    if let Some(draft) = app.session.new_conversation.as_mut() {
+                        draft.attached = true;
+                    }
                 }
                 app.session.session_title = attached.title;
                 app.session.session_cwd = attached.workspace;
@@ -144,7 +154,9 @@ pub(super) fn apply_session(
         SessionEvent::Status(status) => {
             let mut app = state.lock().unwrap();
             app.session.status = normalized_session_status(&status);
-            if app.session.status == crate::SessionStatus::Idle {
+            if app.session.status == crate::SessionStatus::Idle
+                && app.pending_submissions.is_empty()
+            {
                 app.stop_thinking();
             }
             Vec::new()
@@ -315,7 +327,13 @@ pub(super) fn apply_agent_error(
     }
     if matches!(
         code,
-        "new-failed" | "new-input-failed" | "image-input-too-large"
+        "new-failed"
+            | "new-input-failed"
+            | "image-input-too-large"
+            | "skill-unknown"
+            | "skill-unavailable"
+            | "skill-failed"
+            | "pi-rpc-prompt"
     ) && state.lock().unwrap().is_new_conversation()
     {
         let restored = {
@@ -355,6 +373,33 @@ pub(super) fn apply_agent_error(
         "no-commands" | "command-unknown" | "command-invalid-result" | "command-failed"
     ) {
         app.finish_command_execution();
+        let pending = std::mem::take(&mut app.pending_submissions);
+        let pending_count = pending.len();
+        app.pending_submissions = pending.into_iter().filter(|id| {
+            !app.transcript.get(id).is_some_and(|node| matches!(&node.item,
+                crate::display::DisplayItem::Card(card) if card.role == crate::display::CardRole::Skill))
+        }).collect();
+        if pending_count > 0
+            && app.pending_submissions.is_empty()
+            && app.session.status == crate::SessionStatus::Idle
+        {
+            app.stop_thinking();
+        }
+    }
+    if matches!(
+        code,
+        "input-failed"
+            | "image-input-failed"
+            | "image-input-too-large"
+            | "skill-unknown"
+            | "skill-unavailable"
+            | "skill-failed"
+            | "pi-rpc-prompt"
+    ) {
+        app.pending_submissions.clear();
+        if app.session.status == crate::SessionStatus::Idle {
+            app.stop_thinking();
+        }
     }
     let language = app.config.language;
     app.push_error_message(tr_args(

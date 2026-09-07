@@ -699,11 +699,11 @@ mod tests {
 
     #[test]
     fn enter_edits_choice_confirm_and_esc_cancel() {
-        let mut s = SettingsState::default(); // 主题: deepseek-e/ferra
-        s.themes = vec!["deepseek-e".into(), "ferra".into()];
+        let mut s = SettingsState::default();
+        s.themes = vec!["dracula".into(), "ferra".into()];
         let mut config = Config::default();
-        config.theme = "deepseek-e".into();
-        assert_eq!(config.theme, "deepseek-e");
+        config.theme = "dracula".into();
+        assert_eq!(config.theme, "dracula");
         s.handle_key(&key(KeyCode::Enter), &mut config);
         assert_eq!(
             s.editing,
@@ -926,8 +926,8 @@ mod tests {
     fn stale_theme_stays_selectable() {
         let mut config = Config::default();
         config.theme = "custom-mine".into();
-        let themes = vec!["deepseek-e".to_string(), "ferra".to_string()];
+        let themes = vec!["dracula".to_string(), "ferra".to_string()];
         let opts = dynamic_options(&ITEMS[0], &config, &[], &themes);
-        assert_eq!(opts, vec!["deepseek-e", "ferra", "custom-mine"]);
+        assert_eq!(opts, vec!["dracula", "ferra", "custom-mine"]);
     }
 }

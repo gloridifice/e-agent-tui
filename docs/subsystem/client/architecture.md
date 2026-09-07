@@ -365,8 +365,7 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
 - **Config/theme/launcher (Rust boundary)**: the `Config`/theme value schemas and defaults live in `e-tui`; config defaults live only in `crates/e-tui/assets/default_config.toml`, embedded and parsed by `e-tui::config` via `include_str!`. Each executable adapter owns its platform paths, config/state file reads and writes, and theme discovery/installation. Both use the shared frontend configuration directory documented in the [README](../../../README.md#config), while session state remains adapter-specific. Pi's runtime mode override must not overwrite the persisted DSH default mode when saving shared settings; `e-tui` performs no config, theme, session, or Preview filesystem I/O. The persisted `Config` is deserialized directly with
   `Deserialize` + `#[serde(deny_unknown_fields)]`; validated transparent values keep `background_color` as
   `#RRGGBB` and both reveal rates in `0..=1024` (zero disables pacing and exposes complete content immediately),
-  while `resolved_theme` is a `#[serde(skip)]` runtime cache. The embedded default theme is `ferra`; `deepseek-e`
-  remains available as a built-in theme.
+  while `resolved_theme` is a `#[serde(skip)]` runtime cache. The embedded default and unknown-name fallback theme is `ferra`.
   `from_user_toml` first recursively `overlay_known`s user values onto the embedded TOML as the schema, then
   strictly deserializes exactly once: old files inherit missing fields, deprecated unknown keys are ignored,
   malformed/known-type errors fall back safely; `Config::default()` must not re-derive from Rust field literals.

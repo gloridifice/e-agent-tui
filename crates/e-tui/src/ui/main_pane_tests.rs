@@ -2063,7 +2063,7 @@ fn preview_styled_layout_caches_syntax_until_width_or_theme_changes() {
         .unwrap();
     assert_eq!(state.preview.take_work_stats().layout_rebuilds, 1);
 
-    theme = Theme::deepseek_e();
+    theme = Theme::from_name("dracula");
     state.config.resolved_theme = theme;
     terminal
         .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))

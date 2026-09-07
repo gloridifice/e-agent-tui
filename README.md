@@ -92,7 +92,7 @@ Mouse: drag any visible TUI text to copy on release, including input, status, pa
 
 ### Themes
 
-Use `/theme` to choose Ferra (default), Rider Dark, Dracula, Catppuccin (Mocha), One Dark, SynthWave '84, or the legacy DeepSeek E theme. Custom themes are discovered under `<config_path>/themes/<theme_name>.toml`.
+Use `/theme` to choose Ferra (default), Rider Dark, Dracula, Catppuccin (Mocha), One Dark, or SynthWave '84. Custom themes are discovered under `<config_path>/themes/<theme_name>.toml`.
 See [themes folder](crates/e-tui/assets/themes/) for example.
 
 ## Development

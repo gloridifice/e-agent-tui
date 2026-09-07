@@ -111,7 +111,7 @@ mod tests {
         let path = dir.path().join("e/config.toml");
         let config = Config {
             default_mode: "pi".into(),
-            theme: "deepseek-e".into(),
+            theme: "dracula".into(),
             ..Config::default()
         };
 

@@ -333,7 +333,7 @@ mod tests {
         let mut config = Config::default();
         config.theme = "ferra".into();
         let action = UiAction::PersistConfig(config.clone());
-        config.theme = "deepseek-e".into();
+        config.theme = "dracula".into();
         assert!(matches!(
             action,
             UiAction::PersistConfig(snapshot) if snapshot.theme == "ferra"

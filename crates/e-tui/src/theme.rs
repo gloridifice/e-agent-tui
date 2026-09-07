@@ -12,7 +12,6 @@ use std::collections::BTreeMap;
 use ratatui::style::{Color, Modifier, Style};
 use serde::Deserialize;
 
-const DEEPSEEK_E_SOURCE: &str = include_str!("../assets/themes/deepseek-e.toml");
 const FERRA_SOURCE: &str = include_str!("../assets/themes/ferra.toml");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -350,15 +349,11 @@ pub struct Theme {
 }
 
 impl Theme {
-    pub fn deepseek_e() -> Self {
-        builtin_theme("deepseek-e")
-    }
-
     pub fn ferra() -> Self {
         builtin_theme("ferra")
     }
 
-    /// Built-in fallback by name (unknown names fall back to deepseek-e).
+    /// Built-in fallback by name (unknown names fall back to Ferra).
     pub fn from_name(name: &str) -> Self {
         builtin_theme(name)
     }
@@ -366,7 +361,7 @@ impl Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        Self::deepseek_e()
+        Self::ferra()
     }
 }
 
@@ -487,7 +482,7 @@ pub fn parse_theme(text: &str) -> Option<ThemeFile> {
     parse_theme_result(text).ok()
 }
 
-pub fn builtin_theme_sources() -> [(&'static str, &'static str); 7] {
+pub fn builtin_theme_sources() -> [(&'static str, &'static str); 6] {
     [
         ("ferra", FERRA_SOURCE),
         (
@@ -504,7 +499,6 @@ pub fn builtin_theme_sources() -> [(&'static str, &'static str); 7] {
             "synthwave-84",
             include_str!("../assets/themes/synthwave-84.toml"),
         ),
-        ("deepseek-e", DEEPSEEK_E_SOURCE),
     ]
 }
 
@@ -512,7 +506,7 @@ fn builtin_theme_file(name: &str) -> ThemeFile {
     let source = builtin_theme_sources()
         .into_iter()
         .find_map(|(candidate, source)| (candidate == name).then_some(source))
-        .unwrap_or(DEEPSEEK_E_SOURCE);
+        .unwrap_or(FERRA_SOURCE);
     parse_theme_result(source).expect("embedded theme must be valid")
 }
 
@@ -634,6 +628,6 @@ mod tests {
             Color::Rgb(1, 2, 3)
         );
         assert_eq!(resolve("ferra", &themes).user, Theme::ferra().user);
-        assert_eq!(resolve("nope", &themes).user, Theme::deepseek_e().user);
+        assert_eq!(resolve("nope", &themes).user, Theme::ferra().user);
     }
 }

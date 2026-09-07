@@ -310,7 +310,7 @@ pub struct Config {
     // 外观
     pub spinner_style: String,
     pub spinner_frame_ms: u64,
-    /// Selected theme name ("deepseek-e" | "ferra" | a `<name>` from the
+    /// Selected theme name (a built-in name or a `<name>` from the
     /// themes directory). The resolved palette is cached in `resolved_theme`
     /// (not persisted) so render-time lookup never touches disk.
     pub theme: String,
@@ -595,7 +595,7 @@ mod tests {
     fn unknown_theme_name_is_persisted_but_runtime_palette_has_a_safe_fallback() {
         let config = Config::from_user_toml("theme = \"removed-theme\"").unwrap();
         assert_eq!(config.theme, "removed-theme");
-        assert_eq!(config.resolved_theme.user, Theme::deepseek_e().user);
+        assert_eq!(config.resolved_theme.user, Theme::ferra().user);
     }
 
     #[test]

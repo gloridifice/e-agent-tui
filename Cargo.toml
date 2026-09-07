@@ -10,3 +10,25 @@ default-members = ["crates/e-dsh"]
 # a local legacy fallback can never join the workspace again.
 exclude = ["crates/e-dsh/vendor"]
 resolver = "2"
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/gloridifice/e"
+homepage = "https://github.com/gloridifice/e"
+
+[workspace.dependencies]
+e-tui = { version = "=0.0.1", path = "crates/e-tui" }
+
+[workspace.metadata.release]
+allow-branch = ["master"]
+shared-version = true
+dependent-version = "upgrade"
+consolidate-commits = true
+pre-release-commit-message = "chore(release): v{{version}}"
+tag = true
+tag-name = "v{{version}}"
+tag-message = "Release v{{version}}"
+publish = true
+push = true

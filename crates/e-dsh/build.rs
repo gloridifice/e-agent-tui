@@ -6,9 +6,11 @@ fn main() {
 }
 
 fn generate_wire_contract() {
-    let contract_path = PathBuf::from("../../bridge/protocol-contract.json");
+    let contract_path = PathBuf::from("assets/bridge/protocol-contract.json");
     println!("cargo:rerun-if-changed={}", contract_path.display());
-    let raw = fs::read_to_string(&contract_path).expect("read bridge/protocol-contract.json");
+    let raw = fs::read_to_string(&contract_path).expect(
+        "read assets/bridge/protocol-contract.json; run node tools/sync-release-assets.mjs",
+    );
     let contract: serde_json::Value = serde_json::from_str(&raw).expect("parse protocol contract");
     let number = |path: &[&str]| -> u64 {
         let mut value = &contract;
@@ -39,7 +41,7 @@ fn generate_wire_contract() {
     let shapes_json =
         serde_json::to_string(&contract["messageShapes"]).expect("serialize message shapes");
     let generated = format!(
-        "// Generated from bridge/protocol-contract.json; do not edit.\n\
+        "// Generated from the packaged bridge protocol contract; do not edit.\n\
          pub const WIRE_PROTOCOL_VERSION: u64 = {};\n\
          pub const SNAPSHOT_EVENT_CAP: usize = {};\n\
          pub const HISTORY_EVENT_CAP: usize = {};\n\
@@ -65,7 +67,7 @@ fn generate_wire_contract() {
 fn generate_embedded_bridge() {
     use sha2::{Digest, Sha256};
 
-    let bridge = PathBuf::from("../../bridge");
+    let bridge = PathBuf::from("assets/bridge");
 
     // The runtime bridge package: manifest, canonical contract, and every
     // production module directly under bridge/src. Tests, tools, caches, and

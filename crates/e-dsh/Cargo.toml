@@ -1,12 +1,18 @@
 [package]
 name = "e-dsh"
-version = "0.0.3"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "DSH adapter and dshe executable for the e agent TUI"
+readme = "README.md"
+keywords = ["terminal", "tui", "agent", "deepseek"]
+categories = ["command-line-interface", "development-tools"]
+include = ["src/**", "assets/**", "build.rs", "README.md", "LICENSE.md"]
 
 [lib]
-# Keep the existing import path during the behavior-preserving extraction.
-name = "e"
+name = "e_dsh"
 path = "src/lib.rs"
 
 [[bin]]
@@ -20,7 +26,7 @@ default = []
 tracy = ["e-tui/tracy"]
 
 [dependencies]
-e-tui = { path = "../e-tui" }
+e-tui.workspace = true
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = "0.30"
 futures-util = { version = "0.3", features = ["sink"] }
@@ -47,4 +53,4 @@ serde_json = "1"
 sha2 = "0.11"
 
 [dev-dependencies]
-e-tui = { path = "../e-tui", features = ["test-support"] }
+e-tui = { workspace = true, features = ["test-support"] }

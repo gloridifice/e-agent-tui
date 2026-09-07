@@ -1,6 +1,5 @@
 use super::*;
 use crate::{
-    mouse_selection::{SelectionFrame, SelectionSurface},
     reveal::{apply_reveal, RevealSignature},
     ui::component::{card, text, working},
     wrap::stable_wrap_prefix_graphemes,
@@ -1106,18 +1105,8 @@ pub(super) fn render_transcript(
     scroll: &mut ScrollState,
     theme: &Theme,
     help_visible: bool,
-    selection_frame: &mut SelectionFrame,
 ) {
-    let _ = render_transcript_impl(
-        frame,
-        area,
-        state,
-        scroll,
-        theme,
-        help_visible,
-        0,
-        selection_frame,
-    );
+    let _ = render_transcript_impl(frame, area, state, scroll, theme, help_visible, 0);
 }
 
 /// Render transcript with the bottom stack (accessories + input + status +
@@ -1134,18 +1123,8 @@ pub(super) fn render_transcript_combined(
     theme: &Theme,
     help_visible: bool,
     bottom_rows: usize,
-    selection_frame: &mut SelectionFrame,
 ) -> usize {
-    render_transcript_impl(
-        frame,
-        area,
-        state,
-        scroll,
-        theme,
-        help_visible,
-        bottom_rows,
-        selection_frame,
-    )
+    render_transcript_impl(frame, area, state, scroll, theme, help_visible, bottom_rows)
 }
 
 #[allow(clippy::too_many_arguments)] // Internal implementation mirrors the public viewport contract.
@@ -1157,7 +1136,6 @@ fn render_transcript_impl(
     theme: &Theme,
     help_visible: bool,
     bottom_rows: usize,
-    selection_frame: &mut SelectionFrame,
 ) -> usize {
     let screen_height = area.height as usize;
     let width = area.width as usize;
@@ -1261,17 +1239,6 @@ fn render_transcript_impl(
                 // backgrounds (inline code, diff chips) authoritative.
                 row = row.patch_style(Style::default().bg(theme.bg));
                 reading_rail_rows.push(display.len() + visual_row_offset);
-            }
-            if !help_visible {
-                super::selection::register_line(
-                    selection_frame,
-                    SelectionSurface::Transcript,
-                    global_row,
-                    area.x,
-                    area.y
-                        .saturating_add((display.len() + visual_row_offset) as u16),
-                    &row,
-                );
             }
             // Only an explicit row-level background makes a solid row.
             // Span backgrounds (notably inline-code chips) must stay local;

@@ -1,8 +1,6 @@
 use ratatui::{layout::Rect, Frame};
 
-use crate::{
-    config::Config, mouse_selection::SelectionFrame, preview::PreviewPaneState, theme::Theme,
-};
+use crate::{config::Config, preview::PreviewPaneState, theme::Theme};
 
 pub fn render(
     frame: &mut Frame,
@@ -10,7 +8,6 @@ pub fn render(
     preview: &mut PreviewPaneState,
     config: &Config,
     theme: &Theme,
-    selection_frame: &mut SelectionFrame,
     left_padding: u16,
     right_padding: u16,
 ) {
@@ -20,7 +17,6 @@ pub fn render(
         preview,
         config,
         theme,
-        selection_frame,
         left_padding,
         right_padding,
     );

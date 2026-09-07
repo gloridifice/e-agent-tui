@@ -11,8 +11,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context};
-use e::protocol::{ClientMessage, MAX_WIRE_FRAME_BYTES, WIRE_PROTOCOL_VERSION};
-use e::runtime_ports::{BridgeTransportPort, ProductionRuntimePorts};
+use e_dsh::protocol::{ClientMessage, MAX_WIRE_FRAME_BYTES, WIRE_PROTOCOL_VERSION};
+use e_dsh::runtime_ports::{BridgeTransportPort, ProductionRuntimePorts};
 use e_tui::profile::{FrameMetrics, FrameSample};
 use e_tui::runtime::{
     animation_active, animation_interval, execute_ui_actions, inbound_budget_remaining,
@@ -27,7 +27,7 @@ use e_tui::EffectResult;
 use e_tui::UiAction;
 
 fn token_path() -> PathBuf {
-    e::launcher::dsh_home().join("dsh-tui.token")
+    e_dsh::launcher::dsh_home().join("dsh-tui.token")
 }
 
 fn read_token() -> anyhow::Result<String> {
@@ -107,23 +107,23 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn run_setup() -> anyhow::Result<()> {
-    let home = e::launcher::dsh_home();
-    e::setup::run_setup(&home).map_err(|error| anyhow::anyhow!("{error}"))
+    let home = e_dsh::launcher::dsh_home();
+    e_dsh::setup::run_setup(&home).map_err(|error| anyhow::anyhow!("{error}"))
 }
 
 fn run_clean() -> anyhow::Result<()> {
-    let home = e::launcher::dsh_home();
-    let path = e::launcher::lock_path(&home);
-    match e::launcher::clean(&home)? {
-        e::launcher::CleanOutcome::NothingToClean => println!("Nothing to clean."),
-        e::launcher::CleanOutcome::RemovedStaleLock { pid } => match pid {
+    let home = e_dsh::launcher::dsh_home();
+    let path = e_dsh::launcher::lock_path(&home);
+    match e_dsh::launcher::clean(&home)? {
+        e_dsh::launcher::CleanOutcome::NothingToClean => println!("Nothing to clean."),
+        e_dsh::launcher::CleanOutcome::RemovedStaleLock { pid } => match pid {
             Some(pid) => println!(
                 "Removed stale lock for managed DSH process {pid}: {}",
                 path.display()
             ),
             None => println!("Removed stale lock: {}", path.display()),
         },
-        e::launcher::CleanOutcome::StoppedManagedService { pid } => println!(
+        e_dsh::launcher::CleanOutcome::StoppedManagedService { pid } => println!(
             "Stopped managed DSH process {pid} and removed lock: {}",
             path.display()
         ),
@@ -138,14 +138,14 @@ async fn run_tui(url: String, resume_session_id: Option<String>) -> anyhow::Resu
     #[allow(unused_variables)]
     let _tracy = e_tui::profile::start_tracy(std::env::var("DSH_TUI_TRACY").as_deref() == Ok("1"));
 
-    let home = e::launcher::dsh_home();
-    e::setup::require_ready(&home).map_err(|error| anyhow::anyhow!("{error}"))?;
+    let home = e_dsh::launcher::dsh_home();
+    e_dsh::setup::require_ready(&home).map_err(|error| anyhow::anyhow!("{error}"))?;
 
     // Launcher preamble: ensure a DSH bridge is listening at `url`, spawning
     // `dsh --profile e` when none is (global dsh, else npx). `dsh_session`
     // records whether this process owns the spawned service so `release`
     // below can shut it down when the last TUI closes.
-    let mut dsh_session = e::launcher::acquire(&url, &home)?;
+    let mut dsh_session = e_dsh::launcher::acquire(&url, &home)?;
 
     let _z = e_tui::tracy_zone!("read_token");
     let token = read_token();
@@ -175,7 +175,7 @@ async fn run_tui(url: String, resume_session_id: Option<String>) -> anyhow::Resu
     // is shut down when this is the last attached TUI; an out-of-band dsh is
     // left untouched. Delay the confirmation until after leaving the alternate
     // screen so it remains visible in the caller's terminal.
-    let dsh_server_closed = e::launcher::release(&mut dsh_session);
+    let dsh_server_closed = e_dsh::launcher::release(&mut dsh_session);
 
     if dsh_server_closed {
         println!(
@@ -196,7 +196,7 @@ impl<T: BridgeTransportPort> AgentRequestPort for DshAgentPort<'_, T> {
         request: e_tui::AgentRequest,
     ) -> impl std::future::Future<Output = Result<(), String>> + Send {
         self.outbound
-            .send_message(e::bridge::adapter::agent_request_to_client(request))
+            .send_message(e_dsh::bridge::adapter::agent_request_to_client(request))
     }
 }
 
@@ -217,14 +217,14 @@ async fn run(
 ) -> anyhow::Result<()> {
     // Config: persisted TOML, live-editable via /settings (D26–D30).
     let _z = e_tui::tracy_zone!("config load");
-    let mut config = e::config::load();
+    let mut config = e_dsh::config::load();
     *effective_language = config.language;
     // Discover the themes directory (ensuring the two defaults exist) and
     // resolve the configured theme name to a palette. `themes` is refreshed
     // by `/reload` and `/theme`; `config.resolved_theme` caches the result
     // so render-time lookups never touch disk.
-    let mut themes = e::theme::load_themes(&e::config::themes_dir());
-    config.resolved_theme = e::theme::resolve(&config.theme, &themes);
+    let mut themes = e_dsh::theme::load_themes(&e_dsh::config::themes_dir());
+    config.resolved_theme = e_dsh::theme::resolve(&config.theme, &themes);
     // A fresh process opens a NEW session by default (each process shows
     // one session); resume only through the explicit CLI session id or the
     // opt-in remember-last-session setting. The new session is created on
@@ -232,7 +232,7 @@ async fn run(
     // when that preset id is stale).
     let resume_session_id = resume_session_id.or_else(|| {
         if config.remember_last_session {
-            e::config::StateFile::load().last_session_id
+            e_dsh::config::StateFile::load().last_session_id
         } else {
             None
         }
@@ -271,7 +271,7 @@ async fn run(
         protocol_version: WIRE_PROTOCOL_VERSION,
     };
     let _z = e_tui::tracy_zone!("ws connect");
-    let mut bridge_io = e::bridge_io::BridgeIo::connect(&url, hello, max_frame_bytes).await?;
+    let mut bridge_io = e_dsh::bridge_io::BridgeIo::connect(&url, hello, max_frame_bytes).await?;
     drop(_z);
     phases.mark("ws connect");
     phases.mark("hello sent");
@@ -285,20 +285,22 @@ async fn run(
     // ---- event-driven main loop ----
     let sync_output = std::env::var("DSHE_DISABLE_SYNC_OUTPUT").as_deref() != Ok("1");
     #[cfg(windows)]
-    let mut terminal =
-        TerminalOwner::new_with_options(e::win_input::enable_virtual_terminal_input, sync_output)
-            .context("initialize terminal")?;
+    let mut terminal = TerminalOwner::new_with_options(
+        e_dsh::win_input::enable_virtual_terminal_input,
+        sync_output,
+    )
+    .context("initialize terminal")?;
     #[cfg(not(windows))]
     let mut terminal =
         TerminalOwner::new_with_options(|| Ok(()), sync_output).context("initialize terminal")?;
     phases.mark("terminal setup");
     #[cfg(windows)]
-    let mut events = ProductionTerminalEvents::new(e::win_input::native_mods);
+    let mut events = ProductionTerminalEvents::new(e_dsh::win_input::native_mods);
     #[cfg(not(windows))]
     let mut events = ProductionTerminalEvents::new();
     let mut runtime_ports = ProductionRuntimePorts;
     let mut scheduler = FrameScheduler::new(runtime_ports.now());
-    let mut committed_selection_frame = e_tui::SelectionFrame::default();
+    let mut committed_presentation = e_tui::ui::Presentation::default();
     let mut spinner_deadline: Option<Instant> = None;
     let mut frame_metrics = FrameMetrics::new(
         std::env::var("DSHE_FRAME_TIMING").as_deref() == Ok("1"),
@@ -313,6 +315,12 @@ async fn run(
         let _main_loop_zone = e_tui::tracy_zone!("main loop");
         let mut pending_event = None;
         let mut first_inbound = None;
+        RuntimeController::reconcile_presentation(
+            &state_r,
+            &committed_presentation,
+            &mut scheduler,
+            Instant::now(),
+        );
         let frame_deadline = scheduler.deadline();
         let (reveal_deadline, notice_deadline) = {
             let state = state_r.lock().unwrap();
@@ -324,8 +332,11 @@ async fn run(
                     .deadline(state.config.copy_toast_secs),
             )
         };
-        let animation_deadline =
-            e_tui::reveal::earliest_deadline(spinner_deadline, reveal_deadline);
+        let notice_deadline = scheduler.presentation_deadline(notice_deadline);
+        let animation_deadline = scheduler.presentation_deadline(e_tui::reveal::earliest_deadline(
+            spinner_deadline,
+            reveal_deadline,
+        ));
         tokio::select! {
             maybe = bridge_io.inbound.recv() => {
                 let Some(msg) = maybe else {
@@ -389,7 +400,7 @@ async fn run(
             let mut count = 0usize;
             while let Some(msg) = next.take() {
                 count += 1;
-                let event = e::bridge::adapter::normalize_server_message(msg);
+                let event = e_dsh::bridge::adapter::normalize_server_message(msg);
                 let is_snapshot = matches!(
                     &event,
                     e_tui::AgentEvent::Timeline(e_tui::agent::TimelineEvent::Snapshot { .. })
@@ -480,7 +491,7 @@ async fn run(
                 },
                 runtime_ports.now(),
                 &state_r,
-                &committed_selection_frame,
+                committed_presentation.selection_frame(),
                 &mut TerminalUiState {
                     scroll: &mut interaction.scroll,
                     input: &mut interaction.input,
@@ -573,6 +584,13 @@ async fn run(
             scheduler.request(DirtyReason::Content, Instant::now());
         }
 
+        RuntimeController::reconcile_presentation(
+            &state_r,
+            &committed_presentation,
+            &mut scheduler,
+            Instant::now(),
+        );
+
         // Start the spinner clock only while a running/settling indicator
         // exists. Reveal lanes contribute their own exact deadlines at the
         // next select turn; a fully idle client has no periodic wakeup.
@@ -601,7 +619,7 @@ async fn run(
             } else {
                 None
             };
-            let mut candidate_selection_frame = None;
+            let mut candidate_presentation = None;
             let transaction = terminal.draw(|frame| {
                 let output = e_tui::ui::render_with_cursor_and_selection(
                     frame,
@@ -620,9 +638,9 @@ async fn run(
                         pane_resize: interaction.pane_resize,
                     },
                     &interaction.mouse_selection,
-                    &committed_selection_frame,
+                    &committed_presentation,
                 );
-                candidate_selection_frame = Some(output.selection_frame);
+                candidate_presentation = Some(output.presentation);
                 output.cursor
             });
             let cache_work = state.render.transcript_cache.take_work_stats();
@@ -630,20 +648,10 @@ async fn run(
             drop(state);
             state_r.lock().unwrap().interaction = interaction;
             let transaction = transaction?;
-            let mut candidate_selection_frame =
-                candidate_selection_frame.expect("render always produces selection geometry");
-            let geometry_changed =
-                !candidate_selection_frame.same_geometry(&committed_selection_frame);
-            let epoch = if geometry_changed {
-                committed_selection_frame.epoch().wrapping_add(1).max(1)
-            } else {
-                committed_selection_frame.epoch().max(1)
-            };
-            candidate_selection_frame.set_epoch(epoch);
-            committed_selection_frame = candidate_selection_frame;
-            if geometry_changed {
-                state_r.lock().unwrap().interaction.mouse_selection.clear();
-            }
+            committed_presentation.commit(
+                candidate_presentation.expect("render always produces presentation"),
+                &mut state_r.lock().unwrap().interaction.mouse_selection,
+            );
             scheduler.complete(Instant::now());
             let io = transaction.io;
             let report = frame_metrics.record(FrameSample {
@@ -710,11 +718,13 @@ mod tests {
     }
 
     impl UiActionPorts for ClipboardPorts {
-        fn load_config(&mut self) -> Result<(e::config::Config, Vec<e::theme::ThemeFile>), String> {
+        fn load_config(
+            &mut self,
+        ) -> Result<(e_dsh::config::Config, Vec<e_dsh::theme::ThemeFile>), String> {
             Err("not used".into())
         }
 
-        fn persist_config(&mut self, _config: &e::config::Config) -> Result<(), String> {
+        fn persist_config(&mut self, _config: &e_dsh::config::Config) -> Result<(), String> {
             Err("not used".into())
         }
 

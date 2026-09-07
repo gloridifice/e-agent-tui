@@ -37,6 +37,8 @@ mod effect;
 mod input;
 #[cfg(test)]
 mod key_mapping_tests;
+#[cfg(test)]
+mod selection_tests;
 mod terminal;
 
 pub enum RuntimeInput {
@@ -140,6 +142,25 @@ fn normalized_session_status(status: &crate::agent::AgentStatus) -> crate::Sessi
 }
 
 impl RuntimeController {
+    pub fn reconcile_presentation(
+        state: &Arc<Mutex<RuntimeState>>,
+        committed: &crate::ui::Presentation,
+        scheduler: &mut crate::runtime::scheduler::FrameScheduler,
+        now: Instant,
+    ) {
+        let mut state = state.lock().unwrap();
+        let context = crate::ui::selection_context(
+            &state,
+            state.interaction.input_page.as_ref(),
+            state.interaction.approval.as_ref(),
+            state.interaction.help_visible,
+        );
+        if context != committed.selection_frame().context() {
+            state.interaction.mouse_selection.clear();
+        }
+        scheduler.set_selection_held(state.interaction.mouse_selection.is_dragging(), now);
+    }
+
     pub fn apply_terminal_route(
         route: TerminalRoute,
         size: TerminalSize,

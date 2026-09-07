@@ -18,7 +18,6 @@ use crate::{
         PREVIEW_SEPARATOR_COLUMNS, PREVIEW_SEPARATOR_GAP_COLUMNS,
     },
     login::LoginState,
-    mouse_selection::SelectionFrame,
     settings::SettingsState,
     theme::Theme,
 };
@@ -246,7 +245,6 @@ pub(super) fn render_with_cursor(
     scroll: &mut ScrollState,
     theme: &Theme,
     overlays: RenderOverlays<'_>,
-    selection_frame: &mut SelectionFrame,
 ) -> Option<Position> {
     let pane_resize = overlays.pane_resize;
     if pane_resize.is_active() {
@@ -291,7 +289,6 @@ pub(super) fn render_with_cursor(
                 scroll,
                 theme,
                 pane_overlays,
-                selection_frame,
                 true,
             );
             state.rebuild_reading_model();
@@ -308,7 +305,6 @@ pub(super) fn render_with_cursor(
                 scroll,
                 theme,
                 pane_overlays,
-                selection_frame,
                 false,
             );
             state.rebuild_reading_model();
@@ -320,7 +316,6 @@ pub(super) fn render_with_cursor(
                 &mut state.preview,
                 &state.config,
                 theme,
-                selection_frame,
                 PREVIEW_SPLIT_LEFT_PADDING,
                 PREVIEW_SPLIT_RIGHT_PADDING,
             );
@@ -333,7 +328,6 @@ pub(super) fn render_with_cursor(
                 &mut state.preview,
                 &state.config,
                 theme,
-                selection_frame,
                 PREVIEW_FULLSCREEN_LEFT_PADDING,
                 PREVIEW_FULLSCREEN_RIGHT_PADDING,
             );

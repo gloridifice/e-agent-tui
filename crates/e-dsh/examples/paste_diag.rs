@@ -28,7 +28,7 @@ async fn main() {
 
     crossterm::terminal::enable_raw_mode().expect("enable raw mode");
     // Must run after raw mode, whose setup otherwise clears the flag.
-    let setup = e::win_input::enable_virtual_terminal_input();
+    let setup = e_dsh::win_input::enable_virtual_terminal_input();
 
     let _ = writeln!(log, "READY t={} setup={:?}", stamp(), setup);
     let _ = log.flush();
@@ -36,7 +36,7 @@ async fn main() {
     let _ = stdout.flush();
 
     #[cfg(windows)]
-    let mut events = ProductionTerminalEvents::new(e::win_input::native_mods);
+    let mut events = ProductionTerminalEvents::new(e_dsh::win_input::native_mods);
     #[cfg(not(windows))]
     let mut events = ProductionTerminalEvents::new();
 

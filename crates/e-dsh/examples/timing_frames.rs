@@ -9,7 +9,7 @@
 
 use std::time::Instant;
 
-use e::config::Config;
+use e_dsh::config::Config;
 use e_tui::{
     display::{
         CardRole, ContentCard, DisplayId, DisplayItem, DisplayTone, TranscriptBlock,

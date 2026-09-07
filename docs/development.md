@@ -52,7 +52,7 @@ cargo build --release
 cargo build --release --features tracy
 ```
 
-`pie` accepts `--session <file>`, `--approve`, and `--no-approve`; use `pie --help` for the exact current interface. DSH client configuration is stored under `%APPDATA%\dshe\`; Pi frontend-only configuration is stored under `%APPDATA%\pie\`.
+`pie` accepts `--session <file>`, `--approve`, and `--no-approve`; use `pie --help` for the exact current interface. Both frontends share the [frontend configuration directory](../README.md#config); backend configuration and session state remain separate.
 
 ## Dependencies
 
@@ -64,9 +64,33 @@ Cargo uses the official crates.io registry. Add dependencies to the owning packa
 
 Commit the root workspace `Cargo.lock`. `crates/e-dsh/vendor/` and `tools/vendor-crates.mjs` are retired offline fallbacks; do not depend on them.
 
+## Release
+
+The three Rust packages inherit one workspace version and are released together with [`cargo-release`](https://github.com/crate-ci/cargo-release). Install the release tool once:
+
+```powershell
+cargo install cargo-release --locked
+```
+
+Before publishing, start from a clean `master` checkout and run the package verifier described in [testing](testing.md). The first release publishes the version already declared in the workspace (`0.0.1`):
+
+```powershell
+cargo release --workspace             # dry run
+cargo release --workspace --execute   # publish, commit, tag, and push
+```
+
+For later releases, select the increment explicitly; all package versions, the internal `e-tui` requirement, and `Cargo.lock` are updated together:
+
+```powershell
+cargo release patch --workspace
+cargo release patch --workspace --execute
+```
+
+Cargo-release publishes `e-tui` before the two adapters and uses one shared `v<version>` tag. Never use `--allow-dirty` or `--no-verify` for an executed release. A crates.io version cannot be overwritten; yank a bad version and publish a new synchronized patch instead.
+
 ## Bridge development
 
-Bridge source changes are not visible to a running DSH service until the deployed package is replaced and DSH is restarted. Follow [DSH integration](dsh-integration.md) for packaged and development deployment flows, and [testing](testing.md) for bridge and compatibility checks.
+Bridge source changes are not visible to a running DSH service until the deployed package is replaced and DSH is restarted. Before a packaged build, run `node tools/sync-release-assets.mjs` so `e-dsh` embeds the current generated mirror. Follow [DSH integration](dsh-integration.md) for packaged and development deployment flows, and [testing](testing.md) for bridge and compatibility checks.
 
 ## Integration diagnostics
 

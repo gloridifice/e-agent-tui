@@ -62,7 +62,7 @@ pub use interaction::{
     MIN_PREVIEW_PANE_WIDTH, PREVIEW_RIGHT_MARGIN_COLUMNS, PREVIEW_SEPARATOR_COLUMNS,
     PREVIEW_SEPARATOR_GAP_COLUMNS,
 };
-pub use mouse_selection::{MouseSelection, SelectionFrame, SelectionSurface, SelectionUpdate};
+pub use mouse_selection::{MouseSelection, SelectionFrame, SelectionUpdate};
 pub use notice::{NoticeState, COPY_NOTICE_MIN_SECS};
 pub use preview::{
     LineSelection, MutationDiff, MutationHunk, PreviewCache, PreviewContent, PreviewKey,

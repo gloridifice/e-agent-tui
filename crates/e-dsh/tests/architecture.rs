@@ -46,6 +46,46 @@ fn runners_process_admitted_input_before_claiming_queued_prompts() {
     }
 }
 
+#[test]
+fn runners_share_selection_policy_and_publish_only_after_submission() {
+    for (name, source) in [
+        ("dshe", include_str!("../src/main.rs")),
+        ("pie", include_str!("../../e-pi/src/main.rs")),
+    ] {
+        let source = production_source(source);
+        let reconcile = source
+            .find("RuntimeController::reconcile_presentation(")
+            .unwrap();
+        let wait = source
+            .find("let frame_deadline = scheduler.deadline()")
+            .unwrap();
+        assert!(
+            reconcile < wait,
+            "{name} must reconcile capture before sleeping"
+        );
+        assert_eq!(
+            source.matches("scheduler.presentation_deadline(").count(),
+            2,
+            "{name} must gate both animation and notice deadlines"
+        );
+        let draw = source.find("let transaction = terminal.draw(").unwrap();
+        let submitted = source[draw..]
+            .find("let transaction = transaction?;")
+            .unwrap();
+        let publish = source[draw..]
+            .find("committed_presentation.commit(")
+            .unwrap();
+        assert!(
+            submitted < publish,
+            "{name} must not publish a failed frame"
+        );
+        assert!(
+            !source.contains("same_geometry("),
+            "{name} must not duplicate snapshot policy"
+        );
+    }
+}
+
 #[derive(Debug)]
 struct SourceModule {
     id: String,
@@ -227,7 +267,7 @@ fn use_paths(source: &str) -> Vec<Vec<String>> {
 
 fn qualified_paths(source: &str) -> Vec<Vec<String>> {
     let mut paths = Vec::new();
-    for prefix in ["crate::", "self::", "super::", "e::"] {
+    for prefix in ["crate::", "self::", "super::", "e_dsh::"] {
         let mut search = 0usize;
         while let Some(relative) = source[search..].find(prefix) {
             let start = search + relative;
@@ -898,18 +938,36 @@ fn production_crate_graphs_are_acyclic_and_keep_leaf_boundaries() {
         "command catalog must remain a leaf among top-level frontend modules"
     );
 
+    let workspace_manifest = fs::read_to_string(
+        dsh_root
+            .parent()
+            .expect("workspace crates directory")
+            .parent()
+            .expect("workspace root")
+            .join("Cargo.toml"),
+    )
+    .expect("read workspace manifest");
     let dsh_manifest =
         fs::read_to_string(dsh_root.join("Cargo.toml")).expect("read e-dsh manifest");
     let pi_manifest = fs::read_to_string(pi_root.join("Cargo.toml")).expect("read e-pi manifest");
     let tui_manifest =
         fs::read_to_string(tui_root.join("Cargo.toml")).expect("read e-tui manifest");
+    let workspace: toml::Value =
+        toml::from_str(&workspace_manifest).expect("parse workspace manifest");
+    let workspace_version = workspace["workspace"]["package"]["version"]
+        .as_str()
+        .expect("workspace package version");
+    let tui_dependency = &workspace["workspace"]["dependencies"]["e-tui"];
+    let synchronized_requirement = format!("={workspace_version}");
     assert!(
-        dsh_manifest.contains("e-tui = { path = \"../e-tui\" }"),
-        "e-dsh must depend on the local e-tui package"
+        tui_dependency["path"].as_str() == Some("crates/e-tui")
+            && tui_dependency["version"].as_str() == Some(synchronized_requirement.as_str())
+            && dsh_manifest.contains("e-tui.workspace = true"),
+        "e-dsh must inherit the synchronized, versioned local e-tui package"
     );
     assert!(
-        pi_manifest.contains("e-tui = { path = \"../e-tui\" }") && !pi_manifest.contains("e-dsh"),
-        "e-pi must depend directly on e-tui and not on e-dsh"
+        pi_manifest.contains("e-tui.workspace = true") && !pi_manifest.contains("e-dsh"),
+        "e-pi must depend directly on the inherited e-tui package and not on e-dsh"
     );
     assert!(
         !tui_manifest.contains("e-dsh")

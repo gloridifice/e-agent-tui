@@ -21,6 +21,7 @@ pub(super) fn apply_terminal_route(
     match route {
         route @ (TerminalRoute::Pointer(PointerEvent::Wheel { up })
         | TerminalRoute::TranscriptPage { up }) => {
+            ui.mouse_selection.clear();
             let page = matches!(route, TerminalRoute::TranscriptPage { .. });
             let before = {
                 let mut app = state.lock().unwrap();
@@ -130,7 +131,18 @@ pub(super) fn apply_terminal_route(
                 return effects;
             }
 
-            if !selection_frame.matches_viewport(size.width, size.height) {
+            let context = {
+                let app = state.lock().unwrap();
+                crate::ui::selection_context(
+                    &app,
+                    ui.input_page.as_ref(),
+                    ui.approval.as_ref(),
+                    *ui.help_visible,
+                )
+            };
+            if !selection_frame.matches_viewport(size.width, size.height)
+                || selection_frame.context() != context
+            {
                 ui.mouse_selection.clear();
                 return effects;
             }
@@ -140,11 +152,16 @@ pub(super) fn apply_terminal_route(
             }
         }
         TerminalRoute::Paste { text } => {
+            ui.mouse_selection.clear();
             paste_text(ui.input, ui.input_page, &text);
         }
-        TerminalRoute::ReadClipboard => effects.push(UiAction::ReadClipboard),
+        TerminalRoute::ReadClipboard => {
+            ui.mouse_selection.clear();
+            effects.push(UiAction::ReadClipboard);
+        }
         TerminalRoute::Help { dismiss } => {
             if dismiss {
+                ui.mouse_selection.clear();
                 *ui.help_visible = false;
             }
         }

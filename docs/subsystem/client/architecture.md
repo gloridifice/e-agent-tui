@@ -3,7 +3,7 @@
 > Status: Current
 > Authority: Stable package boundaries and frontend invariants. Source and tests govern exact types, defaults, and behavior.
 
-Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.exe` artifact (with transitional library import name `e`), `crates/e-pi` owns the `pie.exe` artifact, and `crates/e-tui` is the kernel-neutral frontend library. Current ownership is determined by the code and the boundaries below, never by completed migration records.
+Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.exe` artifact and `e_dsh` library, `crates/e-pi` owns the `pie.exe` artifact, and `crates/e-tui` is the kernel-neutral frontend library. Current ownership is determined by the code and the boundaries below, never by completed migration records.
 
 - **Current package boundary**: DSH `ServerMessage`/`ClientMessage` and raw host-event parsing remain in `e-dsh::protocol`. `e-dsh::bridge::adapter` converts inbound values to `e-tui::AgentEvent` and outbound `e-tui::AgentRequest` values back to wire messages. `e-pi` launches the official `pi --mode rpc` child and owns its bounded JSONL framing, Pi RPC DTOs, process lifecycle, native session metadata index, and `AgentEvent`/`AgentRequest` conversion (internally decomposed under `e_pi::adapter::{request,response,session,model,extension,tool,content}` behind the unchanged `PiAdapter` facade; raw Pi JSON never escapes that boundary). Pi remains authoritative for configuration, credentials, model behavior, resources, extensions, and session writes. Both executable adapters depend directly on `e-tui`; neither adapter may depend on or import the other.
 - **Kernel-neutral frontend and runtime**: `e-tui::TuiApp` owns `SessionModel`, `TimelineModel`, `CatalogModel`, `InteractionModel`, `RenderState`, shared Preview state/cache, Reading Document/Layout, and Reading View state. `e_tui::runtime::RuntimeState` is the normalized reduction facade around that root, while `e_tui::runtime` owns the provider-neutral controller, frame scheduler, terminal event routing/source, VT parser, terminal lifecycle, synchronized frame submission, profiling counters, and external-effect port contracts. `RuntimeController` returns owned `e-tui::UiAction` values, and runners execute or await them only after releasing state guards. `e-tui` contains no DSH or Pi wire/event names, WebSocket or child-process control, provider-specific persistence policy, filesystem-backed effects, or clipboard implementation; architecture tests enforce those boundaries.
@@ -135,9 +135,9 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   every newline. The terminal is initialized/restored at a single point via
   `e_tui::runtime::TerminalOwner`; frames are committed atomically with a 64KiB
   `BufWriter` + DEC 2026 synchronized output (`DSHE_DISABLE_SYNC_OUTPUT=1` only as a compatibility diagnostic).
-  Selectable geometry is an ephemeral render artifact: `e-tui` returns a candidate visible-row frame, the runner
-  replaces its local committed frame only after terminal submission succeeds, and neither pending nor committed
-  selection geometry enters `RenderState` or semantic cache state. Never full-render per event; redraw P95 ≤30ms
+  Selectable presentation is an ephemeral render artifact: `e-tui` returns a candidate composed screen snapshot,
+  the runner publishes it only after terminal submission succeeds, and neither pending nor committed snapshots
+  enter `RenderState` or semantic caches. Never full-render per event; redraw P95 ≤30ms
   and only when dirty/deadline expires; animation only patches
   the active message range, streaming only splices the tail; display-row layout is cached by width/generation,
   and each frame only materializes/clones the visible window. Do not break the shared layout semantics of
@@ -193,14 +193,17 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   mouse wheel moves 3 lines per notch (always operating on the transcript even when an Input Page is open).
   A primary-button press on the pane separator is captured by resize before selectable-content hit testing;
   captured separator drags update only transient geometry, clear any existing selection, and remain resize-owned
-  when they cross Transcript or Preview cells. Other primary-button drags select only visible Transcript or Preview
-  text in the surface where the drag starts, use display-cell/grapheme boundaries, and copy rendered visual rows on
-  release; this partial visual copy is distinct from Reading View `y`, which copies the complete owning source Block.
-  The pure selection reducer
-  reads only the immutable runner-owned committed visible frame; frame revision or viewport mismatch rejects stale
-  paint/copy after resize, session/draft/history/Preview identity changes, while focus loss and new primary press
-  are explicit cancellation transitions. Ratatui line collection and reverse-video painting stay in
-  `ui::selection`, outside the selection kernel.
+  when they cross Transcript or Preview cells. Other primary-button drags select the final composited screen in
+  row-major order across panes, composer, pages, accessories, and overlays; blank cells can anchor a range.
+  Visual copy preserves whole graphemes and displayed masks/placeholders/ellipses, never hidden or complete source,
+  and trims trailing ordinary spaces on each selected screen row. Reading copy remains the complete-source operation.
+  The pure reducer reads only the runner-owned committed screen map. From press until release/cancellation, the
+  renderer replays its immutable unselected snapshot plus selection; background reduction continues while shared
+  scheduling defers live presentation and presentation-only deadlines. Release copies the held range and restores
+  live rendering without losing deferred dirty work. Focus loss, resize, editing/scroll/navigation, and incompatible
+  session/draft/foreground context changes cancel capture; routine streaming, automatic Preview following, and
+  history results do not move the held screen. `ui::selection` owns final-buffer adaptation and presentation-only
+  reverse-video highlighting, including topmost overlays; no widget-specific copy registration is required.
   Configured global help is handled before the Input Page. Unbound modified letters never enter the focus graph or text editors; browse-state bindings are not inherited by text editing. `Config.enter_sends` exists only for legacy config deserialization compatibility and must
   no longer change key semantics. The terminal hardware cursor must always be hidden inside the TUI; the screen
   only draws a software reverse-video cursor; `ui.rs::render_with_cursor` only returns the IME anchor, and the
@@ -259,7 +262,7 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   keep the viewport). The top "history" hint row is **display-only** and does not enter the cache; Thinking is a
   public `ActivityRow`, but is not generated during snapshot replay/history prepend (`state.replaying`), and
   file-group merge/settlement scans skip it.
-- **Tracy/timing** (`profile.rs`): instrument with `e::tracy_zone!("literal")` (a macro that safely no-ops when
+- **Tracy/timing** (`profile.rs`): instrument with `e_dsh::tracy_zone!("literal")` (a macro that safely no-ops when
   no client is present); use `PhaseTimers` for stage timing. Zone names must be string literals.
 - **Responsive Screen, Preview, and pane resizing**: the Screen derives message width from the committed
   `message_pane_percent` basis-point setting (default 60%, inclusive range 25.00%–100.00%) at the current terminal
@@ -357,8 +360,8 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   and is drawn as ● when editing; non-writable providers must not receive action focus; an existing proxy must
   enter the delete confirmation page on Enter, and `login-proxy-delete` is only sent after explicitly choosing
   delete.
-- **Configurable keyboard boundary**: `e-tui::key_mapping` is a pure leaf defining typed actions/scopes, exact normalized chords, effective-context validation and labels. The root `default_key_mapping.toml` is the sole default binding source, embedded at compile time. Adapters read their own `key_mapping.toml` beside `config.toml`; runtime mappings and diagnostics are skipped Config fields. Startup falls back with an error, and invalid reload retains the last valid mapping. Handlers consume semantic actions rather than synthesizing old KeyEvents; disabling/remapping an action cannot fall through to its old hardcoded binding. Global picker/Reading shortcuts do not replace an active page, approval or Reading context. Approvals respond only to configured allow/deny keys. Bracketed paste and mouse remain separate event paths; the Windows physical Ctrl+V fallback remains a KeyEvent and cannot bypass mapping policy. Help, local Markdown help and page/status hints use effective labels. See [key mappings](../../key-mapping.md) and the [terminal binding gate](terminal-binding-gate.md).
-- **Config/theme/launcher (Rust boundary)**: the `Config`/theme value schemas and defaults live in `e-tui`; config defaults live only in `crates/e-tui/assets/default_config.toml`, embedded and parsed by `e-tui::config` via `include_str!`. Each executable adapter owns its platform paths, config/state file reads and writes, and theme discovery/installation; `e-tui` performs no config, theme, session, or Preview filesystem I/O. The persisted `Config` is deserialized directly with
+- **Configurable keyboard boundary**: `e-tui::key_mapping` is a pure leaf defining typed actions/scopes, exact normalized chords, effective-context validation and labels. `crates/e-tui/assets/default_key_mapping.toml` is the sole default binding source, embedded at compile time. Adapters read the shared `key_mapping.toml` beside `config.toml`; runtime mappings and diagnostics are skipped Config fields. Startup falls back with an error, and invalid reload retains the last valid mapping. Handlers consume semantic actions rather than synthesizing old KeyEvents; disabling/remapping an action cannot fall through to its old hardcoded binding. Global picker/Reading shortcuts do not replace an active page, approval or Reading context. Approvals respond only to configured allow/deny keys. Bracketed paste and mouse remain separate event paths; the Windows physical Ctrl+V fallback remains a KeyEvent and cannot bypass mapping policy. Help, local Markdown help and page/status hints use effective labels. See [key mappings](../../key-mapping.md) and the [terminal binding gate](terminal-binding-gate.md).
+- **Config/theme/launcher (Rust boundary)**: the `Config`/theme value schemas and defaults live in `e-tui`; config defaults live only in `crates/e-tui/assets/default_config.toml`, embedded and parsed by `e-tui::config` via `include_str!`. Each executable adapter owns its platform paths, config/state file reads and writes, and theme discovery/installation. Both use the shared frontend configuration directory documented in the [README](../../../README.md#config), while session state remains adapter-specific. Pi's runtime mode override must not overwrite the persisted DSH default mode when saving shared settings; `e-tui` performs no config, theme, session, or Preview filesystem I/O. The persisted `Config` is deserialized directly with
   `Deserialize` + `#[serde(deny_unknown_fields)]`; validated transparent values keep `background_color` as
   `#RRGGBB` and both reveal rates in `0..=1024` (zero disables pacing and exposes complete content immediately),
   while `resolved_theme` is a `#[serde(skip)]` runtime cache. The embedded default theme is `ferra`; `deepseek-e`
@@ -386,7 +389,7 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   code blocks and Mermaid ignore `markdown.code_block_bg.padding` and keep their own fixed layout. `markdown_weak` has exactly the `markdown` role set and `code_weak` has exactly the `code` role set; both weak groups are required: older custom themes must add them
   or the existing whole-theme fallback applies.
   Built-in `deepseek-e`/`ferra` sources are in `crates/e-tui/assets/themes/`, embedded via `include_str!` and parsed by
-  the same parser as user files, and copied without overwrite to `%APPDATA%\dshe\themes\`; a valid same-named user
+  the same parser as user files, and copied without overwrite to the shared config directory's `themes/`; a valid same-named user
   file wins, and an illegal old file must not shadow the embedded fallback. `launcher.rs`: `probe(url)` TCP probe
   → if no dsh, spawn `dsh --profile e --no-open` (`dsh` or `npx @deepseek-ai/dsh`) → `%DSH_HOME%\e.lock` counts
   "close dsh when the last tui closes"; on Windows the child handle points at the `cmd /C` shim, and both normal

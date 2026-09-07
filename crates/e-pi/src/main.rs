@@ -223,7 +223,7 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
     let mut events = ProductionTerminalEvents::new();
     let mut runtime_ports = PiRuntimePorts;
     let mut scheduler = FrameScheduler::new(runtime_ports.now());
-    let mut committed_selection_frame = e_tui::SelectionFrame::default();
+    let mut committed_presentation = e_tui::ui::Presentation::default();
     let mut spinner_deadline: Option<Instant> = None;
     let mut frame_metrics = FrameMetrics::new(
         std::env::var("DSHE_FRAME_TIMING").as_deref() == Ok("1"),
@@ -238,6 +238,12 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
         let _main_loop_zone = e_tui::tracy_zone!("main loop");
         let mut pending_event = None;
         let mut first_inbound = None;
+        RuntimeController::reconcile_presentation(
+            &state_r,
+            &committed_presentation,
+            &mut scheduler,
+            Instant::now(),
+        );
         let frame_deadline = scheduler.deadline();
         let (reveal_deadline, notice_deadline) = {
             let state = state_r.lock().unwrap();
@@ -249,8 +255,11 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
                     .deadline(state.config.copy_toast_secs),
             )
         };
-        let animation_deadline =
-            e_tui::reveal::earliest_deadline(spinner_deadline, reveal_deadline);
+        let notice_deadline = scheduler.presentation_deadline(notice_deadline);
+        let animation_deadline = scheduler.presentation_deadline(e_tui::reveal::earliest_deadline(
+            spinner_deadline,
+            reveal_deadline,
+        ));
         if let Some(event) = pending_inbound.pop_front() {
             first_inbound = Some(event);
         } else {
@@ -432,7 +441,7 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
                 },
                 runtime_ports.now(),
                 &state_r,
-                &committed_selection_frame,
+                committed_presentation.selection_frame(),
                 &mut TerminalUiState {
                     scroll: &mut interaction.scroll,
                     input: &mut interaction.input,
@@ -527,6 +536,13 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
             scheduler.request(DirtyReason::Content, Instant::now());
         }
 
+        RuntimeController::reconcile_presentation(
+            &state_r,
+            &committed_presentation,
+            &mut scheduler,
+            Instant::now(),
+        );
+
         // Start the spinner clock only while a running/settling indicator
         // exists. Reveal lanes contribute their own exact deadlines at the
         // next select turn; a fully idle client has no periodic wakeup.
@@ -555,7 +571,7 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
             } else {
                 None
             };
-            let mut candidate_selection_frame = None;
+            let mut candidate_presentation = None;
             let transaction = terminal.draw(|frame| {
                 let output = e_tui::ui::render_with_cursor_and_selection(
                     frame,
@@ -574,9 +590,9 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
                         pane_resize: interaction.pane_resize,
                     },
                     &interaction.mouse_selection,
-                    &committed_selection_frame,
+                    &committed_presentation,
                 );
-                candidate_selection_frame = Some(output.selection_frame);
+                candidate_presentation = Some(output.presentation);
                 output.cursor
             });
             let cache_work = state.render.transcript_cache.take_work_stats();
@@ -584,20 +600,10 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
             drop(state);
             state_r.lock().unwrap().interaction = interaction;
             let transaction = transaction?;
-            let mut candidate_selection_frame =
-                candidate_selection_frame.expect("render always produces selection geometry");
-            let geometry_changed =
-                !candidate_selection_frame.same_geometry(&committed_selection_frame);
-            let epoch = if geometry_changed {
-                committed_selection_frame.epoch().wrapping_add(1).max(1)
-            } else {
-                committed_selection_frame.epoch().max(1)
-            };
-            candidate_selection_frame.set_epoch(epoch);
-            committed_selection_frame = candidate_selection_frame;
-            if geometry_changed {
-                state_r.lock().unwrap().interaction.mouse_selection.clear();
-            }
+            committed_presentation.commit(
+                candidate_presentation.expect("render always produces presentation"),
+                &mut state_r.lock().unwrap().interaction.mouse_selection,
+            );
             scheduler.complete(Instant::now());
             let io = transaction.io;
             let report = frame_metrics.record(FrameSample {

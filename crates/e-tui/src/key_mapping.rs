@@ -8,7 +8,7 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
-pub const DEFAULT_KEY_MAPPING_SOURCE: &str = include_str!("../../../default_key_mapping.toml");
+pub const DEFAULT_KEY_MAPPING_SOURCE: &str = include_str!("../assets/default_key_mapping.toml");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]

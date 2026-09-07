@@ -1,100 +1,29 @@
-//! Application-owned mouse selection over the last committed visible frame.
+//! Application-owned mouse selection over the last committed screen cells.
 
-use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
+use std::sync::Arc;
 
 use crate::event::PointerEvent;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SelectionSurface {
-    Transcript,
-    Preview,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Point {
-    surface: SelectionSurface,
-    row: usize,
-    grapheme: usize,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct SelectableRow {
-    surface: SelectionSurface,
-    order: usize,
-    x: u16,
-    y: u16,
-    graphemes: Vec<String>,
-    widths: Vec<usize>,
+struct Cell {
+    symbol: String,
+    owner: u16,
+    width: u16,
 }
 
-impl SelectableRow {
-    fn from_text(surface: SelectionSurface, order: usize, x: u16, y: u16, text: &str) -> Self {
-        let graphemes = text.graphemes(true).map(str::to_owned).collect::<Vec<_>>();
-        let widths = graphemes
-            .iter()
-            .map(|grapheme| UnicodeWidthStr::width(grapheme.as_str()))
-            .collect();
-        Self {
-            surface,
-            order,
-            x,
-            y,
-            graphemes,
-            widths,
-        }
-    }
-
-    fn width(&self) -> usize {
-        self.widths.iter().sum()
-    }
-
-    fn point_at(&self, column: u16) -> Option<Point> {
-        if self.graphemes.is_empty() || column < self.x {
-            return None;
-        }
-        let local = usize::from(column - self.x);
-        if local >= self.width() {
-            return None;
-        }
-        let mut start = 0;
-        for (grapheme, width) in self.widths.iter().copied().enumerate() {
-            if local < start + width.max(1) {
-                return Some(Point {
-                    surface: self.surface,
-                    row: self.order,
-                    grapheme,
-                });
-            }
-            start += width;
-        }
-        None
-    }
-
-    fn clamp_point(&self, column: u16) -> Option<Point> {
-        if column < self.x {
-            return (!self.graphemes.is_empty()).then_some(Point {
-                surface: self.surface,
-                row: self.order,
-                grapheme: 0,
-            });
-        }
-        self.point_at(column).or_else(|| {
-            self.graphemes.last().map(|_| Point {
-                surface: self.surface,
-                row: self.order,
-                grapheme: self.graphemes.len().saturating_sub(1),
-            })
-        })
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Point {
+    row: u16,
+    column: u16,
 }
 
-/// Bounded geometry of selectable rows from one successfully committed frame.
+/// Terminal-neutral, screen-bounded text from a successfully submitted frame.
 #[derive(Debug, Clone, Default)]
 pub struct SelectionFrame {
     epoch: u64,
+    context: u64,
     viewport: (u16, u16),
-    rows: Vec<SelectableRow>,
+    cells: Arc<[Cell]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,6 +43,15 @@ impl SelectionFrame {
     pub fn for_viewport(width: u16, height: u16) -> Self {
         Self {
             viewport: (width, height),
+            cells: (0..height)
+                .flat_map(|_| {
+                    (0..width).map(|column| Cell {
+                        symbol: " ".into(),
+                        owner: column,
+                        width: 1,
+                    })
+                })
+                .collect(),
             ..Self::default()
         }
     }
@@ -126,87 +64,58 @@ impl SelectionFrame {
         self.epoch = epoch;
     }
 
-    /// Compare only committed hit-test geometry and text; epoch is assigned by
-    /// the runner after this comparison.
+    pub fn context(&self) -> u64 {
+        self.context
+    }
+
+    pub(crate) fn set_context(&mut self, context: u64) {
+        self.context = context;
+    }
+
     pub fn same_geometry(&self, other: &Self) -> bool {
-        self.viewport == other.viewport && self.rows == other.rows
+        self.context == other.context
+            && self.viewport == other.viewport
+            && self.cells == other.cells
     }
 
     pub fn matches_viewport(&self, width: u16, height: u16) -> bool {
         self.viewport == (width, height)
     }
 
-    pub fn push_text(
-        &mut self,
-        surface: SelectionSurface,
-        order: usize,
-        x: u16,
-        y: u16,
-        text: &str,
-    ) {
-        self.rows
-            .push(SelectableRow::from_text(surface, order, x, y, text));
+    pub(crate) fn put_glyph(&mut self, column: u16, row: u16, symbol: &str, width: u16) {
+        if row >= self.viewport.1 || column >= self.viewport.0 {
+            return;
+        }
+        let width = width.max(1).min(self.viewport.0 - column);
+        let start = usize::from(row) * usize::from(self.viewport.0) + usize::from(column);
+        let cells = Arc::make_mut(&mut self.cells);
+        cells[start] = Cell {
+            symbol: symbol.into(),
+            owner: column,
+            width,
+        };
+        for cell in &mut cells[start + 1..start + usize::from(width)] {
+            *cell = Cell {
+                symbol: String::new(),
+                owner: column,
+                width: 0,
+            };
+        }
+    }
+
+    fn cell(&self, column: u16, row: u16) -> &Cell {
+        &self.cells[usize::from(row) * usize::from(self.viewport.0) + usize::from(column)]
     }
 
     fn point_at(&self, column: u16, row: u16) -> Option<Point> {
-        self.rows
-            .iter()
-            .filter(|entry| entry.y == row)
-            .find_map(|entry| entry.point_at(column))
+        (column < self.viewport.0 && row < self.viewport.1).then_some(Point { row, column })
     }
 
-    fn clamped_point(&self, surface: SelectionSurface, column: u16, row: u16) -> Option<Point> {
-        self.rows
-            .iter()
-            .filter(|entry| entry.surface == surface && !entry.graphemes.is_empty())
-            .min_by_key(|entry| entry.y.abs_diff(row))
-            .and_then(|entry| entry.clamp_point(column))
-    }
-
-    fn row(&self, surface: SelectionSurface, order: usize) -> Option<&SelectableRow> {
-        self.rows
-            .iter()
-            .find(|entry| entry.surface == surface && entry.order == order)
-    }
-
-    fn bounds(&self, anchor: Point, focus: Point) -> Option<(Point, Point)> {
-        if anchor.surface != focus.surface
-            || (anchor.row == focus.row && anchor.grapheme == focus.grapheme)
-        {
-            return None;
-        }
-        Some(
-            if (anchor.row, anchor.grapheme) <= (focus.row, focus.grapheme) {
-                (anchor, focus)
-            } else {
-                (focus, anchor)
-            },
+    fn clamp_point(&self, column: u16, row: u16) -> Option<Point> {
+        self.point_at(
+            column.min(self.viewport.0.saturating_sub(1)),
+            row.min(self.viewport.1.saturating_sub(1)),
         )
-    }
-
-    fn extract(&self, anchor: Point, focus: Point) -> Option<String> {
-        let (start, end) = self.bounds(anchor, focus)?;
-        let mut lines = Vec::new();
-        for order in start.row..=end.row {
-            let row = self.row(start.surface, order)?;
-            let first = if order == start.row {
-                start.grapheme
-            } else {
-                0
-            };
-            if row.graphemes.is_empty() {
-                lines.push(String::new());
-                continue;
-            }
-            let last = if order == end.row {
-                end.grapheme
-            } else {
-                row.graphemes.len() - 1
-            };
-            lines.push(row.graphemes[first..=last].concat());
-        }
-        let text = lines.join("\n");
-        (!text.is_empty()).then_some(text)
     }
 
     pub(crate) fn selected_cell_ranges(
@@ -216,57 +125,65 @@ impl SelectionFrame {
         let Some((start, end)) = selection.bounds_for(self) else {
             return Vec::new();
         };
-        let mut ranges = Vec::with_capacity(end.row.saturating_sub(start.row) + 1);
-        for order in start.row..=end.row {
-            let Some(row) = self.row(start.surface, order) else {
-                continue;
-            };
-            if row.graphemes.is_empty() {
-                continue;
-            }
-            let first = if order == start.row {
-                start.grapheme
-            } else {
-                0
-            };
-            let last = if order == end.row {
-                end.grapheme
-            } else {
-                row.graphemes.len() - 1
-            };
-            let x = row.x.saturating_add(
-                row.widths[..first]
-                    .iter()
-                    .sum::<usize>()
-                    .try_into()
-                    .unwrap_or(u16::MAX),
-            );
-            let width = row.widths[first..=last]
-                .iter()
-                .map(|width| (*width).max(1))
-                .sum::<usize>()
-                .try_into()
-                .unwrap_or(u16::MAX);
-            if width > 0 {
-                ranges.push(SelectionCellRange { x, y: row.y, width });
-            }
-        }
-        ranges
+        (start.row..=end.row)
+            .map(|row| {
+                let first = if row == start.row { start.column } else { 0 };
+                let last = if row == end.row {
+                    end.column
+                } else {
+                    self.viewport.0 - 1
+                };
+                let x = self.cell(first, row).owner;
+                let last_owner = self.cell(last, row).owner;
+                let right = last_owner + self.cell(last_owner, row).width;
+                SelectionCellRange {
+                    x,
+                    y: row,
+                    width: right - x,
+                }
+            })
+            .collect()
+    }
+
+    fn extract(&self, selection: &MouseSelection) -> Option<String> {
+        let text = self
+            .selected_cell_ranges(selection)
+            .into_iter()
+            .map(|range| {
+                let mut line = String::new();
+                for column in range.x..range.x + range.width {
+                    line.push_str(&self.cell(column, range.y).symbol);
+                }
+                line.truncate(line.trim_end_matches(' ').len());
+                line
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        text.chars().any(|c| !c.is_whitespace()).then_some(text)
     }
 }
 
-/// Interaction-owned state; the frame remains render-owned.
+/// Interaction state holds coordinates and identity, never a screen buffer.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MouseSelection {
     epoch: Option<u64>,
     anchor: Option<Point>,
     focus: Option<Point>,
     dragging: bool,
+    moved: bool,
 }
 
 impl MouseSelection {
     pub fn clear(&mut self) {
         *self = Self::default();
+    }
+
+    pub fn is_dragging(&self) -> bool {
+        self.dragging
+    }
+
+    pub fn holds(&self, frame: &SelectionFrame) -> bool {
+        self.dragging && self.epoch == Some(frame.epoch())
     }
 
     pub fn handle(&mut self, event: PointerEvent, frame: &SelectionFrame) -> SelectionUpdate {
@@ -276,31 +193,27 @@ impl MouseSelection {
             self.clear();
         }
         match event {
-            PointerEvent::Wheel { up: _ } => {}
-            PointerEvent::FocusLost => self.clear(),
+            PointerEvent::Wheel { .. } | PointerEvent::FocusLost => self.clear(),
             PointerEvent::PrimaryPress { column, row } => {
                 self.clear();
-                if let Some(point) = frame.point_at(column, row) {
-                    self.epoch = Some(frame.epoch());
-                    self.anchor = Some(point);
-                    self.focus = Some(point);
-                    self.dragging = true;
-                }
-            }
-            PointerEvent::PrimaryDrag { column, row } => {
-                if let Some(anchor) = self.anchor {
-                    self.focus = frame.clamped_point(anchor.surface, column, row);
-                }
-            }
-            PointerEvent::PrimaryRelease { column, row } => {
-                if self.dragging {
-                    self.dragging = false;
-                    if let Some(anchor) = self.anchor {
-                        self.focus = frame.clamped_point(anchor.surface, column, row);
+                if frame.epoch() != 0 {
+                    if let Some(point) = frame.point_at(column, row) {
+                        self.epoch = Some(frame.epoch());
+                        self.anchor = Some(point);
+                        self.focus = Some(point);
+                        self.dragging = true;
                     }
-                    copy = self
-                        .bounds_for(frame)
-                        .and_then(|(anchor, focus)| frame.extract(anchor, focus));
+                }
+            }
+            PointerEvent::PrimaryDrag { column, row }
+            | PointerEvent::PrimaryRelease { column, row } => {
+                if self.dragging {
+                    self.focus = frame.clamp_point(column, row);
+                    self.moved |= self.focus != self.anchor;
+                    if matches!(event, PointerEvent::PrimaryRelease { .. }) {
+                        self.dragging = false;
+                        copy = frame.extract(self);
+                    }
                 }
             }
         }
@@ -311,138 +224,137 @@ impl MouseSelection {
     }
 
     fn bounds_for(&self, frame: &SelectionFrame) -> Option<(Point, Point)> {
-        (self.epoch == Some(frame.epoch()))
-            .then_some((self.anchor?, self.focus?))
-            .and_then(|(anchor, focus)| frame.bounds(anchor, focus))
+        if self.epoch != Some(frame.epoch()) || !self.moved {
+            return None;
+        }
+        let (anchor, focus) = (self.anchor?, self.focus?);
+        Some((anchor.min(focus), anchor.max(focus)))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
 
     fn frame(lines: &[&str]) -> SelectionFrame {
-        let mut frame = SelectionFrame::for_viewport(80, 24);
+        let mut frame = SelectionFrame::for_viewport(20, lines.len() as u16);
         frame.set_epoch(1);
         for (row, line) in lines.iter().enumerate() {
-            frame.push_text(SelectionSurface::Transcript, row, 0, row as u16, line);
+            let mut column = 0;
+            for glyph in line.graphemes(true) {
+                let width = glyph.width() as u16;
+                frame.put_glyph(column, row as u16, glyph, width);
+                column += width;
+            }
         }
         frame
     }
 
-    fn copy(
-        selection: &mut MouseSelection,
-        event: PointerEvent,
+    fn drag(
         frame: &SelectionFrame,
-    ) -> Option<String> {
-        selection.handle(event, frame).copy
-    }
-
-    #[test]
-    fn extracts_backward_multiline_visual_range() {
-        let frame = frame(&["alpha", "beta"]);
+        start: (u16, u16),
+        end: (u16, u16),
+    ) -> (MouseSelection, Option<String>) {
         let mut selection = MouseSelection::default();
-        selection.handle(PointerEvent::PrimaryPress { column: 3, row: 1 }, &frame);
-        let copied = copy(
-            &mut selection,
-            PointerEvent::PrimaryRelease { column: 1, row: 0 },
-            &frame,
+        selection.handle(
+            PointerEvent::PrimaryPress {
+                column: start.0,
+                row: start.1,
+            },
+            frame,
         );
-        assert_eq!(copied.as_deref(), Some("lpha\nbeta"));
+        let copied = selection
+            .handle(
+                PointerEvent::PrimaryRelease {
+                    column: end.0,
+                    row: end.1,
+                },
+                frame,
+            )
+            .copy;
+        (selection, copied)
     }
 
     #[test]
-    fn keeps_wide_and_combining_graphemes_whole() {
-        let frame = frame(&["A界🙂éZ"]);
-        let mut selection = MouseSelection::default();
-        selection.handle(PointerEvent::PrimaryPress { column: 1, row: 0 }, &frame);
-        let copied = copy(
-            &mut selection,
-            PointerEvent::PrimaryRelease { column: 4, row: 0 },
-            &frame,
-        );
-        assert_eq!(copied.as_deref(), Some("界🙂"));
-        assert_eq!(frame.selected_cell_ranges(&selection)[0].width, 4);
+    fn screen_ranges_include_adjacent_panes_in_both_directions() {
+        let frame = frame(&["left  │ right", "bottom"]);
+        let forward = drag(&frame, (1, 0), (2, 1)).1;
+        assert_eq!(forward.as_deref(), Some("eft  │ right\nbot"));
+        assert_eq!(drag(&frame, (2, 1), (1, 0)).1, forward);
     }
 
     #[test]
-    fn preserves_intentional_blank_rows_and_trailing_spaces() {
-        let frame = frame(&["a ", "", "b"]);
-        let mut selection = MouseSelection::default();
-        selection.handle(PointerEvent::PrimaryPress { column: 0, row: 0 }, &frame);
-        let copied = copy(
-            &mut selection,
-            PointerEvent::PrimaryRelease { column: 0, row: 2 },
-            &frame,
+    fn wide_combining_and_zwj_graphemes_are_emitted_once() {
+        let frame = frame(&["A界🙂e\u{301}👩‍💻Z"]);
+        let (selection, copied) = drag(&frame, (2, 0), (7, 0));
+        assert_eq!(copied.as_deref(), Some("界🙂e\u{301}👩‍💻"));
+        assert_eq!(
+            frame.selected_cell_ranges(&selection),
+            vec![SelectionCellRange {
+                x: 1,
+                y: 0,
+                width: 7
+            }]
         );
-        assert_eq!(copied.as_deref(), Some("a \n\nb"));
+        assert_eq!(drag(&frame, (1, 0), (2, 0)).1.as_deref(), Some("界"));
     }
 
     #[test]
-    fn hit_testing_checks_both_split_surfaces_on_the_same_screen_row() {
-        let mut frame = SelectionFrame::for_viewport(80, 24);
-        frame.set_epoch(1);
-        frame.push_text(SelectionSurface::Transcript, 0, 0, 0, "main");
-        frame.push_text(SelectionSurface::Preview, 0, 10, 0, "preview");
-        let mut selection = MouseSelection::default();
-        selection.handle(PointerEvent::PrimaryPress { column: 10, row: 0 }, &frame);
-        let copied = copy(
-            &mut selection,
-            PointerEvent::PrimaryRelease { column: 12, row: 0 },
-            &frame,
+    fn visual_spaces_and_blank_rows_have_one_policy() {
+        let frame = frame(&["  a  b\u{a0}  ", "", "  end "]);
+        assert_eq!(
+            drag(&frame, (0, 0), (8, 2)).1.as_deref(),
+            Some("  a  b\u{a0}\n\n  end")
         );
-        assert_eq!(copied.as_deref(), Some("pre"));
+        assert_eq!(drag(&frame, (0, 0), (2, 0)).1.as_deref(), Some("  a"));
+        assert!(drag(&frame, (15, 0), (19, 1)).1.is_none());
     }
 
     #[test]
-    fn geometry_comparison_includes_viewport_but_ignores_epoch() {
-        let first = frame(&["alpha"]);
-        let mut same = first.clone();
-        same.set_epoch(9);
-        assert!(first.same_geometry(&same));
-        assert!(!first.same_geometry(&frame(&["beta"])));
-        assert!(!first.same_geometry(&SelectionFrame::for_viewport(81, 24)));
+    fn drag_clamps_to_viewport_not_to_text() {
+        let frame = frame(&["first", "last"]);
+        assert_eq!(
+            drag(&frame, (0, 0), (200, 200)).1.as_deref(),
+            Some("first\nlast")
+        );
+        assert!(drag(&frame, (200, 0), (0, 0)).1.is_none());
+    }
 
+    #[test]
+    fn click_unmatched_reports_and_cancel_do_not_copy() {
+        let frame = frame(&["text"]);
+        assert!(drag(&frame, (0, 0), (0, 0)).1.is_none());
+        for cancel in [PointerEvent::FocusLost, PointerEvent::Wheel { up: true }] {
+            let mut selection = MouseSelection::default();
+            selection.handle(PointerEvent::PrimaryPress { column: 0, row: 0 }, &frame);
+            selection.handle(cancel, &frame);
+            selection.handle(PointerEvent::PrimaryDrag { column: 3, row: 0 }, &frame);
+            assert!(selection
+                .handle(PointerEvent::PrimaryRelease { column: 3, row: 0 }, &frame)
+                .copy
+                .is_none());
+            assert!(!selection.is_dragging());
+        }
+    }
+
+    #[test]
+    fn only_committed_compatible_epochs_can_copy() {
+        let first = frame(&["text"]);
+        let mut next = first.clone();
+        next.set_epoch(2);
+        assert!(first.same_geometry(&next));
+        next.set_context(3);
+        assert!(!first.same_geometry(&next));
+        assert!(!first.same_geometry(&SelectionFrame::for_viewport(21, 1)));
         let mut selection = MouseSelection::default();
         selection.handle(PointerEvent::PrimaryPress { column: 0, row: 0 }, &first);
-        let update = selection.handle(PointerEvent::PrimaryRelease { column: 2, row: 0 }, &same);
-        assert!(update.copy.is_none());
-        assert!(update.changed);
-    }
-
-    #[test]
-    fn press_rejects_left_padding_but_drag_clamps_to_the_left_edge() {
-        let mut frame = SelectionFrame::for_viewport(80, 24);
-        frame.set_epoch(1);
-        frame.push_text(SelectionSurface::Transcript, 0, 4, 0, "alpha");
-        let mut selection = MouseSelection::default();
-        selection.handle(PointerEvent::PrimaryPress { column: 3, row: 0 }, &frame);
-        assert!(copy(
-            &mut selection,
-            PointerEvent::PrimaryRelease { column: 6, row: 0 },
-            &frame,
-        )
-        .is_none());
-
-        selection.handle(PointerEvent::PrimaryPress { column: 6, row: 0 }, &frame);
-        let copied = copy(
-            &mut selection,
-            PointerEvent::PrimaryRelease { column: 3, row: 0 },
-            &frame,
-        );
-        assert_eq!(copied.as_deref(), Some("alp"));
-    }
-
-    #[test]
-    fn click_does_not_copy() {
-        let frame = frame(&["alpha"]);
-        let mut selection = MouseSelection::default();
-        selection.handle(PointerEvent::PrimaryPress { column: 1, row: 0 }, &frame);
-        assert!(copy(
-            &mut selection,
-            PointerEvent::PrimaryRelease { column: 1, row: 0 },
-            &frame,
-        )
-        .is_none());
+        assert!(selection
+            .handle(PointerEvent::PrimaryRelease { column: 3, row: 0 }, &next)
+            .copy
+            .is_none());
+        next.set_epoch(0);
+        assert!(drag(&next, (0, 0), (3, 0)).1.is_none());
     }
 }

@@ -1,7 +1,7 @@
 //! render_demo — print a sample markdown document through the renderer so
 //! the box-drawing output can be eyeballed.
 
-use e::config::Theme;
+use e_dsh::config::Theme;
 use e_tui::render::render_markdown;
 
 fn main() {

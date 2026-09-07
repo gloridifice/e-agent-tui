@@ -68,22 +68,30 @@ For a profiling build, enable the optional Tracy integration:
 cargo build --release --features tracy
 ```
 
+## Config
 
-## Key interactions
+`e`'s config is under:
 
-Bindings are configurable in `<config_path>/key_mapping.toml`; see [key mappings](docs/key-mapping.md) and the complete [defaults](default_key_mapping.toml). Below, **Main** means Command on macOS and Ctrl on Windows/Linux (the terminal must forward the shortcut).
+- Windows: `%APPDATA%\e`
+- Linux: `$XDG_CONFIG_HOME/e` (default `~/.config/e`)
+- macOS: `~/.config/e`
 
-- `Main+H`: help; `Main+L`: model; `Main+E`: effort; `Main+,`: settings; `Main+N`: resume session.
-- `Main+R`: Reading View; `j`/`k` or ↓/↑ select Blocks, `PageDown`/`PageUp` repeats down/up cursor movement 15 times, `l` enters Items, `y` copies the complete Block; `Backspace` returns to Blocks and `Esc`/`q` exits Reading.
-- `Main+P`: toggle full-screen Preview on narrow terminals.
-- `Shift+Enter`: newline; `Enter`: send as soon as possible; `Main+Enter`: send after the active turn; `Esc`: cancel all `⌁` ASAP messages first, otherwise the newest `○` after-turn message; interrupt only when no candidates remain. `Main+V`: paste; `Ctrl+Backspace`/`Ctrl+W` or `Option+Backspace`: delete the previous word.
-- `PageUp`/`PageDown` or wheel: transcript scrolling; drag the pane separator to resize, or drag visible Transcript/Preview text to copy it.
+You can run `/econfig` in `e` to open or show the config path of your device.
 
-If PowerShell cannot find `dshe`, add `%USERPROFILE%\.cargo\bin` to `PATH`.
+- `config.toml`: Settings configuration.
+- `key_mapping.toml`: Key mapping overrides.
+- `themes/`: custom theme folder.
 
-If the project-managed DSH service or its lock gets stuck, run `dshe clean` to force-stop that service and remove `%DSH_HOME%\e.lock`. It does not stop a DSH service started outside `dshe`.
+### Key mapping
 
-To update, pull the latest changes, run `cargo install --path crates/e-dsh --locked`, then run `dshe setup` to refresh the embedded bridge. Restart DSH if it is already running.
+Bindings are configurable in `<config_path>/key_mapping.toml`; see [key mappings](docs/key-mapping.md) and the complete [defaults](crates/e-tui/assets/default_key_mapping.toml). Below, **Main** means Command on macOS and Ctrl on Windows/Linux (the terminal must forward the shortcut).
+
+Mouse: drag any visible TUI text to copy on release, including input, status, paths, and popups. Multiline selection follows screen rows across both panes; the display pauses during selection while background work continues. A press on the separator resizes instead. Reading View copy still copies the complete source block.
+
+### Themes
+
+Themes can be scaned under `<config_path>/themes/<theme_name>.toml`.
+See [themes folder](crates/e-tui/assets/themes/) for example.
 
 ## Development
 
@@ -101,11 +109,13 @@ npm test
 cd ..
 
 node tools/sync-protocol-contract.mjs --check
+node tools/sync-release-assets.mjs --check
 ```
 
-After changing `bridge/`, rebuild the client and re-run `dshe setup` so the embedded bridge is current, then restart DSH before testing it:
+After changing `bridge/`, regenerate the packaged mirror, rebuild the client, and re-run `dshe setup` so the embedded bridge is current. Then restart DSH before testing it:
 
 ```powershell
+node tools/sync-release-assets.mjs
 cargo build --release
 dshe setup
 ```

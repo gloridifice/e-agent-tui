@@ -2,7 +2,7 @@
 //! report the resulting public display-surface mix. Usage:
 //!   cargo run --example smoke_snapshot -- <path-to-snapshot.json>
 
-use e::protocol::HostEvent;
+use e_dsh::protocol::HostEvent;
 use e_tui::{
     display::{ActivityState, CardRole, DisplayItem, TranscriptFormat},
     presentation::materialize_transcript,
@@ -34,7 +34,7 @@ fn main() -> anyhow::Result<()> {
 
     let mut state = RuntimeState::default();
     for event in events.iter().cloned() {
-        state.apply_host_event(&e::bridge::adapter::normalize_host_event(
+        state.apply_host_event(&e_dsh::bridge::adapter::normalize_host_event(
             HostEvent::from_value(event),
         ));
     }

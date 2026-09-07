@@ -1,8 +1,15 @@
 [package]
 name = "e-tui"
-version = "0.0.3"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Kernel-neutral terminal frontend for interactive agent sessions"
+readme = "README.md"
+keywords = ["terminal", "tui", "agent", "ratatui"]
+categories = ["command-line-interface", "development-tools"]
+include = ["src/**", "assets/**", "locales/**", "README.md", "LICENSE.md"]
 
 [features]
 default = []

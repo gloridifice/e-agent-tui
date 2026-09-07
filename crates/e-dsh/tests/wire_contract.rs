@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use e::protocol::{
+use e_dsh::protocol::{
     ServerMessage, CLIENT_MESSAGE_TYPES, SERVER_MESSAGE_TYPES, WIRE_MESSAGE_SHAPES_JSON,
     WIRE_PROTOCOL_VERSION, WIRE_RECORD_SHAPES_JSON,
 };

@@ -22,6 +22,7 @@ On setup, if `profiles\e` is absent and `profiles\dshe` exists, the legacy direc
 The normal source-install and update flow is:
 
 ```powershell
+node tools/sync-release-assets.mjs   # required after changing bridge/
 cargo install --path crates/e-dsh --locked
 dshe setup
 ```

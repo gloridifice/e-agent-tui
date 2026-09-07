@@ -38,6 +38,22 @@ npm test
 
 The package script uses `--test-isolation=none` to avoid `EPERM` when tests spawn sandboxed processes. File-layer tests must use a temporary home directory and must never touch the real `%DSH_HOME%`.
 
+## Release assets and package archives
+
+The bridge embedded in the published `e-dsh` crate is a generated mirror of the authoritative `bridge/` package. After any production bridge change, regenerate it from the repository root:
+
+```powershell
+node tools/sync-release-assets.mjs
+```
+
+Bridge tests run the corresponding `--check` mode. Before a release, also verify the actual package archives rather than relying only on workspace builds:
+
+```powershell
+node tools/verify-crate-packages.mjs
+```
+
+The verifier packages all three crates and checks the extracted adapters against the packaged `e-tui`, so it also works before a new synchronized `e-tui` version exists on crates.io.
+
 ## Protocol changes
 
 The machine-readable authority is `bridge/protocol-contract.json`. After changing the protocol, generate the derived files as described in the [bridge architecture](subsystem/bridge/architecture.md), then verify from the repository root:

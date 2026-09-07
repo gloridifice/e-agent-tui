@@ -2474,14 +2474,15 @@ fn mouse_selection_highlights_transcript_wide_cells_over_reading_style() {
                 &theme,
                 overlays(),
                 &MouseSelection::default(),
-                &crate::SelectionFrame::default(),
+                &Presentation::default(),
             ));
         })
         .unwrap();
-    let mut committed = rendered
-        .expect("render returns selection geometry")
-        .selection_frame;
-    committed.set_epoch(1);
+    let mut committed = Presentation::default();
+    committed.commit(
+        rendered.expect("render returns presentation").presentation,
+        &mut MouseSelection::default(),
+    );
 
     let ((a_x, y), wide_x, b_x, baseline) = {
         let buffer = terminal.backend().buffer();
@@ -2504,19 +2505,19 @@ fn mouse_selection_highlights_transcript_wide_cells_over_reading_style() {
             column: a_x,
             row: y,
         },
-        &committed,
+        committed.selection_frame(),
     );
     let copied = selection.handle(
         PointerEvent::PrimaryRelease {
             column: b_x,
             row: y,
         },
-        &committed,
+        committed.selection_frame(),
     );
     assert_eq!(
         copied.copy.as_deref(),
         Some(source),
-        "coords=({a_x},{y})..({b_x},{y}), frame={committed:#?}"
+        "coords=({a_x},{y})..({b_x},{y})"
     );
 
     terminal
@@ -2556,7 +2557,7 @@ fn mouse_selection_highlights_transcript_wide_cells_over_reading_style() {
 }
 
 #[test]
-fn mouse_selection_keeps_preview_and_transcript_ranges_independent() {
+fn mouse_selection_crosses_preview_and_transcript_in_screen_order() {
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();
     state.transcript.append(
@@ -2587,14 +2588,17 @@ fn mouse_selection_keeps_preview_and_transcript_ranges_independent() {
                 &theme,
                 overlays(),
                 &MouseSelection::default(),
-                &crate::SelectionFrame::default(),
+                &Presentation::default(),
             ));
         })
         .unwrap();
-    let mut committed = rendered
-        .expect("render returns split-pane geometry")
-        .selection_frame;
-    committed.set_epoch(2);
+    let mut committed = Presentation::default();
+    committed.commit(
+        rendered
+            .expect("render returns split presentation")
+            .presentation,
+        &mut MouseSelection::default(),
+    );
     state.render.transcript_cache.take_work_stats();
     state.preview.take_work_stats();
     let ((main_x, main_y), (preview_x, preview_y)) = {
@@ -2611,14 +2615,14 @@ fn mouse_selection_keeps_preview_and_transcript_ranges_independent() {
             column: preview_x,
             row: preview_y,
         },
-        &committed,
+        committed.selection_frame(),
     );
     let preview_copy = selection.handle(
         PointerEvent::PrimaryRelease {
             column: preview_x + 6,
             row: preview_y,
         },
-        &committed,
+        committed.selection_frame(),
     );
     assert_eq!(preview_copy.copy.as_deref(), Some("preview"));
     terminal
@@ -2648,20 +2652,19 @@ fn mouse_selection_keeps_preview_and_transcript_ranges_independent() {
             column: main_x,
             row: main_y,
         },
-        &committed,
+        committed.selection_frame(),
     );
     let copied = selection.handle(
         PointerEvent::PrimaryRelease {
             column: preview_x,
             row: preview_y,
         },
-        &committed,
+        committed.selection_frame(),
     );
-    assert_eq!(
-        copied.copy.as_deref(),
-        Some("main text"),
-        "cross-pane drag clamps to the starting Transcript surface"
-    );
+    let copied = copied.copy.expect("cross-pane range copies");
+    assert!(copied.starts_with("main text"));
+    assert!(copied.ends_with('p'));
+    assert!(copied.contains('\n'));
     terminal
         .draw(|frame| {
             render_with_cursor_and_selection(
@@ -2680,7 +2683,7 @@ fn mouse_selection_keeps_preview_and_transcript_ranges_independent() {
     assert!(buffer[(main_x, main_y)]
         .modifier
         .contains(Modifier::REVERSED));
-    assert!(!buffer[(preview_x, preview_y)]
+    assert!(buffer[(preview_x, preview_y)]
         .modifier
         .contains(Modifier::REVERSED));
     let transcript_work = state.render.transcript_cache.take_work_stats();

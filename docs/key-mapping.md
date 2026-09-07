@@ -1,9 +1,9 @@
 # Key mappings
 
 > Status: Current
-> Authority: User configuration workflow. The complete action inventory and defaults live in [`default_key_mapping.toml`](../default_key_mapping.toml); `/help` displays effective bindings.
+> Authority: User configuration workflow. The complete action inventory and defaults live in [`crates/e-tui/assets/default_key_mapping.toml`](../crates/e-tui/assets/default_key_mapping.toml); `/help` displays effective bindings.
 
-Both `dshe` and `pie` embed the project default file. They do not read a workspace-local default at runtime. Create `key_mapping.toml` beside that executable's `config.toml` to override bindings. On Windows the directories are `%APPDATA%\dshe\` and `%APPDATA%\pie\`, respectively; the Settings page displays the actual config path.
+Both `dshe` and `pie` embed the project default file. They do not read a workspace-local default at runtime. Create `key_mapping.toml` beside the shared `config.toml` to override bindings in both frontends. See the [configuration directory](../README.md#config) for platform paths; the Settings page displays the actual config path.
 
 ```toml
 [global]

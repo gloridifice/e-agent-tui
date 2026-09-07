@@ -8,7 +8,7 @@
 
 use std::time::Instant;
 
-use e::protocol::HostEvent;
+use e_dsh::protocol::HostEvent;
 use e_tui::ui::{render, ScrollState};
 use e_tui::{input::InputState, runtime::RuntimeState};
 
@@ -35,11 +35,11 @@ fn main() -> anyhow::Result<()> {
 
     // Phase 2: fold events into messages (state.apply("snapshot")).
     let mut state = RuntimeState::default();
-    state.config = e::config::load();
+    state.config = e_dsh::config::load();
     let records = events
         .into_iter()
         .map(HostEvent::from_value)
-        .map(e::bridge::adapter::normalize_host_event)
+        .map(e_dsh::bridge::adapter::normalize_host_event)
         .collect::<Vec<_>>();
     state.apply_snapshot(&records, false);
     let t3 = Instant::now();

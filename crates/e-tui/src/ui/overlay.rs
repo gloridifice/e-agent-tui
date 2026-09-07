@@ -61,6 +61,11 @@ pub(super) fn help_overlay(config: &crate::Config, theme: &Theme) -> Vec<Line<'s
             style,
         ));
     }
+    rows.push(Line::styled(tr(config.language, "help.mouse_copy"), style));
+    rows.push(Line::styled(
+        tr(config.language, "help.mouse_resize"),
+        style,
+    ));
     rows.push(Line::styled(tr(config.language, "key.help.more"), style));
     rows
 }

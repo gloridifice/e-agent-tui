@@ -24,7 +24,7 @@ Before provisioning the current profile, setup SHALL rename `%DSH_HOME%\profiles
 - **THEN** setup SHALL leave `%DSH_HOME%\profiles\dshe` untouched and provision only `%DSH_HOME%\profiles\e`
 
 ### Requirement: Profile-targeted guidance names e
-Operator diagnostics, development mount defaults, compatibility-smoke examples, and maintained architecture documentation SHALL name `e` whenever referring to the dedicated DSH profile. They SHALL continue to use `dshe` for the executable, setup command, configuration directory, and setup-record filename.
+Operator diagnostics, development mount defaults, compatibility-smoke examples, and maintained architecture documentation SHALL name `e` whenever referring to the dedicated DSH profile. They SHALL continue to use `dshe` for the executable, setup command, and setup-record filename. The `dshe` and `pie` frontend configuration files SHALL share the platform configuration root's `e` directory, except on macOS where they SHALL use `~/.config/e`; backend configuration and adapter-specific session state SHALL remain separate.
 
 #### Scenario: Bridge connection repair guidance
 - **WHEN** the client reports that its bridge route is unavailable

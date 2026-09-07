@@ -5,6 +5,7 @@
 
 Architecture conventions for the Node.js (ESM) DSH host-composition plugin.
 
+- **Published bridge mirror**: top-level `bridge/` remains the sole source for production Node bridge files. `tools/sync-release-assets.mjs` deterministically mirrors `package.json`, `protocol-contract.json`, and production `src/*.js` into `crates/e-dsh/assets/bridge`; `e-dsh/build.rs` always embeds that package-local mirror so checkout and crates.io builds use the same inputs. Bridge tests run check mode and reject missing, stale, or extra mirror files.
 - **Module layout**: `index.js` only keeps WebSocket lifecycle and composition wiring; `dispatcher.js` is the
   client frame router; `host.js` explicitly wraps the DSH service locator, `connection.js` unifies detach/
   expired-connection determination, `history.js` manages surface cache and paging, `session.js` manages

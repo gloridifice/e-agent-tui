@@ -5,7 +5,7 @@ use ratatui::{
 
 use crate::{
     app::TuiApp, input::InputState, input_page::InputPageSession, interaction::ScrollState,
-    login::LoginState, mouse_selection::SelectionFrame, settings::SettingsState, theme::Theme,
+    login::LoginState, settings::SettingsState, theme::Theme,
 };
 
 pub(crate) struct MainPaneOverlays<'a> {
@@ -26,7 +26,6 @@ pub(crate) fn render_with_cursor(
     scroll: &mut ScrollState,
     theme: &Theme,
     overlays: MainPaneOverlays<'_>,
-    selection_frame: &mut SelectionFrame,
     reserve_collapsed_separator: bool,
 ) -> Option<Position> {
     super::super::render_main_pane_with_cursor(
@@ -37,7 +36,6 @@ pub(crate) fn render_with_cursor(
         scroll,
         theme,
         overlays,
-        selection_frame,
         reserve_collapsed_separator,
     )
 }

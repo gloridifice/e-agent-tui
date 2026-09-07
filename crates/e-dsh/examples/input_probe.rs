@@ -23,7 +23,7 @@ fn main() -> std::io::Result<()> {
 
         crossterm::terminal::enable_raw_mode()?;
         // Must run after raw mode, whose setup otherwise clears the flag.
-        e::win_input::enable_virtual_terminal_input()?;
+        e_dsh::win_input::enable_virtual_terminal_input()?;
 
         println!("Input probe. Press keys; Ctrl+C quits.\r");
         println!("Try: Backspace, Ctrl+Backspace, Ctrl+H, Alt+Backspace.\r");

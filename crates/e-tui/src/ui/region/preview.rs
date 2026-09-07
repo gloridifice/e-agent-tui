@@ -10,7 +10,6 @@ use ratatui::{
 use crate::{
     config::Config,
     i18n::{tr, tr_args, Language},
-    mouse_selection::{SelectionFrame, SelectionSurface},
     preview::{
         LineSelection, PreviewContent, PreviewLayout, PreviewLayoutKey, PreviewPaneState,
         PreviewRevealIntent, PreviewState, ToolMetrics, ToolPreview, ToolPreviewPrimary,
@@ -32,7 +31,6 @@ pub fn render(
     preview: &mut PreviewPaneState,
     config: &Config,
     theme: &Theme,
-    selection_frame: &mut SelectionFrame,
     left_padding: u16,
     right_padding: u16,
 ) {
@@ -159,16 +157,6 @@ pub fn render(
     } else {
         0
     };
-    for (screen_index, (source_index, line)) in visible_lines.iter().enumerate() {
-        crate::ui::selection::register_line(
-            selection_frame,
-            SelectionSurface::Preview,
-            *source_index,
-            area.x.saturating_add(left_padding),
-            area.y.saturating_add((top_padding + screen_index) as u16),
-            line,
-        );
-    }
     let mut centered = Vec::with_capacity(usize::from(area.height));
     centered.extend(std::iter::repeat_n(Line::raw(""), top_padding));
     centered.extend(visible_lines.into_iter().map(|(_, line)| line));

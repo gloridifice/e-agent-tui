@@ -1,0 +1,521 @@
+{
+  "protocolVersion": 10,
+  "limits": {
+    "snapshotEvents": 600,
+    "historyEvents": 2000,
+    "maxFrameBytes": 16777216,
+    "clientReplayEvents": 2000
+  },
+  "surfaceEvents": [
+    "user/message",
+    "assistant/message",
+    "tool/call",
+    "tool/result",
+    "turn/start",
+    "turn/end",
+    "todo/write",
+    "command/run",
+    "command/done",
+    "compaction/start",
+    "compaction/summary",
+    "compaction/end",
+    "llm/retry",
+    "llm/retry-started",
+    "tool/code-dispatch-start",
+    "tool/code-dispatch",
+    "tool-workflow/run-start",
+    "tool-workflow/agent-start",
+    "tool-workflow/agent-end",
+    "tool-workflow/run-end",
+    "goal/change",
+    "plan/mode",
+    "request/context",
+    "agent-preset/selected",
+    "permission/preset",
+    "sandbox/mode",
+    "schedule/change"
+  ],
+  "clientMessages": [
+    "hello",
+    "input",
+    "new-input",
+    "command",
+    "interrupt",
+    "clear-asap",
+    "attach",
+    "list-sessions",
+    "approval-answer",
+    "answer-questions",
+    "cancel-questions",
+    "history",
+    "login-get",
+    "login-set-api-key",
+    "login-proxy-create",
+    "login-proxy-delete",
+    "model-get",
+    "model-set",
+    "ping"
+  ],
+  "serverMessages": [
+    "welcome",
+    "snapshot",
+    "event",
+    "status",
+    "asap-queue",
+    "history",
+    "sessions",
+    "presets",
+    "skills",
+    "title",
+    "login",
+    "approval",
+    "question",
+    "question-resolved",
+    "commands",
+    "command-result",
+    "model",
+    "error",
+    "pong"
+  ],
+  "shapeTypes": {
+    "primitives": [
+      "string",
+      "boolean",
+      "integer",
+      "host-event"
+    ],
+    "arraySuffix": "[]",
+    "recordReference": "Any other type name refers to an entry in records"
+  },
+  "records": {
+    "PromptImage": {
+      "required": {
+        "mediaType": "string",
+        "data": "string"
+      },
+      "optional": {
+        "name": "string"
+      }
+    },
+    "PromptContentPart": {
+      "required": {},
+      "optional": {
+        "text": "string",
+        "mediaType": "string",
+        "data": "string",
+        "name": "string"
+      }
+    },
+    "QuestionAnswer": {
+      "required": {
+        "id": "string",
+        "selected": "string[]"
+      },
+      "optional": {
+        "custom": "string"
+      }
+    },
+    "QuestionItem": {
+      "required": {
+        "id": "string",
+        "question": "string"
+      },
+      "optional": {
+        "header": "string",
+        "options": "QuestionOption[]",
+        "multiSelect": "boolean"
+      }
+    },
+    "QuestionOption": {
+      "required": {
+        "label": "string"
+      },
+      "optional": {
+        "description": "string"
+      }
+    },
+    "SessionInfo": {
+      "required": {
+        "id": "string",
+        "title": "string",
+        "live": "boolean",
+        "createdAt": "integer"
+      },
+      "optional": {}
+    },
+    "PresetInfo": {
+      "required": {
+        "id": "string"
+      },
+      "optional": {
+        "name": "string",
+        "description": "string",
+        "order": "integer",
+        "broken": "string"
+      }
+    },
+    "SkillInfo": {
+      "required": {
+        "name": "string",
+        "description": "string"
+      },
+      "optional": {}
+    },
+    "ProviderInfo": {
+      "required": {
+        "id": "string",
+        "name": "string"
+      },
+      "optional": {
+        "apiKeyConfigured": "boolean",
+        "apiKeyWritable": "boolean",
+        "apiKeySource": "string",
+        "apiKeyHint": "string"
+      }
+    },
+    "ProxyInfo": {
+      "required": {
+        "id": "string",
+        "name": "string",
+        "baseUrl": "string",
+        "protocol": "string",
+        "model": "string"
+      },
+      "optional": {}
+    },
+    "CommandInfo": {
+      "required": {
+        "name": "string",
+        "description": "string"
+      },
+      "optional": {
+        "input": "CommandInputInfo"
+      }
+    },
+    "CommandInputInfo": {
+      "required": {
+        "hint": "string"
+      },
+      "optional": {}
+    },
+    "ModelProviderInfo": {
+      "required": {
+        "id": "string",
+        "name": "string"
+      },
+      "optional": {
+        "models": "ModelInfo[]"
+      }
+    },
+    "ModelInfo": {
+      "required": {
+        "id": "string",
+        "name": "string"
+      },
+      "optional": {
+        "description": "string",
+        "contextWindow": "integer",
+        "reasoning": "ModelReasoningInfo"
+      }
+    },
+    "ModelReasoningInfo": {
+      "required": {
+        "efforts": "ModelReasoningEffortInfo[]"
+      },
+      "optional": {
+        "defaultEffort": "string"
+      }
+    },
+    "ModelReasoningEffortInfo": {
+      "required": {
+        "id": "string",
+        "name": "string"
+      },
+      "optional": {
+        "description": "string"
+      }
+    },
+    "ModelCurrent": {
+      "required": {
+        "provider": "string",
+        "model": "string"
+      },
+      "optional": {
+        "reasoningEffort": "string"
+      }
+    }
+  },
+  "messageShapes": {
+    "client": {
+      "hello": {
+        "required": {
+          "token": "string",
+          "protocolVersion": "integer"
+        },
+        "optional": {
+          "resumeSessionId": "string",
+          "cwd": "string",
+          "mode": "string"
+        }
+      },
+      "input": {
+        "required": {
+          "content": "PromptContentPart[]"
+        },
+        "optional": {
+          "mode": "string"
+        }
+      },
+      "new-input": {
+        "required": {
+          "mode": "string",
+          "content": "PromptContentPart[]"
+        },
+        "optional": {}
+      },
+      "command": {
+        "required": {
+          "line": "string"
+        },
+        "optional": {
+          "images": "PromptImage[]"
+        }
+      },
+      "interrupt": {
+        "required": {},
+        "optional": {}
+      },
+      "clear-asap": {
+        "required": {},
+        "optional": {}
+      },
+      "attach": {
+        "required": {
+          "sessionId": "string"
+        },
+        "optional": {}
+      },
+      "list-sessions": {
+        "required": {},
+        "optional": {}
+      },
+      "approval-answer": {
+        "required": {
+          "id": "string",
+          "allow": "boolean"
+        },
+        "optional": {}
+      },
+      "answer-questions": {
+        "required": {
+          "rpcId": "string",
+          "answers": "QuestionAnswer[]"
+        },
+        "optional": {}
+      },
+      "cancel-questions": {
+        "required": {
+          "rpcId": "string"
+        },
+        "optional": {}
+      },
+      "history": {
+        "required": {
+          "beforeSeq": "integer",
+          "limit": "integer"
+        },
+        "optional": {}
+      },
+      "login-get": {
+        "required": {},
+        "optional": {}
+      },
+      "login-set-api-key": {
+        "required": {
+          "provider": "string",
+          "value": "string"
+        },
+        "optional": {}
+      },
+      "login-proxy-create": {
+        "required": {
+          "baseUrl": "string",
+          "apiKey": "string",
+          "protocol": "string",
+          "model": "string"
+        },
+        "optional": {}
+      },
+      "login-proxy-delete": {
+        "required": {
+          "id": "string"
+        },
+        "optional": {}
+      },
+      "model-get": {
+        "required": {},
+        "optional": {}
+      },
+      "model-set": {
+        "required": {
+          "provider": "string",
+          "model": "string"
+        },
+        "optional": {
+          "reasoningEffort": "string"
+        }
+      },
+      "ping": {
+        "required": {},
+        "optional": {}
+      }
+    },
+    "server": {
+      "welcome": {
+        "required": {
+          "sessionId": "string",
+          "status": "string"
+        },
+        "optional": {
+          "protocolVersion": "integer",
+          "maxFrameBytes": "integer",
+          "provider": "string",
+          "model": "string",
+          "mode": "string",
+          "title": "string",
+          "cwd": "string"
+        }
+      },
+      "snapshot": {
+        "required": {
+          "events": "host-event[]"
+        },
+        "optional": {
+          "truncated": "boolean"
+        }
+      },
+      "event": {
+        "required": {
+          "event": "host-event"
+        },
+        "optional": {}
+      },
+      "status": {
+        "required": {
+          "status": "string"
+        },
+        "optional": {}
+      },
+      "asap-queue": {
+        "required": {
+          "sessionId": "string",
+          "prompts": "string[]"
+        },
+        "optional": {
+          "operation": "string",
+          "error": "string"
+        }
+      },
+      "history": {
+        "required": {
+          "events": "host-event[]"
+        },
+        "optional": {
+          "hasMore": "boolean"
+        }
+      },
+      "sessions": {
+        "required": {
+          "sessions": "SessionInfo[]"
+        },
+        "optional": {
+          "titlesPending": "boolean"
+        }
+      },
+      "presets": {
+        "required": {
+          "presets": "PresetInfo[]"
+        },
+        "optional": {}
+      },
+      "skills": {
+        "required": {},
+        "optional": {
+          "skills": "SkillInfo[]"
+        }
+      },
+      "title": {
+        "required": {
+          "title": "string"
+        },
+        "optional": {}
+      },
+      "login": {
+        "required": {},
+        "optional": {
+          "providers": "ProviderInfo[]",
+          "proxies": "ProxyInfo[]",
+          "error": "string"
+        }
+      },
+      "approval": {
+        "required": {
+          "id": "string",
+          "toolName": "string",
+          "reason": "string"
+        },
+        "optional": {
+          "callId": "string"
+        }
+      },
+      "question": {
+        "required": {
+          "rpcId": "string",
+          "sessionId": "string",
+          "questions": "QuestionItem[]"
+        },
+        "optional": {}
+      },
+      "question-resolved": {
+        "required": {
+          "questionRpcId": "string",
+          "outcome": "string"
+        },
+        "optional": {}
+      },
+      "commands": {
+        "required": {},
+        "optional": {
+          "commands": "CommandInfo[]"
+        }
+      },
+      "command-result": {
+        "required": {
+          "commandId": "string",
+          "kind": "string"
+        },
+        "optional": {
+          "text": "string"
+        }
+      },
+      "model": {
+        "required": {},
+        "optional": {
+          "providers": "ModelProviderInfo[]",
+          "current": "ModelCurrent"
+        }
+      },
+      "error": {
+        "required": {
+          "code": "string",
+          "message": "string"
+        },
+        "optional": {}
+      },
+      "pong": {
+        "required": {},
+        "optional": {}
+      }
+    }
+  }
+}

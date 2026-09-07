@@ -7,10 +7,17 @@ use serde::{Deserialize, Serialize};
 pub use e_tui::config::{Config, ThinkingDisplayMode, DEFAULT_CONFIG_SOURCE};
 pub use e_tui::theme::Theme;
 
+/// Shared frontend configuration, using `~/.config/e` on macOS too.
 pub fn config_dir() -> PathBuf {
-    directories::ProjectDirs::from("", "", "pie")
-        .map(|dirs| dirs.config_dir().to_path_buf())
-        .unwrap_or_else(|| PathBuf::from(".pie"))
+    directories::BaseDirs::new()
+        .map(|dirs| {
+            if cfg!(target_os = "macos") {
+                dirs.home_dir().join(".config/e")
+            } else {
+                dirs.config_dir().join("e")
+            }
+        })
+        .unwrap_or_else(|| PathBuf::from(".e"))
 }
 
 pub fn config_path() -> PathBuf {
@@ -51,11 +58,22 @@ pub fn load() -> Config {
 }
 
 pub fn save(config: &Config) -> Result<(), String> {
-    let path = config_path();
+    save_to(&config_path(), config)
+}
+
+fn save_to(path: &std::path::Path, config: &Config) -> Result<(), String> {
+    // Pi's runtime-only mode must not overwrite the shared DSH default.
+    let persisted = match std::fs::read_to_string(path) {
+        Ok(text) => Config::user_toml_or_default(&text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Config::default(),
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut config = config.clone();
+    config.default_mode = persisted.default_mode;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
     }
-    let text = toml::to_string_pretty(config).map_err(|error| error.to_string())?;
+    let text = toml::to_string_pretty(&config).map_err(|error| error.to_string())?;
     std::fs::write(path, text).map_err(|error| error.to_string())
 }
 
@@ -80,5 +98,32 @@ impl StateFile {
         if let Ok(text) = toml::to_string(self) {
             let _ = std::fs::write(path, text);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saving_shared_settings_preserves_dsh_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("e/config.toml");
+        let config = Config {
+            default_mode: "pi".into(),
+            theme: "deepseek-e".into(),
+            ..Config::default()
+        };
+
+        save_to(&path, &config).unwrap();
+        let saved = Config::user_toml_or_default(&std::fs::read_to_string(&path).unwrap());
+        assert_eq!(saved.default_mode, Config::default().default_mode);
+        assert_eq!(saved.theme, config.theme);
+
+        std::fs::write(&path, "default_mode = 'minimal'\n").unwrap();
+        save_to(&path, &config).unwrap();
+        let saved = Config::user_toml_or_default(&std::fs::read_to_string(&path).unwrap());
+        assert_eq!(saved.default_mode, "minimal");
+        assert_eq!(saved.theme, config.theme);
     }
 }

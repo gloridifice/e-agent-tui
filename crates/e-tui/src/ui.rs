@@ -23,7 +23,7 @@ use crate::{
     input_page::{FocusId, InputPage, InputPageSession, ModelPage, ResumePage, ThemePage},
     interaction::PendingPrompt,
     login::LoginState,
-    mouse_selection::{MouseSelection, SelectionFrame},
+    mouse_selection::MouseSelection,
     projection::TranscriptNode,
     settings::SettingsState,
     transcript_layout::{truncate_activity_line, wrap_line, wrapped_rows, ProvenanceLayoutRow},
@@ -58,6 +58,7 @@ pub use crate::interaction::ScrollState;
 const MAX_RENDER_LINES_PER_MSG: usize = 800;
 
 pub use screen::RenderOverlays;
+pub use selection::{selection_context, Presentation};
 
 fn input_accessories(
     state: &TuiApp,
@@ -222,16 +223,16 @@ pub fn render_with_cursor(
         theme,
         overlays,
         &MouseSelection::default(),
-        &SelectionFrame::default(),
+        &Presentation::default(),
     )
     .cursor
 }
 
 /// Ephemeral artifacts produced by one render attempt. The runner publishes
-/// `selection_frame` only after terminal submission succeeds.
+/// `presentation` only after terminal submission succeeds.
 pub struct RenderOutput {
     pub cursor: Option<Position>,
-    pub selection_frame: SelectionFrame,
+    pub presentation: Presentation,
 }
 
 #[allow(clippy::too_many_arguments)] // Explicit render inputs preserve the UI boundary.
@@ -243,32 +244,39 @@ pub fn render_with_cursor_and_selection(
     theme: &Theme,
     overlays: RenderOverlays<'_>,
     selection: &MouseSelection,
-    committed_selection_frame: &SelectionFrame,
+    committed: &Presentation,
 ) -> RenderOutput {
     let resizing = overlays.pane_resize.is_active();
-    let toast = (!resizing).then_some(overlays.toast).flatten();
-    let area = frame.area();
-    let mut selection_frame = SelectionFrame::for_viewport(area.width, area.height);
-    let cursor = screen::render_with_cursor(
-        frame,
+    let context = selection_context(
         state,
-        input,
-        scroll,
-        theme,
-        overlays,
-        &mut selection_frame,
+        overlays.input_page.as_deref(),
+        overlays.approval,
+        overlays.help_visible,
     );
-    // Never paint a range from stale coordinates onto a newly composed frame.
-    // The runner publishes the new geometry only after terminal submission.
-    if !resizing && selection_frame.same_geometry(committed_selection_frame) {
-        selection::paint(committed_selection_frame, selection, frame.buffer_mut());
+    if !resizing {
+        if let Some(cursor) = committed.replay(frame.buffer_mut(), selection, context) {
+            return RenderOutput {
+                cursor,
+                presentation: committed.clone(),
+            };
+        }
     }
+    let toast = (!resizing).then_some(overlays.toast).flatten();
+    let cursor = screen::render_with_cursor(frame, state, input, scroll, theme, overlays);
     if let Some(toast) = toast {
         overlay::render_toast(frame, toast, theme);
     }
+    let presentation = Presentation::capture(frame.buffer_mut(), cursor, context, !resizing);
+    if !resizing
+        && presentation
+            .selection_frame()
+            .same_geometry(committed.selection_frame())
+    {
+        selection::paint(committed.selection_frame(), selection, frame.buffer_mut());
+    }
     RenderOutput {
         cursor,
-        selection_frame,
+        presentation,
     }
 }
 
@@ -281,7 +289,6 @@ pub(crate) fn render_main_pane_with_cursor(
     scroll: &mut ScrollState,
     theme: &Theme,
     overlays: pane::main::MainPaneOverlays<'_>,
-    selection_frame: &mut SelectionFrame,
     reserve_collapsed_separator: bool,
 ) -> Option<Position> {
     let pane::main::MainPaneOverlays {
@@ -344,15 +351,7 @@ pub(crate) fn render_main_pane_with_cursor(
         ])
         .split(page);
 
-        region::transcript::render(
-            frame,
-            chunks[0],
-            state,
-            scroll,
-            theme,
-            help_visible,
-            selection_frame,
-        );
+        region::transcript::render(frame, chunks[0], state, scroll, theme, help_visible);
         if approval_rows > 0 {
             if let Some(card) = approval {
                 render_approval(frame, chunks[1], card, theme, &state.config);
@@ -437,7 +436,6 @@ pub(crate) fn render_main_pane_with_cursor(
         theme,
         help_visible,
         bottom_stack,
-        selection_frame,
     );
     let mut cursor_anchor = None;
     let mut input_rect = None;

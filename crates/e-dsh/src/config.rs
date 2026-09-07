@@ -10,18 +10,24 @@ use serde::{Deserialize, Serialize};
 pub use e_tui::config::{Config, ThinkingDisplayMode, DEFAULT_CONFIG_SOURCE};
 pub use e_tui::theme::Theme;
 
-/// `%APPDATA%\dshe` on Windows, `~/.config/dshe` elsewhere.
+/// Shared frontend configuration, using `~/.config/e` on macOS too.
 pub fn config_dir() -> PathBuf {
-    directories::ProjectDirs::from("", "", "dshe")
-        .map(|dirs| dirs.config_dir().to_path_buf())
-        .unwrap_or_else(|| PathBuf::from(".dshe"))
+    directories::BaseDirs::new()
+        .map(|dirs| {
+            if cfg!(target_os = "macos") {
+                dirs.home_dir().join(".config/e")
+            } else {
+                dirs.config_dir().join("e")
+            }
+        })
+        .unwrap_or_else(|| PathBuf::from(".e"))
 }
 
 pub fn config_path() -> PathBuf {
     config_dir().join("config.toml")
 }
 
-/// Theme files live beside the config: `%APPDATA%\dshe\themes\`.
+/// Theme files live beside the shared config.
 pub fn themes_dir() -> PathBuf {
     config_dir().join("themes")
 }

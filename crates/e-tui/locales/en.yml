@@ -171,6 +171,8 @@ help.builtin_commands: "Built-in commands"
 help.runtime_commands: "Current runtime commands"
 key.navigate: "Move"
 key.help.more: "— Unbound · /help: complete binding list · /reload: reload key_mapping.toml"
+help.mouse_copy: "Drag anywhere to copy screen rows across panes; display pauses while held."
+help.mouse_resize: "Wheel scrolls; a separator press resizes instead of selecting."
 key.action.print_help: "Help"
 key.action.enter_read_mode: "Reading View"
 key.action.choose_model: "Model"
@@ -231,7 +233,9 @@ help.body: |
   - Pi cancels its entire backend queue, including extension steering/follow-up messages; local after-turn prompts are preserved.
   - Page text editors accept ordinary letters; global picker shortcuts do not replace an active page or approval.
   - Reading copies the complete owning block, even with an item selected. Exit leaves Reading; back-to-blocks only leaves Items.
-  - Mouse wheel scrolls messages; drag the separator to resize; drag visible Transcript/Preview text to copy the selected visual range.
+  - Drag any visible screen text to copy on release, including input, status, pages, and popups. Multiline ranges include adjacent panes in screen row order.
+  - The display stays fixed while selecting; background work continues and live display resumes on release. Only displayed masks, placeholders, and ellipses are copied; trailing ordinary spaces are omitted.
+  - Mouse wheel scrolls messages and cancels selection. A separator press resizes; a text drag starting elsewhere can include its visible glyph.
   - Type `/` to complete built-in and runtime commands.
 
   ## Active key mappings

@@ -86,7 +86,9 @@ cargo release patch --workspace
 cargo release patch --workspace --execute
 ```
 
-Cargo-release publishes `e-tui` before the two adapters and uses one shared `v<version>` tag. Never use `--allow-dirty` or `--no-verify` for an executed release. A crates.io version cannot be overwritten; yank a bad version and publish a new synchronized patch instead.
+Cargo-release publishes `e-tui` before the two adapters and uses one shared `v<version>` tag. The pre-release hook clears cached local-registry sources for each selected package's current version and cleans that package's build artifacts when such sources exist. This prevents repeated dry runs from reusing an older same-version archive; downloaded crates.io sources are left intact, and normal publish verification stays enabled.
+
+Never use `--allow-dirty` or `--no-verify` for an executed release. Uncommitted changes also make the dry run fail, even if all package builds pass. A crates.io version cannot be overwritten; yank a bad version and publish a new synchronized patch instead.
 
 ## Bridge development
 

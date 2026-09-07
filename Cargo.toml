@@ -26,6 +26,7 @@ allow-branch = ["master"]
 shared-version = true
 dependent-version = "upgrade"
 consolidate-commits = true
+pre-release-hook = ["node", "../../tools/prepare-crate-release.mjs", "{{crate_name}}"]
 pre-release-commit-message = "chore(release): v{{version}}"
 tag = true
 tag-name = "v{{version}}"

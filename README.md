@@ -78,7 +78,7 @@ cargo build --release --features tracy
 
 You can run `/econfig` in `e` to open or show the config path of your device.
 
-- `config.toml`: Settings configuration.
+- `config.toml`: Settings configuration. `/econfig` prints its path in the message pane.
 - `key_mapping.toml`: Key mapping overrides.
 - `themes/`: custom theme folder.
 

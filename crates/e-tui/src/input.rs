@@ -1647,12 +1647,7 @@ mod tests {
         // Fuzzy subsequence (p-l-n inside "plan").
         assert_eq!(match_commands("pln"), vec!["/plan"]);
         // All prefix results come before everything else.
-        let m = match_commands("c");
-        assert!(
-            m.iter().all(|c| c.starts_with("/c")),
-            "prefix group only: {m:?}"
-        );
-        assert_eq!(m.len(), 1);
+        assert_eq!(match_commands("c"), vec!["/compact", "/econfig"]);
     }
 
     #[test]

@@ -37,6 +37,7 @@ pub enum CommandAction {
     Effort,
     Theme,
     Reload,
+    Econfig,
     Skill,
     Forward,
     Help,
@@ -107,6 +108,13 @@ pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
     ),
     command!("theme", "command.theme.description", None, None, Theme),
     command!("reload", "command.reload.description", None, None, Reload),
+    command!(
+        "econfig",
+        "command.econfig.description",
+        None,
+        None,
+        Econfig
+    ),
     command!(
         "skill",
         "command.skill.description",

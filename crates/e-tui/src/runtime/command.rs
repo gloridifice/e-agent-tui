@@ -315,6 +315,15 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
             }
             outcome.reload_config = true;
         }
+        CommandAction::Econfig => {
+            if !reject_arguments(&context, name, raw_input) {
+                context
+                    .state
+                    .lock()
+                    .unwrap()
+                    .push_system_message(context.config.config_path_display.clone());
+            }
+        }
         CommandAction::Help => {
             if !reject_arguments(&context, name, raw_input) {
                 let markdown = crate::help::markdown(context.config, context.integrated_commands);
@@ -514,6 +523,50 @@ mod tests {
             .content
             .contains("`/feedback`: record feedback <text>"));
         assert_eq!(block.content.matches("`/plan`").count(), 1);
+    }
+
+    #[test]
+    fn econfig_prints_adapter_path_without_an_agent_request() {
+        for (line, valid) in [("/econfig", true), ("/econfig extra", false)] {
+            let state = Arc::new(Mutex::new(RuntimeState::default()));
+            let mut input_page = None;
+            let mut config = Config {
+                config_path_display: "C:\\用户\\e\\config.toml".into(),
+                ..Config::default()
+            };
+            let expected = config.config_path_display.clone();
+            let mut themes = Vec::new();
+            let mut paste_placeholder_chars = config.paste_placeholder_chars;
+            let mut history_limit = config.history_limit;
+            let mut theme = config.theme();
+            let outcome = handle_local_command(
+                line.into(),
+                LocalCommandContext {
+                    language: config.language,
+                    input_page: &mut input_page,
+                    integrated_commands: &[],
+                    config: &mut config,
+                    themes: &mut themes,
+                    new_modes: &[],
+                    model_providers: &[],
+                    current_model: None,
+                    input_paste_placeholder_chars: &mut paste_placeholder_chars,
+                    input_history_limit: &mut history_limit,
+                    theme: &mut theme,
+                    question_open: false,
+                    approval_open: false,
+                    state: &state,
+                },
+            );
+            assert!(outcome.outbound.is_empty());
+            assert!(input_page.is_none());
+            let state = state.lock().unwrap();
+            let DisplayItem::Block(block) = &state.transcript.nodes().last().unwrap().item else {
+                panic!("econfig must append a transcript block");
+            };
+            assert_eq!(block.content == expected, valid);
+            assert!(!block.streaming);
+        }
     }
 
     fn model_provider(id: &str, model_ids: &[&str]) -> ModelProvider {

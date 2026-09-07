@@ -388,7 +388,7 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   independently. Padding defaults to zero when omitted and is opt-in per element: inline code consumes it, while
   code blocks and Mermaid ignore `markdown.code_block_bg.padding` and keep their own fixed layout. `markdown_weak` has exactly the `markdown` role set and `code_weak` has exactly the `code` role set; both weak groups are required: older custom themes must add them
   or the existing whole-theme fallback applies.
-  Built-in `deepseek-e`/`ferra` sources are in `crates/e-tui/assets/themes/`, embedded via `include_str!` and parsed by
+  Built-in theme sources are in `crates/e-tui/assets/themes/`, registered in `theme::builtin_theme_sources`, embedded via `include_str!` and parsed by
   the same parser as user files, and copied without overwrite to the shared config directory's `themes/`; a valid same-named user
   file wins, and an illegal old file must not shadow the embedded fallback. `launcher.rs`: `probe(url)` TCP probe
   → if no dsh, spawn `dsh --profile e --no-open` (`dsh` or `npx @deepseek-ai/dsh`) → `%DSH_HOME%\e.lock` counts

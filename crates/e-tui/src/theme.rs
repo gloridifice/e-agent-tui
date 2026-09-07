@@ -360,10 +360,7 @@ impl Theme {
 
     /// Built-in fallback by name (unknown names fall back to deepseek-e).
     pub fn from_name(name: &str) -> Self {
-        match name {
-            "ferra" => Self::ferra(),
-            _ => Self::deepseek_e(),
-        }
+        builtin_theme(name)
     }
 }
 
@@ -490,8 +487,25 @@ pub fn parse_theme(text: &str) -> Option<ThemeFile> {
     parse_theme_result(text).ok()
 }
 
-pub fn builtin_theme_sources() -> [(&'static str, &'static str); 2] {
-    [("deepseek-e", DEEPSEEK_E_SOURCE), ("ferra", FERRA_SOURCE)]
+pub fn builtin_theme_sources() -> [(&'static str, &'static str); 7] {
+    [
+        ("ferra", FERRA_SOURCE),
+        (
+            "rider-dark",
+            include_str!("../assets/themes/rider-dark.toml"),
+        ),
+        ("dracula", include_str!("../assets/themes/dracula.toml")),
+        (
+            "catppuccin",
+            include_str!("../assets/themes/catppuccin.toml"),
+        ),
+        ("one-dark", include_str!("../assets/themes/one-dark.toml")),
+        (
+            "synthwave-84",
+            include_str!("../assets/themes/synthwave-84.toml"),
+        ),
+        ("deepseek-e", DEEPSEEK_E_SOURCE),
+    ]
 }
 
 fn builtin_theme_file(name: &str) -> ThemeFile {

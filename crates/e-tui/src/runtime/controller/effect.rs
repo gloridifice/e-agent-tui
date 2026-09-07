@@ -15,6 +15,7 @@ pub(super) fn sync_live_config(
 ) {
     *theme = config.theme();
     input.language = config.language;
+    input.key_mapping = config.key_mapping.clone();
     input.paste_placeholder_chars = config.paste_placeholder_chars;
     input.history_limit = config.history_limit;
     let catalogs = {
@@ -34,6 +35,11 @@ pub(super) fn apply_reloaded_config(
     state: &Mutex<RuntimeState>,
     ui: &mut TerminalUiState<'_>,
 ) {
+    let mut config = config;
+    if let Some(error) = config.key_mapping_error.take() {
+        config.key_mapping = ui.config.key_mapping.clone();
+        state.lock().unwrap().push_error_message(error);
+    }
     *ui.config = config;
     *ui.themes = themes;
     sync_live_config(ui.config, state, ui.input, ui.theme);
@@ -51,6 +57,12 @@ pub(super) fn apply_effect_result(
         EffectResult::ConfigPersisted(Ok(())) | EffectResult::ConfigReloaded { .. } => false,
         EffectResult::ClipboardRead(Ok(content)) => {
             let mut app = state.lock().unwrap();
+            if app.reading.is_some()
+                || app.interaction.approval.is_some()
+                || app.interaction.help_visible
+            {
+                return false;
+            }
             let interaction = &mut app.interaction;
             match content {
                 ClipboardPaste::Text(text) => {
@@ -144,14 +156,18 @@ pub(super) fn dispatch_next_queued(state: &Mutex<RuntimeState>) -> Vec<UiAction>
     let Some(pending) = state.take_next_queued() else {
         return Vec::new();
     };
-    state.admit_submission(&pending.prompt, was_idle);
-    let request = match pending.delivery {
-        crate::interaction::PromptDelivery::Asap if !was_idle => AgentRequest::Steer {
+    let steering = pending.delivery == crate::interaction::PromptDelivery::Asap
+        && (!was_idle || state.interaction.queue.has_backend());
+    let request = if steering {
+        state.interaction.queue.begin_submission(pending.clone());
+        AgentRequest::Steer {
             prompt: pending.prompt,
-        },
-        _ => AgentRequest::Input {
+        }
+    } else {
+        state.admit_submission(&pending.prompt, was_idle);
+        AgentRequest::Input {
             prompt: pending.prompt,
-        },
+        }
     };
     vec![agent_action(request)]
 }

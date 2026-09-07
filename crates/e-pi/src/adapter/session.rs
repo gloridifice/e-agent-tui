@@ -67,6 +67,7 @@ pub(super) fn state_response(adapter: &mut PiAdapter, data: Option<&Value>) -> A
     let switched = adapter.last_attached_session.as_deref() != Some(session_key.as_str());
     adapter.last_attached_session = Some(session_key.clone());
     let output = if switched {
+        adapter.pending_queue = super::queue::PendingQueue::default();
         // `Attached` already carries the title; mirror it in the dedup key
         // so the follow-up refresh does not emit a duplicate event.
         adapter.emitted_title = adapter.session_name.clone();

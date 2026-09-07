@@ -40,9 +40,6 @@ pub const PREVIEW_FULLSCREEN_LEFT_PADDING: u16 = 1;
 pub const PREVIEW_FULLSCREEN_RIGHT_PADDING: u16 = 1;
 /// Ordinary Main content keeps one blank column at each pane edge.
 pub const MAIN_PAGE_MARGIN: u16 = 1;
-/// Conflict audit: Ctrl+P is unclaimed by composer, pages, approvals, copy
-/// mode, and global help, so it owns narrow full-screen Preview toggling.
-pub const PREVIEW_TOGGLE_KEY: char = 'p';
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScreenLayout {

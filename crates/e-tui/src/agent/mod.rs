@@ -165,8 +165,20 @@ pub struct Question {
     pub multi_select: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AsapQueueOperation {
+    Submit,
+    Clear,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InteractionEvent {
+    AsapQueue {
+        session_id: String,
+        prompts: Vec<String>,
+        operation: Option<AsapQueueOperation>,
+        error: Option<String>,
+    },
     CommandResult {
         id: String,
         outcome: String,

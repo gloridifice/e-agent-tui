@@ -59,6 +59,32 @@ pub(super) fn apply_agent(
                 Vec::new()
             }
         }
+        AgentEvent::Interaction(InteractionEvent::AsapQueue {
+            session_id,
+            prompts,
+            operation,
+            error,
+        }) => {
+            if state.lock().unwrap().session.session_id.as_deref() != Some(&session_id) {
+                return Vec::new();
+            }
+            ui.queue.update_remote(prompts);
+            match operation {
+                Some(crate::agent::AsapQueueOperation::Submit) => {
+                    ui.queue.complete_submission(error.is_some())
+                }
+                Some(crate::agent::AsapQueueOperation::Clear) => ui.queue.complete_clear(),
+                None => {}
+            }
+            if let Some(error) = error {
+                state.lock().unwrap().push_error_message(error);
+            }
+            ui.queue
+                .take_clear_request()
+                .then_some(UiAction::Agent(crate::AgentRequest::ClearAsap))
+                .into_iter()
+                .collect()
+        }
         AgentEvent::Interaction(event) => apply_interaction(event, state, ui),
         AgentEvent::Preview(crate::agent::PreviewEvent::Resolved {
             request_id,
@@ -311,7 +337,9 @@ pub(super) fn apply_interaction(
         InteractionEvent::Error { code, message } => {
             return apply_agent_error(&code, &message, state, ui);
         }
-        InteractionEvent::Heartbeat | InteractionEvent::SetEditorText { .. } => {}
+        InteractionEvent::Heartbeat
+        | InteractionEvent::SetEditorText { .. }
+        | InteractionEvent::AsapQueue { .. } => {}
     }
     Vec::new()
 }

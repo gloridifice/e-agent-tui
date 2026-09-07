@@ -555,8 +555,9 @@ impl RuntimeState {
         delivery: crate::interaction::PromptDelivery,
         queue: &mut crate::interaction::PendingPromptQueue,
     ) -> bool {
-        if self.is_fully_idle()
-            || (delivery == crate::interaction::PromptDelivery::Asap && self.is_agent_idle())
+        if queue.is_empty()
+            && (self.is_fully_idle()
+                || (delivery == crate::interaction::PromptDelivery::Asap && self.is_agent_idle()))
         {
             true
         } else {

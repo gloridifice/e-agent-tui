@@ -1,0 +1,123 @@
+# User overrides: <config_path>/key_mapping.toml. Values replace whole bindings.
+# osmain = Command on macOS, Ctrl elsewhere. nop (or []) disables an action.
+[global]
+print_help = "osmain-h"
+enter_read_mode = "osmain-r"
+choose_model = "osmain-l"
+choose_effort = "osmain-e"
+open_settings = "osmain-,"
+resume_session = "osmain-n"
+toggle_preview = "osmain-p"
+page_up = "pageup"
+page_down = "pagedown"
+
+[message]
+new_line = "shift-enter"
+paste = "osmain-v"
+clear_or_quit = "ctrl-c"
+cancel_or_interrupt = "esc"
+history_search = "nop"
+complete = "tab"
+toggle_multiline = "alt-enter"
+
+[message.idle]
+send = "enter"
+
+[message.working]
+send_asap = "enter"
+send_after_turn = "osmain-enter"
+
+[message.edit]
+move_left = "left"
+move_right = "right"
+move_up = "up"
+move_down = "down"
+move_start = "home"
+move_end = "end"
+delete_backward = "backspace"
+delete_forward = "delete"
+delete_word_backward = ["ctrl-backspace", "ctrl-w", "alt-backspace"]
+
+[message.suggest]
+previous = "up"
+next = "down"
+complete = "tab"
+accept = "enter"
+cancel = "esc"
+
+[message.search]
+previous = "up"
+next = "down"
+accept = "enter"
+cancel = "esc"
+delete_backward = "backspace"
+
+[read_mode]
+move_up = ["up", "k"]
+move_down = ["down", "j"]
+move_up_fast = "pageup"
+move_down_fast = "pagedown"
+exit = ["esc", "q"]
+copy_block = "y"
+enter_items = ["right", "l"]
+
+[read_mode.item]
+move_left = ["left", "h"]
+move_right = ["right", "l"]
+move_up = ["up", "k"]
+move_down = ["down", "j"]
+back_to_blocks = "backspace"
+
+[page]
+move_left = ["left", "h"]
+move_right = ["right", "l"]
+move_up = ["up", "k"]
+move_down = ["down", "j"]
+confirm = "enter"
+back = "esc"
+close = "q"
+
+[page.edit]
+confirm = "enter"
+cancel = "esc"
+delete_backward = "backspace"
+paste = "osmain-v"
+
+[page.choice]
+previous = ["left", "h"]
+next = ["right", "l"]
+confirm = "enter"
+cancel = "esc"
+
+[page.resume]
+previous = "up"
+next = "down"
+confirm = "enter"
+cancel = "esc"
+delete_backward = "backspace"
+paste = "osmain-v"
+
+[page.question]
+previous_question = ["left", "h"]
+next_question = ["right", "l"]
+previous_option = ["up", "k"]
+next_option = ["down", "j"]
+toggle_option = "space"
+confirm = "enter"
+cancel = "esc"
+
+# Free-text answers keep letters as text, but retain arrow question switching.
+[page.question.edit]
+previous_question = "left"
+next_question = "right"
+confirm = "enter"
+cancel = "esc"
+delete_backward = "backspace"
+paste = "osmain-v"
+
+[approval]
+allow = ["y", "shift-y"]
+deny = ["n", "shift-n", "esc"]
+
+[help]
+close = ["esc", "q", "osmain-h"]

@@ -68,8 +68,6 @@ settings.choice.thinking.lines: "行"
 settings.choice.thinking.full: "完整"
 settings.choice.language.en: "英语"
 settings.choice.language.zh_cn: "简体中文"
-settings.footer.edit: "Enter 确认   Esc 取消修改"
-settings.footer.browse: "h/l/←/→ 切页   j/k/↑/↓ 移动   Enter 执行   Esc 退出 · 即改即存"
 composer.image: "[图片 %{name}]"
 composer.paste: "[已粘贴 %{count} 字文本]"
 input.search: "搜索： "
@@ -81,11 +79,9 @@ accessory.suggest.commands: "命令"
 accessory.suggest.modes: "模式"
 accessory.suggest.models: "模型"
 accessory.suggest.skills: "技能"
-accessory.suggest.footer: "↑↓ 选择 · Enter 发送 · Esc 关闭 · ↳ 插件命令"
 accessory.approval.title: "审批"
 accessory.approval.allow: "允许"
 accessory.approval.deny: "拒绝"
-accessory.approval.details: "详情"
 notice.copied: "已复制 %{lines} 行：%{preview}%{ellipsis}"
 transcript.history_loading: "（正在加载更早的消息…）"
 transcript.history_exhausted: "（已到最早的消息）"
@@ -117,8 +113,8 @@ markdown.code: "代码"
 markdown.block_line: " · %{count} 行"
 markdown.block_lines: " · %{count} 行"
 markdown.mermaid_error: "（Mermaid 渲染失败：%{error}）"
-markdown.collapse_hint: "  … 收起 %{hidden} 行 [Enter 展开]"
-markdown.table_collapse_hint: " … 收起 %{hidden} 行 [Enter 展开]"
+markdown.collapse_hint: "  … 收起 %{hidden} 行"
+markdown.table_collapse_hint: " … 收起 %{hidden} 行"
 preview.empty: "无预览"
 preview.loading: "• 正在加载预览…"
 preview.error: "预览错误：%{error}"
@@ -173,48 +169,73 @@ terminal.no_readable_content: "没有可阅读的内容"
 terminal.command_no_images: "此命令不接受图片"
 help.builtin_commands: "内置命令"
 help.runtime_commands: "当前运行时命令"
+key.navigate: "移动"
+key.help.more: "— 未绑定 · /help：完整按键列表 · /reload：重载 key_mapping.toml"
+key.action.print_help: "帮助"
+key.action.enter_read_mode: "阅读视图"
+key.action.choose_model: "模型"
+key.action.choose_effort: "推理强度"
+key.action.open_settings: "设置"
+key.action.resume_session: "续接会话"
+key.action.toggle_preview: "预览"
+key.action.page_up: "向上翻页"
+key.action.page_down: "向下翻页"
+key.action.new_line: "换行"
+key.action.paste: "粘贴"
+key.action.clear_or_quit: "清空／空闲且输入为空时退出"
+key.action.cancel_or_interrupt: "撤回全部尽快消息／最新等待消息／中断"
+key.action.history_search: "搜索历史"
+key.action.complete: "补全"
+key.action.toggle_multiline: "切换多行"
+key.action.send: "发送"
+key.action.send_asap: "尽快发送"
+key.action.send_after_turn: "本轮结束后发送"
+key.action.move_left: "左移"
+key.action.move_right: "右移"
+key.action.move_up: "上移"
+key.action.move_down: "下移"
+key.action.move_up_fast: "光标上移15步"
+key.action.move_down_fast: "光标下移15步"
+key.action.move_start: "开头"
+key.action.move_end: "末尾"
+key.action.delete_backward: "退格"
+key.action.delete_forward: "删除"
+key.action.delete_word_backward: "删词"
+key.action.previous: "上一项"
+key.action.next: "下一项"
+key.action.accept: "接受"
+key.action.cancel: "取消"
+key.action.exit: "退出阅读"
+key.action.copy_block: "复制完整块"
+key.action.enter_items: "进入项目"
+key.action.back_to_blocks: "返回块级"
+key.action.confirm: "确认"
+key.action.back: "返回"
+key.action.close: "关闭"
+key.action.previous_question: "上一题"
+key.action.next_question: "下一题"
+key.action.previous_option: "上一选项"
+key.action.next_option: "下一选项"
+key.action.toggle_option: "选择／切换"
+key.action.allow: "允许"
+key.action.deny: "拒绝"
 help.body: |
   # e 帮助
 
-  ## 输入与控制
+  以下按键反映当前生效的配置，`—` 表示未绑定。
+  在 `config.toml` 同目录的 `key_mapping.toml` 中覆盖动作；`/reload` 验证成功后统一应用。
+  `osmain` 在 macOS 上表示 Command，在 Windows/Linux 上表示 Ctrl。终端截获的快捷键需要调整终端设置或重新绑定。
 
-  - `Enter`：不打断当前工作的情况下尽快发送
-  - `Ctrl+Enter`：等待当前工作完全结束后发送
-  - `Shift+Enter`：换行
-  - `Ctrl+V`：粘贴图片或文本
-  - `Ctrl+Backspace` / `Ctrl+W`：删除前一个词
-  - `↑` / `↓`：行间移动，并在边界切换历史提示词
-  - `Esc`：优先取消最新候选消息；没有候选消息时中断当前工作
-  - `Ctrl+C`：清空输入；空闲且输入为空时退出
+  - 输入导航先在行间移动，边界处切换历史；粘贴块与图片块保持原子操作。
+  - 取消优先撤回全部尽快插入消息，否则取消最新等待发送消息；候选为空时才中断工作。撤回确认前重复取消不会中断。清空动作仅在空闲且输入为空时退出。
+  - Pi 会清空整个后端队列，包括扩展排入的 steering／follow-up 消息；本地等待发送消息会保留。
+  - 页面文本编辑允许普通字母；全局选择器快捷键不会替换正在编辑或等待回答的页面。
+  - 阅读复制当前项目所属完整块；退出动作退出整个阅读视图，返回块级仅退出项目导航。
+  - 鼠标滚轮滚动消息；拖动分隔条调整比例；拖选 Transcript/Preview 可见文本复制选中范围。
+  - 输入 `/` 补全内置命令与运行时命令。
 
-  ## 视图与导航
-
-  - `Ctrl+Y`：进入阅读视图
-  - `Ctrl+P`：切换全屏预览
-  - `Ctrl+N`：打开续接会话 Input Page
-  - `Ctrl+H`：打开快捷帮助浮层
-  - `PageUp` / `PageDown` / 鼠标滚轮：滚动消息
-  - 输入 `/`：补全内置命令及当前运行时命令；使用 `Tab` 或 `↑` / `↓` 选择
-
-  ## Input Page 与交互
-
-  - Input Page：方向键或 `hjkl` 移动焦点，`Enter` 执行，`Esc` 返回；编辑状态下 `hjkl` 输入文字
-  - 审批：`Y` 允许，`n` 拒绝
-  - 提问页：`h` / `l` 切换问题，`j` / `k` 切换选项，`Space` 选择，`Enter` 提交
-  - 阅读视图：`j` / `k` 块导航，`l` 进入项目，`h` / `j` / `k` / `l` 项目导航，`y` 复制完整块
+  ## 当前按键映射
 overlay.help.title: "帮助 — e"
-overlay.help.row1: "Enter 尽快发送   Ctrl+Enter 等待本轮结束后发送   Shift+Enter 换行   Ctrl+V 粘贴图片/文本   Ctrl+Backspace/Ctrl+W 删词"
-overlay.help.row2: "Esc 优先取消最新候选消息/队列空时中断   Ctrl+C 清空输入/空闲退出   /exit /q /quit 退出"
-overlay.help.row3: "Ctrl+Y 阅读视图   Ctrl+P 预览   Ctrl+N 续接会话 Input Page   Ctrl+H 帮助"
-overlay.help.row4: "输入 /：补全内置命令及当前会话自动接入的 DSH/插件命令   Tab/↑↓ 选择"
-overlay.help.row5: "/settings 设置面板   /login 登录（API key/Proxy）   /new [模式] 新建会话   PgUp/PgDn/滚轮滚动消息"
-overlay.help.row6: "鼠标: 拖动 Bark 分隔条调整消息栏比例；其他左键拖选 Transcript/Preview 可见文本，松开复制；阅读视图 y 复制完整原文"
-overlay.help.row7: "/theme 切换主题   /model [provider/model] 选择模型   /effort [强度] 选择推理强度   /reload 重载配置/主题/技能   /skill:<名称> 注入技能"
-overlay.help.row8: "Input Page: 方向键/hjkl 移动焦点（Settings ←→/hl 切页）   Enter 执行   Esc 返回；编辑时 hjkl 输入文字"
-overlay.help.row9: "/resume 打开续接会话 Input Page（输入筛选、↑↓ 选择）/ /resume <会话ID> 直接切换"
-overlay.help.row10: "审批: Y 允许 / n 拒绝   提问页: h/l/←→ 切换问题  j/k/↑↓ 切换选项  Space 选择/多选  Enter 下一题/提交"
-overlay.help.row11: "阅读视图: j/k 块导航  l 进入项目  h/j/k/l 项目导航  y 复制完整块  Esc 返回/退出"
-overlay.help.row12: "q/Esc 关闭帮助"
 input_page.login.title: "登录"
 input_page.login.providers_title: "API key · 选择提供商"
 input_page.login.api_key_title: "API key · 填写"
@@ -226,7 +247,7 @@ input_page.login.api_key.description: "为各模型提供商填写 API key"
 input_page.login.proxy.label: "Proxy"
 input_page.login.proxy.description: "管理自定义代理端点"
 input_page.login.configured: "已配置 %{hint}"
-input_page.login.not_configured: "未配置（Enter 填写）"
+input_page.login.not_configured: "未配置"
 input_page.login.no_providers: "没有可用的提供商"
 input_page.login.new_proxy: "+ 新建"
 input_page.login.new_proxy_description: "新建代理"
@@ -240,40 +261,26 @@ input_page.login.save_description: "保存并创建"
 input_page.login.delete_prompt: "确定删除代理“%{name}”？"
 input_page.login.keep_proxy: "保留该代理"
 input_page.login.delete_permanently: "永久删除"
-input_page.login.footer.menu: "↑/↓ 选择   Enter 进入   Esc 退出"
-input_page.login.footer.providers: "↑/↓ 选择   Enter 填写   Esc 返回"
-input_page.login.footer.api_key: "Enter 保存   Esc 返回 · 密钥不会回显"
-input_page.login.footer.proxy_list: "↑/↓ 选择   Enter 执行   Esc 返回"
-input_page.login.footer.proxy_form: "↑/↓ 选字段   Enter 编辑/切换   Enter 保存   Esc 返回"
-input_page.login.footer.proxy_delete: "←/→ 选择   Enter 确认   Esc 取消"
 input_page.login.loading: "读取中…"
 input_page.model.title: "模型"
 input_page.model.loading: "读取模型目录中…"
 input_page.model.no_providers: "（无可用提供商）"
 input_page.model.no_models: "（该提供商无可用模型）"
-input_page.model.footer: "hjkl/方向键移动   Enter 执行   Esc 退出"
 input_page.effort.title: "推理强度"
 input_page.effort.loading: "读取推理强度中…"
 input_page.effort.unavailable: "当前模型未提供可选择的推理强度"
 input_page.effort.current_default: "当前：提供商默认"
 input_page.effort.default: "（默认）"
-input_page.effort.footer: "hjkl/方向键移动   Enter 执行   Esc 退出"
 input_page.theme.title: "主题"
 input_page.theme.no_themes: "（无可用主题）"
-input_page.theme.footer: "hjkl/方向键移动   Enter 应用   Esc 退出"
 input_page.resume.title: "续接会话"
 input_page.resume.loading: "读取会话列表中…"
 input_page.resume.title_loading: "（标题读取中…）"
 input_page.resume.unnamed: "（未命名会话）"
 input_page.resume.no_matches: "（无匹配会话）"
-input_page.resume.footer: "输入文字筛选   ↑↓ 选择   Enter 续接   Esc 退出"
 input_page.question.title: "问题"
 input_page.question.no_question: "（没有可显示的问题）"
 input_page.question.answer_placeholder: "输入答案"
 input_page.question.footer_text: "输入答案"
-input_page.question.footer_select: "Space 选择"
-input_page.question.footer_multiselect: "Space 多选/取消"
-input_page.question.footer_navigation: "h/l ←/→ 问题   j/k ↑/↓ 选项"
-input_page.question.footer_cancel: "Esc 取消"
 input_page.question.action_next: "下一题"
 input_page.question.action_submit: "提交"

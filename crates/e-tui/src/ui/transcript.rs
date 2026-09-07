@@ -1169,7 +1169,7 @@ fn render_transcript_impl(
             screen_height.saturating_sub(bottom_rows).max(1)
         };
         let mut display = if help_visible {
-            help_overlay(state.config.language, theme)
+            help_overlay(&state.config, theme)
         } else {
             let mut lines = draft
                 .pending_card
@@ -1295,12 +1295,10 @@ fn render_transcript_impl(
         .transcript_cache
         .record_materialized_rows(display.len());
     if help_visible {
-        if bottom_rows == 0 {
-            display.extend(help_overlay(state.config.language, theme));
-        } else {
+        if bottom_rows != 0 {
             display.clear();
-            display.extend(help_overlay(state.config.language, theme));
         }
+        display.extend(help_overlay(&state.config, theme));
     }
     // Lazy scroll-back hint at the top of the transcript (display-only).
     if show_hint {

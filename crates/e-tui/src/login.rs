@@ -7,12 +7,13 @@
 //!   base URL, API key, protocol (three choices) and model name — none of
 //!   which is mandatory except a non-empty base URL.
 
+#[cfg(test)]
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::{
     action::AgentRequest,
     agent::{CredentialProvider, ProxyRoute},
-    page_core::{handle_text_editor, TextEditResult, TextEditor},
+    page_core::{handle_text_input, TextEditResult, TextEditor},
 };
 
 /// Wire protocols a custom proxy route may speak (first = default).
@@ -242,15 +243,28 @@ impl LoginState {
         }
     }
 
+    pub fn key_scope(&self) -> crate::key_mapping::Scope {
+        if self.editing.is_some() {
+            crate::key_mapping::Scope::PageEdit
+        } else {
+            crate::key_mapping::Scope::Page
+        }
+    }
+
+    #[cfg(test)]
     pub fn handle_key(&mut self, key: &KeyEvent) -> LoginAction {
-        // ---- text editing (proxy form fields + API key) ----
+        self.handle_input(crate::key_mapping::KeyMapping::default().input(self.key_scope(), key))
+    }
+
+    pub fn handle_input(&mut self, key: crate::key_mapping::MappedKey) -> LoginAction {
+        use crate::key_mapping::{Action, MappedKey::Command};
         if let Some(buf) = self.editing.take() {
             let mut editor = TextEditor {
                 buf,
                 secret: matches!(self.page, Page::ApiKey { .. })
                     || matches!(self.page, Page::ProxyForm if self.pos == 1),
             };
-            return match handle_text_editor(&mut editor, key) {
+            return match handle_text_input(&mut editor, key) {
                 TextEditResult::Confirm(buf) => {
                     if let Page::ApiKey { provider, .. } = &self.page {
                         let provider = provider.clone();
@@ -284,35 +298,35 @@ impl LoginState {
         }
 
         // ---- browsing ----
-        match (&self.page, key.code) {
-            (Page::Menu, KeyCode::Esc | KeyCode::Char('q')) => LoginAction::Exit,
-            (Page::Menu, KeyCode::Up | KeyCode::Char('k')) => {
+        match (&self.page, key) {
+            (Page::Menu, Command(Action::Back | Action::Close)) => LoginAction::Exit,
+            (Page::Menu, Command(Action::MoveUp)) => {
                 self.pos = self.pos.saturating_sub(1);
                 LoginAction::None
             }
-            (Page::Menu, KeyCode::Down | KeyCode::Char('j')) => {
+            (Page::Menu, Command(Action::MoveDown)) => {
                 self.pos = (self.pos + 1).min(1);
                 LoginAction::None
             }
-            (Page::Menu, KeyCode::Enter) => {
+            (Page::Menu, Command(Action::Confirm)) => {
                 self.open_menu_item();
                 LoginAction::None
             }
 
-            (Page::Providers, KeyCode::Esc) => {
+            (Page::Providers, Command(Action::Back)) => {
                 self.page = Page::Menu;
                 self.pos = 0;
                 LoginAction::None
             }
-            (Page::Providers, KeyCode::Up | KeyCode::Char('k')) => {
+            (Page::Providers, Command(Action::MoveUp)) => {
                 self.move_pos(-1);
                 LoginAction::None
             }
-            (Page::Providers, KeyCode::Down | KeyCode::Char('j')) => {
+            (Page::Providers, Command(Action::MoveDown)) => {
                 self.move_pos(1);
                 LoginAction::None
             }
-            (Page::Providers, KeyCode::Enter) => {
+            (Page::Providers, Command(Action::Confirm)) => {
                 if let Some(p) = self
                     .providers
                     .get(self.pos)
@@ -329,20 +343,20 @@ impl LoginState {
 
             (Page::ApiKey { .. }, _) => LoginAction::None,
 
-            (Page::ProxyList, KeyCode::Esc) => {
+            (Page::ProxyList, Command(Action::Back)) => {
                 self.page = Page::Menu;
                 self.pos = 0;
                 LoginAction::None
             }
-            (Page::ProxyList, KeyCode::Up | KeyCode::Char('k')) => {
+            (Page::ProxyList, Command(Action::MoveUp)) => {
                 self.move_pos(-1);
                 LoginAction::None
             }
-            (Page::ProxyList, KeyCode::Down | KeyCode::Char('j')) => {
+            (Page::ProxyList, Command(Action::MoveDown)) => {
                 self.move_pos(1);
                 LoginAction::None
             }
-            (Page::ProxyList, KeyCode::Enter) => {
+            (Page::ProxyList, Command(Action::Confirm)) => {
                 if self.pos == self.proxies.len() {
                     self.page = Page::ProxyForm;
                     self.pos = 0;
@@ -357,20 +371,20 @@ impl LoginState {
                 LoginAction::None
             }
 
-            (Page::ProxyForm, KeyCode::Esc) => {
+            (Page::ProxyForm, Command(Action::Back)) => {
                 self.page = Page::ProxyList;
                 self.pos = self.proxies.len();
                 LoginAction::None
             }
-            (Page::ProxyForm, KeyCode::Up | KeyCode::Char('k')) => {
+            (Page::ProxyForm, Command(Action::MoveUp)) => {
                 self.pos = self.pos.saturating_sub(1);
                 LoginAction::None
             }
-            (Page::ProxyForm, KeyCode::Down | KeyCode::Char('j')) => {
+            (Page::ProxyForm, Command(Action::MoveDown)) => {
                 self.pos = (self.pos + 1).min(PROXY_SAVE_ROW);
                 LoginAction::None
             }
-            (Page::ProxyForm, KeyCode::Enter) => {
+            (Page::ProxyForm, Command(Action::Confirm)) => {
                 if self.pos == PROXY_SAVE_ROW {
                     let d = &self.draft;
                     let action = LoginAction::Send(AgentRequest::LoginProxyCreate {
@@ -391,7 +405,7 @@ impl LoginState {
                 }
             }
 
-            (Page::ProxyDelete { id, .. }, KeyCode::Esc | KeyCode::Char('q')) => {
+            (Page::ProxyDelete { id, .. }, Command(Action::Back | Action::Close)) => {
                 let proxy_pos = self
                     .proxies
                     .iter()
@@ -401,21 +415,15 @@ impl LoginState {
                 self.pos = proxy_pos;
                 LoginAction::None
             }
-            (
-                Page::ProxyDelete { .. },
-                KeyCode::Left | KeyCode::Char('h') | KeyCode::Up | KeyCode::Char('k'),
-            ) => {
+            (Page::ProxyDelete { .. }, Command(Action::MoveLeft | Action::MoveUp)) => {
                 self.pos = 0;
                 LoginAction::None
             }
-            (
-                Page::ProxyDelete { .. },
-                KeyCode::Right | KeyCode::Char('l') | KeyCode::Down | KeyCode::Char('j'),
-            ) => {
+            (Page::ProxyDelete { .. }, Command(Action::MoveRight | Action::MoveDown)) => {
                 self.pos = 1;
                 LoginAction::None
             }
-            (Page::ProxyDelete { id, .. }, KeyCode::Enter) => {
+            (Page::ProxyDelete { id, .. }, Command(Action::Confirm)) => {
                 let proxy_pos = self
                     .proxies
                     .iter()

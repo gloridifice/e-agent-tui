@@ -114,11 +114,20 @@ pub(super) fn render_queue(
                 PromptDelivery::Asap => "⌁",
                 PromptDelivery::AfterTurn => "○",
             };
+            let preview: String = item
+                .prompt
+                .display_text_in(language)
+                .chars()
+                .map(|ch| {
+                    if ch.is_whitespace() || ch.is_control() {
+                        ' '
+                    } else {
+                        ch
+                    }
+                })
+                .collect();
             Line::from(Span::styled(
-                format!(
-                    "  {marker} {}",
-                    trim_to_width(&item.prompt.display_text_in(language), width)
-                ),
+                format!("  {marker} {}", trim_to_width(&preview, width)),
                 Style::default().fg(theme.dim).bg(theme.bg),
             ))
         })
@@ -283,8 +292,10 @@ pub(super) fn render_approval(
     area: ratatui::layout::Rect,
     approval: &crate::interaction::ApprovalCard,
     theme: &Theme,
-    language: Language,
+    config: &crate::Config,
 ) {
+    let language = config.language;
+    use crate::key_mapping::{Action, Scope};
     let title = Line::from(vec![
         Span::styled(
             format!("⚠ {}", tr(language, "accessory.approval.title")),
@@ -304,17 +315,21 @@ pub(super) fn render_approval(
     }
     rows.push(Line::from(vec![
         Span::styled(
-            format!("[Y] {}", tr(language, "accessory.approval.allow")),
+            format!(
+                "[{}] {}",
+                config.key_mapping.label(Scope::Approval, Action::Allow),
+                tr(language, "accessory.approval.allow")
+            ),
             Style::default().fg(theme.ok),
         ),
         Span::styled("   ", Style::default().fg(theme.dim)),
         Span::styled(
-            format!("[n] {}", tr(language, "accessory.approval.deny")),
+            format!(
+                "[{}] {}",
+                config.key_mapping.label(Scope::Approval, Action::Deny),
+                tr(language, "accessory.approval.deny")
+            ),
             Style::default().fg(theme.err),
-        ),
-        Span::styled(
-            format!("   [i] {}", tr(language, "accessory.approval.details")),
-            Style::default().fg(theme.dim),
         ),
     ]));
     let block = Block::default()
@@ -434,14 +449,10 @@ mod tests {
         };
 
         terminal
-            .draw(|frame| {
-                render_suggest(frame, &suggestion, Rect::new(0, 4, 8, 1), &theme)
-            })
+            .draw(|frame| render_suggest(frame, &suggestion, Rect::new(0, 4, 8, 1), &theme))
             .unwrap();
         let buffer = terminal.backend().buffer();
-        let row = (0..8)
-            .map(|x| buffer[(x, 2)].symbol())
-            .collect::<String>();
+        let row = (0..8).map(|x| buffer[(x, 2)].symbol()).collect::<String>();
 
         assert_eq!(row, "  /model");
         assert!(!row.contains('…'));
@@ -475,6 +486,18 @@ mod tests {
         assert!(rows[1].contains("⌁ c"));
         assert!(rows[2].contains("○ b"));
         assert!(rows[3].contains("○ d"));
+    }
+
+    #[test]
+    fn queue_flattens_multiline_backend_previews_to_one_row() {
+        let mut queue = crate::interaction::PendingPromptQueue::default();
+        queue.update_remote(vec!["first\nsecond\tthird".into()]);
+        queue.push("waiting".into(), PromptDelivery::AfterTurn);
+        let rows = strip_rows(40, 2, |frame, area, theme| {
+            render_queue(frame, area, queue.entries(), 2, theme, Language::English);
+        });
+        assert!(rows[0].contains("⌁ first second third"));
+        assert!(rows[1].contains("○ waiting"));
     }
 
     /// The pending-count summary row keeps the same right gutter.

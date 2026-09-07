@@ -3,6 +3,7 @@ import { shapeCommandResultFrame } from './command.js'
 import { parseSkillCommand } from './skill.js'
 import { HISTORY_CAP, PROTOCOL_VERSION } from './protocol.js'
 import { normalizeCommandImages, normalizePromptContent } from './session-prompt.js'
+import { createPendingPrompts } from './pending-prompts.js'
 
 /** Per-socket client-message router. It owns mutable attachment/login state;
  * the bridge composition root only wires lifecycle effects and host adapters. */
@@ -25,10 +26,12 @@ export function createClientDispatcher({
   modelSelections,
   sessionModel,
   sessionPrompt,
+  pendingPrompts,
   createUserMessage,
 }) {
   let conn = null
   let modelUpdates = null
+  const promptQueue = pendingPrompts ?? createPendingPrompts({ send, isCurrent: (current) => conns.isCurrent(current, conn) })
 
   async function hello(msg) {
     if (msg.token !== token) {
@@ -112,9 +115,23 @@ export function createClientDispatcher({
   async function input(msg) {
     if (!conn) return
     const current = conn
+    const mode = msg.mode ?? 'queue'
+    if (mode === 'steer') {
+      const precedingModels = modelUpdates
+      await promptQueue.submit(current, async () => {
+        if (precedingModels) await precedingModels
+        if (!conns.isCurrent(current, conn)) return
+        const content = normalizePromptContent(clientPromptContent(msg))
+        if (content.some((part) => part.type === 'image')) {
+          await sessionPrompt.prompt(current.agent.id, content, mode)
+        } else {
+          current.agent.steer(createUserMessage({ content, source: { kind: 'user' } }))
+        }
+      })
+      return
+    }
     if (modelUpdates) await modelUpdates
     if (!conns.isCurrent(current, conn)) return
-    const mode = msg.mode ?? 'queue'
     let content
     try {
       if (mode !== 'queue' && mode !== 'steer') throw new Error('invalid input mode')
@@ -335,6 +352,7 @@ export function createClientDispatcher({
     switch (msg?.type) {
       case 'hello': void hello(msg); break
       case 'input': void input(msg); break
+      case 'clear-asap': if (conn) void promptQueue.clear(conn); break
       case 'new-input': void newInput(msg); break
       case 'command': command(msg); break
       case 'attach': void attachSession(msg); break

@@ -164,14 +164,12 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   state, catalog presentation/completion, Input Page focus/editing, login/settings page state, retained question
   batches, approval routing, scroll/follow, help, transient notice deadlines, mouse-selection reducer state, and
   prompt queues. Question, approval, and queued-prompt
-  state is session-scoped and must be cleared together on a bridge welcome that switches session identity. Pending prompts retain one total submission order for newest-first cancellation, while their display and dispatch projection groups as-soon-as-possible prompts above after-turn prompts without reordering either group. `Enter` queues the former during active work and `Ctrl+Enter` queues the latter; `Esc` removes the newest pending prompt before it may interrupt the agent. The old
+  state is session-scoped and must be cleared together on a bridge welcome that switches session identity. Pending prompts preserve FIFO within each delivery class, with ASAP display/dispatch above after-turn candidates. The queue owner combines local candidates, one admission-in-flight prompt, failed admissions, and an authoritative backend snapshot. Steering dispatch does not create a transcript card: authoritative user events do, while queue updates remove consumed candidates. Cancel removes all ASAP candidates first, preserves local after-turn prompts, and cancels those newest-first only when no ASAP candidates remain. A clear barrier waits for admission acknowledgment, prevents repeated Cancel from interrupting, and holds newer submissions locally until clear completes. Adapters buffer queue updates during admission/clear and return the current snapshot with the operation result and attached session identity; stale-session results cannot change a new queue. Pi uses official queue_update/clear_queue (including extension-origin steering/follow-up); DSH observes and clears its next-step inbox. Failed admissions remain visible without automatic retries; failed clears retain the backend snapshot and report an error. The old
   executable-side runtime facades have been removed; protocol DTO conversion and external action execution remain
   in each owning adapter.
 - **Input interaction and character boundaries**: `InputState.cursor` is a **character index**;
   `String::insert/remove` and slicing need byte indices — use `char_to_byte()` (`input.rs`); CJK has regression
-  tests; cursor x uses `unicode_width`. Plain input is fixed: `Enter` sends as soon as the active turn can accept steering, `Ctrl+Enter` waits until the turn has fully ended, `Shift+Enter` inserts a newline, and
-  `Ctrl+V` requests an application clipboard read when the terminal does not already translate it into bracketed
-  paste. `PromptInput` is an ordered provider-neutral sequence of owned text and image parts; queues and deferred
+  tests; cursor x uses `unicode_width`. Key bindings resolve to semantic actions: send-asap waits until the active turn can accept steering, send-after-turn waits until the turn has fully ended, newline inserts a line break, and paste requests an application clipboard read when the terminal does not already translate it into bracketed paste. Defaults and overrides are governed by [key mappings](../../key-mapping.md). `PromptInput` is an ordered provider-neutral sequence of owned text and image parts; queues and deferred
   new-conversation drafts retain the whole value. Composer images use one internal object marker and render as one
   Rose `[Image <name>]` block whose display-width truncation retains the filename suffix. Cursor movement skips the
   block, Backspace/Delete removes the block and its bytes, and the marker is never projected into model text;
@@ -191,7 +189,7 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   cannot infer paste identity and yields plain text. The suggestion popup never opens while a paste block exists
   (a fill would destroy the block).
   `↑/↓` move between input lines by character column first, and only switch to the previous/next history prompt
-  at the first/last line boundary; `PageUp`/`PageDown` page by the currently visible transcript height, and the
+  at the first/last line boundary; outside Reading, `PageUp`/`PageDown` page by the currently visible transcript height. While Reading owns input, its configurable fast-movement actions instead repeat ordinary cursor up/down 15 times, checking Block/Item mode on each step and retaining cursor-following visibility; disabling them cannot fall back to global paging. The
   mouse wheel moves 3 lines per notch (always operating on the transcript even when an Input Page is open).
   A primary-button press on the pane separator is captured by resize before selectable-content hit testing;
   captured separator drags update only transient geometry, clear any existing selection, and remain resize-owned
@@ -203,8 +201,7 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   paint/copy after resize, session/draft/history/Preview identity changes, while focus loss and new primary press
   are explicit cancellation transitions. Ratatui line collection and reverse-video painting stay in
   `ui::selection`, outside the selection kernel.
-  `Ctrl+H` is a global help key handled before the Input Page, and `hjkl` with Control/Alt/Super must not enter
-  the focus graph. `Config.enter_sends` exists only for legacy config deserialization compatibility and must
+  Configured global help is handled before the Input Page. Unbound modified letters never enter the focus graph or text editors; browse-state bindings are not inherited by text editing. `Config.enter_sends` exists only for legacy config deserialization compatibility and must
   no longer change key semantics. The terminal hardware cursor must always be hidden inside the TUI; the screen
   only draws a software reverse-video cursor; `ui.rs::render_with_cursor` only returns the IME anchor, and the
   main loop moves the hidden cursor after the frame completes. Do not call `Frame::set_cursor_position` again —
@@ -216,11 +213,7 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   background fill. The shared shell uses full-width Bark rules with Umber ends around a prompt-style command header;
   page-internal dividers are Umber, focused text is Sage, and selected text is Coral. Settings keeps its category
   strip display-only and renders labels/descriptions and values as a transparent two-column ruled grid.
-- **Reading View and copy semantics**: `Ctrl+Y` enters Reading View (`Ctrl+V` remains reserved for paste);
-  `Ctrl+P` toggles the existing full-screen Preview fallback when the responsive split is too narrow; Preview-only
-  presentation has no pane separator. Block mode uses
-  `j`/`k`, `l`, `y`, and `Esc`; Item mode uses spatial `h`/`j`/`k`/`l`, with `Esc` returning to Block mode. `y`
-  always copies the complete owning Block from `ReadingCopyPayload`, never clipped terminal cells. Reading navigation keeps the selected Block inside a ceiling-quarter viewport margin; direct anchoring at that safe margin avoids fractional-row page transitions bouncing back across the opposite threshold. Mouse drag
+- **Reading View and copy semantics**: configured entry defaults to `osmain-r`, and Preview toggle defaults to `osmain-p`; Preview-only presentation has no pane separator. Block and Item navigation use separate mapping contexts, sharing complete-block copy and whole-view exit. Default `Esc`/`q` exits Reading from either level; `Backspace` returns from Items to Blocks. Copy always uses the complete owning Block from `ReadingCopyPayload`, never clipped terminal cells. Reading navigation keeps the selected Block inside a ceiling-quarter viewport margin; direct anchoring at that safe margin avoids fractional-row page transitions bouncing back across the opposite threshold. Mouse drag
   copies only the selected visible rendered range and is intentionally separate from this complete-source
   operation. Clipboard completion is reduced into a frontend-owned generic transient notice; a successful copy
   uses a small top-layer popup (three seconds by default) showing the copied line count and a grapheme-safe
@@ -301,7 +294,7 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   input/output/cache-read/cache-write total, and is hidden for a deferred-new draft. The effort entry is hidden
   unless the exact current route exposes reasoning
   metadata, resolves `current.reasoningEffort` then `reasoning.defaultEffort` then `Default`, and never
-  invalidates the transcript cache. The right side is fixed `^h Help`, reserved before left-side clipping and
+  invalidates the transcript cache. The right side displays the effective help binding and localized Help label, reserved before left-side clipping and
   flush with the right edge; line 2's
   left side is `SessionModel.session_title` (shows `新会话` when empty) and the right side is the absolute
   `SessionModel.session_cwd` path, with the title truncated with `…` when too long so the path is preserved.
@@ -343,8 +336,8 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
 - **Immediate submission feedback**: dispatched prompts and explicit skills enter the public card surface locally
   before transport completion, followed by Thinking and an active working indicator; explicit submission resumes
   transcript following so feedback is visible even after scrolling back. Live user/skill echoes replace
-  their pending cards in place with authoritative source/copy content rather than appending duplicates. Queued
-  prompts retain their existing accessory until dispatch. A materializing draft displays its pending public card
+  their pending cards in place with authoritative source/copy content rather than appending duplicates. ASAP
+  prompts retain their queue accessory through backend admission until consumption or cancellation; after-turn prompts retain it until idle dispatch. A materializing draft displays its pending public card
   and working indicator without exposing the retained old transcript; admission failure restores the draft prompt.
 - **Input Page controller** (`input_page.rs` + `settings.rs` + `login.rs`): the main loop holds a single
   `Option<InputPageSession>` with the closed variant set Settings/Login/Model/Effort/Theme/Resume/Question; page keys only
@@ -364,6 +357,7 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   and is drawn as ● when editing; non-writable providers must not receive action focus; an existing proxy must
   enter the delete confirmation page on Enter, and `login-proxy-delete` is only sent after explicitly choosing
   delete.
+- **Configurable keyboard boundary**: `e-tui::key_mapping` is a pure leaf defining typed actions/scopes, exact normalized chords, effective-context validation and labels. The root `default_key_mapping.toml` is the sole default binding source, embedded at compile time. Adapters read their own `key_mapping.toml` beside `config.toml`; runtime mappings and diagnostics are skipped Config fields. Startup falls back with an error, and invalid reload retains the last valid mapping. Handlers consume semantic actions rather than synthesizing old KeyEvents; disabling/remapping an action cannot fall through to its old hardcoded binding. Global picker/Reading shortcuts do not replace an active page, approval or Reading context. Approvals respond only to configured allow/deny keys. Bracketed paste and mouse remain separate event paths; the Windows physical Ctrl+V fallback remains a KeyEvent and cannot bypass mapping policy. Help, local Markdown help and page/status hints use effective labels. See [key mappings](../../key-mapping.md) and the [terminal binding gate](terminal-binding-gate.md).
 - **Config/theme/launcher (Rust boundary)**: the `Config`/theme value schemas and defaults live in `e-tui`; config defaults live only in `crates/e-tui/assets/default_config.toml`, embedded and parsed by `e-tui::config` via `include_str!`. Each executable adapter owns its platform paths, config/state file reads and writes, and theme discovery/installation; `e-tui` performs no config, theme, session, or Preview filesystem I/O. The persisted `Config` is deserialized directly with
   `Deserialize` + `#[serde(deny_unknown_fields)]`; validated transparent values keep `background_color` as
   `#RRGGBB` and both reveal rates in `0..=1024` (zero disables pacing and exposes complete content immediately),
@@ -414,5 +408,5 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   `hello-failed`) must become actionable fatal client errors before the following WebSocket close can overwrite them
   with a generic disconnect; the client must also reject a differing protocol version in `welcome`, and protocol
   mismatch guidance must mention updating/rebuilding the client, running `dshe setup`, and restarting DSH.
-  `/reload` re-reads config + rescans themes.
+  `/reload` re-reads config and key mappings and rescans themes.
 - After adding interaction keys, sync `e-tui/src/ui/overlay.rs`, the README quick reference, the terminal binding gate, and input/router tests.

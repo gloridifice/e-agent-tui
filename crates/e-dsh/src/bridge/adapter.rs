@@ -194,6 +194,30 @@ pub fn normalize_server_message(message: ServerMessage) -> AgentEvent {
                 message: fatal_message.unwrap_or(message),
             })
         }
+        ServerMessage::AsapQueue {
+            session_id,
+            prompts,
+            operation,
+            error,
+        } => {
+            let operation = match operation.as_deref() {
+                Some("submit") => Some(e_tui::agent::AsapQueueOperation::Submit),
+                Some("clear") => Some(e_tui::agent::AsapQueueOperation::Clear),
+                None => None,
+                Some(other) => {
+                    return AgentEvent::Interaction(InteractionEvent::Error {
+                        code: "protocol".into(),
+                        message: format!("Unknown queue operation: {other}"),
+                    })
+                }
+            };
+            AgentEvent::Interaction(InteractionEvent::AsapQueue {
+                session_id,
+                prompts,
+                operation,
+                error,
+            })
+        }
         ServerMessage::Pong => AgentEvent::Interaction(InteractionEvent::Heartbeat),
     }
 }
@@ -240,6 +264,7 @@ pub fn agent_request_to_client(request: AgentRequest) -> ClientMessage {
             images: images.into_iter().map(image_to_wire).collect(),
         },
         AgentRequest::Interrupt => ClientMessage::Interrupt,
+        AgentRequest::ClearAsap => ClientMessage::ClearAsap,
         AgentRequest::Attach { session_id } => ClientMessage::Attach { session_id },
         AgentRequest::ListSessions => ClientMessage::ListSessions,
         AgentRequest::ApprovalAnswer { id, allow } => ClientMessage::ApprovalAnswer { id, allow },
@@ -1050,6 +1075,24 @@ mod tests {
                 if media_type == "image/png" && data == "AAEC" && name.as_deref() == Some("clip.png")
         ));
         assert!(matches!(&content[2], WirePromptPart::Text { text } if text == "after"));
+    }
+
+    #[test]
+    fn asap_queue_wire_preserves_snapshot_and_operation_outcome() {
+        let message: ServerMessage = serde_json::from_value(serde_json::json!({
+            "type": "asap-queue", "sessionId": "s1", "prompts": ["same", "same"],
+            "operation": "clear", "error": "cannot clear"
+        }))
+        .unwrap();
+        assert!(matches!(normalize_server_message(message),
+            AgentEvent::Interaction(InteractionEvent::AsapQueue {
+                session_id, prompts, operation: Some(e_tui::agent::AsapQueueOperation::Clear),
+                error: Some(error),
+            }) if session_id == "s1" && prompts == ["same", "same"] && error == "cannot clear"));
+        assert_eq!(
+            serde_json::to_value(agent_request_to_client(AgentRequest::ClearAsap)).unwrap(),
+            serde_json::json!({"type": "clear-asap"})
+        );
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! Typed subset of Pi's documented 0.84.x RPC protocol.
+//! Typed subset of Pi's documented 0.85.x RPC protocol.
 
 use std::collections::BTreeMap;
 
@@ -14,6 +14,10 @@ pub enum RpcCommand {
         message: String,
         #[serde(rename = "streamingBehavior", skip_serializing_if = "Option::is_none")]
         streaming_behavior: Option<StreamingBehavior>,
+    },
+    ClearQueue {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
     },
     Abort {
         #[serde(skip_serializing_if = "Option::is_none")]

@@ -2,11 +2,12 @@
 //! share one visible focus. The page replaces the ordinary input area without
 //! a floating border.
 
+#[cfg(test)]
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::{
     config::{Config, HexRgb, PaneWidthPercent, RevealRate},
-    page_core::{handle_text_editor, TextEditResult, TextEditor},
+    page_core::{handle_text_input, TextEditResult, TextEditor},
 };
 
 pub const CATEGORIES: &[&str] = &[
@@ -489,9 +490,26 @@ impl SettingsState {
         self.pos[self.category] = self.pos[self.category].min(n);
     }
 
+    pub fn key_scope(&self) -> crate::key_mapping::Scope {
+        use crate::key_mapping::Scope;
+        match self.editing {
+            Some(Edit::Input { .. }) => Scope::PageEdit,
+            Some(Edit::Choice { .. }) => Scope::PageChoice,
+            None => Scope::Page,
+        }
+    }
+
+    #[cfg(test)]
     pub fn handle_key(&mut self, key: &KeyEvent, config: &mut Config) -> SettingsAction {
-        // ---- editing: Enter confirms, Esc cancels, everything else is
-        // ---- consumed by the edit (←/→ move the choice cursor).
+        self.handle_input(config.key_mapping.input(self.key_scope(), key), config)
+    }
+
+    pub fn handle_input(
+        &mut self,
+        key: crate::key_mapping::MappedKey,
+        config: &mut Config,
+    ) -> SettingsAction {
+        use crate::key_mapping::{Action, MappedKey::Command};
         if let Some(edit) = self.editing.take() {
             let def = self.current_item();
             let options: Vec<String> = def
@@ -500,7 +518,7 @@ impl SettingsState {
             match edit {
                 Edit::Input { buf } => {
                     let mut editor = TextEditor { buf, secret: false };
-                    match handle_text_editor(&mut editor, key) {
+                    match handle_text_input(&mut editor, key) {
                         TextEditResult::Confirm(value) => {
                             if let Some(def) = def {
                                 (def.apply)(config, value);
@@ -515,20 +533,20 @@ impl SettingsState {
                 }
                 Edit::Choice { cursor } => {
                     let n = options.len().max(1);
-                    match key.code {
-                        KeyCode::Enter => {
+                    match key {
+                        Command(Action::Confirm) => {
                             if let (Some(def), Some(opt)) = (def, options.get(cursor)) {
                                 (def.apply)(config, opt.clone());
                                 return SettingsAction::Changed;
                             }
                         }
-                        KeyCode::Esc => {}
-                        KeyCode::Left | KeyCode::Char('h') => {
+                        Command(Action::Cancel) => {}
+                        Command(Action::Previous) => {
                             self.editing = Some(Edit::Choice {
                                 cursor: (cursor + n - 1) % n,
                             });
                         }
-                        KeyCode::Right | KeyCode::Char('l') => {
+                        Command(Action::Next) => {
                             self.editing = Some(Edit::Choice {
                                 cursor: (cursor + 1) % n,
                             });
@@ -541,21 +559,21 @@ impl SettingsState {
         }
 
         // ---- browsing: category tabs stay outside the focus graph.
-        match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => SettingsAction::Exit,
-            KeyCode::Left | KeyCode::Char('h') => {
+        match key {
+            Command(Action::Back | Action::Close) => SettingsAction::Exit,
+            Command(Action::MoveLeft) => {
                 self.category = (self.category + CATEGORIES.len() - 1) % CATEGORIES.len();
                 self.clamp_item();
                 self.scroll = 0;
                 SettingsAction::None
             }
-            KeyCode::Right | KeyCode::Char('l') => {
+            Command(Action::MoveRight) => {
                 self.category = (self.category + 1) % CATEGORIES.len();
                 self.clamp_item();
                 self.scroll = 0;
                 SettingsAction::None
             }
-            KeyCode::Up | KeyCode::Char('k') => {
+            Command(Action::MoveUp) => {
                 let items = items_in(self.category);
                 let current = self.pos[self.category];
                 if let Some(previous) = (0..current)
@@ -566,7 +584,7 @@ impl SettingsState {
                 }
                 SettingsAction::None
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            Command(Action::MoveDown) => {
                 let items = items_in(self.category);
                 let current = self.pos[self.category];
                 if let Some(next) = (current + 1..items.len())
@@ -576,7 +594,7 @@ impl SettingsState {
                 }
                 SettingsAction::None
             }
-            KeyCode::Enter => {
+            Command(Action::Confirm) => {
                 if let Some(def) = self.current_item() {
                     match def.kind {
                         ItemKind::Choice { options } => {

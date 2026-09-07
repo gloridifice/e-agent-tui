@@ -9,7 +9,9 @@ use std::{
     time::Instant,
 };
 
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event, KeyEvent};
+#[cfg(test)]
+use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::Rect;
 
 use crate::{
@@ -33,6 +35,8 @@ pub use crate::{DrawPriority, EffectResult, UiAction};
 mod agent;
 mod effect;
 mod input;
+#[cfg(test)]
+mod key_mapping_tests;
 mod terminal;
 
 pub enum RuntimeInput {
@@ -168,8 +172,11 @@ impl RuntimeController {
         input::apply_input_action(action, state, queue)
     }
 
-    pub fn answer_approval(key: &KeyEvent, approval: &mut Option<ApprovalCard>) -> Vec<UiAction> {
-        input::answer_approval(key, approval)
+    pub fn answer_approval(
+        action: Option<crate::key_mapping::Action>,
+        approval: &mut Option<ApprovalCard>,
+    ) -> Vec<UiAction> {
+        input::answer_approval(action, approval)
     }
 
     pub fn apply_input_page_key(
@@ -684,6 +691,21 @@ mod tests {
             [UiAction::Agent(AgentRequest::Steer { prompt })] if prompt.plain_text() == Some("asap")
         ));
         assert!(RuntimeController::dispatch_next_queued(&state).is_empty());
+        {
+            let mut app = state.lock().unwrap();
+            assert_eq!(app.interaction.queue.len(), 2);
+            assert!(
+                app.pending_submissions.is_empty(),
+                "steering is not a transcript card before consumption"
+            );
+            app.interaction.queue.update_remote(vec!["asap".into()]);
+            app.interaction.queue.complete_submission(false);
+            assert!(
+                app.interaction.queue.take_next(false).is_none(),
+                "remote ASAP blocks after-turn dispatch"
+            );
+            app.interaction.queue.update_remote(Vec::new());
+        }
 
         {
             let mut app = state.lock().unwrap();
@@ -735,10 +757,50 @@ mod tests {
             &state,
             &mut queue,
         );
-        assert!(matches!(enter.effects.as_slice(),
+        assert!(enter.effects.is_empty());
+        state.lock().unwrap().interaction.queue = queue;
+        let effects = RuntimeController::dispatch_next_queued(&state);
+        assert!(matches!(effects.as_slice(),
             [UiAction::Agent(AgentRequest::Input { prompt })]
                 if prompt.plain_text() == Some("confirmation")));
-        assert_eq!(queue.len(), 1);
+        assert_eq!(state.lock().unwrap().interaction.queue.len(), 1);
+    }
+
+    #[test]
+    fn idle_submission_joins_existing_queue_before_priority_dispatch() {
+        use crate::interaction::PromptDelivery::{AfterTurn, Asap};
+
+        for (older, newer, expected) in [
+            (Asap, Asap, ["older", "newer"]),
+            (AfterTurn, AfterTurn, ["older", "newer"]),
+            (Asap, AfterTurn, ["older", "newer"]),
+            (AfterTurn, Asap, ["newer", "older"]),
+        ] {
+            let state = Mutex::new(RuntimeState::default());
+            let mut queue = PendingPromptQueue::default();
+            queue.push("older".into(), older);
+            let action = match newer {
+                Asap => InputAction::Send("newer".into()),
+                AfterTurn => InputAction::SendAfterTurn("newer".into()),
+            };
+            let outcome = RuntimeController::apply_input_action(action, &state, &mut queue);
+            assert!(
+                outcome.effects.is_empty(),
+                "new input must not bypass the queue"
+            );
+            assert_eq!(queue.entries()[0].prompt, "older");
+            assert_eq!(queue.entries()[1].prompt, "newer");
+            state.lock().unwrap().interaction.queue = queue;
+
+            for text in expected {
+                let effects = RuntimeController::dispatch_next_queued(&state);
+                assert!(matches!(effects.as_slice(),
+                    [UiAction::Agent(AgentRequest::Input { prompt })]
+                        if prompt.plain_text() == Some(text)));
+                state.lock().unwrap().stop_thinking();
+            }
+            assert!(state.lock().unwrap().interaction.queue.is_empty());
+        }
     }
 
     #[test]
@@ -747,8 +809,14 @@ mod tests {
         {
             let mut app = state.lock().unwrap();
             app.begin_command_execution();
-            app.interaction.queue.push("after".into(), crate::interaction::PromptDelivery::AfterTurn);
-            app.interaction.queue.push("confirmation".into(), crate::interaction::PromptDelivery::Asap);
+            app.interaction.queue.push(
+                "after".into(),
+                crate::interaction::PromptDelivery::AfterTurn,
+            );
+            app.interaction.queue.push(
+                "confirmation".into(),
+                crate::interaction::PromptDelivery::Asap,
+            );
         }
         let effects = RuntimeController::dispatch_next_queued(&state);
         assert!(matches!(effects.as_slice(),
@@ -757,13 +825,15 @@ mod tests {
         state.lock().unwrap().stop_thinking();
         assert!(RuntimeController::dispatch_next_queued(&state).is_empty());
         state.lock().unwrap().finish_command_execution();
-        assert!(matches!(RuntimeController::dispatch_next_queued(&state).as_slice(),
+        assert!(
+            matches!(RuntimeController::dispatch_next_queued(&state).as_slice(),
             [UiAction::Agent(AgentRequest::Input { prompt })]
-                if prompt.plain_text() == Some("after")));
+                if prompt.plain_text() == Some("after"))
+        );
     }
 
     #[test]
-    fn escape_cancels_the_latest_candidate_before_interrupting() {
+    fn escape_cancels_all_asap_before_after_turn_candidates() {
         let state = Arc::new(Mutex::new(RuntimeState::default()));
         state.lock().unwrap().session.status = crate::SessionStatus::Running;
         let mut config = Config::default();
@@ -812,7 +882,77 @@ mod tests {
             "candidate cancellation must not interrupt"
         );
         assert_eq!(queue.len(), 1);
+        assert_eq!(queue.entries()[0].prompt, "b");
+        state.lock().unwrap().interaction.queue = queue;
+        assert!(RuntimeController::dispatch_next_queued(&state).is_empty());
+    }
+
+    #[test]
+    fn queue_acknowledgments_are_session_scoped_and_drive_the_clear_barrier() {
+        use crate::agent::AsapQueueOperation::{Clear, Submit};
+        let state = Arc::new(Mutex::new(RuntimeState::default()));
+        state.lock().unwrap().session.session_id = Some("current".into());
+        let mut queue = PendingPromptQueue::default();
+        queue.push("a".into(), crate::interaction::PromptDelivery::Asap);
+        let sending = queue.take_next(true).unwrap();
+        queue.begin_submission(sending);
+        queue.cancel_asap();
+        let mut scroll = ScrollState::default();
+        let mut input = InputState::new(&Config::default());
+        let mut page = None;
+        let mut approval = None;
+        let mut question = None;
+        let mut deliver = |queue: &mut PendingPromptQueue,
+                           session_id: &str,
+                           operation,
+                           prompts: Vec<String>,
+                           error| {
+            RuntimeController::apply_agent(
+                AgentEvent::Interaction(InteractionEvent::AsapQueue {
+                    session_id: session_id.into(),
+                    prompts,
+                    operation: Some(operation),
+                    error,
+                }),
+                &state,
+                &mut runtime_ui(
+                    &mut scroll,
+                    &mut input,
+                    &mut page,
+                    &mut approval,
+                    &mut question,
+                    queue,
+                ),
+            )
+        };
+        assert!(deliver(&mut queue, "old", Submit, Vec::new(), None).is_empty());
         assert_eq!(queue.entries()[0].prompt, "a");
+        assert!(!queue.take_clear_request());
+        let effects = deliver(
+            &mut queue,
+            "current",
+            Submit,
+            vec!["expanded a".into()],
+            None,
+        );
+        assert!(matches!(
+            effects.as_slice(),
+            [UiAction::Agent(AgentRequest::ClearAsap)]
+        ));
+        assert!(!queue.take_clear_request());
+        assert!(deliver(
+            &mut queue,
+            "current",
+            Clear,
+            vec!["expanded a".into()],
+            Some("clear rejected".into())
+        )
+        .is_empty());
+        assert!(queue.has_asap());
+        queue.cancel_asap();
+        assert!(queue.take_clear_request());
+        assert!(deliver(&mut queue, "current", Clear, Vec::new(), None).is_empty());
+        assert!(queue.is_empty());
     }
 
     #[test]

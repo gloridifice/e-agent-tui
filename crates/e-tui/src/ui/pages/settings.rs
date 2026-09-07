@@ -20,11 +20,7 @@ pub(crate) fn render_settings(
     render_categories(frame, body[0], settings, config, theme);
     render_settings_grid(frame, body[1], settings, config, theme);
 
-    let hint = if settings.editing.is_some() {
-        crate::i18n::tr(config.language, "settings.footer.edit")
-    } else {
-        crate::i18n::tr(config.language, "settings.footer.browse")
-    };
+    let hint = page_key_hints(config, settings.key_scope());
     frame.render_widget(
         Paragraph::new(hint).style(Style::default().fg(theme.dim)),
         regions.footer,

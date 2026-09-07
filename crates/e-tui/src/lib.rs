@@ -24,6 +24,7 @@ i18n::init_i18n!();
 pub mod input;
 pub mod input_page;
 pub mod interaction;
+pub mod key_mapping;
 pub mod login;
 pub mod mermaid;
 pub mod mouse_selection;

@@ -124,6 +124,7 @@ pub enum AgentRequest {
     Steer {
         prompt: PromptInput,
     },
+    ClearAsap,
     NewInput {
         mode: String,
         prompt: PromptInput,

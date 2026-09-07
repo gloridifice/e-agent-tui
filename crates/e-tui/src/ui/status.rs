@@ -111,7 +111,11 @@ pub(super) fn render_status(
     }
     let left = Line::from(left_spans);
     let right_text = format!(
-        "^h {}",
+        "{} {}",
+        state.config.key_mapping.label(
+            crate::key_mapping::Scope::Global,
+            crate::key_mapping::Action::PrintHelp
+        ),
         crate::i18n::tr(state.config.language, "status.help")
     );
     let right_width = UnicodeWidthStr::width(right_text.as_str()).min(area.width as usize) as u16;
@@ -427,9 +431,9 @@ mod tests {
             .unwrap();
 
         let buffer = terminal.backend().buffer();
-        let expected_start = 80 - UnicodeWidthStr::width("^h 帮助") as u16;
+        let expected_start = 80 - UnicodeWidthStr::width("Ctrl+H 帮助") as u16;
         let actual_start = (0..80u16)
-            .find(|&x| buffer[(x, 0)].symbol() == "^")
+            .find(|&x| buffer[(x, 0)].symbol() == "C")
             .expect("help label renders");
         assert_eq!(actual_start, expected_start);
     }

@@ -46,6 +46,7 @@ import { createSessionService } from './session.js'
 import { createModelSelectionAdapter } from './model-selection.js'
 import { createSessionLister, titleFromObservation } from './session-list.js'
 import { createClientDispatcher } from './dispatcher.js'
+import { createPendingPrompts } from './pending-prompts.js'
 import { shapeCommandsFrame, watchCommandChanges } from './command.js'
 import { encodeBoundedFrame, shapeWelcomeFrame } from './frame.js'
 import {
@@ -105,6 +106,8 @@ function apply(ctx, config = {}) {
       ws.send(encodeBoundedFrame(message, MAX_FRAME_BYTES))
     }
   }
+
+  const pendingPrompts = createPendingPrompts({ send, isCurrent: (conn) => conns.has(conn) })
 
   /** Project the effective, agent-scoped DSH command registry to one TUI. */
   function sendCommands(conn) {
@@ -322,7 +325,8 @@ function apply(ctx, config = {}) {
     const offStatus = ctx.on('agent/status', function (payload) {
       if (payload.agent.id === agent.id) send(ws, { type: 'status', status: payload.status })
     })
-    conn.off = () => { offEvent(); offStatus() }
+    const offPending = pendingPrompts.watch(ctx, conn)
+    conn.off = () => { offEvent(); offStatus(); offPending() }
     return conn
   }
 
@@ -368,6 +372,7 @@ function apply(ctx, config = {}) {
       modelSelections,
       sessionModel,
       sessionPrompt,
+      pendingPrompts,
       createUserMessage,
     })
     ws.on('message', dispatcher.handle)

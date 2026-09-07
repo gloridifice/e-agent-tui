@@ -39,6 +39,16 @@ pub fn load() -> Config {
         Err(_) => Config::default(),
     };
     config.config_path_display = path.display().to_string();
+    let key_path = config_dir().join("key_mapping.toml");
+    let mapping = match std::fs::read_to_string(&key_path) {
+        Ok(text) => e_tui::key_mapping::KeyMapping::from_user_toml(&text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
+        Err(error) => Err(error.to_string()),
+    };
+    match mapping {
+        Ok(mapping) => config.key_mapping = mapping,
+        Err(error) => config.key_mapping_error = Some(format!("{}: {error}", key_path.display())),
+    }
     config
 }
 

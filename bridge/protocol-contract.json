@@ -1,5 +1,5 @@
 {
-  "protocolVersion": 9,
+  "protocolVersion": 10,
   "limits": {
     "snapshotEvents": 600,
     "historyEvents": 2000,
@@ -41,6 +41,7 @@
     "new-input",
     "command",
     "interrupt",
+    "clear-asap",
     "attach",
     "list-sessions",
     "approval-answer",
@@ -60,6 +61,7 @@
     "snapshot",
     "event",
     "status",
+    "asap-queue",
     "history",
     "sessions",
     "presets",
@@ -283,6 +285,10 @@
         "required": {},
         "optional": {}
       },
+      "clear-asap": {
+        "required": {},
+        "optional": {}
+      },
       "attach": {
         "required": {
           "sessionId": "string"
@@ -399,6 +405,16 @@
           "status": "string"
         },
         "optional": {}
+      },
+      "asap-queue": {
+        "required": {
+          "sessionId": "string",
+          "prompts": "string[]"
+        },
+        "optional": {
+          "operation": "string",
+          "error": "string"
+        }
       },
       "history": {
         "required": {

@@ -26,6 +26,26 @@ fn production_source(source: &str) -> &str {
     source
 }
 
+#[test]
+fn runners_process_admitted_input_before_claiming_queued_prompts() {
+    for (name, source) in [
+        ("dshe", include_str!("../src/main.rs")),
+        ("pie", include_str!("../../e-pi/src/main.rs")),
+    ] {
+        let source = production_source(source);
+        let input = source
+            .find("RuntimeController::apply_terminal_route(")
+            .unwrap();
+        let dispatch = source
+            .find("RuntimeController::dispatch_next_queued(")
+            .unwrap();
+        assert!(
+            input < dispatch,
+            "{name} dispatch must not outrun admitted Escape"
+        );
+    }
+}
+
 #[derive(Debug)]
 struct SourceModule {
     id: String,

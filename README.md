@@ -71,10 +71,13 @@ cargo build --release --features tracy
 
 ## Key interactions
 
-- `Ctrl+Y`: enter Reading View; `j`/`k` select Blocks, `l` enters Item navigation, `y` copies the complete Block source, and `Esc` returns/exits.
-- `Ctrl+P`: toggle full-screen Preview on narrow terminals.
-- `Shift+Enter`: insert a newline; `Enter`: send as soon as possible; `Ctrl+Enter`: wait until the current turn finishes; `Esc`: cancel the newest queued message before interrupting; `Ctrl+Backspace`/`Ctrl+W` (or `Option+Backspace` on macOS): delete the word before the cursor.
-- `Ctrl+H`: help; `Ctrl+N`: resume session; `PageUp`/`PageDown` or wheel: transcript scrolling; drag the pane separator to resize, or drag visible Transcript/Preview text to copy it.
+Bindings are configurable in `<config_path>/key_mapping.toml`; see [key mappings](docs/key-mapping.md) and the complete [defaults](default_key_mapping.toml). Below, **Main** means Command on macOS and Ctrl on Windows/Linux (the terminal must forward the shortcut).
+
+- `Main+H`: help; `Main+L`: model; `Main+E`: effort; `Main+,`: settings; `Main+N`: resume session.
+- `Main+R`: Reading View; `j`/`k` or ↓/↑ select Blocks, `PageDown`/`PageUp` repeats down/up cursor movement 15 times, `l` enters Items, `y` copies the complete Block; `Backspace` returns to Blocks and `Esc`/`q` exits Reading.
+- `Main+P`: toggle full-screen Preview on narrow terminals.
+- `Shift+Enter`: newline; `Enter`: send as soon as possible; `Main+Enter`: send after the active turn; `Esc`: cancel all `⌁` ASAP messages first, otherwise the newest `○` after-turn message; interrupt only when no candidates remain. `Main+V`: paste; `Ctrl+Backspace`/`Ctrl+W` or `Option+Backspace`: delete the previous word.
+- `PageUp`/`PageDown` or wheel: transcript scrolling; drag the pane separator to resize, or drag visible Transcript/Preview text to copy it.
 
 If PowerShell cannot find `dshe`, add `%USERPROFILE%\.cargo\bin` to `PATH`.
 

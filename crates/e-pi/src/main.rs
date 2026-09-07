@@ -164,6 +164,10 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
     phases.mark("config load");
     let theme = config.theme();
     let mut app = RuntimeState::default();
+    if let Some(error) = &config.key_mapping_error {
+        eprintln!("{error}");
+        app.push_error_message(error.clone());
+    }
     app.frontend = e_tui::FrontendKind::Pi;
     app.config = config.clone();
     app.interaction = e_tui::InteractionModel::new(&config);
@@ -400,30 +404,6 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
             scheduler.request(DirtyReason::Content, Instant::now());
         }
 
-        // ---- queued prompts: steer the next ASAP prompt during an active
-        // ---- turn, or dispatch the next candidate once fully idle.
-        let queued_effects = RuntimeController::dispatch_next_queued(&state_r);
-        if !queued_effects.is_empty() {
-            let mut agent = PiAgentPort {
-                requests: &request_tx,
-            };
-            let execution = execute_ui_actions(
-                queued_effects,
-                &mut agent,
-                &mut scheduler,
-                &mut runtime_ports,
-            )
-            .await;
-            if let Some(reason) = execution.fatal {
-                fatal = Some(reason);
-                break 'outer;
-            }
-            if execution.quit {
-                break 'outer;
-            }
-            scheduler.request(DirtyReason::Content, Instant::now());
-        }
-
         // ---- directly-woken terminal event ----
         if let Some(event) = pending_event {
             let focus = {
@@ -436,7 +416,7 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
                     reading_view_open: state.reading.is_some(),
                 }
             };
-            let route = route_terminal_event(event, focus);
+            let route = route_terminal_event(event, focus, &config.key_mapping);
             let terminal_size = terminal.size();
             let terminal_height = terminal_size.as_ref().map(|s| s.height).unwrap_or(40);
             let terminal_width = terminal_size.as_ref().map(|s| s.width).unwrap_or(120);
@@ -522,6 +502,29 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
             if execution.quit {
                 break 'outer;
             }
+        }
+
+        // Process admitted input before claiming candidates so Escape can cancel them.
+        let queued_effects = RuntimeController::dispatch_next_queued(&state_r);
+        if !queued_effects.is_empty() {
+            let mut agent = PiAgentPort {
+                requests: &request_tx,
+            };
+            let execution = execute_ui_actions(
+                queued_effects,
+                &mut agent,
+                &mut scheduler,
+                &mut runtime_ports,
+            )
+            .await;
+            if let Some(reason) = execution.fatal {
+                fatal = Some(reason);
+                break 'outer;
+            }
+            if execution.quit {
+                break 'outer;
+            }
+            scheduler.request(DirtyReason::Content, Instant::now());
         }
 
         // Start the spinner clock only while a running/settling indicator

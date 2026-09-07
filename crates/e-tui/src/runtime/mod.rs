@@ -16,7 +16,10 @@ pub mod terminal;
 
 pub use controller::{RuntimeController, RuntimeUiState, TerminalUiState};
 pub use executor::{execute_ui_actions, EffectExecution};
-pub use input::{route_terminal_event, ProductionTerminalEvents, TerminalFocus, TerminalRoute};
+pub use input::{
+    route_terminal_event_with_mapping as route_terminal_event, ProductionTerminalEvents,
+    TerminalFocus, TerminalRoute,
+};
 pub use policy::{
     animation_interval, inbound_budget_remaining, is_streaming_delta, wait_for_deadline,
     INBOUND_BATCH_BUDGET, INBOUND_BATCH_LIMIT, MIN_ANIMATION_INTERVAL,

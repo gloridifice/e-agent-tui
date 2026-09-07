@@ -1,5 +1,5 @@
 use super::*;
-use crate::i18n::{tr, Language};
+use crate::i18n::tr;
 
 pub(super) fn render_toast(frame: &mut Frame, message: &str, theme: &Theme) {
     let area = frame.area();
@@ -31,28 +31,36 @@ pub(super) fn render_toast(frame: &mut Frame, message: &str, theme: &Theme) {
     );
 }
 
-pub(super) fn help_overlay(language: Language, theme: &Theme) -> Vec<Line<'static>> {
-    let keys = [
-        "overlay.help.title",
-        "overlay.help.row1",
-        "overlay.help.row2",
-        "overlay.help.row3",
-        "overlay.help.row4",
-        "overlay.help.row5",
-        "overlay.help.row6",
-        "overlay.help.row7",
-        "overlay.help.row8",
-        "overlay.help.row9",
-        "overlay.help.row10",
-        "overlay.help.row11",
-        "overlay.help.row12",
+pub(super) fn help_overlay(config: &crate::Config, theme: &Theme) -> Vec<Line<'static>> {
+    use crate::key_mapping::{Action::*, Scope::*};
+    let style = Style::default().fg(theme.fg).bg(theme.bg_soft);
+    let mut rows = vec![Line::styled(
+        tr(config.language, "overlay.help.title"),
+        style,
+    )];
+    let groups: &[(crate::key_mapping::Scope, &[crate::key_mapping::Action])] = &[
+        (Global, &[PrintHelp, EnterReadMode]),
+        (Global, &[ChooseModel, ChooseEffort, OpenSettings]),
+        (Global, &[ResumeSession, TogglePreview]),
+        (MessageIdle, &[Send]),
+        (MessageWorking, &[SendAsap, SendAfterTurn]),
+        (Message, &[NewLine, Paste]),
+        (Message, &[CancelOrInterrupt]),
+        (Message, &[ClearOrQuit]),
+        (ReadMode, &[MoveUp, MoveDown, CopyBlock]),
+        (ReadMode, &[MoveUpFast, MoveDownFast]),
+        (ReadMode, &[EnterItems, Exit]),
+        (ReadModeItem, &[BackToBlocks]),
+        (Page, &[Confirm, Back]),
+        (Approval, &[Allow, Deny]),
+        (Help, &[Close]),
     ];
-    keys.into_iter()
-        .map(|key| {
-            Line::from(Span::styled(
-                tr(language, key),
-                Style::default().fg(theme.fg).bg(theme.bg_soft),
-            ))
-        })
-        .collect()
+    for &(scope, actions) in groups {
+        rows.push(Line::styled(
+            crate::help::key_hints(config, scope, actions),
+            style,
+        ));
+    }
+    rows.push(Line::styled(tr(config.language, "key.help.more"), style));
+    rows
 }

@@ -303,6 +303,10 @@ impl<'de> Deserialize<'de> for PaneWidthPercent {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    #[serde(skip)]
+    pub key_mapping: crate::key_mapping::KeyMapping,
+    #[serde(skip)]
+    pub key_mapping_error: Option<String>,
     // 外观
     pub spinner_style: String,
     pub spinner_frame_ms: u64,

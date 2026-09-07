@@ -2318,7 +2318,7 @@ mod tests {
         let (lines, _) = render_full(&code);
         let text = plain(&lines);
         assert!(
-            text.iter().any(|l| l.contains("[Enter expand]")),
+            text.iter().any(|l| l.contains("80 lines hidden")),
             "collapse hint present: {:?}",
             text
         );
@@ -2342,9 +2342,7 @@ mod tests {
         let lines = render_markdown(&code, &theme, &mut next, &options, &mut units);
         let text = plain(&lines);
         assert!(text.iter().any(|line| line.contains("代码 · 100 行")));
-        assert!(text
-            .iter()
-            .any(|line| line.contains("收起 80 行 [Enter 展开]")));
+        assert!(text.iter().any(|line| line.contains("收起 80 行")));
     }
 
     #[test]
@@ -2372,7 +2370,7 @@ mod tests {
         let lines = render_markdown(&code, &theme, &mut 0, &options, &mut units);
         let text = plain(&lines);
         assert!(
-            !text.iter().any(|l| l.contains("[Enter expand]")),
+            !text.iter().any(|l| l.contains("lines hidden")),
             "no hint when expanded"
         );
         // Glow layout: header row + 100 content rows + 1 bottom padding row.

@@ -58,13 +58,21 @@ pub(super) fn route(adapter: &mut PiAdapter, request: AgentRequest) -> AdapterOu
         }
         AgentRequest::Steer { prompt } => {
             let Some(text) = prompt.plain_text().map(str::to_owned) else {
-                return adapter.unsupported("Pi image prompts must be pasted as temporary file paths");
+                return super::queue::event(adapter, Some(e_tui::agent::AsapQueueOperation::Submit),
+                    Some("Pi image prompts must be pasted as temporary file paths".into()));
             };
+            let id = adapter.request_id("asap");
+            adapter.pending_queue.operation = Some((id.clone(), e_tui::agent::AsapQueueOperation::Submit, super::queue::session_key(adapter)));
             AdapterOutput::command(RpcCommand::Prompt {
-                id: Some(adapter.request_id("prompt")),
+                id: Some(id),
                 message: text,
                 streaming_behavior: Some(StreamingBehavior::Steer),
             })
+        }
+        AgentRequest::ClearAsap => {
+            let id = adapter.request_id("clear-asap");
+            adapter.pending_queue.operation = Some((id.clone(), e_tui::agent::AsapQueueOperation::Clear, super::queue::session_key(adapter)));
+            AdapterOutput::command(RpcCommand::ClearQueue { id: Some(id) })
         }
         AgentRequest::NewInput { mode: _, prompt } => {
             let Some(text) = prompt.plain_text().map(str::to_owned) else {

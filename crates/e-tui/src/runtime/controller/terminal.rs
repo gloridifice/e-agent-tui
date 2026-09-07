@@ -2,11 +2,12 @@
 
 use super::{
     agent_action, paste_text, runtime_command, scroll_lines, scroll_page, transcript_view_height,
-    AgentRequest, Arc, ControllerAction, InputPageSession, InputPageUiState, Instant, KeyCode,
-    KeyEvent, KeyModifiers, LocalCommandContext, Mutex, PointerEvent, Rect, RuntimeState,
-    ScrollState, SelectionFrame, TerminalRoute, TerminalSize, TerminalUiState, UiAction,
+    AgentRequest, Arc, InputPageSession, InputPageUiState, Instant, KeyEvent, LocalCommandContext,
+    Mutex, PointerEvent, Rect, RuntimeState, ScrollState, SelectionFrame, TerminalRoute,
+    TerminalSize, TerminalUiState, UiAction,
 };
 use crate::i18n::tr;
+use crate::key_mapping::{Action, Scope};
 
 pub(super) fn apply_terminal_route(
     route: TerminalRoute,
@@ -151,6 +152,44 @@ pub(super) fn apply_terminal_route(
             ui.mouse_selection.clear();
             *ui.help_visible = true;
         }
+        TerminalRoute::Global(action) => {
+            ui.mouse_selection.clear();
+            match action {
+                Action::EnterReadMode => effects.extend(enter_reading(size, now, state, ui)),
+                Action::TogglePreview => {
+                    let mut app = state.lock().unwrap();
+                    app.preview.fullscreen = !app.preview.fullscreen;
+                }
+                Action::ChooseModel => {
+                    *ui.input_page = Some(InputPageSession::model());
+                    effects.push(agent_action(AgentRequest::ModelGet));
+                }
+                Action::ChooseEffort => {
+                    *ui.input_page = Some(InputPageSession::effort());
+                    effects.push(agent_action(AgentRequest::ModelGet));
+                }
+                Action::ResumeSession => {
+                    *ui.input_page = Some(InputPageSession::resume());
+                    effects.push(agent_action(AgentRequest::ListSessions));
+                }
+                Action::OpenSettings => {
+                    *ui.input_page =
+                        Some(InputPageSession::settings(crate::settings::SettingsState {
+                            modes: state
+                                .lock()
+                                .unwrap()
+                                .catalogs
+                                .new_modes
+                                .iter()
+                                .map(|m| m.id.clone())
+                                .collect(),
+                            themes: ui.themes.iter().map(|t| t.name.clone()).collect(),
+                            ..Default::default()
+                        }));
+                }
+                _ => {}
+            }
+        }
         TerminalRoute::InputPage(key) => {
             ui.mouse_selection.clear();
             effects.extend(super::input::apply_input_page_key(
@@ -168,7 +207,10 @@ pub(super) fn apply_terminal_route(
         }
         TerminalRoute::Approval(key) => {
             ui.mouse_selection.clear();
-            effects.extend(super::input::answer_approval(&key, ui.approval))
+            effects.extend(super::input::answer_approval(
+                ui.config.key_mapping.resolve(Scope::Approval, &key),
+                ui.approval,
+            ))
         }
         TerminalRoute::Reading(key) => {
             ui.mouse_selection.clear();
@@ -181,6 +223,35 @@ pub(super) fn apply_terminal_route(
         TerminalRoute::Ignore => {}
     }
     effects
+}
+
+fn enter_reading(
+    size: TerminalSize,
+    now: Instant,
+    state: &Arc<Mutex<RuntimeState>>,
+    ui: &mut TerminalUiState<'_>,
+) -> Vec<UiAction> {
+    let viewport_height = {
+        let app = state.lock().unwrap();
+        transcript_view_height(
+            size,
+            &app,
+            ui.input,
+            false,
+            ui.approval.as_ref(),
+            ui.queue.entries(),
+        )
+    };
+    let (entered, actions) = {
+        let mut app = state.lock().unwrap();
+        let entered = app.enter_reading(ui.input, ui.scroll, viewport_height);
+        (entered, app.take_actions())
+    };
+    if !entered {
+        ui.notice
+            .show(tr(ui.config.language, "terminal.no_readable_content"), now);
+    }
+    actions
 }
 
 pub(super) fn apply_reading_key(
@@ -206,38 +277,60 @@ pub(super) fn apply_reading_key(
         .reading
         .as_ref()
         .is_some_and(|reading| reading.item_cursor.is_some());
-    match key.code {
-        KeyCode::Esc => {
+    let scope = if item_mode {
+        Scope::ReadModeItem
+    } else {
+        Scope::ReadMode
+    };
+    match ui.config.key_mapping.resolve(scope, key) {
+        Some(Action::Exit) => {
             let mut app = state.lock().unwrap();
-            if !app.leave_reading_items() {
-                app.exit_reading(ui.input);
-            }
+            app.exit_reading(ui.input);
             app.take_actions()
         }
-        KeyCode::Down | KeyCode::Char('j') if key.modifiers.is_empty() => {
+        Some(Action::BackToBlocks) => {
             let mut app = state.lock().unwrap();
-            if item_mode {
-                app.move_reading_item(crate::ReadingDirection::Down, ui.scroll, viewport_height);
+            app.leave_reading_items();
+            app.take_actions()
+        }
+        Some(
+            action
+            @ (Action::MoveDown | Action::MoveUp | Action::MoveDownFast | Action::MoveUpFast),
+        ) => {
+            let up = matches!(action, Action::MoveUp | Action::MoveUpFast);
+            let steps = if matches!(action, Action::MoveUpFast | Action::MoveDownFast) {
+                15
             } else {
-                app.move_reading_block(1, ui.scroll, viewport_height);
-            }
-            app.take_actions()
-        }
-        KeyCode::Up | KeyCode::Char('k') if key.modifiers.is_empty() => {
+                1
+            };
             let mut app = state.lock().unwrap();
-            if item_mode {
-                app.move_reading_item(crate::ReadingDirection::Up, ui.scroll, viewport_height);
-            } else {
-                app.move_reading_block(-1, ui.scroll, viewport_height);
+            for _ in 0..steps {
+                let in_items = app
+                    .reading
+                    .as_ref()
+                    .is_some_and(|reading| reading.item_cursor.is_some());
+                let moved = if in_items {
+                    let direction = if up {
+                        crate::ReadingDirection::Up
+                    } else {
+                        crate::ReadingDirection::Down
+                    };
+                    app.move_reading_item(direction, ui.scroll, viewport_height)
+                } else {
+                    app.move_reading_block(if up { -1 } else { 1 }, ui.scroll, viewport_height)
+                };
+                if !moved {
+                    break;
+                }
             }
             app.take_actions()
         }
-        KeyCode::Left | KeyCode::Char('h') if key.modifiers.is_empty() && item_mode => {
+        Some(Action::MoveLeft) if item_mode => {
             let mut app = state.lock().unwrap();
             app.move_reading_item(crate::ReadingDirection::Left, ui.scroll, viewport_height);
             app.take_actions()
         }
-        KeyCode::Right | KeyCode::Char('l') if key.modifiers.is_empty() => {
+        Some(Action::MoveRight | Action::EnterItems) => {
             let mut app = state.lock().unwrap();
             if item_mode {
                 app.move_reading_item(crate::ReadingDirection::Right, ui.scroll, viewport_height);
@@ -246,7 +339,7 @@ pub(super) fn apply_reading_key(
             }
             app.take_actions()
         }
-        KeyCode::Char('y') if key.modifiers.is_empty() => state
+        Some(Action::CopyBlock) => state
             .lock()
             .unwrap()
             .reading_copy_text()
@@ -263,14 +356,23 @@ pub(super) fn apply_ordinary_key(
     state: &Arc<Mutex<RuntimeState>>,
     ui: &mut TerminalUiState<'_>,
 ) -> Vec<UiAction> {
-    if key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        super::input::apply_action(
-            ControllerAction::OpenPage(InputPageSession::resume()),
-            ui.input_page,
-        );
-        return vec![agent_action(AgentRequest::ListSessions)];
-    }
-    if key.code == KeyCode::Esc && key.modifiers.is_empty() && !ui.queue.is_empty() {
+    ui.input.key_mapping = ui.config.key_mapping.clone();
+    if ui
+        .config
+        .key_mapping
+        .resolve(ui.input.key_scope(false), &key)
+        == Some(Action::CancelOrInterrupt)
+        && !ui.queue.is_empty()
+    {
+        if ui.queue.has_asap() {
+            ui.queue.cancel_asap();
+            return ui
+                .queue
+                .take_clear_request()
+                .then_some(UiAction::Agent(crate::AgentRequest::ClearAsap))
+                .into_iter()
+                .collect();
+        }
         ui.queue.cancel_latest();
         return Vec::new();
     }
@@ -293,27 +395,7 @@ pub(super) fn apply_ordinary_key(
     }
     let mut outcome = super::input::apply_input_action(action, state, ui.queue);
     if outcome.activate_reading {
-        let viewport_height = {
-            let app = state.lock().unwrap();
-            transcript_view_height(
-                size,
-                &app,
-                ui.input,
-                ui.input_page.is_some(),
-                ui.approval.as_ref(),
-                ui.queue.entries(),
-            )
-        };
-        let (entered, actions) = {
-            let mut app = state.lock().unwrap();
-            let entered = app.enter_reading(ui.input, ui.scroll, viewport_height);
-            (entered, app.take_actions())
-        };
-        outcome.effects.extend(actions);
-        if !entered {
-            ui.notice
-                .show(tr(ui.config.language, "terminal.no_readable_content"), now);
-        }
+        outcome.effects.extend(enter_reading(size, now, state, ui));
     }
     if let Some(pending) = outcome.command {
         let command_name = pending

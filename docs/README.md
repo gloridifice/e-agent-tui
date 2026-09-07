@@ -25,6 +25,7 @@ Repository-wide guides:
 - [Testing and validation](testing.md) — proportional validation policy, scoped tests, protocol checks, and compatibility gates.
 - [DSH integration](dsh-integration.md) — profile setup, bridge deployment, restart, and upgrade workflow.
 - [Troubleshooting](troubleshooting.md) — operational symptoms and diagnostic routes.
+- [Key mappings](key-mapping.md) — scoped keyboard configuration, reload, and terminal limitations.
 
 Subsystem and contract documentation:
 

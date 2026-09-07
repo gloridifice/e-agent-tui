@@ -6,9 +6,16 @@
 //! block that renders as `[N text pasted]` (like pi's paste markers); typed
 //! text around blocks stays editable and the cursor skips blocks whole.
 
+use crate::key_mapping::{
+    Action, KeyMapping,
+    MappedKey::{Command, Text},
+    Scope,
+};
 use std::ops::Range;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+#[cfg(test)]
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
 use unicode_script::{Script, UnicodeScript};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -32,6 +39,7 @@ const IMAGE_NAME_DISPLAY_WIDTH: usize = 28;
 
 #[derive(Clone)]
 pub struct InputState {
+    pub key_mapping: KeyMapping,
     pub buf: String,
     /// Cursor as a char index into `buf`.
     pub cursor: usize,
@@ -43,7 +51,7 @@ pub struct InputState {
     /// Atomic ranges belonging to the saved history-browsing draft.
     draft_paste_blocks: Vec<PasteBlock>,
     draft_image_blocks: Vec<ImageBlock>,
-    /// Ctrl+R history search, when active.
+    /// History search, when active.
     pub search: Option<SearchState>,
     /// Active language for localized stateful suggestions and placeholders.
     pub language: Language,
@@ -152,6 +160,7 @@ pub fn normalize_paste_text(text: &str) -> String {
 impl InputState {
     pub fn new(config: &Config) -> Self {
         Self {
+            key_mapping: config.key_mapping.clone(),
             buf: String::new(),
             cursor: 0,
             history: Vec::new(),
@@ -562,15 +571,27 @@ impl InputState {
         self.handle_key_with_catalog(key, idle, &catalogs)
     }
 
+    pub fn key_scope(&self, idle: bool) -> Scope {
+        if self.search.is_some() {
+            Scope::MessageSearch
+        } else if self.suggest.is_some() {
+            Scope::MessageSuggest
+        } else if idle {
+            Scope::MessageIdle
+        } else {
+            Scope::MessageWorking
+        }
+    }
+
     pub fn handle_key_with_catalog(
         &mut self,
         key: &KeyEvent,
         idle: bool,
         catalogs: &CatalogModel,
     ) -> InputAction {
-        // Ctrl+C: clear the input bar; only an empty bar while idle quits.
-        // (Esc is the interrupt key now.)
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        let scope = self.key_scope(idle);
+        let mapped = self.key_mapping.input(scope, key);
+        if mapped == Command(Action::ClearOrQuit) {
             if !self.buf.is_empty() {
                 self.clear();
                 self.search = None;
@@ -585,17 +606,7 @@ impl InputState {
             }
             return InputAction::None;
         }
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('p') {
-            return InputAction::PreviewToggle;
-        }
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('y') {
-            return InputAction::ReadingToggle;
-        }
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('l') {
-            return InputAction::None;
-        }
-        // Ctrl+R: reverse history search (design §4.1).
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('r') {
+        if mapped == Command(Action::HistorySearch) {
             if !self.multiline {
                 self.search = Some(SearchState {
                     query: String::new(),
@@ -608,36 +619,34 @@ impl InputState {
         // History search mode owns the keys.
         if self.search.is_some() {
             let mut search = self.search.take().unwrap();
-            match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => {
+            match mapped {
+                Command(Action::Cancel) => {
                     return InputAction::None;
                 }
-                KeyCode::Enter if !key.modifiers.contains(KeyModifiers::SHIFT) => {
+                Command(Action::Accept) => {
                     let matches = self.matching_history(&search.query);
                     if let Some(entry) = matches.get(search.sel) {
                         self.restore_text(entry.clone());
                     }
                     return InputAction::None;
                 }
-                KeyCode::Up => {
+                Command(Action::Previous) => {
                     let n = self.matching_history(&search.query).len();
                     if n > 0 {
                         search.sel = (search.sel + n - 1) % n;
                     }
                 }
-                KeyCode::Down => {
+                Command(Action::Next) => {
                     let n = self.matching_history(&search.query).len();
                     if n > 0 {
                         search.sel = (search.sel + 1) % n;
                     }
                 }
-                KeyCode::Char(c) => {
-                    if !c.is_ascii_control() {
-                        search.query.push(c);
-                        search.sel = 0;
-                    }
+                Text(c) => {
+                    search.query.push(c);
+                    search.sel = 0;
                 }
-                KeyCode::Backspace => {
+                Command(Action::DeleteBackward) => {
                     search.query.pop();
                     search.sel = 0;
                 }
@@ -649,14 +658,14 @@ impl InputState {
 
         // Slash-command suggestion popup: navigation owns the keys while open.
         if self.suggest.is_some() {
-            match key.code {
-                KeyCode::Esc => {
+            match mapped {
+                Command(Action::Cancel) => {
                     // Restore what was typed before the fill.
                     let query = self.suggest.take().map(|s| s.query).unwrap_or_default();
                     self.restore_text(query);
                     return InputAction::None;
                 }
-                KeyCode::Up | KeyCode::Down => {
+                Command(Action::Previous | Action::Next) => {
                     // At the popup boundary the arrow escapes the list and
                     // recalls the previous/next history prompt exactly like
                     // plain input; only inside the list does it move the
@@ -664,7 +673,7 @@ impl InputState {
                     // the popup).
                     let at_edge = {
                         let s = self.suggest.as_mut().unwrap();
-                        if key.code == KeyCode::Up {
+                        if mapped == Command(Action::Previous) {
                             if s.sel == 0 {
                                 true
                             } else {
@@ -683,7 +692,7 @@ impl InputState {
                     };
                     if at_edge {
                         self.suggest = None;
-                        if key.code == KeyCode::Up {
+                        if mapped == Command(Action::Previous) {
                             self.history_prev();
                         } else {
                             self.history_next();
@@ -704,7 +713,7 @@ impl InputState {
                     }
                     return InputAction::None;
                 }
-                KeyCode::Tab => {
+                Command(Action::Complete) => {
                     // A partial buffer completes the highlighted row first;
                     // only a fully-typed row advances to the next candidate.
                     let s = self.suggest.as_mut().unwrap();
@@ -721,9 +730,7 @@ impl InputState {
                     }
                     return InputAction::None;
                 }
-                KeyCode::Enter if !key.modifiers.contains(KeyModifiers::SHIFT) => {
-                    // Send the highlighted command (Enter accepts it even
-                    // under the Ctrl+Enter style).
+                Command(Action::Accept) => {
                     let cmd = self
                         .suggest
                         .take()
@@ -738,35 +745,25 @@ impl InputState {
             }
         }
 
-        // Shift+Enter: explicit newline in the input bar (chat-style); also
-        // closes the suggestion popup since the buffer is no longer a plain
-        // command line.
-        if key.modifiers.contains(KeyModifiers::SHIFT) && key.code == KeyCode::Enter {
+        if mapped == Command(Action::NewLine) {
             self.insert_char('\n');
             self.multiline = true;
             self.suggest = None;
             return InputAction::None;
         }
-        // Alt+Enter arrives as KeyCode::Enter with ALT on Windows terminals
-        // (and as '\r' on others) — toggle multiline mode either way.
-        if key.modifiers.contains(KeyModifiers::ALT) && key.code == KeyCode::Enter {
+        if mapped == Command(Action::ToggleMultiline) {
             return self.toggle_multiline();
         }
 
-        // Ctrl+Enter deliberately queues ordinary messages until the current
-        // turn has fully ended. Slash commands keep their ordinary command
-        // behavior rather than entering the prompt queue.
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Enter {
+        if mapped == Command(Action::SendAfterTurn) {
             return match self.commit() {
                 InputAction::Send(prompt) => InputAction::SendAfterTurn(prompt),
                 action => action,
             };
         }
-        let action = match key.code {
-            // Chat-style input is fixed: Enter sends; Shift+Enter above is
-            // the only ordinary newline gesture.
-            KeyCode::Enter => self.commit(),
-            KeyCode::Tab => {
+        let action = match mapped {
+            Command(Action::Send | Action::SendAsap) => self.commit(),
+            Command(Action::Complete) => {
                 // Open the suggestion popup and fill the first match —
                 // in either context: a slash-prefixed word (commands) or
                 // the `/new ` prefix (agent-preset modes).
@@ -785,37 +782,15 @@ impl InputState {
                 }
                 InputAction::None
             }
-            // Ctrl+W is the Unix delete-previous-word convention and is the
-            // byte Windows Terminal emits for Ctrl+Backspace, so honor it here
-            // even when the physical-key snapshot could not confirm the origin.
-            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.delete_word_back();
-                InputAction::None
-            }
-            KeyCode::Char(c) => {
-                if key.modifiers.contains(KeyModifiers::ALT) {
-                    // Alt+Enter toggles multiline.
-                    if c == '\r' || c == '\n' {
-                        return self.toggle_multiline();
-                    }
-                }
-                if key.modifiers.contains(KeyModifiers::CONTROL) {
-                    return InputAction::None;
-                }
+            Text(c) => {
                 self.insert_char(c);
                 InputAction::None
             }
-            // Ctrl+Backspace/Ctrl+W (Windows) and Alt/Option+Backspace
-            // (macOS) delete the word before the cursor.
-            KeyCode::Backspace
-                if key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-            {
+            Command(Action::DeleteWordBackward) => {
                 self.delete_word_back();
                 InputAction::None
             }
-            KeyCode::Backspace => {
+            Command(Action::DeleteBackward) => {
                 if let Some((start, end)) = self.block_ending_at(self.cursor) {
                     self.remove_range(start, end);
                 } else if self.cursor > 0 {
@@ -824,7 +799,7 @@ impl InputState {
                 }
                 InputAction::None
             }
-            KeyCode::Delete => {
+            Command(Action::DeleteForward) => {
                 if let Some((start, end)) = self.block_starting_at(self.cursor) {
                     self.remove_range(start, end);
                 } else if self.cursor < self.buf.chars().count() {
@@ -832,7 +807,7 @@ impl InputState {
                 }
                 InputAction::None
             }
-            KeyCode::Left => {
+            Command(Action::MoveLeft) => {
                 if let Some((start, _)) = self.block_ending_at(self.cursor) {
                     self.cursor = start;
                 } else if self.cursor > 0 {
@@ -840,7 +815,7 @@ impl InputState {
                 }
                 InputAction::None
             }
-            KeyCode::Right => {
+            Command(Action::MoveRight) => {
                 if let Some((_, end)) = self.block_starting_at(self.cursor) {
                     self.cursor = end;
                 } else if self.cursor < self.buf.chars().count() {
@@ -848,29 +823,27 @@ impl InputState {
                 }
                 InputAction::None
             }
-            KeyCode::Home => {
+            Command(Action::MoveStart) => {
                 self.cursor = 0;
                 InputAction::None
             }
-            KeyCode::End => {
+            Command(Action::MoveEnd) => {
                 self.cursor = self.buf.chars().count();
                 InputAction::None
             }
-            KeyCode::Up => {
+            Command(Action::MoveUp) => {
                 if !self.multiline || !self.cursor_up() {
                     self.history_prev();
                 }
                 InputAction::None
             }
-            KeyCode::Down => {
+            Command(Action::MoveDown) => {
                 if !self.multiline || !self.cursor_down() {
                     self.history_next();
                 }
                 InputAction::None
             }
-            KeyCode::Esc => {
-                // Esc interrupts the current conversation (while the agent
-                // runs); clearing the bar is Ctrl+C's job now.
+            Command(Action::CancelOrInterrupt) => {
                 if idle {
                     InputAction::None
                 } else {
@@ -1575,7 +1548,8 @@ mod tests {
     fn history_search_filters_and_loads() {
         let mut s = state();
         s.history = vec!["hello".into(), "world".into(), "help me".into()];
-        s.handle_key(&ctrl('r'), true);
+        s.key_mapping = KeyMapping::from_user_toml("[message]\nhistory_search='f2'").unwrap();
+        s.handle_key(&key(KeyCode::F(2)), true);
         assert!(s.search.is_some());
         for c in "he".chars() {
             s.handle_key(&key(KeyCode::Char(c)), true);
@@ -1617,10 +1591,13 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_p_is_reserved_for_preview_toggle() {
+    fn global_shortcuts_are_not_composer_actions_or_text() {
         let mut s = state();
-        assert_eq!(s.handle_key(&ctrl('p'), true), InputAction::PreviewToggle);
-        assert_eq!(s.handle_key(&ctrl('y'), true), InputAction::ReadingToggle);
+        for c in ['p', 'y', 'r', 'l', 'e'] {
+            assert_eq!(s.handle_key(&ctrl(c), true), InputAction::None);
+        }
+        assert!(s.buf.is_empty());
+        assert!(s.search.is_none());
     }
 
     #[test]

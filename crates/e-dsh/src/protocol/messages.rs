@@ -63,12 +63,18 @@ pub enum ClientMessage {
     },
     /// Interrupt the current turn and any direct commands still executing.
     Interrupt,
+    ClearAsap,
     /// Switch the connection to another live session.
-    Attach { session_id: String },
+    Attach {
+        session_id: String,
+    },
     /// Request the session list (for the `/resume` Input Page).
     ListSessions,
     /// Answer one pending approval.
-    ApprovalAnswer { id: String, allow: bool },
+    ApprovalAnswer {
+        id: String,
+        allow: bool,
+    },
     /// Submit answers for one pending user-question batch.
     AnswerQuestions {
         rpc_id: String,
@@ -76,15 +82,23 @@ pub enum ClientMessage {
     },
     /// Cancel one pending user-question batch (the host resolves the tool
     /// call as cancelled).
-    CancelQuestions { rpc_id: String },
+    CancelQuestions {
+        rpc_id: String,
+    },
     /// Request older history: surface events with seq < `before_seq`,
     /// newest first from the stored log (lazy scroll-back paging).
-    History { before_seq: u64, limit: usize },
+    History {
+        before_seq: u64,
+        limit: usize,
+    },
     /// Read the login page state (providers / proxies).
     LoginGet,
     /// Store one provider's API key (empty clears it; the value itself is
     /// never read back — only its configured/source/hint view).
-    LoginSetApiKey { provider: String, value: String },
+    LoginSetApiKey {
+        provider: String,
+        value: String,
+    },
     /// Create a custom proxy provider route.
     LoginProxyCreate {
         base_url: String,
@@ -93,7 +107,9 @@ pub enum ClientMessage {
         model: String,
     },
     /// Remove one custom proxy provider route.
-    LoginProxyDelete { id: String },
+    LoginProxyDelete {
+        id: String,
+    },
     /// Request the provider/model catalog (for the `/model` picker).
     ModelGet,
     /// Select the provider/model (and optional reasoning effort) for the
@@ -210,6 +226,12 @@ pub enum ServerMessage {
     },
     Status {
         status: String,
+    },
+    AsapQueue {
+        session_id: String,
+        prompts: Vec<String>,
+        operation: Option<String>,
+        error: Option<String>,
     },
     /// One page of older history for the scroll-back request.
     History {

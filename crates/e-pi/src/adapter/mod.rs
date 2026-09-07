@@ -88,6 +88,7 @@ pub struct PiAdapter {
     /// one result. Retain the id only until that duplicate message arrives.
     pending_tool_result_messages: HashSet<String>,
     extension_ui: HashMap<String, PendingExtensionUi>,
+    pending_queue: queue::PendingQueue,
 }
 
 impl PiAdapter {
@@ -115,6 +116,7 @@ impl PiAdapter {
             deferred_requests: std::collections::VecDeque::new(),
             pending_tool_result_messages: HashSet::new(),
             extension_ui: HashMap::new(),
+            pending_queue: queue::PendingQueue::default(),
         }
     }
 
@@ -123,11 +125,12 @@ impl PiAdapter {
     }
 
     pub fn request(&mut self, request: AgentRequest) -> AdapterOutput {
-        if self.configuration_request.is_some()
+        if (self.configuration_request.is_some() || self.pending_queue.operation.is_some())
             && matches!(
                 request,
                 AgentRequest::Input { .. }
                     | AgentRequest::Steer { .. }
+                    | AgentRequest::ClearAsap
                     | AgentRequest::Command { .. }
                     | AgentRequest::NewInput { .. }
                     | AgentRequest::ModelSet { .. }
@@ -137,6 +140,18 @@ impl PiAdapter {
             )
         {
             if self.deferred_requests.len() >= 64 {
+                let operation = match request {
+                    AgentRequest::Steer { .. } => Some(e_tui::agent::AsapQueueOperation::Submit),
+                    AgentRequest::ClearAsap => Some(e_tui::agent::AsapQueueOperation::Clear),
+                    _ => None,
+                };
+                if let Some(operation) = operation {
+                    return queue::event(
+                        self,
+                        Some(operation),
+                        Some("Too many requests waiting for the model/session change".into()),
+                    );
+                }
                 return AdapterOutput::event(AgentEvent::Interaction(InteractionEvent::Error {
                     code: if matches!(request, AgentRequest::NewInput { .. }) {
                         "new-failed"
@@ -226,9 +241,8 @@ impl PiAdapter {
                         .to_owned(),
                 }))
             }
-            "queue_update" | "agent_end" | "message_start" | "tool_execution_update" => {
-                AdapterOutput::default()
-            }
+            "queue_update" => queue::update(self, &record),
+            "agent_end" | "message_start" | "tool_execution_update" => AdapterOutput::default(),
             _ => AdapterOutput::default(),
         }
     }
@@ -348,6 +362,9 @@ impl PiAdapter {
 mod content;
 mod extension;
 mod model;
+mod queue;
+#[cfg(test)]
+mod queue_tests;
 mod request;
 mod response;
 mod session;

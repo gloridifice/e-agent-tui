@@ -8,7 +8,7 @@ Do not edit capacities, rosters, or payload fields here by hand.
 
 | Field | Value |
 |---|---:|
-| Protocol version | 9 |
+| Protocol version | 10 |
 | Snapshot surface events | 600 |
 | History page events | 2000 |
 | Maximum normal frame | 16777216 bytes |
@@ -21,6 +21,7 @@ Do not edit capacities, rosters, or payload fields here by hand.
 - `new-input`
 - `command`
 - `interrupt`
+- `clear-asap`
 - `attach`
 - `list-sessions`
 - `approval-answer`
@@ -67,6 +68,12 @@ Do not edit capacities, rosters, or payload fields here by hand.
 | optional | `images` | `PromptImage[]` |
 
 ### `interrupt`
+
+| Presence | Field | Type |
+|---|---|---|
+| — | _(no payload fields)_ | — |
+
+### `clear-asap`
 
 | Presence | Field | Type |
 |---|---|---|
@@ -165,6 +172,7 @@ Do not edit capacities, rosters, or payload fields here by hand.
 - `snapshot`
 - `event`
 - `status`
+- `asap-queue`
 - `history`
 - `sessions`
 - `presets`
@@ -212,6 +220,15 @@ Do not edit capacities, rosters, or payload fields here by hand.
 | Presence | Field | Type |
 |---|---|---|
 | required | `status` | `string` |
+
+### `asap-queue`
+
+| Presence | Field | Type |
+|---|---|---|
+| required | `sessionId` | `string` |
+| required | `prompts` | `string[]` |
+| optional | `operation` | `string` |
+| optional | `error` | `string` |
 
 ### `history`
 

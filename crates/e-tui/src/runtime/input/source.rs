@@ -163,6 +163,11 @@ fn changed_size(previous: &mut (u16, u16), current: (u16, u16)) -> Option<(u16, 
 }
 
 #[cfg(windows)]
+fn is_plain_paste_shortcut(mods: NativeMods) -> bool {
+    mods.paste && mods.ctrl && !mods.shift && !mods.alt
+}
+
+#[cfg(windows)]
 fn spawn_paste_shortcut_watcher(
     native_mods: fn() -> NativeMods,
 ) -> tokio::sync::mpsc::UnboundedReceiver<()> {
@@ -174,8 +179,9 @@ fn spawn_paste_shortcut_watcher(
             if tx.is_closed() {
                 break;
             }
-            let down = native_mods().paste;
-            if down && !was_down && tx.send(()).is_err() {
+            let mods = native_mods();
+            let down = mods.paste;
+            if down && !was_down && is_plain_paste_shortcut(mods) && tx.send(()).is_err() {
                 break;
             }
             was_down = down;
@@ -311,6 +317,21 @@ impl WindowsRawInput {
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paste_fallback_does_not_erase_extra_modifiers() {
+        let plain = NativeMods {
+            ctrl: true,
+            paste: true,
+            ..NativeMods::default()
+        };
+        assert!(is_plain_paste_shortcut(plain));
+        assert!(!is_plain_paste_shortcut(NativeMods {
+            shift: true,
+            ..plain
+        }));
+        assert!(!is_plain_paste_shortcut(NativeMods { alt: true, ..plain }));
+    }
 
     #[test]
     fn resize_watcher_emits_only_changed_dimensions() {

@@ -5,11 +5,12 @@ pub mod vt;
 
 pub use source::ProductionTerminalEvents;
 
-use crossterm::event::{
-    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
-};
+use crossterm::event::{Event, KeyEvent, KeyEventKind, MouseButton, MouseEventKind};
 
+use crate::key_mapping::{Action, KeyMapping, Scope};
 use crate::PointerEvent;
+#[cfg(test)]
+use crossterm::event::{KeyCode, KeyModifiers};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TerminalFocus {
@@ -26,6 +27,7 @@ pub enum TerminalRoute {
     ReadClipboard,
     Help { dismiss: bool },
     OpenHelp,
+    Global(Action),
     TranscriptPage { up: bool },
     InputPage(KeyEvent),
     Approval(KeyEvent),
@@ -34,7 +36,25 @@ pub enum TerminalRoute {
     Ignore,
 }
 
-pub fn route_terminal_event(event: Event, focus: TerminalFocus) -> TerminalRoute {
+#[cfg(test)]
+fn route_terminal_event(event: Event, focus: TerminalFocus) -> TerminalRoute {
+    route_terminal_event_with_mapping(event, focus, &KeyMapping::default())
+}
+
+pub fn route_terminal_event_with_mapping(
+    event: Event,
+    focus: TerminalFocus,
+    mapping: &KeyMapping,
+) -> TerminalRoute {
+    let scope = if focus.reading_view_open && !focus.input_page_open && !focus.approval_open {
+        Scope::ReadMode
+    } else {
+        Scope::Global
+    };
+    let global = match &event {
+        Event::Key(key) => mapping.resolve_global(scope, key),
+        _ => None,
+    };
     match event {
         Event::Mouse(mouse) => match mouse.kind {
             MouseEventKind::ScrollUp => TerminalRoute::Pointer(PointerEvent::Wheel { up: true }),
@@ -67,38 +87,46 @@ pub fn route_terminal_event(event: Event, focus: TerminalFocus) -> TerminalRoute
         // paste instead of nothing at all. Treat that as the terminal handing
         // the paste back: read the clipboard through the application port,
         // which prefers image content over text.
-        Event::Paste(text) if text.is_empty() => TerminalRoute::ReadClipboard,
+        Event::Paste(text)
+            if text.is_empty()
+                && !focus.input_page_open
+                && !focus.approval_open
+                && !focus.help_visible =>
+        {
+            TerminalRoute::ReadClipboard
+        }
+        Event::Paste(_) if focus.approval_open || focus.help_visible => TerminalRoute::Ignore,
         Event::Paste(text) => TerminalRoute::Paste { text },
         Event::Key(key) if key.kind == KeyEventKind::Release => TerminalRoute::Ignore,
-        Event::Key(key) if is_clipboard_paste_shortcut(&key) && focus.reading_view_open => {
-            TerminalRoute::Ignore
-        }
-        Event::Key(key) if is_clipboard_paste_shortcut(&key) => TerminalRoute::ReadClipboard,
         Event::Key(key) if focus.help_visible => TerminalRoute::Help {
-            dismiss: matches!(
-                key.code,
-                KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('h')
-            ),
+            dismiss: mapping.resolve(Scope::Help, &key) == Some(Action::Close)
+                || mapping.resolve(Scope::Global, &key) == Some(Action::PrintHelp),
         },
-        Event::Key(key)
-            if key.code == KeyCode::Char('h') && key.modifiers.contains(KeyModifiers::CONTROL) =>
-        {
-            TerminalRoute::OpenHelp
-        }
-        Event::Key(key) if matches!(key.code, KeyCode::PageUp | KeyCode::PageDown) => {
-            TerminalRoute::TranscriptPage {
-                up: key.code == KeyCode::PageUp,
+        Event::Key(_) if global.is_some() => match global.unwrap() {
+            Action::PrintHelp => TerminalRoute::OpenHelp,
+            Action::PageUp => TerminalRoute::TranscriptPage { up: true },
+            Action::PageDown => TerminalRoute::TranscriptPage { up: false },
+            _ if focus.input_page_open || focus.approval_open || focus.reading_view_open => {
+                TerminalRoute::Ignore
             }
-        }
+            action => TerminalRoute::Global(action),
+        },
         Event::Key(key) if focus.input_page_open => TerminalRoute::InputPage(key),
         Event::Key(key) if focus.approval_open => TerminalRoute::Approval(key),
+        Event::Key(key)
+            if focus.reading_view_open
+                && mapping.resolve(Scope::Message, &key) == Some(Action::Paste)
+                && mapping.resolve(Scope::ReadMode, &key).is_none()
+                && mapping.resolve(Scope::ReadModeItem, &key).is_none() =>
+        {
+            TerminalRoute::Ignore
+        }
         Event::Key(key) if focus.reading_view_open => TerminalRoute::Reading(key),
+        Event::Key(key) if mapping.resolve(Scope::Message, &key) == Some(Action::Paste) => {
+            TerminalRoute::ReadClipboard
+        }
         Event::Key(key) => TerminalRoute::Ordinary(key),
     }
-}
-
-fn is_clipboard_paste_shortcut(key: &KeyEvent) -> bool {
-    key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('v' | 'V'))
 }
 
 #[cfg(test)]

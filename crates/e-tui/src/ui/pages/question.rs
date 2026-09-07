@@ -7,8 +7,9 @@ pub(super) fn render_question_page(
     focus: &crate::input_page::FocusState,
     viewport: &mut crate::input_page::ViewportState,
     theme: &Theme,
-    language: crate::Language,
+    config: &crate::Config,
 ) -> Option<Position> {
+    let language = config.language;
     let regions = input_page_shell(frame, area, theme);
     let Some(question) = batch.questions.get(batch.current) else {
         frame.render_widget(
@@ -111,24 +112,31 @@ pub(super) fn render_question_page(
     } else {
         crate::i18n::tr(language, "input_page.question.action_submit")
     };
-    let footer = if options.is_empty() {
-        format!(
-            "{}   Enter {action}   {}",
-            crate::i18n::tr(language, "input_page.question.footer_text"),
-            crate::i18n::tr(language, "input_page.question.footer_cancel"),
-        )
+    let scope = if options.is_empty() {
+        KeyScope::PageQuestionEdit
     } else {
-        let select = if question.multi_select {
-            crate::i18n::tr(language, "input_page.question.footer_multiselect")
-        } else {
-            crate::i18n::tr(language, "input_page.question.footer_select")
-        };
-        format!(
-            "{}   {select}   Enter {action}   {}",
-            crate::i18n::tr(language, "input_page.question.footer_navigation"),
-            crate::i18n::tr(language, "input_page.question.footer_cancel"),
+        KeyScope::PageQuestion
+    };
+    let navigation = if options.is_empty() {
+        crate::i18n::tr(language, "input_page.question.footer_text")
+    } else {
+        crate::help::key_hints(
+            config,
+            scope,
+            &[
+                KeyAction::PreviousQuestion,
+                KeyAction::NextQuestion,
+                KeyAction::PreviousOption,
+                KeyAction::NextOption,
+                KeyAction::ToggleOption,
+            ],
         )
     };
+    let footer = format!(
+        "{navigation}   {} {action}   {}",
+        config.key_mapping.label(scope, KeyAction::Confirm),
+        crate::help::key_hints(config, scope, &[KeyAction::Cancel])
+    );
     frame.render_widget(
         Paragraph::new(footer).style(Style::default().fg(theme.dim)),
         regions.footer,

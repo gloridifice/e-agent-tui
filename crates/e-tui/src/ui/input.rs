@@ -26,7 +26,6 @@ pub(super) fn render_input(
     let surface_style = Style::default();
 
     if let Some(search) = &input.search {
-        // Ctrl+R history search strip.
         let matches = input.matching_history(&search.query);
         let preview = matches
             .get(search.sel)

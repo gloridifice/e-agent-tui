@@ -5,10 +5,10 @@ pub(crate) fn render_login(
     area: ratatui::layout::Rect,
     login: &LoginState,
     theme: &Theme,
-    language: crate::Language,
+    config: &crate::Config,
 ) {
     let mut viewport = crate::input_page::ViewportState::default();
-    render_login_scrolled(frame, area, login, &mut viewport, theme, language);
+    render_login_scrolled(frame, area, login, &mut viewport, theme, config);
 }
 
 pub(super) fn render_login_scrolled(
@@ -17,8 +17,9 @@ pub(super) fn render_login_scrolled(
     login: &LoginState,
     viewport: &mut crate::input_page::ViewportState,
     theme: &Theme,
-    language: crate::Language,
+    config: &crate::Config,
 ) {
+    let language = config.language;
     let regions = input_page_shell(frame, area, theme);
     let buffer = frame.buffer_mut();
     let title_key = match &login.page {
@@ -301,24 +302,7 @@ pub(super) fn render_login_scrolled(
     } else if login.loading {
         crate::i18n::tr(language, "input_page.login.loading")
     } else {
-        match &login.page {
-            crate::login::Page::Menu => crate::i18n::tr(language, "input_page.login.footer.menu"),
-            crate::login::Page::Providers => {
-                crate::i18n::tr(language, "input_page.login.footer.providers")
-            }
-            crate::login::Page::ApiKey { .. } => {
-                crate::i18n::tr(language, "input_page.login.footer.api_key")
-            }
-            crate::login::Page::ProxyList => {
-                crate::i18n::tr(language, "input_page.login.footer.proxy_list")
-            }
-            crate::login::Page::ProxyForm => {
-                crate::i18n::tr(language, "input_page.login.footer.proxy_form")
-            }
-            crate::login::Page::ProxyDelete { .. } => {
-                crate::i18n::tr(language, "input_page.login.footer.proxy_delete")
-            }
-        }
+        page_key_hints(config, login.key_scope())
     };
     let fg = if login.error.is_some() {
         theme.err

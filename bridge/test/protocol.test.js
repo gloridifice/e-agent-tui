@@ -12,7 +12,7 @@ import {
 } from '../src/protocol.js'
 
 test('canonical contract owns protocol capacities and message roster', () => {
-  assert.equal(PROTOCOL_VERSION, 9)
+  assert.equal(PROTOCOL_VERSION, 10)
   assert.equal(SNAPSHOT_CAP, 600)
   assert.equal(HISTORY_CAP, 2000)
   assert.equal(MAX_FRAME_BYTES, 16 * 1024 * 1024)
@@ -23,6 +23,8 @@ test('canonical contract owns protocol capacities and message roster', () => {
   assert.equal(SNAPSHOT_SURFACE.has('approval/asked'), false, 'audit-only events stay out')
   assert.ok(supportsClientMessage('answer-questions'))
   assert.ok(supportsClientMessage('new-input'))
+  assert.ok(supportsClientMessage('clear-asap'))
+  assert.ok(WIRE_CONTRACT.serverMessages.includes('asap-queue'))
   assert.equal(supportsClientMessage('made-up-message'), false)
   assert.equal(new Set(WIRE_CONTRACT.clientMessages).size, WIRE_CONTRACT.clientMessages.length)
   assert.equal(new Set(WIRE_CONTRACT.serverMessages).size, WIRE_CONTRACT.serverMessages.length)
@@ -33,7 +35,7 @@ test('canonical contract owns protocol capacities and message roster', () => {
     'package compatibility metadata follows the canonical wire contract',
   )
   const docs = readFileSync(new URL('../../docs/protocol.md', import.meta.url), 'utf8')
-  assert.match(docs, /Protocol version \| 9/)
+  assert.match(docs, /Protocol version \| 10/)
   assert.match(docs, /`commands`/)
   assert.match(docs, /`skills`/)
   assert.match(docs, /`command-result`/)

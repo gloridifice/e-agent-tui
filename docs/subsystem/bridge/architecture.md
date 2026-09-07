@@ -12,7 +12,7 @@ Architecture conventions for the Node.js (ESM) DSH host-composition plugin.
   title folding, `model-selection.js` is the sole DSH model-selection adapter, `session-prompt.js` validates
   encoded prompt parts and owns lazy `apiProxy.sessions.prompt` admission, `command.js` projects the host command
   catalog/direct results, `question.js` owns API-proxy question relay lifecycle, `protocol.js` reads the shared
-  wire contract; `trim.js`, `compose.js`,
+  wire contract; `pending-prompts.js` owns inbox observation and serialized ASAP admission/clear; `trim.js`, `compose.js`,
   `login.js`, `skill.js`, `model.js`, `frame.js` keep their own pure logic. Every boundary must have
   `node:test` under `bridge/test/`; new code must not pile back into `index.js`.
 - **Image prompt admission**: wire v7 `input`/`new-input` carry ordered text/image content. Pure text keeps the
@@ -23,6 +23,7 @@ Architecture conventions for the Node.js (ESM) DSH host-composition plugin.
   injecting encoded bytes through `agent.followup`. Wire v9 `input.mode` selects `queue` (the compatibility default) or `steer`; text routes to the matching `agent.followup`/`agent.steer` API and image admission forwards the same mode to `apiProxy.sessions.prompt`. The Rust client rejects image-bearing frames above the
   contract's `maxFrameBytes` before sending. New-session admission and every async result retain the normal
   current-connection guard.
+- **Pending ASAP prompts**: wire v10 `asap-queue` snapshots include the attached session identity and optional submit/clear outcome. `input.mode=steer` admission, including asynchronous image/model preflight, is serialized with `clear-asap` per connection. Inbox inserted/claimed/discarded notifications publish authoritative pending previews; intermediate snapshots are buffered during an operation and its acknowledgment includes the latest snapshot. Clear splices the complete next-step inbox without aborting tools or clearing next-turn input; after-turn prompts from this frontend remain local. Listeners detach with the connection and stale asynchronous outcomes are discarded. Preview strings are display-only; host messages remain authoritative for content and attachments.
 - **DSH command integration**: after attach, use `ctx.commands.list(agent)` to send handler-free
   `commands{commands[{name,description,input?:{hint}}]}`; on `commands/change`, recompute the effective catalog
   for each connection (agent-scoped shadowing cannot be done as a global incremental patch). `command{line,images?}`

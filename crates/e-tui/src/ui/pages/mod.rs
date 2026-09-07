@@ -18,6 +18,27 @@ pub(super) use settings::render_settings;
 use theme::render_theme_page;
 
 use super::*;
+use crate::key_mapping::{Action as KeyAction, Scope as KeyScope};
+
+fn page_key_hints(config: &crate::Config, scope: KeyScope) -> String {
+    use KeyAction::*;
+    if scope == KeyScope::Page {
+        let directions = [MoveLeft, MoveRight, MoveUp, MoveDown]
+            .map(|action| config.key_mapping.label(scope, action))
+            .join(" ");
+        return format!(
+            "{directions} {}   {}",
+            crate::i18n::tr(config.language, "key.navigate"),
+            crate::help::key_hints(config, scope, &[Confirm, Back])
+        );
+    }
+    let actions: &[KeyAction] = match scope {
+        KeyScope::PageChoice => &[Previous, Next, Confirm, Cancel],
+        KeyScope::PageResume => &[Previous, Next, Confirm, Cancel],
+        _ => &[Confirm, Cancel, Paste],
+    };
+    crate::help::key_hints(config, scope, actions)
+}
 
 fn input_page_shell(
     frame: &mut Frame,
@@ -82,14 +103,7 @@ pub(super) fn render_input_page(
             None
         }
         InputPage::Login(login) => {
-            render_login_scrolled(
-                frame,
-                area,
-                login,
-                &mut session.viewport,
-                theme,
-                config.language,
-            );
+            render_login_scrolled(frame, area, login, &mut session.viewport, theme, config);
             None
         }
         InputPage::Model(model) => {
@@ -100,7 +114,7 @@ pub(super) fn render_input_page(
                 &session.focus,
                 &mut session.viewport,
                 theme,
-                config.language,
+                config,
             );
             None
         }
@@ -112,7 +126,7 @@ pub(super) fn render_input_page(
                 &session.focus,
                 &mut session.viewport,
                 theme,
-                config.language,
+                config,
             );
             None
         }
@@ -124,19 +138,12 @@ pub(super) fn render_input_page(
                 &session.focus,
                 &mut session.viewport,
                 theme,
-                config.language,
+                config,
             );
             None
         }
         InputPage::Resume(page) => {
-            render_resume_page(
-                frame,
-                area,
-                page,
-                &mut session.viewport,
-                theme,
-                config.language,
-            );
+            render_resume_page(frame, area, page, &mut session.viewport, theme, config);
             None
         }
         InputPage::Question(batch) => render_question_page(
@@ -146,7 +153,7 @@ pub(super) fn render_input_page(
             &session.focus,
             &mut session.viewport,
             theme,
-            config.language,
+            config,
         ),
     }
 }

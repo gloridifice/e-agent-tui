@@ -317,7 +317,7 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
         }
         CommandAction::Help => {
             if !reject_arguments(&context, name, raw_input) {
-                let markdown = crate::help::markdown(context.language, context.integrated_commands);
+                let markdown = crate::help::markdown(context.config, context.integrated_commands);
                 context.state.lock().unwrap().push_local_markdown(markdown);
             }
         }

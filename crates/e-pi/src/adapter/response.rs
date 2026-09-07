@@ -8,6 +8,10 @@ use serde_json::Value;
 use super::{model, session, AdapterOutput, NewSubmission, PiAdapter};
 
 pub(super) fn dispatch(adapter: &mut PiAdapter, record: RpcRecord) -> AdapterOutput {
+    if let Some(mut output) = super::queue::response(adapter, &record) {
+        drain_deferred(adapter, &mut output);
+        return output;
+    }
     let completed = adapter
         .configuration_request
         .clone()
@@ -26,7 +30,19 @@ pub(super) fn dispatch(adapter: &mut PiAdapter, record: RpcRecord) -> AdapterOut
             } else {
                 "input-failed"
             };
-            adapter.deferred_requests.clear();
+            let deferred = std::mem::take(&mut adapter.deferred_requests);
+            for request in deferred {
+                let operation = match request {
+                    e_tui::AgentRequest::Steer { .. } => {
+                        Some(e_tui::agent::AsapQueueOperation::Submit)
+                    }
+                    e_tui::AgentRequest::ClearAsap => Some(e_tui::agent::AsapQueueOperation::Clear),
+                    _ => None,
+                };
+                if let Some(operation) = operation {
+                    output.merge(super::queue::event(adapter, Some(operation), Some("Pending queue operation cancelled because the model/session change failed".into())));
+                }
+            }
             output
                 .events
                 .push(AgentEvent::Interaction(InteractionEvent::Error {
@@ -36,14 +52,18 @@ pub(super) fn dispatch(adapter: &mut PiAdapter, record: RpcRecord) -> AdapterOut
                             .into(),
                 }));
         }
-        while adapter.configuration_request.is_none() {
-            let Some(request) = adapter.deferred_requests.pop_front() else {
-                break;
-            };
-            output.merge(adapter.request(request));
-        }
+        drain_deferred(adapter, &mut output);
     }
     output
+}
+
+fn drain_deferred(adapter: &mut PiAdapter, output: &mut AdapterOutput) {
+    while adapter.configuration_request.is_none() && adapter.pending_queue.operation.is_none() {
+        let Some(request) = adapter.deferred_requests.pop_front() else {
+            break;
+        };
+        output.merge(adapter.request(request));
+    }
 }
 
 fn configuration_refresh(adapter: &mut PiAdapter) -> AdapterOutput {

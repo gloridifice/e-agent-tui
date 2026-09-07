@@ -2,8 +2,8 @@
 
 use super::{
     agent_action, AgentRequest, ApprovalCard, ControllerAction, InputAction, InputHandlerOutcome,
-    InputPageSession, InputPageUiState, KeyCode, KeyEvent, Mutex, PageEffect, PendingCommand,
-    PromptInput, RuntimeState, UiAction,
+    InputPageSession, InputPageUiState, KeyEvent, Mutex, PageEffect, PendingCommand, PromptInput,
+    RuntimeState, UiAction,
 };
 use crate::{
     i18n::tr,
@@ -104,10 +104,14 @@ pub(super) fn apply_input_action(
 }
 
 pub(super) fn answer_approval(
-    key: &KeyEvent,
+    action: Option<crate::key_mapping::Action>,
     approval: &mut Option<ApprovalCard>,
 ) -> Vec<UiAction> {
-    let allow = matches!(key.code, KeyCode::Char('y' | 'Y'));
+    let allow = match action {
+        Some(crate::key_mapping::Action::Allow) => true,
+        Some(crate::key_mapping::Action::Deny) => false,
+        _ => return Vec::new(),
+    };
     let Some(card) = approval.take() else {
         return Vec::new();
     };
@@ -122,6 +126,15 @@ pub(super) fn apply_input_page_key(
     state: &Mutex<RuntimeState>,
     ui: &mut InputPageUiState<'_>,
 ) -> Vec<UiAction> {
+    let page = ui
+        .input_page
+        .as_ref()
+        .expect("input-page handler requires an open page");
+    if ui.config.key_mapping.resolve(page.key_scope(), key)
+        == Some(crate::key_mapping::Action::Paste)
+    {
+        return vec![UiAction::ReadClipboard];
+    }
     let was_question = ui
         .input_page
         .as_ref()

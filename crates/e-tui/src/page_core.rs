@@ -6,6 +6,13 @@
 
 use std::collections::HashMap;
 
+use crate::key_mapping::{
+    Action, MappedKey,
+    MappedKey::{Command, Text},
+};
+#[cfg(test)]
+use crate::key_mapping::{KeyMapping, Scope};
+#[cfg(test)]
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::action::AgentRequest;
@@ -18,18 +25,17 @@ pub enum Direction {
     Right,
 }
 
+#[cfg(test)]
 pub fn direction_from_key(key: &KeyEvent) -> Option<Direction> {
-    if key
-        .modifiers
-        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
-    {
-        return None;
-    }
-    match key.code {
-        KeyCode::Left | KeyCode::Char('h') => Some(Direction::Left),
-        KeyCode::Down | KeyCode::Char('j') => Some(Direction::Down),
-        KeyCode::Up | KeyCode::Char('k') => Some(Direction::Up),
-        KeyCode::Right | KeyCode::Char('l') => Some(Direction::Right),
+    direction_from_input(KeyMapping::default().input(Scope::Page, key))
+}
+
+pub fn direction_from_input(key: MappedKey) -> Option<Direction> {
+    match key {
+        Command(Action::MoveLeft) => Some(Direction::Left),
+        Command(Action::MoveDown | Action::NextOption) => Some(Direction::Down),
+        Command(Action::MoveUp | Action::PreviousOption) => Some(Direction::Up),
+        Command(Action::MoveRight) => Some(Direction::Right),
         _ => None,
     }
 }
@@ -149,20 +155,20 @@ pub enum TextEditResult {
     Cancel,
 }
 
+#[cfg(test)]
 pub fn handle_text_editor(editor: &mut TextEditor, key: &KeyEvent) -> TextEditResult {
-    match key.code {
-        KeyCode::Enter => TextEditResult::Confirm(std::mem::take(&mut editor.buf)),
-        KeyCode::Esc => TextEditResult::Cancel,
-        KeyCode::Backspace => {
+    handle_text_input(editor, KeyMapping::default().input(Scope::PageEdit, key))
+}
+
+pub fn handle_text_input(editor: &mut TextEditor, key: MappedKey) -> TextEditResult {
+    match key {
+        Command(Action::Confirm) => TextEditResult::Confirm(std::mem::take(&mut editor.buf)),
+        Command(Action::Cancel) => TextEditResult::Cancel,
+        Command(Action::DeleteBackward) => {
             editor.buf.pop();
             TextEditResult::Continue
         }
-        KeyCode::Char(character)
-            if !character.is_ascii_control()
-                && !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER) =>
-        {
+        Text(character) => {
             editor.buf.push(character);
             TextEditResult::Continue
         }

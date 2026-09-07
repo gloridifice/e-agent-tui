@@ -20,6 +20,8 @@ The Pi frontend requires the official Pi runtime on `PATH`:
 npm install --global @earendil-works/pi-coding-agent
 ```
 
+The Pi runtime must expose `queue_update`, `clear_queue`, and prompt admission acknowledgments (the 0.85.0 RPC contract). ASAP cancellation uses Pi's whole backend queue clear; see [key mappings](key-mapping.md) for the interaction semantics.
+
 ## Install from a checkout
 
 ```powershell

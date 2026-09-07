@@ -6,8 +6,9 @@ pub(super) fn render_resume_page(
     page: &ResumePage,
     viewport: &mut crate::input_page::ViewportState,
     theme: &Theme,
-    language: crate::Language,
+    config: &crate::Config,
 ) {
+    let language = config.language;
     let regions = input_page_shell(frame, area, theme);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -84,7 +85,7 @@ pub(super) fn render_resume_page(
     }
     frame.render_widget(Paragraph::new(rows), regions.body);
     frame.render_widget(
-        Paragraph::new(crate::i18n::tr(language, "input_page.resume.footer"))
+        Paragraph::new(page_key_hints(config, KeyScope::PageResume))
             .style(Style::default().fg(theme.dim)),
         regions.footer,
     );

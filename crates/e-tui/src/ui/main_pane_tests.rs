@@ -181,7 +181,7 @@ fn local_help_markdown_renders_as_styled_transcript_content() {
     let mut runtime = crate::runtime::RuntimeState::default();
     runtime.config.resolved_theme = Theme::ferra();
     runtime.push_local_markdown(crate::help::markdown(
-        crate::Language::English,
+        &runtime.config,
         &[crate::agent::CommandDescriptor {
             name: "feedback".into(),
             description: "record feedback".into(),
@@ -193,7 +193,7 @@ fn local_help_markdown_renders_as_styled_transcript_content() {
     let input = InputState::new(&state.config);
     let mut scroll = ScrollState::default();
     let theme = Theme::ferra();
-    let mut terminal = Terminal::new(TestBackend::new(120, 140)).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(120, 260)).unwrap();
 
     terminal
         .draw(|frame| {
@@ -653,7 +653,7 @@ fn extracted_main_pane_preserves_status_spacing_and_hidden_cursor() {
         "status row: {:?}",
         main_row(38)
     );
-    assert!(row(38).contains("^h Help"));
+    assert!(row(38).contains("Ctrl+H Help"));
     assert!(main_row(39).contains("refactor bridge"));
     assert_eq!(buffer[(1, 38)].bg, Color::Reset);
 }

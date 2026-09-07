@@ -4,11 +4,20 @@
 //! the common lifecycle, focus navigation, text editing, viewport anchoring,
 //! and side-effect boundary used by the main loop.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crate::key_mapping::{
+    Action, MappedKey,
+    MappedKey::{Command, Text},
+    Scope,
+};
+#[cfg(test)]
+pub use crate::page_core::{direction_from_key, handle_text_editor};
+#[cfg(test)]
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
 
 pub use crate::page_core::{
-    direction_from_key, handle_text_editor, Direction, FocusId, FocusNode, FocusState, PageEffect,
-    PageOutcome, TextEditResult, TextEditor, ViewportState,
+    direction_from_input, Direction, FocusId, FocusNode, FocusState, PageEffect, PageOutcome,
+    TextEditResult, TextEditor, ViewportState,
 };
 use crate::{
     action::AgentRequest,
@@ -95,18 +104,18 @@ impl ResumePage {
             .unwrap_or_else(|| self.sel.min(filtered.len().saturating_sub(1)));
     }
 
-    fn handle_key(&mut self, key: &KeyEvent) -> PageOutcome {
-        match key.code {
-            KeyCode::Esc => PageOutcome::close(),
-            KeyCode::Up => {
+    fn handle_input(&mut self, key: MappedKey) -> PageOutcome {
+        match key {
+            Command(Action::Cancel) => PageOutcome::close(),
+            Command(Action::Previous) => {
                 self.sel = self.sel.saturating_sub(1);
                 PageOutcome::default()
             }
-            KeyCode::Down => {
+            Command(Action::Next) => {
                 self.sel = (self.sel + 1).min(self.filtered_indices().len().saturating_sub(1));
                 PageOutcome::default()
             }
-            KeyCode::Enter => self
+            Command(Action::Confirm) => self
                 .selected_id()
                 .map(|session_id| {
                     PageOutcome::send(
@@ -117,17 +126,12 @@ impl ResumePage {
                     )
                 })
                 .unwrap_or_default(),
-            KeyCode::Backspace => {
+            Command(Action::DeleteBackward) => {
                 self.query.pop();
                 self.sel = 0;
                 PageOutcome::default()
             }
-            KeyCode::Char(character)
-                if !character.is_ascii_control()
-                    && !key.modifiers.intersects(
-                        KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
-                    ) =>
-            {
+            Text(character) => {
                 self.query.push(character);
                 self.sel = 0;
                 PageOutcome::default()
@@ -471,32 +475,28 @@ impl InputPageSession {
         }
     }
 
+    pub fn key_scope(&self) -> Scope {
+        match &self.page {
+            InputPage::Settings(settings) => settings.key_scope(),
+            InputPage::Login(login) => login.key_scope(),
+            InputPage::Resume(_) => Scope::PageResume,
+            InputPage::Question(question) if question.is_free_text() => Scope::PageQuestionEdit,
+            InputPage::Question(_) => Scope::PageQuestion,
+            _ => Scope::Page,
+        }
+    }
+
     pub fn handle_key(&mut self, key: &KeyEvent, config: &mut Config) -> PageOutcome {
-        let editing = match &self.page {
-            InputPage::Settings(settings) => settings.editing.is_some(),
-            InputPage::Login(login) => login.editing.is_some(),
-            InputPage::Resume(_) => true,
-            InputPage::Question(question) => question.is_free_text(),
-            InputPage::Model(_) | InputPage::Effort(_) | InputPage::Theme(_) => false,
-        };
-        if !editing {
-            if let Some(direction) = direction_from_key(key) {
-                if self.focus.move_in(direction) {
-                    self.sync_page_from_focus();
-                    return PageOutcome::default();
-                }
-            }
-            if key
-                .modifiers
-                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
-                && matches!(key.code, KeyCode::Char('h' | 'j' | 'k' | 'l'))
-            {
+        let key = config.key_mapping.input(self.key_scope(), key);
+        if let Some(direction) = direction_from_input(key) {
+            if self.focus.move_in(direction) {
+                self.sync_page_from_focus();
                 return PageOutcome::default();
             }
         }
 
         let outcome = match &mut self.page {
-            InputPage::Settings(settings) => match settings.handle_key(key, config) {
+            InputPage::Settings(settings) => match settings.handle_input(key, config) {
                 SettingsAction::None => PageOutcome::default(),
                 SettingsAction::Changed => PageOutcome {
                     close: false,
@@ -504,33 +504,33 @@ impl InputPageSession {
                 },
                 SettingsAction::Exit => PageOutcome::close(),
             },
-            InputPage::Login(login) => match login.handle_key(key) {
+            InputPage::Login(login) => match login.handle_input(key) {
                 LoginAction::None => PageOutcome::default(),
                 LoginAction::Exit => PageOutcome::close(),
                 LoginAction::Send(message) => PageOutcome::send(message, false),
             },
             InputPage::Model(model) => {
-                if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+                if matches!(key, Command(Action::Back | Action::Close)) {
                     PageOutcome::close()
-                } else if key.code == KeyCode::Enter {
+                } else if key == Command(Action::Confirm) {
                     model.activate(&mut self.focus)
                 } else {
                     PageOutcome::default()
                 }
             }
             InputPage::Effort(effort) => {
-                if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+                if matches!(key, Command(Action::Back | Action::Close)) {
                     PageOutcome::close()
-                } else if key.code == KeyCode::Enter {
+                } else if key == Command(Action::Confirm) {
                     effort.activate(&mut self.focus)
                 } else {
                     PageOutcome::default()
                 }
             }
             InputPage::Theme(theme) => {
-                if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+                if matches!(key, Command(Action::Back | Action::Close)) {
                     PageOutcome::close()
-                } else if key.code == KeyCode::Enter {
+                } else if key == Command(Action::Confirm) {
                     let Some(id) = self.focus.current.as_ref() else {
                         return PageOutcome::default();
                     };
@@ -550,35 +550,27 @@ impl InputPageSession {
                     PageOutcome::default()
                 }
             }
-            InputPage::Resume(resume) => resume.handle_key(key),
-            InputPage::Question(question) => match key.code {
-                KeyCode::Esc => PageOutcome::send(
+            InputPage::Resume(resume) => resume.handle_input(key),
+            InputPage::Question(question) => match key {
+                Command(Action::Cancel) => PageOutcome::send(
                     AgentRequest::CancelQuestions {
                         request_id: question.rpc_id.clone(),
                     },
                     true,
                 ),
-                KeyCode::Left | KeyCode::Char('h') if !question.is_free_text() => {
+                Command(Action::PreviousQuestion) => {
                     question.step_question(-1);
                     PageOutcome::default()
                 }
-                KeyCode::Right | KeyCode::Char('l') if !question.is_free_text() => {
+                Command(Action::NextQuestion) => {
                     question.step_question(1);
                     PageOutcome::default()
                 }
-                KeyCode::Left => {
-                    question.step_question(-1);
-                    PageOutcome::default()
-                }
-                KeyCode::Right => {
-                    question.step_question(1);
-                    PageOutcome::default()
-                }
-                KeyCode::Char(' ') if !question.is_free_text() => {
+                Command(Action::ToggleOption) if !question.is_free_text() => {
                     question.toggle_selection();
                     PageOutcome::default()
                 }
-                KeyCode::Enter => question
+                Command(Action::Confirm) => question
                     .enter()
                     .map(|answers| {
                         PageOutcome::send(
@@ -590,17 +582,11 @@ impl InputPageSession {
                         )
                     })
                     .unwrap_or_default(),
-                KeyCode::Backspace if question.is_free_text() => {
+                Command(Action::DeleteBackward) if question.is_free_text() => {
                     question.backspace();
                     PageOutcome::default()
                 }
-                KeyCode::Char(character)
-                    if question.is_free_text()
-                        && !character.is_ascii_control()
-                        && !key.modifiers.intersects(
-                            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
-                        ) =>
-                {
+                Text(character) if question.is_free_text() => {
                     question.push_char(character);
                     PageOutcome::default()
                 }

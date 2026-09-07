@@ -355,7 +355,7 @@ pub(crate) fn render_main_pane_with_cursor(
         );
         if approval_rows > 0 {
             if let Some(card) = approval {
-                render_approval(frame, chunks[1], card, theme, state.config.language);
+                render_approval(frame, chunks[1], card, theme, &state.config);
             }
         }
         if goal_rows > 0 {
@@ -397,7 +397,7 @@ pub(crate) fn render_main_pane_with_cursor(
             render_settings(frame, chunks[6], settings, &state.config, theme);
             None
         } else if let Some(login) = login.as_mut() {
-            render_login(frame, chunks[6], login, theme, state.config.language);
+            render_login(frame, chunks[6], login, theme, &state.config);
             None
         } else {
             region::composer::render(
@@ -452,7 +452,7 @@ pub(crate) fn render_main_pane_with_cursor(
                 ratatui::layout::Rect::new(page.x, y, page.width, h),
                 card,
                 theme,
-                state.config.language,
+                &state.config,
             );
         }
         y = y.saturating_add(approval_rows);

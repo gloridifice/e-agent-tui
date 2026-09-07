@@ -212,8 +212,13 @@ pub(super) fn render_suggest(
     // do not leak the transcript through the transparent completion area.
     frame.render_widget(ratatui::widgets::Clear, rect);
     let width = usize::from(rect.width);
-    let command_width = suggest
-        .matches
+    let file_paths = suggest.kind == crate::input::SuggestionKind::Files;
+    let labels = if file_paths {
+        &suggest.descriptions
+    } else {
+        &suggest.matches
+    };
+    let command_width = labels
         .iter()
         .map(|command| UnicodeWidthStr::width(command.as_str()))
         .max()
@@ -225,13 +230,7 @@ pub(super) fn render_suggest(
         "─".repeat(width),
         theme.input.hint.style(),
     )));
-    for (index, command) in suggest
-        .matches
-        .iter()
-        .enumerate()
-        .skip(start)
-        .take(visible_rows)
-    {
+    for (index, command) in labels.iter().enumerate().skip(start).take(visible_rows) {
         let selected = index == suggest.sel;
         // Keep the fill-in command intact. On narrow rows the description
         // yields all remaining space before the command is clipped by the
@@ -239,11 +238,15 @@ pub(super) fn render_suggest(
         let command_text = command.clone();
         let command_used = UnicodeWidthStr::width(command_text.as_str());
         let gap = description_column.saturating_sub(2 + command_used);
-        let description = suggest
-            .descriptions
-            .get(index)
-            .map(String::as_str)
-            .unwrap_or("");
+        let description = if file_paths {
+            ""
+        } else {
+            suggest
+                .descriptions
+                .get(index)
+                .map(String::as_str)
+                .unwrap_or("")
+        };
         let description_width = width.saturating_sub(description_column);
         let description_text = if description_width == 0 {
             String::new()
@@ -457,6 +460,28 @@ mod tests {
         assert_eq!(row, "  /model");
         assert!(!row.contains('…'));
         assert!(!row.contains("Select"));
+    }
+
+    #[test]
+    fn path_suggestion_displays_only_the_entry_name() {
+        let backend = TestBackend::new(30, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let suggestion = Suggestion {
+            query: "Please read @foo/".into(),
+            sel: 0,
+            matches: vec!["Please read @foo/a.rs".into()],
+            descriptions: vec!["a.rs".into()],
+            sources: vec![CommandSource::Builtin],
+            kind: crate::input::SuggestionKind::Files,
+        };
+        terminal
+            .draw(|frame| {
+                render_suggest(frame, &suggestion, Rect::new(0, 4, 30, 1), &Theme::ferra())
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let row = (0..30).map(|x| buffer[(x, 2)].symbol()).collect::<String>();
+        assert_eq!(row.trim(), "a.rs");
     }
 
     #[test]

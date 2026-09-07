@@ -22,6 +22,10 @@ pub trait AgentRequestPort {
 }
 
 pub trait UiActionPorts {
+    fn complete_paths(
+        &mut self,
+        request: &crate::path_completion::PathCompletionRequest,
+    ) -> impl Future<Output = Vec<crate::path_completion::PathCandidate>> + Send;
     fn load_config(&mut self) -> Result<(Config, Vec<ThemeFile>), String>;
     fn persist_config(&mut self, config: &Config) -> Result<(), String>;
     fn persist_session_id(&mut self, session_id: String);
@@ -93,6 +97,12 @@ impl ScriptedUiActionPorts {
 
 #[cfg(any(test, feature = "test-support"))]
 impl UiActionPorts for ScriptedUiActionPorts {
+    async fn complete_paths(
+        &mut self,
+        _request: &crate::path_completion::PathCompletionRequest,
+    ) -> Vec<crate::path_completion::PathCandidate> {
+        Vec::new()
+    }
     fn load_config(&mut self) -> Result<(Config, Vec<ThemeFile>), String> {
         self.loaded_config
             .take()

@@ -31,6 +31,13 @@ pub async fn execute_ui_actions(
     let mut execution = EffectExecution::default();
     for action in actions {
         match action {
+            UiAction::CompletePaths(request) => {
+                let candidates = ports.complete_paths(&request).await;
+                execution.completed.push(EffectResult::PathsCompleted {
+                    request,
+                    candidates,
+                });
+            }
             UiAction::Agent(request) => {
                 if let Err(error) = agent.send_agent_request(request).await {
                     execution.fatal = Some(error);
@@ -145,6 +152,12 @@ mod tests {
     }
 
     impl UiActionPorts for RecordingPorts {
+        async fn complete_paths(
+            &mut self,
+            _request: &crate::path_completion::PathCompletionRequest,
+        ) -> Vec<crate::path_completion::PathCandidate> {
+            Vec::new()
+        }
         fn load_config(&mut self) -> Result<(Config, Vec<ThemeFile>), String> {
             Err("not used".into())
         }

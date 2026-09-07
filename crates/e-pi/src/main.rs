@@ -82,6 +82,15 @@ async fn main() -> anyhow::Result<()> {
 struct PiRuntimePorts;
 
 impl UiActionPorts for PiRuntimePorts {
+    async fn complete_paths(
+        &mut self,
+        request: &e_tui::path_completion::PathCompletionRequest,
+    ) -> Vec<e_tui::path_completion::PathCandidate> {
+        let request = request.clone();
+        tokio::task::spawn_blocking(move || e_pi::path_completion::complete(&request))
+            .await
+            .unwrap_or_default()
+    }
     fn load_config(&mut self) -> Result<(Config, Vec<ThemeFile>), String> {
         let mut config = e_pi::config::load();
         let themes = e_pi::effects::load_themes(&e_pi::config::themes_dir());

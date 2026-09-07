@@ -54,6 +54,21 @@ pub(super) fn apply_effect_result(
     now: Instant,
 ) -> bool {
     match result {
+        EffectResult::PathsCompleted {
+            request,
+            candidates,
+        } => {
+            let mut app = state.lock().unwrap();
+            if app.session.session_cwd.as_deref() != Some(request.cwd.as_str())
+                || app.reading.is_some()
+                || app.interaction.input_page.is_some()
+                || app.interaction.approval.is_some()
+                || app.interaction.help_visible
+            {
+                return false;
+            }
+            app.interaction.input.complete_paths(request, candidates)
+        }
         EffectResult::ConfigPersisted(Ok(())) | EffectResult::ConfigReloaded { .. } => false,
         EffectResult::ClipboardRead(Ok(content)) => {
             let mut app = state.lock().unwrap();
@@ -185,6 +200,43 @@ mod tests {
             panic!("expected an error block");
         };
         block.content.clone()
+    }
+
+    #[test]
+    fn path_results_require_current_workspace_and_composer_context() {
+        let state = Mutex::new(RuntimeState::default());
+        let request = {
+            let mut app = state.lock().unwrap();
+            app.session.session_cwd = Some("root".into());
+            app.interaction.input.restore_text("@".into());
+            app.interaction.input.next_path_request("root").unwrap()
+        };
+        let result = EffectResult::PathsCompleted {
+            request,
+            candidates: vec![crate::path_completion::PathCandidate {
+                path: "foo/".into(),
+                label: "foo/".into(),
+            }],
+        };
+        state.lock().unwrap().session.session_cwd = Some("other".into());
+        assert!(!apply_effect_result(result.clone(), &state, Instant::now()));
+        state.lock().unwrap().session.session_cwd = Some("root".into());
+        state.lock().unwrap().interaction.help_visible = true;
+        assert!(!apply_effect_result(result.clone(), &state, Instant::now()));
+        state.lock().unwrap().interaction.help_visible = false;
+        assert!(apply_effect_result(result, &state, Instant::now()));
+        assert_eq!(
+            state
+                .lock()
+                .unwrap()
+                .interaction
+                .input
+                .suggest
+                .as_ref()
+                .unwrap()
+                .matches,
+            ["@foo/"]
+        );
     }
 
     #[test]

@@ -47,6 +47,15 @@ impl BridgeTransportPort for mpsc::Sender<ClientMessage> {
 pub struct ProductionRuntimePorts;
 
 impl UiActionPorts for ProductionRuntimePorts {
+    async fn complete_paths(
+        &mut self,
+        request: &e_tui::path_completion::PathCompletionRequest,
+    ) -> Vec<e_tui::path_completion::PathCandidate> {
+        let request = request.clone();
+        tokio::task::spawn_blocking(move || crate::path_completion::complete(&request))
+            .await
+            .unwrap_or_default()
+    }
     fn load_config(&mut self) -> Result<(Config, Vec<ThemeFile>), String> {
         let mut config = config::load();
         let themes = theme::load_themes(&config::themes_dir());

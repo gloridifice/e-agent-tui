@@ -47,6 +47,7 @@ pub(super) fn help_overlay(config: &crate::Config, theme: &Theme) -> Vec<Line<'s
         (Message, &[NewLine, Paste]),
         (Message, &[CancelOrInterrupt]),
         (Message, &[ClearOrQuit]),
+        (MessageSuggest, &[Complete, Accept, Cancel]),
         (ReadMode, &[MoveUp, MoveDown, CopyBlock]),
         (ReadMode, &[MoveUpFast, MoveDownFast]),
         (ReadMode, &[EnterItems, Exit]),
@@ -61,6 +62,10 @@ pub(super) fn help_overlay(config: &crate::Config, theme: &Theme) -> Vec<Line<'s
             style,
         ));
     }
+    rows.push(Line::styled(
+        tr(config.language, "help.path_completion"),
+        style,
+    ));
     rows.push(Line::styled(tr(config.language, "help.mouse_copy"), style));
     rows.push(Line::styled(
         tr(config.language, "help.mouse_resize"),

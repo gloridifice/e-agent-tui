@@ -718,6 +718,12 @@ mod tests {
     }
 
     impl UiActionPorts for ClipboardPorts {
+        async fn complete_paths(
+            &mut self,
+            _request: &e_tui::path_completion::PathCompletionRequest,
+        ) -> Vec<e_tui::path_completion::PathCandidate> {
+            Vec::new()
+        }
         fn load_config(
             &mut self,
         ) -> Result<(e_dsh::config::Config, Vec<e_dsh::theme::ThemeFile>), String> {

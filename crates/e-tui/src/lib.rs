@@ -30,6 +30,7 @@ pub mod mermaid;
 pub mod mouse_selection;
 pub mod notice;
 pub mod page_core;
+pub mod path_completion;
 pub mod presentation;
 pub mod preview;
 pub mod profile;

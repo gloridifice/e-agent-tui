@@ -195,6 +195,10 @@ pub fn clipboard_preview(text: &str, limit: usize) -> (String, bool) {
 
 #[derive(Debug, Clone)]
 pub enum EffectResult {
+    PathsCompleted {
+        request: crate::path_completion::PathCompletionRequest,
+        candidates: Vec<crate::path_completion::PathCandidate>,
+    },
     ConfigPersisted(Result<(), String>),
     ConfigReloaded {
         config: Box<Config>,
@@ -225,6 +229,7 @@ pub enum DrawPriority {
 
 #[derive(Debug, Clone)]
 pub enum UiAction {
+    CompletePaths(crate::path_completion::PathCompletionRequest),
     Agent(AgentRequest),
     ResolvePreview(PreviewRequest),
     PersistConfig(Config),

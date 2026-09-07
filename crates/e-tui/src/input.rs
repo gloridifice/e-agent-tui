@@ -73,8 +73,9 @@ pub struct InputState {
     pub integrated_commands: Vec<CommandDescriptor>,
     #[cfg(test)]
     pub skills: Vec<Skill>,
-    /// Slash-command suggestion popup, when open.
+    /// Command or project-path suggestion popup, when open.
     pub suggest: Option<Suggestion>,
+    path_request: Option<crate::path_completion::PathCompletionRequest>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,6 +138,7 @@ pub enum SuggestionKind {
     Models,
     Efforts,
     Skills,
+    Files,
 }
 
 /// Normalize terminal and system-clipboard line endings to the frontend's
@@ -182,11 +184,87 @@ impl InputState {
             #[cfg(test)]
             skills: Vec::new(),
             suggest: None,
+            path_request: None,
         }
+    }
+
+    pub fn sync_path_workspace(&mut self, cwd: &str) {
+        if self
+            .path_request
+            .as_ref()
+            .is_some_and(|request| request.cwd != cwd)
+        {
+            self.path_request = None;
+            if self
+                .suggest
+                .as_ref()
+                .is_some_and(|s| s.kind == SuggestionKind::Files)
+            {
+                self.suggest = None;
+            }
+        }
+    }
+
+    pub fn next_path_request(
+        &mut self,
+        cwd: &str,
+    ) -> Option<crate::path_completion::PathCompletionRequest> {
+        let request = if self.paste_blocks.is_empty()
+            && self.image_blocks.is_empty()
+            && self.search.is_none()
+        {
+            crate::path_completion::PathCompletionRequest::new(cwd, &self.buf, self.cursor)
+        } else {
+            None
+        };
+        if request == self.path_request {
+            return None;
+        }
+        self.path_request = request.clone();
+        if self
+            .suggest
+            .as_ref()
+            .is_some_and(|s| s.kind == SuggestionKind::Files)
+        {
+            self.suggest = None;
+        }
+        request
+    }
+
+    pub fn complete_paths(
+        &mut self,
+        request: crate::path_completion::PathCompletionRequest,
+        candidates: Vec<crate::path_completion::PathCandidate>,
+    ) -> bool {
+        if self.path_request.as_ref() != Some(&request)
+            || self.buf != request.buffer
+            || self.cursor != request.cursor
+            || !self.paste_blocks.is_empty()
+            || !self.image_blocks.is_empty()
+            || self.search.is_some()
+        {
+            return false;
+        }
+        self.suggest = (!candidates.is_empty()).then(|| Suggestion {
+            query: self.buf.clone(),
+            sel: 0,
+            matches: candidates.iter().map(|c| request.fill(&c.path).0).collect(),
+            descriptions: candidates.iter().map(|c| c.label.clone()).collect(),
+            sources: vec![CommandSource::Builtin; candidates.len()],
+            kind: SuggestionKind::Files,
+        });
+        true
     }
 
     /// Rebuild any open popup after the sole catalog owner changes.
     pub fn catalog_changed(&mut self, catalogs: &CatalogModel) {
+        if self
+            .suggest
+            .as_ref()
+            .is_some_and(|s| s.kind == SuggestionKind::Files)
+        {
+            return;
+        }
         let selected = self
             .suggest
             .as_ref()
@@ -654,6 +732,52 @@ impl InputState {
             }
             self.search = Some(search);
             return InputAction::None;
+        }
+
+        if self
+            .suggest
+            .as_ref()
+            .is_some_and(|s| s.kind == SuggestionKind::Files)
+        {
+            match mapped {
+                Command(Action::Cancel) => {
+                    self.suggest = None;
+                    return InputAction::None;
+                }
+                Command(Action::Previous | Action::Next) => {
+                    let s = self.suggest.as_mut().unwrap();
+                    s.sel = if mapped == Command(Action::Previous) {
+                        s.sel.saturating_sub(1)
+                    } else {
+                        (s.sel + 1).min(s.matches.len() - 1)
+                    };
+                    return InputAction::None;
+                }
+                Command(Action::Complete | Action::Accept) => {
+                    let s = self.suggest.take().unwrap();
+                    let request = self.path_request.clone().unwrap();
+                    let suffix_len = request.buffer.chars().count() - request.token.end;
+                    self.buf = s.matches[s.sel].clone();
+                    self.cursor = self.buf.chars().count() - suffix_len;
+                    self.hist_idx = None;
+                    self.path_request = if s.descriptions[s.sel].ends_with('/') {
+                        if self.buf.chars().nth(self.cursor - 1) == Some('"') {
+                            self.cursor -= 1;
+                        }
+                        None
+                    } else {
+                        crate::path_completion::PathCompletionRequest::new(
+                            &request.cwd,
+                            &self.buf,
+                            self.cursor,
+                        )
+                    };
+                    return InputAction::None;
+                }
+                _ => {
+                    self.suggest = None;
+                }
+            }
         }
 
         // Slash-command suggestion popup: navigation owns the keys while open.
@@ -1557,6 +1681,87 @@ mod tests {
         s.handle_key(&key(KeyCode::Enter), true);
         assert_eq!(s.buf, "help me");
         assert!(s.search.is_none());
+    }
+
+    fn path_candidates(paths: &[&str]) -> Vec<crate::path_completion::PathCandidate> {
+        paths
+            .iter()
+            .map(|path| crate::path_completion::PathCandidate {
+                path: (*path).into(),
+                label: path
+                    .trim_end_matches('/')
+                    .rsplit('/')
+                    .next()
+                    .unwrap()
+                    .to_owned()
+                    + if path.ends_with('/') { "/" } else { "" },
+            })
+            .collect()
+    }
+
+    #[test]
+    fn path_completion_descends_without_sending_and_preserves_surrounding_text() {
+        let mut s = state();
+        s.restore_text("看 @ 后面".into());
+        s.cursor = 3;
+        let request = s.next_path_request("root").unwrap();
+        assert!(s.complete_paths(request, path_candidates(&["foo/", "bar/"])));
+        s.handle_key(&key(KeyCode::Down), true);
+        assert_eq!(s.buf, "看 @ 后面", "navigation must not edit the draft");
+        assert_eq!(s.handle_key(&key(KeyCode::Tab), true), InputAction::None);
+        assert_eq!(s.buf, "看 @bar/ 后面");
+        let request = s.next_path_request("root").unwrap();
+        assert_eq!(request.query, "bar/");
+        s.complete_paths(request, path_candidates(&["bar/c.rs", "bar/d.rs"]));
+        assert_eq!(s.handle_key(&key(KeyCode::Enter), true), InputAction::None);
+        assert_eq!(s.buf, "看 @bar/c.rs 后面");
+        assert!(s.next_path_request("root").is_none());
+        assert!(s.suggest.is_none());
+        assert!(matches!(
+            s.handle_key(&key(KeyCode::Enter), true),
+            InputAction::Send(_)
+        ));
+    }
+
+    #[test]
+    fn path_completion_rejects_stale_results_and_escape_stays_closed() {
+        let mut s = state();
+        s.restore_text("@".into());
+        let stale = s.next_path_request("root").unwrap();
+        s.handle_key(&key(KeyCode::Char('f')), true);
+        let current = s.next_path_request("root").unwrap();
+        assert!(!s.complete_paths(stale, path_candidates(&["bar/"])));
+        s.complete_paths(current, path_candidates(&["foo/"]));
+        s.catalog_changed(&CatalogModel::default());
+        assert!(s.suggest.is_some());
+        s.handle_key(&key(KeyCode::Esc), true);
+        assert_eq!(s.buf, "@f");
+        assert!(s.next_path_request("root").is_none());
+        assert!(s.suggest.is_none());
+        let request = s.next_path_request("other-root").unwrap();
+        s.complete_paths(request, path_candidates(&["fresh/"]));
+        s.sync_path_workspace("third-root");
+        assert!(s.suggest.is_none());
+        assert!(s.next_path_request("third-root").is_some());
+        s.paste_placeholder_chars = 1;
+        s.paste("long paste");
+        assert!(s.next_path_request("root").is_none());
+    }
+
+    #[test]
+    fn path_completion_keeps_quoted_directory_editable() {
+        let mut s = state();
+        s.restore_text("@".into());
+        let request = s.next_path_request("root").unwrap();
+        s.complete_paths(request, path_candidates(&["foo bar/"]));
+        s.handle_key(&key(KeyCode::Tab), true);
+        assert_eq!(s.buf, "@\"foo bar/\"");
+        s.handle_key(&key(KeyCode::Char('a')), true);
+        let request = s.next_path_request("root").unwrap();
+        assert_eq!(request.query, "foo bar/a");
+        s.complete_paths(request, path_candidates(&["foo bar/a.rs"]));
+        s.handle_key(&key(KeyCode::Tab), true);
+        assert_eq!(s.buf, "@\"foo bar/a.rs\"");
     }
 
     #[test]

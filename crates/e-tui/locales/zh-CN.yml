@@ -168,6 +168,7 @@ controller.runtime_error: "运行时错误 %{code}：%{message}"
 controller.new_failed: "创建新对话失败：%{message}"
 terminal.no_readable_content: "没有可阅读的内容"
 terminal.command_no_images: "此命令不接受图片"
+help.path_completion: "@：浏览项目路径；确认只补全，不发送"
 help.builtin_commands: "内置命令"
 help.runtime_commands: "当前运行时命令"
 key.navigate: "移动"
@@ -238,6 +239,7 @@ help.body: |
   - 拖选期间固定画面，后台继续运行，松开恢复刷新；仅复制可见遮罩、占位符和省略号，去掉每行末尾的普通空格。
   - 鼠标滚轮滚动消息并取消选区；在分隔条按下用于调整宽度，从其他位置开始的文字选区可包含分隔条符号。
   - 输入 `/` 补全内置命令与运行时命令。
+  - 输入 `@` 浏览项目相对路径。确认候选只补全、不发送；选择目录后继续浏览，含空格的路径自动加引号。
 
   ## 当前按键映射
 overlay.help.title: "帮助 — e"

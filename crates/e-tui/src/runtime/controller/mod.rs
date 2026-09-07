@@ -169,7 +169,27 @@ impl RuntimeController {
         selection_frame: &SelectionFrame,
         ui: &mut TerminalUiState<'_>,
     ) -> Vec<UiAction> {
-        terminal::apply_terminal_route(route, size, now, state, selection_frame, ui)
+        {
+            let app = state.lock().unwrap();
+            ui.input
+                .sync_path_workspace(app.session.session_cwd.as_deref().unwrap_or(""));
+        }
+        let mut effects =
+            terminal::apply_terminal_route(route, size, now, state, selection_frame, ui);
+        let app = state.lock().unwrap();
+        if ui.input_page.is_none()
+            && ui.approval.is_none()
+            && !*ui.help_visible
+            && app.reading.is_none()
+        {
+            if let Some(request) = ui
+                .input
+                .next_path_request(app.session.session_cwd.as_deref().unwrap_or(""))
+            {
+                effects.push(UiAction::CompletePaths(request));
+            }
+        }
+        effects
     }
 
     /// Apply one normalized agent fact and return deferred external effects.
@@ -243,6 +263,48 @@ mod tests {
         Language,
     };
     use ratatui::text::Line;
+
+    #[test]
+    fn typing_at_requests_paths_from_the_session_workspace() {
+        let state = Arc::new(Mutex::new(RuntimeState::default()));
+        state.lock().unwrap().session.session_cwd = Some("project-root".into());
+        let mut config = Config::default();
+        let mut theme = config.theme();
+        let mut themes = Vec::new();
+        let mut interaction = crate::interaction::InteractionModel::default();
+        let effects = RuntimeController::apply_terminal_route(
+            TerminalRoute::Ordinary(KeyEvent::new(KeyCode::Char('@'), KeyModifiers::NONE)),
+            TerminalSize {
+                width: 80,
+                height: 24,
+            },
+            Instant::now(),
+            &state,
+            &SelectionFrame::default(),
+            &mut TerminalUiState {
+                scroll: &mut interaction.scroll,
+                input: &mut interaction.input,
+                input_page: &mut interaction.input_page,
+                help_visible: &mut interaction.help_visible,
+                notice: &mut interaction.notice,
+                mouse_selection: &mut interaction.mouse_selection,
+                pane_resize: &mut interaction.pane_resize,
+                approval: &mut interaction.approval,
+                question: &mut interaction.question,
+                queue: &mut interaction.queue,
+                config: &mut config,
+                themes: &mut themes,
+                theme: &mut theme,
+            },
+        );
+        let [UiAction::CompletePaths(request)] = effects.as_slice() else {
+            panic!("typing @ must request local path completion, not an agent command");
+        };
+        assert_eq!(request.cwd, "project-root");
+        assert_eq!(request.buffer, "@");
+        assert_eq!(request.query, "");
+        assert!(state.try_lock().is_ok());
+    }
 
     fn open_help_suggestion(input: &mut InputState, catalogs: &crate::CatalogModel) {
         input.handle_key_with_catalog(

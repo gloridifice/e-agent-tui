@@ -168,6 +168,7 @@ controller.runtime_error: "Runtime error %{code}: %{message}"
 controller.new_failed: "New conversation failed: %{message}"
 terminal.no_readable_content: "There is no readable content"
 terminal.command_no_images: "This command does not accept images"
+help.path_completion: "@: browse project paths; accept fills without sending"
 help.builtin_commands: "Built-in commands"
 help.runtime_commands: "Current runtime commands"
 key.navigate: "Move"
@@ -238,6 +239,7 @@ help.body: |
   - The display stays fixed while selecting; background work continues and live display resumes on release. Only displayed masks, placeholders, and ellipses are copied; trailing ordinary spaces are omitted.
   - Mouse wheel scrolls messages and cancels selection. A separator press resizes; a text drag starting elsewhere can include its visible glyph.
   - Type `/` to complete built-in and runtime commands.
+  - Type `@` to browse project-relative paths. Completion accepts a path without sending; directories continue browsing. Paths containing spaces are quoted.
 
   ## Active key mappings
 overlay.help.title: "Help — e"

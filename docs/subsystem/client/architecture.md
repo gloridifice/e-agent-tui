@@ -322,6 +322,7 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   receiving a new `commands`/`skills`/model-catalog frame, refresh any open prompt
   immediately; on session switch, clear the old agent-scoped catalog first. Generic execution must not pre-`start_thinking`; the result
   is projected directly to System/Error by `command-result`.
+- **Project path completion** (`path_completion.rs` + `input.rs`): a whitespace-delimited `@` token (optionally quoted for spaces) requests directory-hierarchy completion relative to the current session cwd. The frontend owns token ranges, cursor-safe replacement, and the shared suggestion popup; executable adapters perform bounded directory reads through `UiActionPorts` outside state guards. Owned results are admitted only for the matching draft, cursor, and cwd. Path navigation does not edit the draft; accepting a candidate fills only its token without sending, and directories continue browsing. Paste/image blocks suppress completion, preserving their atomic ranges.
 - **Startup and deferred `/new`**: a new process sends hello without `resumeSessionId`, and the bridge still
   creates a session in place (`hello.cwd` workspace + `hello.mode` default mode, falling back to standard on
   failure); only a CLI session id and "remember last session" (default off) resume. `/resume` opens the resume

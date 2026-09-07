@@ -9,6 +9,7 @@ pub mod adapter;
 pub mod config;
 pub mod effects;
 pub mod framing;
+pub mod path_completion;
 pub mod process;
 pub mod protocol;
 pub mod session_index;

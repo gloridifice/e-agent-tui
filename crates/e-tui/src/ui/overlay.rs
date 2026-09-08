@@ -52,6 +52,11 @@ pub(super) fn help_overlay(config: &crate::Config, theme: &Theme) -> Vec<Line<'s
         (ReadMode, &[MoveUpFast, MoveDownFast]),
         (ReadMode, &[EnterItems, Exit]),
         (ReadModeItem, &[BackToBlocks]),
+        (History, &[MoveUp, MoveDown, Exit]),
+        (
+            History,
+            &[MoveUpHalf, MoveDownHalf, MoveUpFast, MoveDownFast],
+        ),
         (Page, &[Confirm, Back]),
         (Approval, &[Allow, Deny]),
         (Help, &[Close]),

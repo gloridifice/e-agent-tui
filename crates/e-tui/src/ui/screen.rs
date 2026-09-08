@@ -246,10 +246,6 @@ pub(super) fn render_with_cursor(
     theme: &Theme,
     overlays: RenderOverlays<'_>,
 ) -> Option<Position> {
-    if let Some(history_page) = &mut state.history_page {
-        pane::history::render(frame, frame.area(), history_page, &state.config, theme);
-        return None;
-    }
     let pane_resize = overlays.pane_resize;
     if pane_resize.is_active() {
         return render_resize_placeholder(
@@ -278,71 +274,63 @@ pub(super) fn render_with_cursor(
         approval,
         queue,
     };
+    let preview_fullscreen = state.preview.fullscreen && state.history_page.is_none();
     let screen_layout = layout(
         frame.area(),
         state.config.message_pane_percent,
-        state.preview.fullscreen,
+        preview_fullscreen,
     );
     let cursor = match screen_layout {
-        ScreenLayout::MainOnly(main) => {
-            let cursor = pane::main::render_with_cursor(
-                frame,
-                main,
-                state,
-                input,
-                scroll,
-                theme,
-                pane_overlays,
-                true,
-            );
-            state.rebuild_reading_model();
-            render_reading_rail(frame, main, state, scroll, theme, true);
-            render_reading_item(frame, main, state, scroll, theme, true);
-            cursor
+        ScreenLayout::MainOnly(main) | ScreenLayout::Split { main, .. } => {
+            if let Some(history_page) = &mut state.history_page {
+                pane::history::render(frame, main, history_page, &state.config, theme);
+                None
+            } else {
+                let collapsed = matches!(screen_layout, ScreenLayout::MainOnly(_));
+                let cursor = pane::main::render_with_cursor(
+                    frame,
+                    main,
+                    state,
+                    input,
+                    scroll,
+                    theme,
+                    pane_overlays,
+                    collapsed,
+                );
+                state.rebuild_reading_model();
+                render_reading_rail(frame, main, state, scroll, theme, collapsed);
+                render_reading_item(frame, main, state, scroll, theme, collapsed);
+                cursor
+            }
         }
-        ScreenLayout::Split { main, preview } => {
-            let cursor = pane::main::render_with_cursor(
-                frame,
-                main,
-                state,
-                input,
-                scroll,
-                theme,
-                pane_overlays,
-                false,
-            );
-            state.rebuild_reading_model();
-            render_reading_rail(frame, main, state, scroll, theme, false);
-            render_reading_item(frame, main, state, scroll, theme, false);
-            pane::preview::render(
-                frame,
-                preview,
-                &mut state.preview,
-                &state.config,
-                theme,
-                PREVIEW_SPLIT_LEFT_PADDING,
-                PREVIEW_SPLIT_RIGHT_PADDING,
-            );
-            cursor
-        }
-        ScreenLayout::PreviewOnly(preview) => {
-            pane::preview::render(
-                frame,
-                preview,
-                &mut state.preview,
-                &state.config,
-                theme,
-                PREVIEW_FULLSCREEN_LEFT_PADDING,
-                PREVIEW_FULLSCREEN_RIGHT_PADDING,
-            );
-            None
-        }
+        ScreenLayout::PreviewOnly(_) => None,
     };
+    match screen_layout {
+        ScreenLayout::Split { preview, .. } => pane::preview::render(
+            frame,
+            preview,
+            &mut state.preview,
+            &state.config,
+            theme,
+            PREVIEW_SPLIT_LEFT_PADDING,
+            PREVIEW_SPLIT_RIGHT_PADDING,
+        ),
+        ScreenLayout::PreviewOnly(preview) => pane::preview::render(
+            frame,
+            preview,
+            &mut state.preview,
+            &state.config,
+            theme,
+            PREVIEW_FULLSCREEN_LEFT_PADDING,
+            PREVIEW_FULLSCREEN_RIGHT_PADDING,
+        ),
+        ScreenLayout::MainOnly(_) => {}
+    }
     if !matches!(screen_layout, ScreenLayout::PreviewOnly(_)) {
         if let Some(column) = separator_column(
             frame.area(),
             state.config.message_pane_percent,
-            state.preview.fullscreen,
+            preview_fullscreen,
         ) {
             paint_separator(frame, frame.area(), column, theme, false);
         }

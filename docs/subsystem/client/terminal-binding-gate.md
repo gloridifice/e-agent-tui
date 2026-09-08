@@ -32,4 +32,6 @@ Before claiming physical compatibility for a terminal family, test Windows Termi
 
 8. In `/model`, use Shift+A to mark the focused model and repeat it to remove the mark. Mark again, reopen the page, browse another provider, and press `a` to select and close. Confirm default `h/j/k/l/q` cannot be marked, a newly conflicting page/global binding suppresses a saved mark after reload, and the Bark suffix remains visible when the model name is truncated.
 
+9. Open `/history` and verify it directly shows the session-wide Top 50 ranking in the message pane, keeping split Preview visible. Tab must not switch views or edit the retained draft. Verify row/half-page/full-page movement and Esc/q exit, including remapped or disabled `full_screen` bindings.
+
 Physical runs for the new defaults must be recorded separately; automated success alone does not mark this matrix complete.

@@ -1,14 +1,6 @@
-//! Session-scoped state for the full-screen execution-history page.
+//! Session-scoped state for the execution-history ranking page.
 
-use crate::execution_history::{
-    calls_from_records, ExecutionCall, ExecutionRecord, HistoryQueryResult,
-};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HistoryView {
-    Turns,
-    Longest,
-}
+use crate::execution_history::{ExecutionCall, HistoryQueryResult};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HistoryLoadState {
@@ -24,17 +16,9 @@ pub struct HistoryPage {
     pub session_id: String,
     pub cwd: String,
     pub state: HistoryLoadState,
-    pub records: Vec<ExecutionRecord>,
     pub calls: Vec<ExecutionCall>,
-    pub longest_calls: Option<Vec<ExecutionCall>>,
     pub warnings: Vec<String>,
-    pub watermark: Option<u64>,
-    pub next_offset: u64,
-    pub has_more: bool,
-    pub loading_more: bool,
-    pub view: HistoryView,
-    pub turns_offset: usize,
-    pub longest_offset: usize,
+    offset: usize,
     pub body_height: usize,
 }
 
@@ -45,49 +29,19 @@ impl HistoryPage {
             session_id,
             cwd,
             state: HistoryLoadState::Loading,
-            records: Vec::new(),
             calls: Vec::new(),
-            longest_calls: None,
             warnings: Vec::new(),
-            watermark: None,
-            next_offset: 0,
-            has_more: false,
-            loading_more: false,
-            view: HistoryView::Turns,
-            turns_offset: 0,
-            longest_offset: 0,
+            offset: 0,
             body_height: 1,
         }
     }
 
-    pub fn complete(
-        &mut self,
-        request_id: u64,
-        kind: crate::execution_history::HistoryQueryKind,
-        mut result: HistoryQueryResult,
-    ) -> bool {
+    pub fn complete(&mut self, request_id: u64, result: HistoryQueryResult) -> bool {
         if self.request_id != request_id {
             return false;
         }
-        if kind == crate::execution_history::HistoryQueryKind::Longest50 {
-            self.longest_calls = Some(result.ranked_calls);
-            self.loading_more = false;
-            return true;
-        }
-        if result.next_offset > 0 && !self.records.is_empty() {
-            self.records.append(&mut result.records);
-            self.warnings.append(&mut result.warnings);
-            self.warnings.sort();
-            self.warnings.dedup();
-        } else {
-            self.records = result.records;
-            self.warnings = result.warnings;
-        }
-        self.calls = calls_from_records(&self.records);
-        self.watermark = Some(result.watermark);
-        self.next_offset = result.next_offset;
-        self.has_more = result.has_more;
-        self.loading_more = false;
+        self.calls = result.ranked_calls;
+        self.warnings = result.warnings;
         self.state = if self.calls.is_empty() {
             HistoryLoadState::Empty
         } else {
@@ -100,82 +54,87 @@ impl HistoryPage {
         if self.request_id != request_id {
             return false;
         }
-        self.loading_more = false;
         self.state = HistoryLoadState::Error(error);
         true
     }
 
     pub fn offset(&self) -> usize {
-        match self.view {
-            HistoryView::Turns => self.turns_offset,
-            HistoryView::Longest => self.longest_offset,
-        }
+        self.offset
     }
 
     pub fn set_offset(&mut self, value: usize) {
-        match self.view {
-            HistoryView::Turns => self.turns_offset = value,
-            HistoryView::Longest => self.longest_offset = value,
-        }
-    }
-
-    pub fn toggle(&mut self) {
-        self.view = match self.view {
-            HistoryView::Turns => HistoryView::Longest,
-            HistoryView::Longest => HistoryView::Turns,
-        };
+        self.offset = value;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::execution_history::{ExecutionEvent, HistoryQueryResult};
+    use crate::execution_history::{
+        ExecutionOutcome, MeasuredDuration, OperationFinish, OperationKind, OperationStart,
+        OperationSummary, TimingSource,
+    };
 
-    #[test]
-    fn stale_result_is_rejected_and_views_keep_independent_offsets() {
-        let mut page = HistoryPage::loading(4, "session".into(), "root".into());
-        let stale = HistoryQueryResult {
+    fn result(calls: Vec<ExecutionCall>) -> HistoryQueryResult {
+        HistoryQueryResult {
             path: "trace".into(),
             records: Vec::new(),
-            ranked_calls: Vec::new(),
-            warnings: Vec::new(),
+            ranked_calls: calls,
+            warnings: vec!["capture incomplete".into()],
             watermark: 1,
             next_offset: 1,
             has_more: false,
-        };
-        assert!(!page.complete(3, crate::execution_history::HistoryQueryKind::Show, stale,));
-        page.set_offset(7);
-        page.toggle();
-        assert_eq!(page.offset(), 0);
-        page.set_offset(11);
-        page.toggle();
-        assert_eq!(page.offset(), 7);
-        page.toggle();
-        assert_eq!(page.offset(), 11);
+        }
     }
 
     #[test]
-    fn empty_result_has_a_distinct_state() {
+    fn stale_result_and_error_preserve_page_state_and_offset() {
+        let mut page = HistoryPage::loading(4, "session".into(), "root".into());
+        page.set_offset(7);
+        assert!(!page.complete(3, result(Vec::new())));
+        assert!(!page.fail(3, "stale error".into()));
+        assert_eq!(page.state, HistoryLoadState::Loading);
+        assert!(page.warnings.is_empty());
+        assert_eq!(page.offset(), 7);
+    }
+
+    #[test]
+    fn ranked_result_finishes_loading_without_chronological_records() {
+        let call = ExecutionCall {
+            sequence: 2,
+            run_id: "run".into(),
+            start_unix_ms: 1,
+            end_unix_ms: Some(3),
+            operation: OperationStart {
+                call_id: "call".into(),
+                turn_id: None,
+                parent_id: None,
+                kind: OperationKind::Command,
+                name: "bash".into(),
+                summary: OperationSummary::Identity,
+            },
+            finish: Some(OperationFinish {
+                call_id: "call".into(),
+                outcome: ExecutionOutcome::Success,
+                duration: Some(MeasuredDuration {
+                    duration_ms: 2,
+                    source: TimingSource::Backend,
+                }),
+                output_lines: None,
+            }),
+        };
         let mut page = HistoryPage::loading(1, "session".into(), "root".into());
-        assert!(page.complete(
-            1,
-            crate::execution_history::HistoryQueryKind::Show,
-            HistoryQueryResult {
-                path: "trace".into(),
-                records: vec![crate::execution_history::ExecutionRecord {
-                    sequence: 1,
-                    run_id: "run".into(),
-                    time_unix_ms: 1,
-                    event: ExecutionEvent::Attached,
-                }],
-                ranked_calls: Vec::new(),
-                warnings: Vec::new(),
-                watermark: 1,
-                next_offset: 1,
-                has_more: false,
-            }
-        ));
+        assert!(page.complete(1, result(vec![call.clone()])));
+        assert_eq!(page.state, HistoryLoadState::Ready);
+        assert_eq!(page.calls, vec![call]);
+        assert_eq!(page.warnings, ["capture incomplete"]);
+    }
+
+    #[test]
+    fn empty_result_retains_capture_warnings() {
+        let mut page = HistoryPage::loading(1, "session".into(), "root".into());
+        assert!(page.complete(1, result(Vec::new())));
         assert_eq!(page.state, HistoryLoadState::Empty);
+        assert_eq!(page.warnings, ["capture incomplete"]);
     }
 }

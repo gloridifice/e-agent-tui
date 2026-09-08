@@ -1,4 +1,4 @@
-//! Full-screen execution-history pane.
+//! Full-height execution history within the message pane.
 
 use ratatui::{layout::Rect, Frame};
 

@@ -1,4 +1,4 @@
-//! Full-screen execution-history document rendering.
+//! Execution-history ranking document rendering.
 
 use std::collections::BTreeMap;
 
@@ -12,7 +12,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::{
     execution_history::{ExecutionCall, ExecutionOutcome, OperationKind, OperationSummary},
-    history_page::{HistoryLoadState, HistoryPage, HistoryView},
+    history_page::{HistoryLoadState, HistoryPage},
     key_mapping::{Action, KeyMapping, Scope},
     theme::{Theme, ThemeStyle},
 };
@@ -31,14 +31,6 @@ fn put(row: &mut Row, x: usize, text: impl Into<String>, style: ThemeStyle) {
         x,
         text: text.into(),
         style: style.style(),
-    });
-}
-
-fn put_style(row: &mut Row, x: usize, text: impl Into<String>, style: Style) {
-    row.push(Run {
-        x,
-        text: text.into(),
-        style,
     });
 }
 
@@ -108,12 +100,6 @@ fn elapsed(call: &ExecutionCall) -> String {
     }
 }
 
-fn call_end(call: &ExecutionCall, observed_end: u64) -> u64 {
-    call.end_unix_ms
-        .unwrap_or(observed_end)
-        .max(call.start_unix_ms)
-}
-
 fn clip_width(text: &str, width: usize) -> String {
     if width == 0 {
         return String::new();
@@ -136,175 +122,6 @@ fn clip_width(text: &str, width: usize) -> String {
     }
     output.push('…');
     output
-}
-
-fn command_word(call: &ExecutionCall) -> String {
-    match &call.operation.summary {
-        OperationSummary::Command { command } => command
-            .split_whitespace()
-            .next()
-            .unwrap_or_default()
-            .to_owned(),
-        _ => String::new(),
-    }
-}
-
-fn lane_groups<'a>(calls: &[&'a ExecutionCall], observed_end: u64) -> Vec<Vec<&'a ExecutionCall>> {
-    let mut groups: Vec<Vec<&ExecutionCall>> = Vec::new();
-    let mut ends = Vec::new();
-    for call in calls {
-        let lane = ends
-            .iter()
-            .position(|end| *end <= call.start_unix_ms)
-            .unwrap_or(ends.len());
-        if lane == ends.len() {
-            groups.push(Vec::new());
-            ends.push(0);
-        }
-        groups[lane].push(*call);
-        ends[lane] = call_end(call, observed_end);
-    }
-    groups
-}
-
-fn timeline(
-    width: usize,
-    calls: &[&ExecutionCall],
-    theme: &Theme,
-    caption: Option<&str>,
-) -> Vec<Row> {
-    if calls.is_empty() {
-        return Vec::new();
-    }
-    let start = calls
-        .iter()
-        .map(|call| call.start_unix_ms)
-        .min()
-        .unwrap_or(0);
-    let observed_end = calls
-        .iter()
-        .filter_map(|call| call.end_unix_ms)
-        .max()
-        .unwrap_or(start);
-    let end = calls
-        .iter()
-        .map(|call| call_end(call, observed_end))
-        .max()
-        .unwrap_or(start);
-    let span = end.saturating_sub(start).max(1);
-    let groups = lane_groups(calls, observed_end);
-    let mut rows = Vec::new();
-    if let Some(caption) = caption {
-        let mut row = Vec::new();
-        put(
-            &mut row,
-            2,
-            "─".repeat(width.saturating_sub(4)),
-            theme.history.separator,
-        );
-        put(&mut row, 3, format!(" {caption} "), theme.history.heading);
-        rows.push(row);
-    }
-    let mut times = Vec::new();
-    put(&mut times, 2, clock(start, false), theme.history.metadata);
-    if width >= 10 {
-        put(
-            &mut times,
-            width.saturating_sub(10),
-            clock(end, false),
-            theme.history.metadata,
-        );
-    }
-    let duration = format!(
-        "{:.2}s{}",
-        span as f64 / 1_000.0,
-        if calls.iter().any(|call| call.end_unix_ms.is_none()) {
-            " observed"
-        } else {
-            ""
-        }
-    );
-    if width >= duration.width() + 24 {
-        put(
-            &mut times,
-            width.saturating_sub(duration.width()) / 2,
-            duration,
-            theme.history.total_elapsed,
-        );
-    }
-    rows.push(times);
-    rows.push(blank());
-    let chart_x = 7usize;
-    let chart_width = width.saturating_sub(10).max(1);
-    for (lane_index, group) in groups.iter().enumerate() {
-        let mut row = Vec::new();
-        put(
-            &mut row,
-            2,
-            format!("{:02}", lane_index + 1),
-            theme.history.metadata,
-        );
-        put(
-            &mut row,
-            chart_x,
-            "─".repeat(chart_width),
-            theme.history.separator,
-        );
-        let mut markers = Vec::new();
-        for call in group {
-            let x = ((call.start_unix_ms.saturating_sub(start) as u128 * chart_width as u128)
-                / span as u128) as usize;
-            let end_x = ((call_end(call, observed_end).saturating_sub(start) as u128
-                * chart_width as u128)
-                / span as u128) as usize;
-            let count = end_x.saturating_sub(x).min(chart_width.saturating_sub(x));
-            let operation = operation_style(theme, call.operation.kind);
-            if count == 0 {
-                put(
-                    &mut markers,
-                    chart_x + x.min(chart_width - 1),
-                    "│",
-                    operation,
-                );
-                continue;
-            }
-            let background = operation.fg;
-            put_style(
-                &mut row,
-                chart_x + x,
-                " ".repeat(count),
-                Style::default().bg(background),
-            );
-            let label = match call.operation.kind {
-                OperationKind::Model => String::new(),
-                OperationKind::Command => command_word(call),
-                kind => operation_label(kind).into(),
-            };
-            let padding = usize::from(count > 2);
-            let label = clip_width(&label, count.saturating_sub(padding * 2));
-            put_style(
-                &mut row,
-                chart_x + x + padding,
-                label,
-                theme.history.bar_text.style().bg(background),
-            );
-            if call
-                .finish
-                .as_ref()
-                .is_some_and(|finish| finish.outcome == ExecutionOutcome::Failure)
-            {
-                put_style(
-                    &mut markers,
-                    chart_x + x,
-                    "─".repeat(count),
-                    theme.working_status.failure.style(),
-                );
-            }
-        }
-        rows.push(row);
-        rows.push(markers);
-    }
-    rows
 }
 
 fn duration_styles(calls: &[&ExecutionCall], theme: &Theme) -> BTreeMap<(String, u64), ThemeStyle> {
@@ -466,8 +283,17 @@ fn record_rows(width: usize, calls: &[&ExecutionCall], theme: &Theme) -> Vec<Row
 }
 
 fn ready_document(width: usize, page: &HistoryPage, theme: &Theme) -> Vec<Row> {
-    let all: Vec<_> = page.calls.iter().collect();
-    let mut rows = timeline(width, &all, theme, None);
+    let mut heading = Vec::new();
+    put(
+        &mut heading,
+        2,
+        format!(
+            "Top 50 · elapsed descending · {} measured calls",
+            page.calls.len()
+        ),
+        theme.history.heading,
+    );
+    let mut rows = vec![heading, blank()];
     let mut legend = Vec::new();
     let mut x = 2;
     for kind in [
@@ -483,62 +309,11 @@ fn ready_document(width: usize, page: &HistoryPage, theme: &Theme) -> Vec<Row> {
     }
     rows.push(legend);
     let mut key = Vec::new();
-    put(
-        &mut key,
-        2,
-        "│ subcell · underline: failed · lines+: truncated",
-        theme.history.metadata,
-    );
+    put(&mut key, 2, "lines+: truncated", theme.history.metadata);
     rows.push(key);
-    match page.view {
-        HistoryView::Turns => {
-            let mut turns: Vec<(String, Vec<&ExecutionCall>)> = Vec::new();
-            for call in &page.calls {
-                let turn = call
-                    .operation
-                    .turn_id
-                    .clone()
-                    .unwrap_or_else(|| "unscoped".into());
-                if let Some((_, calls)) = turns.iter_mut().find(|(known, _)| known == &turn) {
-                    calls.push(call);
-                } else {
-                    turns.push((turn, vec![call]));
-                }
-            }
-            for (turn, calls) in turns {
-                rows.push(blank());
-                rows.extend(timeline(width, &calls, theme, Some(&turn)));
-                rows.extend(record_rows(width, &calls, theme));
-            }
-        }
-        HistoryView::Longest => {
-            rows.push(blank());
-            let calls = page.longest_calls.as_deref().unwrap_or_default();
-            let mut heading = Vec::new();
-            put(
-                &mut heading,
-                2,
-                if page.longest_calls.is_none() {
-                    "Top 50 · loading full-session ranking…".into()
-                } else {
-                    format!(
-                        "Top 50 · elapsed descending · {} measured calls",
-                        calls.len()
-                    )
-                },
-                theme.history.heading,
-            );
-            rows.push(heading);
-            rows.push(blank());
-            let references: Vec<_> = calls.iter().collect();
-            rows.extend(record_rows(width, &references, theme));
-        }
-    }
-    for warning in &page.warnings {
-        let mut row = Vec::new();
-        put(&mut row, 2, format!("! {warning}"), theme.log.warning);
-        rows.push(row);
-    }
+    rows.push(blank());
+    let references: Vec<_> = page.calls.iter().collect();
+    rows.extend(record_rows(width, &references, theme));
     rows
 }
 
@@ -574,7 +349,7 @@ pub fn render(
             put(
                 &mut row,
                 2,
-                "No recorded operations for this session.",
+                "Top 50 · no measured completed operations for this session.",
                 theme.history.metadata,
             );
             vec![row]
@@ -591,6 +366,11 @@ pub fn render(
         }
         HistoryLoadState::Ready => ready_document(width, page, theme),
     };
+    for warning in &page.warnings {
+        let mut row = Vec::new();
+        put(&mut row, 2, format!("! {warning}"), theme.log.warning);
+        rows.push(row);
+    }
     if rows.is_empty() {
         rows.push(blank());
     }
@@ -623,13 +403,8 @@ pub fn render(
         width.saturating_sub(4),
         theme.history.separator.style(),
     );
-    let view_hint = match page.view {
-        HistoryView::Turns => "top50",
-        HistoryView::Longest => "turns",
-    };
     let footer = format!(
-        "{} {view_hint} · {}/{} row · {}/{} half · {}/{} page · {} back",
-        key_mapping.label(Scope::History, Action::ToggleView),
+        "{}/{} row · {}/{} half · {}/{} page · {} back",
         key_mapping.label(Scope::History, Action::MoveDown),
         key_mapping.label(Scope::History, Action::MoveUp),
         key_mapping.label(Scope::History, Action::MoveDownHalf),
@@ -679,6 +454,36 @@ mod tests {
     }
 
     #[test]
+    fn empty_ranking_displays_capture_diagnostics() {
+        use ratatui::{backend::TestBackend, Terminal};
+
+        let mut page = HistoryPage::loading(1, "session".into(), "root".into());
+        page.state = HistoryLoadState::Empty;
+        page.warnings.push("capture incomplete".into());
+        let mut terminal = Terminal::new(TestBackend::new(100, 10)).unwrap();
+        terminal
+            .draw(|frame| {
+                render(
+                    frame,
+                    frame.area(),
+                    &mut page,
+                    &KeyMapping::default(),
+                    &Theme::ferra(),
+                )
+            })
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("Top 50 · no measured completed operations"));
+        assert!(text.contains("capture incomplete"));
+    }
+
+    #[test]
     fn page_resets_background_and_keeps_footer_fixed_while_document_scrolls() {
         use crate::execution_history::{
             ExecutionEvent, ExecutionRecord, MeasuredDuration, ObservedOutputLines,
@@ -687,7 +492,7 @@ mod tests {
         use ratatui::{backend::TestBackend, Terminal};
 
         let mut records = Vec::new();
-        for index in 0..8_u64 {
+        for index in 0..40_u64 {
             records.push(ExecutionRecord {
                 sequence: index * 2 + 1,
                 run_id: "run".into(),
@@ -733,14 +538,18 @@ mod tests {
                 }),
             });
         }
+        let calls = crate::execution_history::calls_from_records(&records);
+        let ranked_calls = crate::execution_history::longest_calls(&calls, 50)
+            .into_iter()
+            .cloned()
+            .collect();
         let mut page = HistoryPage::loading(1, "session".into(), "root".into());
         page.complete(
             1,
-            crate::execution_history::HistoryQueryKind::Show,
             crate::execution_history::HistoryQueryResult {
                 path: "trace".into(),
-                records,
-                ranked_calls: Vec::new(),
+                records: Vec::new(),
+                ranked_calls,
                 warnings: Vec::new(),
                 watermark: 1,
                 next_offset: 1,
@@ -768,7 +577,11 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
+        assert!(first.contains("Top 50"));
         assert!(first.contains("■ model"));
+        assert!(!first.contains("turn-"));
+        assert!(!first.contains("Tab"));
+        assert!(first.find("89ms").unwrap() < first.find("88ms").unwrap());
         assert!(first.contains("Esc / q back"));
         page.set_offset(30);
         terminal

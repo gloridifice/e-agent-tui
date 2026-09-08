@@ -50,7 +50,6 @@ pub(super) fn apply_terminal_route(
         };
         let mut changed = false;
         let mut close = false;
-        let mut moved_down = false;
         match route {
             TerminalRoute::History(key) => {
                 let current = page.offset();
@@ -61,13 +60,8 @@ pub(super) fn apply_terminal_route(
                         close = true;
                         changed = true;
                     }
-                    Some(Action::ToggleView) => {
-                        page.toggle();
-                        changed = true;
-                    }
                     Some(Action::MoveDown) => {
                         page.set_offset(current.saturating_add(1));
-                        moved_down = true;
                         changed = true;
                     }
                     Some(Action::MoveUp) => {
@@ -76,7 +70,6 @@ pub(super) fn apply_terminal_route(
                     }
                     Some(Action::MoveDownHalf) => {
                         page.set_offset(current.saturating_add(half));
-                        moved_down = true;
                         changed = true;
                     }
                     Some(Action::MoveUpHalf) => {
@@ -85,7 +78,6 @@ pub(super) fn apply_terminal_route(
                     }
                     Some(Action::MoveDownFast) => {
                         page.set_offset(current.saturating_add(full));
-                        moved_down = true;
                         changed = true;
                     }
                     Some(Action::MoveUpFast) => {
@@ -100,75 +92,19 @@ pub(super) fn apply_terminal_route(
                 page.set_offset(if up {
                     current.saturating_sub(3)
                 } else {
-                    moved_down = true;
                     current.saturating_add(3)
                 });
                 changed = true;
             }
             _ => {}
         }
-        let query_spec = if !close && !page.loading_more {
-            if page.view == crate::history_page::HistoryView::Longest
-                && page.longest_calls.is_none()
-            {
-                Some((
-                    crate::execution_history::HistoryQueryKind::Longest50,
-                    0,
-                    None,
-                    page.session_id.clone(),
-                    page.cwd.clone(),
-                ))
-            } else if page.view == crate::history_page::HistoryView::Turns
-                && moved_down
-                && page.has_more
-            {
-                Some((
-                    crate::execution_history::HistoryQueryKind::Show,
-                    page.next_offset,
-                    page.watermark,
-                    page.session_id.clone(),
-                    page.cwd.clone(),
-                ))
-            } else {
-                None
-            }
-        } else {
-            None
-        };
         if close {
             app.history_page = None;
         }
-        let mut actions: Vec<_> = changed
+        return changed
             .then_some(UiAction::RequestDraw(crate::DrawPriority::Interactive))
             .into_iter()
             .collect();
-        if let Some((kind, after_offset, watermark, session_id, cwd)) = query_spec {
-            app.next_history_request_id = app.next_history_request_id.saturating_add(1);
-            let request_id = app.next_history_request_id;
-            if let Some(page) = app.history_page.as_mut() {
-                page.request_id = request_id;
-                page.loading_more = true;
-            }
-            actions.push(UiAction::QueryHistory(
-                crate::execution_history::HistoryQueryRequest {
-                    request_id,
-                    identity: crate::execution_history::TraceIdentity {
-                        frontend: match app.frontend {
-                            crate::FrontendKind::Dsh => "e-dsh",
-                            crate::FrontendKind::Pi => "e-pi",
-                        }
-                        .into(),
-                        session_id,
-                        cwd,
-                    },
-                    kind,
-                    input_guard: None,
-                    after_offset,
-                    watermark,
-                },
-            ));
-        }
-        return actions;
     }
     let mut effects = Vec::new();
     match route {
@@ -652,7 +588,7 @@ pub(super) fn apply_ordinary_key(
                     let request_id = app.next_history_request_id;
                     let kind = match history_action {
                         crate::command_catalog::FixedSubcommandAction::HistoryShow => {
-                            crate::execution_history::HistoryQueryKind::Show
+                            crate::execution_history::HistoryQueryKind::Longest50
                         }
                         crate::command_catalog::FixedSubcommandAction::HistoryPath => {
                             crate::execution_history::HistoryQueryKind::Path
@@ -664,7 +600,7 @@ pub(super) fn apply_ordinary_key(
                             crate::execution_history::HistoryQueryKind::CopyLongest10
                         }
                     };
-                    if kind == crate::execution_history::HistoryQueryKind::Show {
+                    if kind == crate::execution_history::HistoryQueryKind::Longest50 {
                         app.history_page = Some(crate::history_page::HistoryPage::loading(
                             request_id,
                             identity.session_id.clone(),

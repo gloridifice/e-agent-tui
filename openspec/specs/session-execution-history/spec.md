@@ -2,9 +2,7 @@
 
 ## Purpose
 Provide discoverable project-local execution traces with reliable timing and activity metrics, plus terminal inspection and human-readable audit exports without retaining tool output.
-
 ## Requirements
-
 ### Requirement: Session-local execution files
 For each materialized session observed through `pie` or `dshe`, the client SHALL record execution history in `<session.cwd>/.e/e-pi/execution-history/<session-key>.jsonl` or `<session.cwd>/.e/e-dsh/execution-history/<session-key>.jsonl` respectively. The directory SHALL follow the backend-confirmed session cwd without Git-root promotion. Session keys SHALL be stable and path-safe; file headers SHALL retain and validate provider/session identity and cwd. Resume in the same cwd SHALL append to the same file with a new run identity. Native backend session storage SHALL remain unchanged. Automatic ignore setup SHALL ignore only these execution-history directories and preserve existing `.e/.gitignore` entries. The client SHALL NOT automatically delete old traces or silently relocate writes to a user directory.
 
@@ -77,7 +75,7 @@ Trace writes and queries SHALL run outside UI state locks, preserve event order,
 - **THEN** it does not update the new page, insert the old path into its composer, or trigger a stale clipboard write
 
 ### Requirement: Local history command behavior
-`/history` SHALL behave identically to `/history show`. `/history show` SHALL open the full-screen history view. `/history path` SHALL insert the existing current-session trace's absolute path as editable composer text without sending a prompt, appending a transcript message, or executing a provider command. The path result SHALL use the ordinary character/atomic-block-safe insertion policy and SHALL not overwrite edits made while the request was pending. A no-trace or unmaterialized-session request SHALL show a clear unavailable state without returning the old session's path or creating a fictitious trace. Unknown subcommands or extra arguments SHALL yield local usage feedback without provider forwarding.
+`/history` SHALL behave identically to `/history show`. `/history show` SHALL open the full-height history view in the message pane. `/history path` SHALL insert the existing current-session trace's absolute path as editable composer text without sending a prompt, appending a transcript message, or executing a provider command. The path result SHALL use the ordinary character/atomic-block-safe insertion policy and SHALL not overwrite edits made while the request was pending. A no-trace or unmaterialized-session request SHALL show a clear unavailable state without returning the old session's path or creating a fictitious trace. Unknown subcommands or extra arguments SHALL yield local usage feedback without provider forwarding.
 
 #### Scenario: Insert a path for an audit prompt
 - **WHEN** the user executes `/history path` and the current trace is available
@@ -98,36 +96,6 @@ Trace writes and queries SHALL run outside UI state locks, preserve event order,
 - **WHEN** the user requests an export during active execution
 - **THEN** the export ends at its request watermark, identifies still-running records as such, and does not wait indefinitely for future events
 
-### Requirement: Title-free time-scaled history presentation
-The history page SHALL place a session-wide overview timeline at the beginning of the scrollable document and display the operation-color legend once immediately below that overview. The overview and legend SHALL scroll with the per-turn content rather than remain pinned; only the bottom navigation hints remain fixed. In the default turn view, it SHALL additionally display each turn's time axis immediately before that turn's operation records, with that turn's represented start at the left endpoint and end at the right. Each turn SHALL use its own explicitly labeled time range, distinguish operation kinds by consistent theme-aware colors plus a text legend, and place overlapping operations in separate lanes. The per-turn timelines SHALL scroll with their associated records rather than being replaced by one session-wide chart. It SHALL omit the prototype's title, session masthead, and summary-header section. Exact start/end, operation summary, status and duration SHALL remain readable in a chronological record list without hover. Width SHALL encode elapsed time rather than event count; operations shorter than a terminal cell SHALL use explicitly qualified markers rather than false expanded durations. Long disconnected gaps SHALL remain identifiable; any time compression SHALL be disclosed. Empty/zero-width time ranges, tiny terminals, color-disabled output, and incomplete traces SHALL remain intelligible and bounded. History paging SHALL preserve its own viewport and SHALL not alter the conversation's viewport.
-
-#### Scenario: Inspect a short edit beside a long command
-- **WHEN** the trace contains a 20ms edit and a 12s command
-- **THEN** the time display preserves their relative scale or marks the subcell edit explicitly, while the list shows both exact durations
-
-#### Scenario: Enter with split Preview active
-- **WHEN** the user opens history from the normal split screen
-- **THEN** the history page replaces that screen without an extra history title and the hidden conversation/Preview remain restorable
-
-#### Scenario: Browse multiple turns
-- **WHEN** the history contains several turns of different lengths
-- **THEN** each turn's records are preceded by its own time-scaled timeline with visible endpoint times, not a shared unlabeled scale
-
-### Requirement: Toggle a session-wide Top 50 list
-Within the history page, a registered view-toggle action with default Tab SHALL switch between the default turn view and a flat session-wide list of at most 50 calls sorted by descending measured elapsed duration. Execution order SHALL break ties. The ranked view SHALL replace the per-turn charts and grouped records, retaining the same scrollable session overview and single legend. Eligibility SHALL match copy-10: individually measured completed tool, command and explicit model-operation spans, including measured failures/cancellations and zero durations, excluding enclosing turns/runs, idle, running and unknown-duration records. The limit SHALL count calls rather than wrapped terminal rows. With fewer eligible calls it SHALL show all of them; with none it SHALL show an explanatory empty state. Full recorded summaries and existing timing, line metrics and outcome information SHALL remain available; the list SHALL retain record identity. Ranked elapsed colors SHALL use the same rank palette applied to the session-wide ordering rather than each source turn. The view SHALL visibly identify Top 50 and show an effective toggle hint. Each mode SHALL preserve its independent scroll position, with first entry to the ranked view starting at the beginning; toggling SHALL not affect the conversation or trigger a clipboard export. Tab SHALL remain scoped to history and respect remapping/disable behavior without changing other pages' bindings.
-
-#### Scenario: Rank across turns
-- **WHEN** history contains 65 eligible calls across several turns and the user presses Tab in the turn view
-- **THEN** the grouped section is replaced with the 50 longest calls in descending duration order, while the overview and legend remain part of the same scrollable document
-
-#### Scenario: Return to the turn position
-- **WHEN** the user scrolls the turn view, switches to Top 50, scrolls there and toggles back
-- **THEN** the previous turn-view position is restored and a subsequent toggle restores the ranked-view position, clamped to valid content bounds
-
-#### Scenario: No measurable completed calls
-- **WHEN** the user switches to Top 50 with only running or unknown-duration calls
-- **THEN** an explanatory empty ranked section appears without assigning those calls zero duration
-
 ### Requirement: Semantic history theme roles
 History rendering SHALL consume fixed `semantics.history` roles rather than palette names or hardcoded RGB values. Base roles SHALL be `text`, `heading`, `metadata`, `total_elapsed`, `separator`, `hint`, `progress`, and `bar_text`. The `operation` subgroup SHALL contain `model`, `read`, `edit`, `bash`, `search`, and `other`; each role's foreground SHALL define the shared operation color for list labels, legend swatches, short markers and timeline segment fills. Embedded segment text SHALL use `bar_text`; summaries SHALL use `text` independently of operation color. The `duration` subgroup SHALL contain `highest`, `second`, `top_five`, `remaining`, and `unknown`; ranking policy and eligibility SHALL remain outside the theme. Total elapsed SHALL not inherit individual-call ranking styles. Results SHALL reuse `working_status` roles and capture diagnostics SHALL reuse `log` roles; a highest-duration highlight SHALL not imply a failure outcome.
 
@@ -145,25 +113,56 @@ The page surface SHALL explicitly reset to the terminal default background rathe
 - **WHEN** the longest completed successful operation appears in history
 - **THEN** its duration uses `history.duration.highest`, its result uses `working_status.success`, and its summary uses `history.text`
 
-### Requirement: Per-turn duration emphasis and compact outcomes
-History separators and bottom key hints SHALL use the theme's Umber-equivalent tone. The page surface SHALL use the terminal default background without a Night or other page-wide color fill; operation-colored timeline segments SHALL retain their intentional colors. Model-operation labels, legend swatches and timeline segments SHALL use Bark-equivalent instead of Honey-equivalent, without overriding elapsed-ranking or outcome styling. Operation summary text, including model request summaries, SHALL retain Mist-equivalent. Per-turn timeline captions and total elapsed labels in both the session overview and per-turn timelines SHALL use Mist-equivalent; start/end timestamps in both SHALL use Bark-equivalent. Model timeline segments in both the overview and per-turn charts SHALL remain color-only without an embedded `model` label; model identity SHALL remain available in the legend and operation list. In both overview and per-turn timelines, bash segments SHALL label themselves with the command summary's first whitespace-delimited word instead of the literal `bash`; labels exceeding the segment's available text width SHALL be clipped with a trailing ellipsis without overflowing the segment. The operation legend SHALL still identify bash, and the chronological list and exports SHALL retain complete recorded commands. Within each turn, individually measured completed operations SHALL be ranked by descending elapsed duration, with execution order breaking ties: rank one SHALL use the failure-red tone (Ferra Ember), rank two Blush-equivalent, ranks three through five Mist-equivalent, and all remaining durations Bark-equivalent. Unknown durations SHALL remain unranked and use Bark-equivalent. Ranking SHALL include measured failed operations and SHALL not change the actual result or reorder the chronological list. Success and failure in the result column SHALL render as `✓` and `✗` respectively, retaining distinguishable outcome colors; unknown termination SHALL not use either glyph. These local turn ranks SHALL not change the session-wide ranking of `/history copy-10`.
+### Requirement: Ranking-only history presentation
+The history page SHALL display only the session-wide Top 50 ranked operation list with an operation-color legend and fixed navigation footer. It SHALL NOT display session or per-turn timeline charts, turn groups, a turn-view selector, or a toggle hint. Loading, no eligible operations, query failure, and ready states SHALL remain distinguishable, and readable results SHALL retain incompleteness warnings even when no operations qualify. The Top 50 heading and legend SHALL scroll with the list; only bottom navigation hints remain fixed. Tiny terminals, color-disabled output, and incomplete traces SHALL remain intelligible and bounded. History scrolling SHALL preserve its own viewport without changing the conversation viewport.
+
+#### Scenario: Enter with split Preview active
+- **WHEN** the user opens history from the normal split screen
+- **THEN** the ranked history page replaces only the message pane while Preview and the separator remain visible and the hidden conversation remains restorable
+
+#### Scenario: Browse operations across turns
+- **WHEN** the trace contains operations from several turns
+- **THEN** history presents one elapsed-ranked list without turn headings or timeline charts
+
+#### Scenario: Empty ranking with incomplete capture
+- **WHEN** a query returns no eligible operations and a capture diagnostic
+- **THEN** the page explains the empty ranking and displays the diagnostic instead of reporting a clean empty trace
+
+### Requirement: Direct session-wide Top 50 list
+Opening `/history` or `/history show` SHALL directly request and display a flat session-wide list of at most 50 calls sorted by descending measured elapsed duration, without first requesting turn pages or requiring a toggle. Execution order SHALL break ties. Eligibility SHALL match copy-10: individually measured completed tool, command and explicit model-operation spans, including measured failures/cancellations and zero durations, excluding enclosing turns/runs, idle, running and unknown-duration records. The limit SHALL count calls rather than wrapped terminal rows. With fewer eligible calls it SHALL show all of them; with none it SHALL show an explanatory empty state. Full recorded summaries and existing timing, line metrics and outcome information SHALL remain available; the list SHALL retain record identity. Ranked elapsed colors SHALL use the rank palette applied to the session-wide ordering. The view SHALL visibly identify Top 50, use one independent scroll position, and show effective scrolling/exit hints. Scrolling SHALL NOT request turn pages or trigger clipboard export. There SHALL be no History view-toggle action or default Tab binding; unrelated keys SHALL NOT mutate the retained composer. The retired `history.toggle_view` configuration entry SHALL be recognized and ignored without rejecting other valid overrides or appearing in effective help.
+
+#### Scenario: Rank across turns on entry
+- **WHEN** history contains 65 eligible calls across several turns and the user opens `/history`
+- **THEN** it directly queries the full-session ranking and shows the 50 longest calls in descending duration order
+
+#### Scenario: Retired toggle does nothing
+- **WHEN** history is open and the user presses Tab with default mappings
+- **THEN** no view switch, data query, export, or hidden composer edit occurs
+
+#### Scenario: No measurable completed calls
+- **WHEN** history is opened with only running or unknown-duration calls
+- **THEN** an explanatory empty ranked section appears without assigning those calls zero duration
+
+#### Scenario: Retain other custom bindings
+- **WHEN** an existing mapping includes `history.toggle_view` together with valid scrolling overrides
+- **THEN** the mapping loads with the scrolling overrides intact and the retired toggle has no effect or hint
+
+### Requirement: Ranked duration emphasis and compact outcomes
+History separators and bottom key hints SHALL use the theme's Umber-equivalent tone. The page surface SHALL use the terminal default background without a Night or other page-wide color fill. Model-operation labels and legend swatches SHALL use Bark-equivalent instead of Honey-equivalent, without overriding elapsed-ranking or outcome styling. Operation summary text, including model request summaries, SHALL retain Mist-equivalent; timestamps SHALL use Bark-equivalent. The legend SHALL identify bash while operation records and exports retain complete recorded commands. Within the session-wide measured ranking, rank one SHALL use the failure-red tone (Ferra Ember), rank two Blush-equivalent, ranks three through five Mist-equivalent, and all remaining durations Bark-equivalent. Ranking SHALL include measured failed operations and SHALL NOT change the actual result. Success and failure in the result column SHALL render as `✓` and `✗` respectively, retaining distinguishable outcome colors; cancelled operations SHALL remain distinguishable. The page SHALL NOT change the session-wide ranking of `/history copy-10`.
 
 #### Scenario: Highlight durations without changing outcomes
-- **WHEN** a turn contains at least six completed operations and the longest succeeded
+- **WHEN** the ranked list contains at least six completed operations and the longest succeeded
 - **THEN** its duration is red but its result remains a success checkmark, the second duration is Blush-equivalent, ranks three through five are Mist-equivalent, and later ranks are Bark-equivalent
 
-#### Scenario: Overview legend and transparent page surface
-- **WHEN** the page displays its session overview and several per-turn timelines
-- **THEN** the operation legend appears only beneath the overview, model labels use Bark-equivalent while their summaries retain Mist-equivalent, and ordinary page cells retain the terminal default background
+#### Scenario: Legend and transparent page surface
+- **WHEN** the page displays its operation legend and ranked records
+- **THEN** model labels use Bark-equivalent while their summaries retain Mist-equivalent and ordinary page cells retain the terminal default background
 
-#### Scenario: Scroll past the overview
-- **WHEN** the user scrolls beyond the initial overview and legend
-- **THEN** both leave the viewport with the document, leaving its height available for later turn content above the fixed navigation hints
-
-#### Scenario: Label a shell operation by command
-- **WHEN** a bash operation records `cargo check -p e-pi`
-- **THEN** its timeline segment shows `cargo`, or an ellipsized prefix if space is insufficient, while its record retains the complete command
+#### Scenario: Scroll past the heading and legend
+- **WHEN** the user scrolls beyond the initial Top 50 heading and legend
+- **THEN** both leave the viewport with the list, leaving its height available for later ranked content above the fixed navigation hints
 
 #### Scenario: Ties and unknown duration
-- **WHEN** equal measured durations and an operation with unknown duration occur in a turn
+- **WHEN** equal measured durations and an operation with unknown duration occur in a session
 - **THEN** equal durations receive ranks in execution order and the unknown duration is excluded rather than displacing a measured operation
+

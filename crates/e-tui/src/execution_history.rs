@@ -165,7 +165,6 @@ pub fn longest_calls(calls: &[ExecutionCall], limit: usize) -> Vec<&ExecutionCal
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HistoryQueryKind {
-    Show,
     Path,
     Copy,
     CopyLongest10,

@@ -78,7 +78,6 @@ move_down_fast = ["pagedown", "f"]
 exit = ["esc", "q"]
 
 [history]
-toggle_view = "tab"
 
 [page]
 move_left = ["left", "h"]

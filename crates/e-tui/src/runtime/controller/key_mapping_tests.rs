@@ -115,6 +115,73 @@ impl Harness {
 }
 
 #[test]
+fn history_opens_top50_directly_and_tab_cannot_switch_or_query() {
+    use crate::execution_history::{HistoryQueryKind, HistoryQueryResult};
+
+    for command in ["/history", "/history show"] {
+        let mut h = Harness::new("");
+        {
+            let mut app = h.state.lock().unwrap();
+            app.session.session_id = Some("session".into());
+            app.session.session_cwd = Some("root".into());
+        }
+        h.interaction.input.restore_text(command.into());
+        let actions = h.press(KeyCode::Enter, KeyModifiers::NONE);
+        let requests: Vec<_> = actions
+            .iter()
+            .filter_map(|action| match action {
+                UiAction::QueryHistory(request) => Some(request.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(requests.len(), 1);
+        let request = requests.into_iter().next().unwrap();
+        assert_eq!(request.kind, HistoryQueryKind::Longest50);
+        assert_eq!(request.after_offset, 0);
+        assert_eq!(request.watermark, None);
+        assert!(h.state.lock().unwrap().history_page.is_some());
+        h.interaction.input.restore_text("preserved draft".into());
+        assert!(h.press(KeyCode::Tab, KeyModifiers::NONE).is_empty());
+        assert!(RuntimeController::apply_effect_result(
+            EffectResult::HistoryQueried {
+                request: request.clone(),
+                result: Ok(HistoryQueryResult {
+                    path: "trace".into(),
+                    records: Vec::new(),
+                    ranked_calls: Vec::new(),
+                    warnings: vec!["capture incomplete".into()],
+                    watermark: 7,
+                    next_offset: 7,
+                    has_more: false,
+                }),
+            },
+            &h.state,
+            Instant::now(),
+        ));
+        assert_eq!(
+            h.state.lock().unwrap().history_page.as_ref().unwrap().state,
+            crate::history_page::HistoryLoadState::Empty
+        );
+        assert!(h.press(KeyCode::Tab, KeyModifiers::NONE).is_empty());
+        let actions = h.press(KeyCode::PageDown, KeyModifiers::NONE);
+        assert!(actions
+            .iter()
+            .all(|action| matches!(action, UiAction::RequestDraw(_))));
+        h.press(KeyCode::Char('q'), KeyModifiers::NONE);
+        assert!(h.state.lock().unwrap().history_page.is_none());
+        assert_eq!(h.interaction.input.buf, "preserved draft");
+        assert!(!RuntimeController::apply_effect_result(
+            EffectResult::HistoryQueried {
+                request,
+                result: Err("late error".into())
+            },
+            &h.state,
+            Instant::now(),
+        ));
+    }
+}
+
+#[test]
 fn key_mapping_global_pages_preserve_drafts_and_protect_modals() {
     let mut h = Harness::new("[global]\nchoose_model='f1'");
     h.interaction.input.paste("draft\ntext");

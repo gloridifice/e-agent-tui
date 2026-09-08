@@ -149,7 +149,7 @@ command.plan.hint: "[off|message]"
 command.read.description: "Enter Reading View"
 command.history.description: "Inspect this session's execution history"
 command.history.hint: "[show|path|copy|copy-10]"
-command.history.show.description: "Open the full-screen history page"
+command.history.show.description: "Open the Top 50 execution ranking"
 command.history.path.description: "Insert the trace path into the composer"
 command.history.copy.description: "Copy the chronological execution history"
 command.history.copy_10.description: "Copy the ten longest measured operations"
@@ -212,7 +212,6 @@ key.action.move_up_fast: "Cursor up ×15"
 key.action.move_down_fast: "Cursor down ×15"
 key.action.move_up_half: "Half page up"
 key.action.move_down_half: "Half page down"
-key.action.toggle_view: "Toggle view"
 key.action.move_start: "Start"
 key.action.move_end: "End"
 key.action.delete_backward: "Backspace"
@@ -248,7 +247,7 @@ help.body: |
   - Pi cancels its entire backend queue, including extension steering/follow-up messages; local after-turn prompts are preserved.
   - Page text editors accept ordinary letters; global picker shortcuts do not replace an active page or approval.
   - Reading copies the complete owning block, even with an item selected. Exit leaves Reading; back-to-blocks only leaves Items.
-  - `/history` opens the execution timeline. Tab switches grouped turns and Top 50; the displayed footer reflects the active full-screen/history bindings.
+  - `/history` opens the session-wide Top 50 elapsed ranking in the message pane. The footer shows the active scrolling and exit bindings.
   - Drag any visible screen text to copy on release, including input, status, pages, and popups. Multiline ranges include adjacent panes in screen row order.
   - The display stays fixed while selecting; background work continues and live display resumes on release. Only displayed masks, placeholders, and ellipses are copied; trailing ordinary spaces are omitted.
   - Mouse wheel scrolls messages and cancels selection. A separator press resizes; a text drag starting elsewhere can include its visible glyph.

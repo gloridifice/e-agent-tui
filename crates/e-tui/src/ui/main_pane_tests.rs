@@ -1417,6 +1417,105 @@ fn wide_screen_renders_preview_without_changing_main_provenance() {
 }
 
 #[test]
+fn history_stays_in_message_pane_and_keeps_preview_live() {
+    use crate::history_page::{HistoryLoadState, HistoryPage};
+
+    let mut state = TuiApp::default();
+    state.config.message_pane_percent = crate::PaneWidthPercent::from_basis_points(5_000).unwrap();
+    state.preview.state = PreviewState::Ready(PreviewContent::PlainText("preview sentinel".into()));
+    let mut input = InputState::new(&state.config);
+    input.restore_text("preserved draft".into());
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+    let before = terminal.backend().buffer().clone();
+    let cache_rebuilds = state.render.transcript_cache.work.rebuilds;
+    let separator = separator_column(&state, 120) as u16;
+    state.history_page = Some(HistoryPage::loading(1, "session".into(), "root".into()));
+
+    for load_state in [
+        HistoryLoadState::Loading,
+        HistoryLoadState::Empty,
+        HistoryLoadState::Error("long error ".repeat(30)),
+        HistoryLoadState::Ready,
+    ] {
+        state.history_page.as_mut().unwrap().state = load_state;
+        terminal
+            .draw(|frame| {
+                assert_eq!(
+                    render_with_cursor(frame, &mut state, &input, &mut scroll, &theme, overlays()),
+                    None
+                );
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        assert!(find_text(buffer, "preserved draft").is_none());
+        for y in 0..30 {
+            for x in separator..120 {
+                assert_eq!(buffer[(x, y)], before[(x, y)], "Preview changed at {x},{y}");
+            }
+        }
+        assert_eq!(state.history_page.as_ref().unwrap().body_height, 27);
+        assert_eq!(state.render.transcript_cache.work.rebuilds, cache_rebuilds);
+    }
+
+    state.preview.state = PreviewState::Ready(PreviewContent::PlainText("updated preview".into()));
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+    let (x, _) = find_text(terminal.backend().buffer(), "updated preview").unwrap();
+    assert!(x > separator);
+
+    state.history_page = None;
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+    assert!(find_text(terminal.backend().buffer(), "preserved draft").is_some());
+}
+
+#[test]
+fn history_resize_preserves_narrow_preview_mode_for_exit() {
+    use crate::history_page::HistoryPage;
+
+    let mut state = TuiApp::default();
+    state.preview.fullscreen = true;
+    let saved_percent = state.config.message_pane_percent;
+    state.preview.state = PreviewState::Ready(PreviewContent::PlainText("preview sentinel".into()));
+    state.history_page = Some(HistoryPage::loading(1, "session".into(), "root".into()));
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+
+    for width in [120, 40, 120, 40] {
+        terminal.backend_mut().resize(width, 30);
+        terminal.autoresize().unwrap();
+        terminal
+            .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        assert!(find_text(buffer, "Loading execution history").is_some());
+        assert_eq!(
+            find_text(buffer, "preview sentinel").is_some(),
+            width == 120
+        );
+        assert!(state.preview.fullscreen);
+        assert_eq!(state.config.message_pane_percent, saved_percent);
+    }
+
+    state.history_page = None;
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    assert!(find_text(buffer, "Loading execution history").is_none());
+    assert_eq!(find_text(buffer, "preview sentinel").unwrap().0, 1);
+}
+
+#[test]
 fn split_preview_keeps_a_blank_column_after_the_separator() {
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();

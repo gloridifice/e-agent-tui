@@ -160,19 +160,11 @@ pub(super) fn apply_effect_result(
                 return false;
             }
             match (request.kind, result) {
-                (
-                    kind @ (crate::execution_history::HistoryQueryKind::Show
-                    | crate::execution_history::HistoryQueryKind::Longest50),
-                    Ok(result),
-                ) => app
+                (crate::execution_history::HistoryQueryKind::Longest50, Ok(result)) => app
                     .history_page
                     .as_mut()
-                    .is_some_and(|page| page.complete(request.request_id, kind, result)),
-                (
-                    crate::execution_history::HistoryQueryKind::Show
-                    | crate::execution_history::HistoryQueryKind::Longest50,
-                    Err(error),
-                ) => app
+                    .is_some_and(|page| page.complete(request.request_id, result)),
+                (crate::execution_history::HistoryQueryKind::Longest50, Err(error)) => app
                     .history_page
                     .as_mut()
                     .is_some_and(|page| page.fail(request.request_id, error)),

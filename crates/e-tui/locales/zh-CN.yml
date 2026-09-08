@@ -149,7 +149,7 @@ command.plan.hint: "[off|消息]"
 command.read.description: "进入阅读视图"
 command.history.description: "查看当前会话的执行历史"
 command.history.hint: "[show|path|copy|copy-10]"
-command.history.show.description: "打开全屏历史页"
+command.history.show.description: "打开执行耗时前 50 排名"
 command.history.path.description: "将记录路径插入输入框"
 command.history.copy.description: "复制按时间排序的执行历史"
 command.history.copy_10.description: "复制耗时最长的十项操作"
@@ -212,7 +212,6 @@ key.action.move_up_fast: "光标上移15步"
 key.action.move_down_fast: "光标下移15步"
 key.action.move_up_half: "向上半页"
 key.action.move_down_half: "向下半页"
-key.action.toggle_view: "切换视图"
 key.action.move_start: "开头"
 key.action.move_end: "末尾"
 key.action.delete_backward: "退格"
@@ -248,7 +247,7 @@ help.body: |
   - Pi 会清空整个后端队列，包括扩展排入的 steering／follow-up 消息；本地等待发送消息会保留。
   - 页面文本编辑允许普通字母；全局选择器快捷键不会替换正在编辑或等待回答的页面。
   - 阅读复制当前项目所属完整块；退出动作退出整个阅读视图，返回块级仅退出项目导航。
-  - `/history` 打开执行时间线；Tab 切换分回合与 Top 50，底部提示反映当前生效的全屏／历史按键。
+  - `/history` 在消息栏打开会话耗时前 50 排名；底部提示显示当前生效的滚动和退出按键。
   - 任意可见文字均可拖选后松开复制，包括输入框、状态栏、页面及弹窗；多行选区按屏幕逐行排列，包含相邻窗格。
   - 拖选期间固定画面，后台继续运行，松开恢复刷新；仅复制可见遮罩、占位符和省略号，去掉每行末尾的普通空格。
   - 鼠标滚轮滚动消息并取消选区；在分隔条按下用于调整宽度，从其他位置开始的文字选区可包含分隔条符号。

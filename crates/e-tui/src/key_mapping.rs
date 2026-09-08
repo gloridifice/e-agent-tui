@@ -40,7 +40,6 @@ pub enum Action {
     MoveDownFast,
     MoveUpHalf,
     MoveDownHalf,
-    ToggleView,
     MoveStart,
     MoveEnd,
     DeleteBackward,
@@ -331,7 +330,10 @@ impl KeyMapping {
     }
 
     pub fn from_user_toml_for(text: &str, platform: Platform) -> Result<Self, String> {
-        let mut source = Scopes::new();
+        let mut source: Scopes = Scope::ALL
+            .into_iter()
+            .map(|scope| (scope, BTreeMap::new()))
+            .collect();
         Self::parse_document(DEFAULT_KEY_MAPPING_SOURCE, platform, None, &mut source)?;
         let schema = source.clone();
         Self::parse_document(text, platform, Some(&schema), &mut source)?;
@@ -393,6 +395,9 @@ impl KeyMapping {
                 } else {
                     format!("{prefix}.{name}")
                 };
+                if path == "history.toggle_view" {
+                    continue;
+                }
                 if let Some(table) = value.as_table() {
                     if !Scope::ALL.iter().any(|s| s.name() == path) {
                         return Err(format!("{path}: unknown scope"));
@@ -713,15 +718,15 @@ mod tests {
     }
 
     #[test]
-    fn history_scope_is_remappable_and_disableable() {
+    fn history_scope_ignores_retired_toggle_and_keeps_navigation_overrides() {
         let mapping = KeyMapping::from_user_toml_for(
-            "[full_screen]\nexit='nop'\n[history]\ntoggle_view='x'",
+            "[full_screen]\nexit='nop'\nmove_down='x'\n[history]\ntoggle_view='x'",
             Platform::Other,
         )
         .unwrap();
         assert_eq!(
             mapping.resolve(Scope::History, &key(KeyCode::Char('x'), KeyModifiers::NONE)),
-            Some(Action::ToggleView)
+            Some(Action::MoveDown)
         );
         assert_eq!(
             mapping.resolve(Scope::History, &key(KeyCode::Tab, KeyModifiers::NONE)),
@@ -732,6 +737,9 @@ mod tests {
             None
         );
         assert_eq!(mapping.label(Scope::History, Action::Exit), "—");
+        assert!(!mapping
+            .entries()
+            .any(|(_, action)| action.name() == "toggle_view"));
     }
 
     #[test]

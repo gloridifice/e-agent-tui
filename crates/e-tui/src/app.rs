@@ -189,7 +189,9 @@ impl SessionModel {
         step: Option<u64>,
         usage: Option<TokenUsage>,
     ) {
-        let Some(usage) = usage else { return };
+        let Some(usage) = usage.filter(|usage| *usage != TokenUsage::default()) else {
+            return;
+        };
         let previous = self
             .last_usage_sample
             .filter(|(old_turn, old_step, _)| *old_turn == turn && *old_step == step)
@@ -692,6 +694,53 @@ mod tests {
         DirtyState, UiAction,
     };
     use ratatui::text::Line;
+
+    #[test]
+    fn session_usage_retains_valid_sample_across_empty_updates() {
+        let mut session = SessionModel::default();
+        session.record_usage(Some(1), Some(0), Some(TokenUsage::default()));
+        assert_eq!(session.context_usage_percent(1_000), 0);
+        assert_eq!(session.last_usage_sample, None);
+        assert_eq!(session.cache_hit_rate(), None);
+
+        let usage = TokenUsage {
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_read_tokens: 200,
+            cache_write_tokens: 50,
+        };
+        session.record_usage(Some(1), Some(0), Some(usage));
+        for (turn, step) in [(1, 0), (1, 1), (2, 0)] {
+            for empty in [None, Some(TokenUsage::default())] {
+                session.record_usage(Some(turn), Some(step), empty);
+                assert_eq!(session.context_usage_percent(1_000), 40);
+                assert_eq!(session.last_usage_sample, Some((Some(1), Some(0), usage)));
+                assert_eq!(session.token_usage, usage);
+                assert_eq!(session.cache_hit_rate(), Some(57));
+            }
+        }
+
+        let corrected = TokenUsage {
+            output_tokens: 100,
+            ..usage
+        };
+        session.record_usage(Some(1), Some(0), Some(corrected));
+        assert_eq!(session.context_usage_percent(1_000), 45);
+        assert_eq!(session.token_usage, corrected);
+
+        let smaller = TokenUsage {
+            input_tokens: 50,
+            output_tokens: 10,
+            ..TokenUsage::default()
+        };
+        session.record_usage(Some(2), Some(0), Some(smaller));
+        assert_eq!(session.context_usage_percent(1_000), 6);
+        assert_eq!(session.last_usage_sample, Some((Some(2), Some(0), smaller)));
+        assert_eq!(session.token_usage.input_tokens, 150);
+        assert_eq!(session.token_usage.output_tokens, 110);
+        assert_eq!(session.token_usage.cache_read_tokens, 200);
+        assert_eq!(session.token_usage.cache_write_tokens, 50);
+    }
 
     #[test]
     fn normal_preview_ignores_plain_and_user_owned_content() {

@@ -36,6 +36,18 @@ Input Page browsing, choice editing, text editing, resume filtering, and questio
 
 The old Reading Ctrl+Y and history-search Ctrl+R defaults are retired. History search remains available but unbound; the example above assigns it a replacement. `clear_or_quit` intentionally defaults to literal Ctrl+C on all platforms. Empty-input exit still requires idle state. Cancel removes all `⌁` ASAP candidates first, otherwise the newest `○` after-turn candidate; only an empty queue permits interruption. While backend cancellation is awaiting acknowledgment, repeated Cancel does not interrupt or remove after-turn candidates. Pi uses its native whole-queue clear, which also removes extension-origin steering/follow-up messages; this frontend's after-turn messages remain local and survive it.
 
+## Model letter marks
+
+Inside `/model`, Shift plus an ASCII letter toggles that letter on the focused model. Assigning a used letter moves it to the new model; assigning another letter replaces the model's old mark. Press the plain letter to select its exact provider/model route and close the menu, including from another provider's list. Missing catalog entries do nothing.
+
+Both the plain and shifted chord must be free of effective page and global mappings. Default `h/j/k/l/q` are therefore reserved; Ctrl/Alt/Super shortcuts do not reserve the plain letter. Reloading a conflicting mapping temporarily hides and disables the mark without deleting it. Other menus and text editors are unchanged.
+
+Marks appear as Bark-equivalent ` [a]` suffixes and persist in shared `config.toml`, not `key_mapping.toml`. Older configs default to no marks. The saved array uses lowercase letters and unique letters/routes, for example:
+
+```toml
+model_marks = [{ letter = "a", provider = "openai", model = "model-id" }]
+```
+
 ## Terminal limitations
 
 Applications cannot receive shortcuts intercepted by the terminal or OS. In particular, macOS Command+H and Command+, often belong to the terminal application. Configure terminal forwarding or choose another binding. Legacy terminal encodings may not distinguish Shift+Enter or Ctrl+Enter; modern Kitty CSI-u / modifyOtherKeys support preserves modifiers when delivered.

@@ -27,6 +27,7 @@ pub mod interaction;
 pub mod key_mapping;
 pub mod login;
 pub mod mermaid;
+pub mod model_marks;
 pub mod mouse_selection;
 pub mod notice;
 pub mod page_core;

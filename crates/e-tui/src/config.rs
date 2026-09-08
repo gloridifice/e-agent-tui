@@ -325,6 +325,7 @@ pub struct Config {
     // Behavior
     pub language: Language,
     pub remember_last_session: bool,
+    pub model_marks: crate::model_marks::ModelMarks,
     /// Agent-preset mode for bare `/new` and the session a fresh TUI process
     /// opens (the bridge falls back to `standard` when this id is stale).
     pub default_mode: String,

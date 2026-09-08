@@ -11,7 +11,8 @@ pub(super) fn render_effort_page(
     config: &crate::Config,
 ) {
     let language = config.language;
-    let regions = input_page_shell(frame, area, theme);
+    let mut regions = input_page_shell(frame, area, theme);
+    regions.body.height = regions.body.height.saturating_sub(1);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("❯ ", Style::default().fg(theme.input.hint.fg)),

@@ -9,6 +9,7 @@ The historical [Ctrl+Y investigation](../../history/rust-client-refactor/termina
 
 ```powershell
 cargo test -p e-tui --lib key_mapping
+cargo test -p e-tui --lib model_marks
 cargo test -p e-tui --lib runtime::input
 cargo test -p e-tui --lib input
 cargo test -p e-tui --lib runtime::controller
@@ -28,5 +29,7 @@ Before claiming physical compatibility for a terminal family, test Windows Termi
 5. Enter Reading with a multiline/image draft, navigate Blocks and Items, and verify PageDown/PageUp matches 15 ordinary down/up cursor steps (not viewport-only scrolling), including Item-to-Block transitions and document boundaries. Disable or remap the fast actions and verify there is no global paging fallback. Copy complete source, use Backspace to return to Blocks, and Esc/q to restore the draft.
 6. Open a text editor, question or approval and verify global picker shortcuts do not replace it; verify ordinary hjklq text and explicit approval responses.
 7. Type `@` in an ordinary draft, navigate the path candidates, and complete nested directories and a file using the configured suggestion complete/accept actions. Verify acceptance does not send, Esc dismisses without changing the draft, and surrounding text and quoted paths with spaces are preserved.
+
+8. In `/model`, use Shift+A to mark the focused model and repeat it to remove the mark. Mark again, reopen the page, browse another provider, and press `a` to select and close. Confirm default `h/j/k/l/q` cannot be marked, a newly conflicting page/global binding suppresses a saved mark after reload, and the Bark suffix remains visible when the model name is truncated.
 
 Physical runs for the new defaults must be recorded separately; automated success alone does not mark this matrix complete.

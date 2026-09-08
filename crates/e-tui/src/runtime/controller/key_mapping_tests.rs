@@ -149,6 +149,58 @@ fn key_mapping_global_pages_preserve_drafts_and_protect_modals() {
 }
 
 #[test]
+fn key_mapping_model_marks_persist_and_select_without_touching_the_draft() {
+    let mut h = Harness::new("");
+    h.interaction.input.paste("preserved\ndraft");
+    let draft = h.interaction.input.buf.clone();
+    h.press(KeyCode::Char('l'), KeyModifiers::CONTROL);
+    h.interaction.input_page.as_mut().unwrap().apply_model(
+        vec![crate::agent::ModelProvider {
+            id: "p".into(),
+            name: "Provider".into(),
+            models: vec![crate::agent::ModelDescriptor {
+                id: "m".into(),
+                name: "Model".into(),
+                description: None,
+                context_window: None,
+                reasoning: None,
+            }],
+        }],
+        Some(("p".into(), "m".into())),
+    );
+    for expected in [Some('a'), None, Some('a')] {
+        let actions = h.press(KeyCode::Char('A'), KeyModifiers::NONE);
+        assert!(
+            matches!(actions.as_slice(), [UiAction::PersistConfig(saved)]
+            if saved.model_marks.letter("p", "m") == expected)
+        );
+        assert!(h.interaction.input_page.is_some());
+        assert_eq!(
+            h.state.lock().unwrap().config.model_marks.letter("p", "m"),
+            expected
+        );
+        assert_eq!(h.interaction.input.buf, draft);
+    }
+    let mut config = h.config.clone();
+    config.key_mapping = KeyMapping::from_user_toml("[global]\nprint_help='a'").unwrap();
+    h.reload(config);
+    h.press(KeyCode::Char('a'), KeyModifiers::NONE);
+    assert!(h.interaction.help_visible);
+    assert!(h.interaction.input_page.is_some());
+    h.press(KeyCode::Esc, KeyModifiers::NONE);
+    let mut config = h.config.clone();
+    config.key_mapping = KeyMapping::default();
+    h.reload(config);
+    assert!(
+        matches!(h.press(KeyCode::Char('a'), KeyModifiers::NONE).as_slice(),
+        [UiAction::Agent(AgentRequest::ModelSet { provider, model, reasoning_effort: None })]
+        if provider == "p" && model == "m")
+    );
+    assert!(h.interaction.input_page.is_none());
+    assert_eq!(h.interaction.input.buf, draft);
+}
+
+#[test]
 fn key_mapping_queue_submission_and_cancel_are_remapped_without_fallback() {
     let mut h = Harness::new("[message.working]\nsend_asap='f2'\nsend_after_turn='f3'\n[message]\ncancel_or_interrupt='f4'");
     h.state.lock().unwrap().session.status = crate::SessionStatus::Running;

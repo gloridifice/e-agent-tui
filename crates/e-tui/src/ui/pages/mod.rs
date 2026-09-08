@@ -53,7 +53,7 @@ pub(super) fn preferred_rows(page: &InputPageSession) -> usize {
         InputPage::Model(_) | InputPage::Effort(_) => 1,
         _ => return usize::MAX,
     };
-    body_rows.saturating_add(5)
+    body_rows.saturating_add(6)
 }
 
 fn input_page_shell(
@@ -204,7 +204,7 @@ mod tests {
     #[test]
     fn model_height_tracks_active_column_and_terminal_cap() {
         let mut page = InputPageSession::model();
-        assert_eq!(preferred_rows(&page), 6);
+        assert_eq!(preferred_rows(&page), 7);
         let provider = |id: &str, count: usize| crate::agent::ModelProvider {
             id: id.into(),
             name: id.into(),
@@ -219,26 +219,81 @@ mod tests {
                 .collect(),
         };
         page.apply_model(vec![provider("small", 1), provider("large", 40)], None);
-        assert_eq!(preferred_rows(&page), 7);
+        assert_eq!(preferred_rows(&page), 8);
         if let InputPage::Model(model) = &mut page.page {
             model.active_provider = Some("large".into());
         }
-        assert_eq!(preferred_rows(&page), 45);
+        assert_eq!(preferred_rows(&page), 46);
         let input = InputState::new(&crate::Config::default());
-        for (height, expected) in [(30, 20), (90, 45), (3, 0)] {
+        for (height, expected) in [(30, 20), (90, 46), (3, 0)] {
             assert_eq!(
                 bottom_area_rows(height, 80, &input, Some(preferred_rows(&page)), 1),
                 expected
             );
         }
         page.apply_model(Vec::new(), None);
-        assert_eq!(preferred_rows(&page), 6);
+        assert_eq!(preferred_rows(&page), 7);
+    }
+
+    #[test]
+    fn model_marks_suffix_survives_name_clipping_and_tracks_mapping_changes() {
+        let mut page = InputPageSession::model();
+        page.apply_model(
+            vec![crate::agent::ModelProvider {
+                id: "p".into(),
+                name: "Provider".into(),
+                models: ["short", "模型 very long name repeated many times"]
+                    .into_iter()
+                    .map(|name| crate::agent::ModelDescriptor {
+                        id: name.into(),
+                        name: name.into(),
+                        description: None,
+                        context_window: None,
+                        reasoning: None,
+                    })
+                    .collect(),
+            }],
+            Some(("p".into(), "short".into())),
+        );
+        let mut config = crate::Config::default();
+        config.model_marks.toggle('a', "p", "short");
+        config
+            .model_marks
+            .toggle('b', "p", "模型 very long name repeated many times");
+        for width in [1, 5, 12, 32, 80, 120] {
+            for blocked in [false, true] {
+                config.key_mapping = crate::key_mapping::KeyMapping::from_user_toml(if blocked {
+                    "[page]\nconfirm='a'\nback='shift-b'"
+                } else {
+                    ""
+                })
+                .unwrap();
+                let mut terminal = Terminal::new(TestBackend::new(width, 10)).unwrap();
+                terminal
+                    .draw(|frame| {
+                        render_input_page(frame, frame.area(), &mut page, &config, &config.theme());
+                    })
+                    .unwrap();
+                let buffer = terminal.backend().buffer();
+                let text: String = (0..10)
+                    .flat_map(|y| (0..width).map(move |x| buffer[(x, y)].symbol()))
+                    .collect();
+                if width >= 12 {
+                    assert_eq!(text.contains(" [a]"), !blocked, "{width}: {text}");
+                    assert_eq!(text.contains(" [b]"), !blocked, "{width}: {text}");
+                }
+                if width >= 80 && !blocked {
+                    assert!(text.contains("short [a]"), "{text}");
+                    assert!(text.contains("Shift+letter mark/unmark"), "{text}");
+                }
+            }
+        }
     }
 
     #[test]
     fn effort_height_includes_default_row_and_scroll_keeps_focus_visible() {
         let mut session = InputPageSession::effort();
-        assert_eq!(preferred_rows(&session), 6);
+        assert_eq!(preferred_rows(&session), 7);
         if let InputPage::Effort(page) = &mut session.page {
             page.loading = false;
             page.efforts = (0..5)
@@ -251,7 +306,7 @@ mod tests {
         }
         session.rebuild_focus();
         session.focus.set(FocusId::new("effort:4"));
-        assert_eq!(preferred_rows(&session), 11);
+        assert_eq!(preferred_rows(&session), 12);
         let mut terminal = Terminal::new(TestBackend::new(80, 9)).unwrap();
         terminal
             .draw(|frame| {
@@ -272,11 +327,107 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect();
         assert!(text.contains("Effort 4"));
-        assert_eq!(session.viewport.start, 2);
+        assert_eq!(session.viewport.start, 3);
         if let InputPage::Effort(page) = &mut session.page {
             page.default_effort = Some("2".into());
         }
-        assert_eq!(preferred_rows(&session), 10);
+        assert_eq!(preferred_rows(&session), 11);
+    }
+
+    #[test]
+    fn model_and_effort_keep_blank_row_above_footer() {
+        let config = crate::Config::default();
+        for count in [0, 1, 20] {
+            let mut model = InputPageSession::model();
+            model.apply_model(
+                vec![crate::agent::ModelProvider {
+                    id: "p".into(),
+                    name: "Provider".into(),
+                    models: (0..count)
+                        .map(|index| crate::agent::ModelDescriptor {
+                            id: index.to_string(),
+                            name: format!("Model {index}"),
+                            description: None,
+                            context_window: None,
+                            reasoning: None,
+                        })
+                        .collect(),
+                }],
+                None,
+            );
+            let mut effort = InputPageSession::effort();
+            if let InputPage::Effort(page) = &mut effort.page {
+                page.loading = false;
+                page.default_effort = Some("0".into());
+                page.efforts = (0..count)
+                    .map(|index| crate::agent::ReasoningEffort {
+                        id: index.to_string(),
+                        name: format!("Effort {index}"),
+                        description: None,
+                    })
+                    .collect();
+            }
+            effort.rebuild_focus();
+            if count > 0 {
+                model
+                    .focus
+                    .set(FocusId::new(format!("model:p:{}", count - 1)));
+                effort
+                    .focus
+                    .set(FocusId::new(format!("effort:{}", count - 1)));
+            }
+            for mut page in [
+                model,
+                effort,
+                InputPageSession::model(),
+                InputPageSession::effort(),
+            ] {
+                for height in [preferred_rows(&page) as u16, 9, 6, 3] {
+                    let mut terminal = Terminal::new(TestBackend::new(120, height)).unwrap();
+                    terminal
+                        .draw(|frame| {
+                            render_input_page(
+                                frame,
+                                frame.area(),
+                                &mut page,
+                                &config,
+                                &config.theme(),
+                            );
+                        })
+                        .unwrap();
+                    if height < 6 {
+                        continue;
+                    }
+                    let buffer = terminal.backend().buffer();
+                    let row = |y| {
+                        (0..120)
+                            .map(|x| buffer[(x, y)].symbol())
+                            .collect::<String>()
+                    };
+                    assert!(
+                        row(height - 3).trim().is_empty(),
+                        "gap: {}",
+                        row(height - 3)
+                    );
+                    assert!(row(height - 2).contains("Confirm"));
+                    if count > 0 && height >= 9 {
+                        let expected = match &page.page {
+                            InputPage::Model(model) if !model.loading => {
+                                format!("Model {}", count - 1)
+                            }
+                            InputPage::Effort(effort) if !effort.loading => {
+                                format!("Effort {}", count - 1)
+                            }
+                            _ => continue,
+                        };
+                        assert!(
+                            (3..height - 3).any(|y| row(y).contains(&expected)),
+                            "{expected}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     fn page_cases() -> Vec<(InputPageSession, &'static str, &'static str)> {

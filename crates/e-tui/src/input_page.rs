@@ -262,6 +262,56 @@ impl ModelPage {
         focus.replace(nodes);
     }
 
+    fn focused_model(&self, focus: &FocusState) -> Option<(&str, &str)> {
+        self.providers.iter().find_map(|provider| {
+            provider.models.iter().find_map(|model| {
+                focus
+                    .is(&Self::model_focus(&provider.id, &model.id))
+                    .then_some((provider.id.as_str(), model.id.as_str()))
+            })
+        })
+    }
+
+    fn mark(&self, letter: char, focus: &FocusState, config: &mut Config) -> PageOutcome {
+        if self.loading {
+            return PageOutcome::default();
+        }
+        let Some((provider, model)) = self.focused_model(focus) else {
+            return PageOutcome::default();
+        };
+        config.model_marks.toggle(letter, provider, model);
+        PageOutcome {
+            close: false,
+            effects: vec![PageEffect::ConfigChanged],
+        }
+    }
+
+    fn select_mark(&self, letter: char, config: &Config) -> PageOutcome {
+        let Some(mark) = config.model_marks.get(letter) else {
+            return PageOutcome::default();
+        };
+        if self.loading
+            || !self.providers.iter().any(|provider| {
+                provider.id == mark.provider
+                    && provider.models.iter().any(|model| model.id == mark.model)
+            })
+        {
+            return PageOutcome::default();
+        }
+        Self::select(&mark.provider, &mark.model)
+    }
+
+    fn select(provider: &str, model: &str) -> PageOutcome {
+        PageOutcome::send(
+            AgentRequest::ModelSet {
+                provider: provider.to_owned(),
+                model: model.to_owned(),
+                reasoning_effort: None,
+            },
+            true,
+        )
+    }
+
     fn activate(&mut self, focus: &mut FocusState) -> PageOutcome {
         let Some(id) = focus.current.as_ref().map(|id| id.0.clone()) else {
             return PageOutcome::default();
@@ -291,24 +341,9 @@ impl ModelPage {
             }
             return PageOutcome::default();
         }
-        let selection = self.providers.iter().find_map(|provider| {
-            provider
-                .models
-                .iter()
-                .find(|model| id == Self::model_focus(&provider.id, &model.id).0)
-                .map(|model| (provider.id.clone(), model.id.clone()))
-        });
-        let Some((provider, model)) = selection else {
-            return PageOutcome::default();
-        };
-        PageOutcome::send(
-            AgentRequest::ModelSet {
-                provider,
-                model,
-                reasoning_effort: None,
-            },
-            true,
-        )
+        self.focused_model(focus)
+            .map(|(provider, model)| Self::select(provider, model))
+            .unwrap_or_default()
     }
 }
 
@@ -495,7 +530,11 @@ impl InputPageSession {
     }
 
     pub fn handle_key(&mut self, key: &KeyEvent, config: &mut Config) -> PageOutcome {
-        let key = config.key_mapping.input(self.key_scope(), key);
+        let key = if matches!(self.page, InputPage::Model(_)) {
+            config.key_mapping.model_input(key)
+        } else {
+            config.key_mapping.input(self.key_scope(), key)
+        };
         if let Some(direction) = direction_from_input(key) {
             if self.focus.move_in(direction) {
                 self.sync_page_from_focus();
@@ -517,15 +556,13 @@ impl InputPageSession {
                 LoginAction::Exit => PageOutcome::close(),
                 LoginAction::Send(message) => PageOutcome::send(message, false),
             },
-            InputPage::Model(model) => {
-                if matches!(key, Command(Action::Back | Action::Close)) {
-                    PageOutcome::close()
-                } else if key == Command(Action::Confirm) {
-                    model.activate(&mut self.focus)
-                } else {
-                    PageOutcome::default()
-                }
-            }
+            InputPage::Model(model) => match key {
+                Command(Action::Back | Action::Close) => PageOutcome::close(),
+                Command(Action::Confirm) => model.activate(&mut self.focus),
+                MappedKey::MarkModel(letter) => model.mark(letter, &self.focus, config),
+                MappedKey::SelectModel(letter) => model.select_mark(letter, config),
+                _ => PageOutcome::default(),
+            },
             InputPage::Effort(effort) => {
                 if matches!(key, Command(Action::Back | Action::Close)) {
                     PageOutcome::close()
@@ -1319,6 +1356,109 @@ mod tests {
             &page.page,
             InputPage::Resume(resume) if resume.query == "hjkl" && resume.sel == 1
         ));
+    }
+
+    fn marked_model_page() -> InputPageSession {
+        let mut page = InputPageSession::model();
+        page.apply_model(
+            ["p", "q"]
+                .into_iter()
+                .map(|id| ModelProvider {
+                    id: id.into(),
+                    name: id.into(),
+                    models: vec![crate::agent::ModelDescriptor {
+                        id: "m".into(),
+                        name: "Model".into(),
+                        description: None,
+                        context_window: None,
+                        reasoning: None,
+                    }],
+                })
+                .collect(),
+            Some(("p".into(), "m".into())),
+        );
+        page
+    }
+
+    #[test]
+    fn model_marks_toggle_reopen_and_select_across_provider_refreshes() {
+        let mut config = Config::default();
+        let mut page = marked_model_page();
+        let mark = KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT);
+        for expected in [Some('a'), None, Some('a')] {
+            let outcome = page.handle_key(&mark, &mut config);
+            assert!(!outcome.close);
+            assert!(matches!(
+                outcome.effects.as_slice(),
+                [PageEffect::ConfigChanged]
+            ));
+            assert_eq!(config.model_marks.letter("p", "m"), expected);
+        }
+        page.handle_key(&key(KeyCode::Esc), &mut config);
+        config = Config::from_user_toml(&toml::to_string(&config).unwrap()).unwrap();
+        let mut page = marked_model_page();
+        let InputPage::Model(model) = &page.page else {
+            panic!()
+        };
+        let providers = model.providers.iter().rev().cloned().collect();
+        page.apply_model(providers, Some(("q".into(), "m".into())));
+        page.focus.set(ModelPage::provider_focus("q"));
+        page.handle_key(&key(KeyCode::Enter), &mut config);
+        assert!(page.focus.is(&ModelPage::model_focus("q", "m")));
+        let outcome = page.handle_key(&key(KeyCode::Char('a')), &mut config);
+        assert!(outcome.close);
+        assert!(
+            matches!(outcome.effects.as_slice(), [PageEffect::Send(AgentRequest::ModelSet {
+            provider, model, reasoning_effort: None,
+        })] if provider == "p" && model == "m")
+        );
+    }
+
+    #[test]
+    fn model_marks_ignore_missing_targets_and_respect_reloaded_bindings() {
+        let mut config = Config::default();
+        let mut page = InputPageSession::model();
+        let mark = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::SHIFT);
+        assert!(page.handle_key(&mark, &mut config).effects.is_empty());
+        page.apply_model(Vec::new(), None);
+        assert!(page.handle_key(&mark, &mut config).effects.is_empty());
+        page = marked_model_page();
+        page.focus.set(ModelPage::provider_focus("p"));
+        assert!(page.handle_key(&mark, &mut config).effects.is_empty());
+        page.focus.set(ModelPage::model_focus("p", "m"));
+        for letter in "hjklq".chars() {
+            assert!(page
+                .handle_key(
+                    &KeyEvent::new(KeyCode::Char(letter), KeyModifiers::SHIFT),
+                    &mut config
+                )
+                .effects
+                .is_empty());
+            assert_eq!(config.model_marks.get(letter), None);
+        }
+        page.handle_key(&mark, &mut config);
+        config.key_mapping =
+            crate::key_mapping::KeyMapping::from_user_toml("[page]\nmove_down='shift-a'").unwrap();
+        let outcome = page.handle_key(&key(KeyCode::Char('a')), &mut config);
+        assert!(!outcome.close && outcome.effects.is_empty());
+        page.handle_key(&mark, &mut config);
+        assert_eq!(config.model_marks.letter("p", "m"), Some('a'));
+        config.key_mapping = crate::key_mapping::KeyMapping::default();
+        let InputPage::Model(model) = &page.page else {
+            panic!()
+        };
+        let remaining = model
+            .providers
+            .iter()
+            .filter(|p| p.id == "q")
+            .cloned()
+            .collect();
+        page.apply_model(remaining, Some(("q".into(), "m".into())));
+        for letter in ['a', 'z'] {
+            let outcome = page.handle_key(&key(KeyCode::Char(letter)), &mut config);
+            assert!(!outcome.close && outcome.effects.is_empty());
+        }
+        assert_eq!(config.model_marks.letter("p", "m"), Some('a'));
     }
 
     #[test]

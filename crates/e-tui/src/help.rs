@@ -83,6 +83,12 @@ pub(crate) fn markdown(config: &crate::Config, integrated: &[CommandDescriptor])
     output.push('\n');
     for scope in crate::key_mapping::Scope::ALL {
         output.push_str(&format!("\n### {}\n\n", scope.name()));
+        if scope == crate::key_mapping::Scope::Page {
+            output.push_str(&format!(
+                "- {}\n",
+                crate::i18n::tr(language, "help.model_marks")
+            ));
+        }
         for (_, action) in config.key_mapping.entries().filter(|(s, _)| *s == scope) {
             output.push_str(&format!(
                 "- `{}`: {} (`{}`)\n",

@@ -10,7 +10,8 @@ pub(super) fn render_model_page(
     config: &crate::Config,
 ) {
     let language = config.language;
-    let regions = input_page_shell(frame, area, theme);
+    let mut regions = input_page_shell(frame, area, theme);
+    regions.body.height = regions.body.height.saturating_sub(1);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("❯ ", Style::default().fg(theme.input.hint.fg)),
@@ -80,12 +81,23 @@ pub(super) fn render_model_page(
                 provider == active_provider && current == &model.id
             });
             let style = input_page_item_style(theme, focus.is(&id), selected);
+            let mark = config
+                .model_marks
+                .letter(active_provider, &model.id)
+                .filter(|&letter| config.key_mapping.model_letter_available(letter));
+            let suffix = mark
+                .map(|letter| format!(" [{letter}]"))
+                .unwrap_or_default();
+            let name_width = (columns[2].width as usize).saturating_sub(2 + suffix.len());
+            let name = if name_width == 0 {
+                String::new()
+            } else {
+                trim_to_width(&model.name, name_width)
+            };
             model_rows.push(Line::from(vec![
                 Span::styled(if selected { "● " } else { "○ " }, style),
-                Span::styled(
-                    trim_to_width(&model.name, columns[2].width.saturating_sub(2) as usize),
-                    style,
-                ),
+                Span::styled(name, style),
+                Span::styled(suffix, Style::default().fg(theme.dim)),
             ]));
         }
         if models.is_empty() && !page.providers.is_empty() {
@@ -102,8 +114,12 @@ pub(super) fn render_model_page(
         }
     }
     frame.render_widget(
-        Paragraph::new(page_key_hints(config, KeyScope::Page))
-            .style(Style::default().fg(theme.dim)),
+        Paragraph::new(format!(
+            "{}   {}",
+            crate::i18n::tr(language, "input_page.model.marks_hint"),
+            page_key_hints(config, KeyScope::Page)
+        ))
+        .style(Style::default().fg(theme.dim)),
         regions.footer,
     );
 }

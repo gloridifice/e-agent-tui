@@ -291,6 +291,8 @@ pub fn text_character(key: &KeyEvent) -> Option<char> {
 pub enum MappedKey {
     Command(Action),
     Text(char),
+    MarkModel(char),
+    SelectModel(char),
     Unbound,
 }
 
@@ -495,6 +497,34 @@ impl KeyMapping {
             .unwrap_or(MappedKey::Unbound)
     }
 
+    pub fn model_letter_available(&self, letter: char) -> bool {
+        letter.is_ascii_lowercase()
+            && [KeyModifiers::NONE, KeyModifiers::SHIFT]
+                .into_iter()
+                .all(|modifiers| {
+                    let key = KeyEvent::new(KeyCode::Char(letter), modifiers);
+                    self.resolve(Scope::Page, &key).is_none()
+                        && self.resolve_global(Scope::Page, &key).is_none()
+                })
+    }
+
+    pub fn model_input(&self, key: &KeyEvent) -> MappedKey {
+        let chord = Chord::normalize(key.code, key.modifiers);
+        if key.kind != KeyEventKind::Release {
+            if let KeyCode::Char(letter) = chord.code {
+                if self.model_letter_available(letter) {
+                    if chord.modifiers == KeyModifiers::SHIFT {
+                        return MappedKey::MarkModel(letter);
+                    }
+                    if chord.modifiers.is_empty() {
+                        return MappedKey::SelectModel(letter);
+                    }
+                }
+            }
+        }
+        self.input(Scope::Page, key)
+    }
+
     pub fn label(&self, scope: Scope, action: Action) -> String {
         self.effective
             .get(&scope)
@@ -529,6 +559,65 @@ mod tests {
     fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, modifiers)
     }
+    #[test]
+    fn key_mapping_model_letters_respect_chords_and_effective_bindings() {
+        let map = KeyMapping::default();
+        for (character, modifiers) in [
+            ('A', KeyModifiers::NONE),
+            ('A', KeyModifiers::SHIFT),
+            ('a', KeyModifiers::SHIFT),
+        ] {
+            assert_eq!(
+                map.model_input(&key(KeyCode::Char(character), modifiers)),
+                MappedKey::MarkModel('a')
+            );
+        }
+        assert_eq!(
+            map.model_input(&key(KeyCode::Char('a'), KeyModifiers::NONE)),
+            MappedKey::SelectModel('a')
+        );
+        for letter in "hjklq".chars() {
+            assert!(!map.model_letter_available(letter));
+            assert_eq!(
+                map.model_input(&key(KeyCode::Char(letter), KeyModifiers::SHIFT)),
+                MappedKey::Text(letter)
+            );
+        }
+        for modifiers in [
+            KeyModifiers::CONTROL,
+            KeyModifiers::ALT,
+            KeyModifiers::SUPER,
+            KeyModifiers::SHIFT | KeyModifiers::CONTROL,
+        ] {
+            assert_eq!(
+                map.model_input(&key(KeyCode::Char('a'), modifiers)),
+                MappedKey::Unbound
+            );
+        }
+        for character in ['中', 'é', '1'] {
+            assert!(!matches!(
+                map.model_input(&key(KeyCode::Char(character), KeyModifiers::SHIFT)),
+                MappedKey::MarkModel(_) | MappedKey::SelectModel(_)
+            ));
+        }
+        let mut release = key(KeyCode::Char('A'), KeyModifiers::SHIFT);
+        release.kind = KeyEventKind::Release;
+        assert_eq!(map.model_input(&release), MappedKey::Unbound);
+        let custom = KeyMapping::from_user_toml("[page]\nmove_down='nop'\nconfirm='a'\nback='shift-b'\n[global]\ntoggle_preview='c'\nchoose_model='shift-d'").unwrap();
+        assert!(custom.model_letter_available('j'));
+        for letter in "abcd".chars() {
+            assert!(!custom.model_letter_available(letter));
+        }
+        assert_eq!(
+            custom.model_input(&key(KeyCode::Char('a'), KeyModifiers::NONE)),
+            MappedKey::Command(Action::Confirm)
+        );
+        assert_eq!(
+            map.input(Scope::Page, &key(KeyCode::Char('a'), KeyModifiers::NONE)),
+            MappedKey::Text('a')
+        );
+    }
+
     #[test]
     fn key_mapping_defaults_and_platforms() {
         for platform in [Platform::Mac, Platform::Other] {

@@ -20,7 +20,7 @@ use crate::{
     syntax::{self, SyntaxHint},
     theme::Theme,
     transcript_layout::wrap_line,
-    ui::component::{ansi, diff},
+    ui::component::{ansi, command, diff},
 };
 
 pub fn render(
@@ -274,10 +274,7 @@ fn content_lines(
                 .map(|line| Line::styled(line.clone(), theme.markdown.text.style())),
         )
         .collect(),
-        PreviewContent::Command(command) => vec![Line::from(vec![
-            Span::styled("$ ", theme.input.prompt.style()),
-            Span::styled(command.clone(), theme.code.text.style()),
-        ])],
+        PreviewContent::Command(command) => command_lines(command, theme),
         PreviewContent::Path(path) => {
             vec![Line::styled(path.clone(), theme.markdown.link_url.style())]
         }
@@ -338,6 +335,21 @@ fn weak_markdown_lines(
         .collect()
 }
 
+fn command_lines(source: &str, theme: &Theme) -> Vec<Line<'static>> {
+    let mut lines = command::highlight(
+        source,
+        command::CommandColors {
+            executable: theme.code.r#type.fg,
+            argument: theme.surface.primary_text.fg,
+            operator: theme.surface.muted_text.fg,
+        },
+    );
+    lines[0]
+        .spans
+        .insert(0, Span::styled("$ ", theme.input.prompt.style()));
+    lines
+}
+
 fn tool_sections(
     preview: &ToolPreview,
     theme: &Theme,
@@ -356,10 +368,7 @@ fn tool_sections(
             ));
         }
         ToolPreviewPrimary::Command { command, metrics } => {
-            information.push(Line::from(vec![
-                Span::styled("$ ", theme.input.prompt.style()),
-                Span::styled(command.clone(), theme.surface.primary_text.style()),
-            ]));
+            information.extend(command_lines(command, theme));
             information.push(Line::styled(
                 metrics_text(metrics, language),
                 theme.activity.detail.style(),
@@ -513,6 +522,46 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect::<String>()
+    }
+
+    #[test]
+    fn command_previews_share_tokens_and_preserve_multiline_information() {
+        use ratatui::style::Modifier;
+
+        let theme = Theme::ferra();
+        let source = "cargo --release &&\necho 'a | b' >> output.log";
+        let standalone = content_lines(
+            &PreviewContent::Command(source.into()),
+            &theme,
+            80,
+            Language::English,
+        );
+        let tool = ToolPreview {
+            name: "bash".into(),
+            primary: ToolPreviewPrimary::Command {
+                command: source.into(),
+                metrics: ToolMetrics::default(),
+            },
+            secondary: None,
+        };
+        let (information, secondary) = tool_sections(&tool, &theme, Language::English);
+        assert_eq!(&information[1..3], standalone.as_slice());
+        assert!(secondary.is_none());
+        assert_eq!(line_text(&standalone[0]), "$ cargo --release &&");
+        assert_eq!(line_text(&standalone[1]), "echo 'a | b' >> output.log");
+        assert!(standalone[0].spans.iter().any(|span| {
+            span.content == "--release" && span.style.add_modifier.contains(Modifier::ITALIC)
+        }));
+        let layout = content_layout(&PreviewContent::Tool(tool), &theme, 8, Language::English);
+        assert!(layout.lines.iter().all(|line| line.width() <= 8));
+        let italic_text = layout
+            .lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .filter(|span| span.style.add_modifier.contains(Modifier::ITALIC))
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert_eq!(italic_text, "--release");
     }
 
     #[test]

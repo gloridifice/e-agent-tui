@@ -2,6 +2,7 @@
 
 pub mod ansi;
 pub mod card;
+pub mod command;
 pub mod diff;
 pub mod markdown;
 pub mod rule;

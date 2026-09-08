@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use ratatui::{
     layout::Rect,
     style::{Color, Style},
+    text::{Line, Span},
     widgets::{Block, Clear},
     Frame,
 };
@@ -15,6 +16,8 @@ use crate::{
     history_page::{HistoryLoadState, HistoryPage},
     key_mapping::{Action, KeyMapping, Scope},
     theme::{Theme, ThemeStyle},
+    ui::component::command::{self, CommandColors},
+    wrap::ellipsize_line,
 };
 
 #[derive(Clone)]
@@ -74,6 +77,45 @@ fn summary(call: &ExecutionCall) -> String {
         OperationSummary::Search { query, path } => path
             .as_ref()
             .map_or_else(|| query.clone(), |path| format!("{query} at {path}")),
+    }
+}
+
+fn put_summary(row: &mut Row, mut x: usize, call: &ExecutionCall, width: usize, theme: &Theme) {
+    let OperationSummary::Command { command } = &call.operation.summary else {
+        put(
+            row,
+            x,
+            clip_width(&summary(call), width),
+            theme.history.text,
+        );
+        return;
+    };
+    let lines = command::highlight(
+        command,
+        CommandColors {
+            executable: theme.history.operation.bash.fg,
+            argument: theme.history.text.fg,
+            operator: theme.history.metadata.fg,
+        },
+    );
+    let mut spans = Vec::new();
+    for (index, line) in lines.into_iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(
+                " ",
+                Style::default().fg(theme.history.text.fg),
+            ));
+        }
+        spans.extend(line.spans);
+    }
+    for span in ellipsize_line(Line::from(spans), width).spans {
+        let columns = span.width();
+        row.push(Run {
+            x,
+            text: span.content.into_owned(),
+            style: span.style,
+        });
+        x += columns;
     }
 }
 
@@ -238,12 +280,7 @@ fn record_rows(width: usize, calls: &[&ExecutionCall], theme: &Theme) -> Vec<Row
                 operation,
             );
             let command_width = width.saturating_sub(64).max(8);
-            put(
-                &mut row,
-                28,
-                clip_width(&summary(call), command_width),
-                theme.history.text,
-            );
+            put_summary(&mut row, 28, call, command_width, theme);
             put(
                 &mut row,
                 width.saturating_sub(32),
@@ -259,12 +296,7 @@ fn record_rows(width: usize, calls: &[&ExecutionCall], theme: &Theme) -> Vec<Row
             put(&mut row, width.saturating_sub(9), result, result_style);
         } else {
             put(&mut row, 2, operation_label(call.operation.kind), operation);
-            put(
-                &mut row,
-                10,
-                clip_width(&summary(call), width.saturating_sub(12)),
-                theme.history.text,
-            );
+            put_summary(&mut row, 10, call, width.saturating_sub(12), theme);
             rows.push(row);
             row = Vec::new();
             put(
@@ -441,6 +473,77 @@ pub fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_summaries_keep_styles_inside_wide_and_narrow_columns() {
+        use crate::execution_history::{OperationFinish, OperationStart};
+        use ratatui::style::Modifier;
+
+        let source = "cargo --flag=one &&\necho '中文e\u{0301}👩‍💻' >> long/file/path";
+        let call = ExecutionCall {
+            sequence: 1,
+            run_id: "run".into(),
+            start_unix_ms: 0,
+            end_unix_ms: Some(1),
+            operation: OperationStart {
+                call_id: "call".into(),
+                turn_id: None,
+                parent_id: None,
+                kind: OperationKind::Command,
+                name: "bash".into(),
+                summary: OperationSummary::Command {
+                    command: source.into(),
+                },
+            },
+            finish: Some(OperationFinish {
+                call_id: "call".into(),
+                outcome: ExecutionOutcome::Success,
+                duration: None,
+                output_lines: None,
+            }),
+        };
+        let original = call.clone();
+        for width in [100, 60, 28, 12] {
+            let rows = record_rows(width, &[&call], &Theme::ferra());
+            let (start, columns) = if width >= 80 {
+                (28, width - 64)
+            } else {
+                (10, width - 12)
+            };
+            let summary_runs = rows[2]
+                .iter()
+                .filter(|run| run.x >= start && run.x < start + columns)
+                .collect::<Vec<_>>();
+            let text = summary_runs
+                .iter()
+                .map(|run| run.text.as_str())
+                .collect::<String>();
+            assert_eq!(
+                text,
+                crate::wrap::ellipsize_text(&source.replace('\n', " "), columns)
+            );
+            assert!(summary_runs
+                .iter()
+                .all(|run| run.x + run.text.width() <= start + columns));
+            if width >= 60 {
+                assert!(summary_runs.iter().any(|run| run.text == "--flag="
+                    && run.style.add_modifier.contains(Modifier::ITALIC)));
+                assert!(summary_runs
+                    .iter()
+                    .filter(|run| run.text.contains("one"))
+                    .all(|run| !run.style.add_modifier.contains(Modifier::ITALIC)));
+            }
+            assert!(rows
+                .iter()
+                .flatten()
+                .filter(|run| run.text == "✓")
+                .all(|run| !run.style.add_modifier.contains(Modifier::ITALIC)));
+        }
+        assert_eq!(
+            call, original,
+            "presentation never decorates recorded source"
+        );
+    }
 
     #[test]
     fn clipping_and_clock_are_cell_bounded() {

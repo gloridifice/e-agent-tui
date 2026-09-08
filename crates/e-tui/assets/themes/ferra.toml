@@ -167,3 +167,28 @@ separator = { fg = "umber" }
 bar = { fg = "bark" }
 line = { fg = "umber" }
 placeholder = { fg = "sage", bg = "night" }
+
+[semantics.history]
+text = { fg = "mist" }
+heading = { fg = "mist" }
+metadata = { fg = "bark" }
+total_elapsed = { fg = "mist" }
+separator = { fg = "umber" }
+hint = { fg = "umber" }
+progress = { fg = "blush" }
+bar_text = { fg = "night" }
+
+[semantics.history.operation]
+model = { fg = "bark" }
+read = { fg = "sage" }
+edit = { fg = "coral" }
+bash = { fg = "blush" }
+search = { fg = "rose" }
+other = { fg = "bark" }
+
+[semantics.history.duration]
+highest = { fg = "ember" }
+second = { fg = "blush" }
+top_five = { fg = "mist" }
+remaining = { fg = "bark" }
+unknown = { fg = "bark" }

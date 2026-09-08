@@ -44,6 +44,46 @@ pub async fn execute_ui_actions(
                     break;
                 }
             }
+            UiAction::QueryHistory(request) => {
+                let result = ports.query_history(request.clone()).await;
+                if matches!(
+                    request.kind,
+                    crate::execution_history::HistoryQueryKind::Copy
+                        | crate::execution_history::HistoryQueryKind::CopyLongest10
+                ) {
+                    match result {
+                        Ok(result) => {
+                            let text = crate::execution_history::format_history_export(
+                                &result.records,
+                                &result.warnings,
+                                matches!(
+                                    request.kind,
+                                    crate::execution_history::HistoryQueryKind::CopyLongest10
+                                )
+                                .then_some(10),
+                            );
+                            let lines = text.lines().count();
+                            let (preview, truncated) = clipboard_preview(&text, 6);
+                            execution.completed.push(match ports.write_clipboard(text) {
+                                Ok(()) => EffectResult::ClipboardWritten {
+                                    lines,
+                                    preview,
+                                    truncated,
+                                },
+                                Err(error) => EffectResult::ClipboardFailed(error),
+                            });
+                        }
+                        Err(error) => execution.completed.push(EffectResult::HistoryQueried {
+                            request,
+                            result: Err(error),
+                        }),
+                    }
+                } else {
+                    execution
+                        .completed
+                        .push(EffectResult::HistoryQueried { request, result });
+                }
+            }
             UiAction::ResolvePreview(request) => {
                 let result = ports.resolve_preview(request.clone()).await;
                 execution.completed.push(EffectResult::PreviewResolved {

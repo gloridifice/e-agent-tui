@@ -185,6 +185,7 @@ impl RuntimeController {
             && ui.approval.is_none()
             && !*ui.help_visible
             && app.reading.is_none()
+            && app.history_page.is_none()
         {
             if let Some(request) = ui
                 .input

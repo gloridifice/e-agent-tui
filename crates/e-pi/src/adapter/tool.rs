@@ -40,6 +40,7 @@ pub(super) fn tool_result_fact(message: &Value) -> TimelineFact {
             .get("details")
             .and_then(|details| details.get("truncation"))
             .is_some_and(|value| !value.is_null()),
+        execution_metrics: None,
         starts_thinking: false,
         mutation_diff: pi_edit_mutation_diff(
             message.get("toolName").and_then(Value::as_str),
@@ -259,6 +260,7 @@ pub(super) fn tool_end(adapter: &mut PiAdapter, record: &RpcRecord) -> AdapterOu
             .get("details")
             .and_then(|details| details.get("truncation"))
             .is_some_and(|value| !value.is_null()),
+        execution_metrics: None,
         starts_thinking: false,
         mutation_diff: pi_edit_mutation_diff(record.string("toolName"), &result, is_error),
         mutation_hunks: Vec::new(),

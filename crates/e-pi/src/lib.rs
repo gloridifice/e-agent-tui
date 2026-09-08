@@ -8,6 +8,7 @@
 pub mod adapter;
 pub mod config;
 pub mod effects;
+pub mod execution_history_store;
 pub mod framing;
 pub mod path_completion;
 pub mod process;

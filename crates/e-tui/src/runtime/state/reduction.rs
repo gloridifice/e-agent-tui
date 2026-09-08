@@ -13,7 +13,10 @@ use super::{
     PreviewRevision, RuntimeState, ThinkingNode, TimelineFact, TimelineRecord, ToolMetrics,
     ToolMutation, TranscriptBlock, WorkflowProjection,
 };
-use crate::projection::{command, lifecycle, retry, workflow};
+use crate::{
+    execution_history::ObservedOutputLines,
+    projection::{command, lifecycle, retry, workflow},
+};
 
 impl RuntimeState {
     pub(super) fn allocate_copy_unit(&mut self, source: &str) -> u64 {
@@ -182,7 +185,7 @@ impl RuntimeState {
             Msg::Tool(card) if card.call_id == call_id && card.state == ToolState::Running => {
                 card.state = ToolState::Done {
                     ok,
-                    lines: output.lines().count(),
+                    lines: ObservedOutputLines::from_output(output, output_truncated).count,
                     lines_truncated: output_truncated,
                     duration_ms: now_ms.saturating_sub(card.start_ms),
                 };
@@ -692,6 +695,7 @@ impl RuntimeState {
             output,
             state,
             output_truncated,
+            execution_metrics,
             mutation_diff,
             mutation_hunks,
             ..
@@ -706,6 +710,7 @@ impl RuntimeState {
                     output: output.clone(),
                     is_error: !matches!(state, crate::agent::ActivityState::Success),
                     output_truncated: *output_truncated,
+                    execution_metrics: *execution_metrics,
                     time_ms: now_ms,
                     surface_seq: event.sequence,
                     mutation_diff: mutation_diff.clone(),
@@ -774,9 +779,10 @@ impl RuntimeState {
                 ..
             } => {
                 let seed = self.projector.tool_preview_seeds.get(activity_id).cloned();
+                let lines = ObservedOutputLines::from_output(output, *output_truncated);
                 let metrics = ToolMetrics {
-                    output_lines: row.output_lines.unwrap_or(output.lines().count()),
-                    truncated: *output_truncated || row.output_lines_truncated,
+                    output_lines: row.output_lines.unwrap_or(lines.count),
+                    truncated: lines.truncated || row.output_lines_truncated,
                     duration_ms: row.duration_ms,
                 };
                 let content = tool_preview_result(
@@ -824,9 +830,18 @@ impl RuntimeState {
                 ActivityState::Success
             };
             if row.label != "create" {
-                row.duration_ms = Some(pending.time_ms.saturating_sub(row.start_ms.unwrap_or(0)));
-                row.output_lines = Some(pending.output.lines().count());
-                row.output_lines_truncated = pending.output_truncated;
+                if let Some(metrics) = pending.execution_metrics {
+                    row.duration_ms = metrics.duration_ms;
+                    row.output_lines = metrics.output_lines;
+                    row.output_lines_truncated = metrics.output_lines_truncated;
+                } else {
+                    row.duration_ms =
+                        Some(pending.time_ms.saturating_sub(row.start_ms.unwrap_or(0)));
+                    let lines =
+                        ObservedOutputLines::from_output(&pending.output, pending.output_truncated);
+                    row.output_lines = Some(lines.count);
+                    row.output_lines_truncated = lines.truncated;
+                }
                 row.live_duration_since = None;
             }
         }
@@ -835,9 +850,10 @@ impl RuntimeState {
         // live result path.
         if let (TimelineFact::ToolCall(activity), Some(pending)) = (&event.fact, &pending_result) {
             let seed = self.projector.tool_preview_seeds.get(&activity.id).cloned();
+            let lines = ObservedOutputLines::from_output(&pending.output, pending.output_truncated);
             let metrics = ToolMetrics {
-                output_lines: row.output_lines.unwrap_or(pending.output.lines().count()),
-                truncated: pending.output_truncated || row.output_lines_truncated,
+                output_lines: row.output_lines.unwrap_or(lines.count),
+                truncated: lines.truncated || row.output_lines_truncated,
                 duration_ms: row.duration_ms,
             };
             let revision = pending

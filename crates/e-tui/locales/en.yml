@@ -147,6 +147,16 @@ command.goal.hint: "[goal|clear|edit|pause|resume]"
 command.plan.description: "Plan mode"
 command.plan.hint: "[off|message]"
 command.read.description: "Enter Reading View"
+command.history.description: "Inspect this session's execution history"
+command.history.hint: "[show|path|copy|copy-10]"
+command.history.show.description: "Open the full-screen history page"
+command.history.path.description: "Insert the trace path into the composer"
+command.history.copy.description: "Copy the chronological execution history"
+command.history.copy_10.description: "Copy the ten longest measured operations"
+command.history.usage: "Usage: /history [show|path|copy|copy-10]"
+command.history.blocked: "Execution history is unavailable while a question or approval is open"
+command.history.unavailable: "Execution history requires an attached session"
+command.history.query_failed: "Could not read execution history: %{error}"
 command.quit.description: "Exit the client"
 command.usage: "Usage: /%{command}"
 command.model.usage: "Usage: /model [provider/model]"
@@ -200,6 +210,9 @@ key.action.move_up: "Up"
 key.action.move_down: "Down"
 key.action.move_up_fast: "Cursor up ×15"
 key.action.move_down_fast: "Cursor down ×15"
+key.action.move_up_half: "Half page up"
+key.action.move_down_half: "Half page down"
+key.action.toggle_view: "Toggle view"
 key.action.move_start: "Start"
 key.action.move_end: "End"
 key.action.delete_backward: "Backspace"
@@ -209,7 +222,7 @@ key.action.previous: "Previous"
 key.action.next: "Next"
 key.action.accept: "Accept"
 key.action.cancel: "Cancel"
-key.action.exit: "Exit Reading"
+key.action.exit: "Exit"
 key.action.copy_block: "Copy complete block"
 key.action.enter_items: "Enter items"
 key.action.back_to_blocks: "Back to blocks"
@@ -235,6 +248,7 @@ help.body: |
   - Pi cancels its entire backend queue, including extension steering/follow-up messages; local after-turn prompts are preserved.
   - Page text editors accept ordinary letters; global picker shortcuts do not replace an active page or approval.
   - Reading copies the complete owning block, even with an item selected. Exit leaves Reading; back-to-blocks only leaves Items.
+  - `/history` opens the execution timeline. Tab switches grouped turns and Top 50; the displayed footer reflects the active full-screen/history bindings.
   - Drag any visible screen text to copy on release, including input, status, pages, and popups. Multiline ranges include adjacent panes in screen row order.
   - The display stays fixed while selecting; background work continues and live display resumes on release. Only displayed masks, placeholders, and ellipses are copied; trailing ordinary spaces are omitted.
   - Mouse wheel scrolls messages and cancels selection. A separator press resizes; a text drag starting elsewhere can include its visible glyph.

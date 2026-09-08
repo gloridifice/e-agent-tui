@@ -41,3 +41,6 @@ unicode-width = "0.2"
 tui-syntax-highlight = { version = "0.2", default-features = false, features = ["regex-fancy"] }
 vte = "0.15"
 wasmi = "2"
+
+[dev-dependencies]
+serde_json = "1"

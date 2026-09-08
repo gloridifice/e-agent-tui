@@ -246,6 +246,10 @@ pub(super) fn render_with_cursor(
     theme: &Theme,
     overlays: RenderOverlays<'_>,
 ) -> Option<Position> {
+    if let Some(history_page) = &mut state.history_page {
+        pane::history::render(frame, frame.area(), history_page, &state.config, theme);
+        return None;
+    }
     let pane_resize = overlays.pane_resize;
     if pane_resize.is_active() {
         return render_resize_placeholder(

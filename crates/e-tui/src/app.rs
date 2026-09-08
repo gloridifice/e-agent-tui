@@ -257,6 +257,8 @@ pub struct TuiApp {
     pub reading_document: ReadingDocument,
     pub reading_layout: ReadingLayout,
     pub reading: Option<ReadingViewState>,
+    pub history_page: Option<crate::history_page::HistoryPage>,
+    pub next_history_request_id: u64,
     reading_layout_anchor: Option<ReadingLayoutAnchor>,
     pending_actions: Vec<UiAction>,
 }

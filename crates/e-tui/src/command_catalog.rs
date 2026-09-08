@@ -25,6 +25,7 @@ pub enum CompletionKind {
     Model,
     Effort,
     Skill,
+    FixedSubcommands,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,8 +43,47 @@ pub enum CommandAction {
     Forward,
     Help,
     Reading,
+    History,
     Quit,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixedSubcommandAction {
+    HistoryShow,
+    HistoryPath,
+    HistoryCopy,
+    HistoryCopy10,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct FixedSubcommand {
+    pub name: &'static str,
+    pub description_key: &'static str,
+    pub action: FixedSubcommandAction,
+}
+
+pub const HISTORY_SUBCOMMANDS: &[FixedSubcommand] = &[
+    FixedSubcommand {
+        name: "show",
+        description_key: "command.history.show.description",
+        action: FixedSubcommandAction::HistoryShow,
+    },
+    FixedSubcommand {
+        name: "path",
+        description_key: "command.history.path.description",
+        action: FixedSubcommandAction::HistoryPath,
+    },
+    FixedSubcommand {
+        name: "copy",
+        description_key: "command.history.copy.description",
+        action: FixedSubcommandAction::HistoryCopy,
+    },
+    FixedSubcommand {
+        name: "copy-10",
+        description_key: "command.history.copy_10.description",
+        action: FixedSubcommandAction::HistoryCopy10,
+    },
+];
 
 /// One optimized command. `name` never includes the leading slash.
 #[derive(Debug, Clone, Copy)]
@@ -53,6 +93,8 @@ pub struct BuiltinCommand {
     pub input_hint_key: Option<&'static str>,
     pub completion: CompletionKind,
     pub action: CommandAction,
+    pub subcommands: &'static [FixedSubcommand],
+    pub default_subcommand: Option<FixedSubcommandAction>,
 }
 
 macro_rules! command {
@@ -63,6 +105,8 @@ macro_rules! command {
             input_hint_key: $hint_key,
             completion: CompletionKind::$completion,
             action: CommandAction::$action,
+            subcommands: &[],
+            default_subcommand: None,
         }
     };
 }
@@ -144,6 +188,15 @@ pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
         Forward
     ),
     command!("read", "command.read.description", None, None, Reading),
+    BuiltinCommand {
+        name: "history",
+        description_key: "command.history.description",
+        input_hint_key: Some("command.history.hint"),
+        completion: CompletionKind::FixedSubcommands,
+        action: CommandAction::History,
+        subcommands: HISTORY_SUBCOMMANDS,
+        default_subcommand: Some(FixedSubcommandAction::HistoryShow),
+    },
     command!("exit", "command.quit.description", None, None, Quit),
     command!("q", "command.quit.description", None, None, Quit),
     command!("quit", "command.quit.description", None, None, Quit),
@@ -154,6 +207,35 @@ pub fn builtin_command(name: &str) -> Option<&'static BuiltinCommand> {
 }
 
 /// Resolve an argument-completion context from the central declaration.
+pub fn match_fixed_subcommands(
+    command: &'static BuiltinCommand,
+    query: &str,
+) -> Vec<&'static FixedSubcommand> {
+    let query = query.to_lowercase();
+    rank_candidates(&query, command.subcommands.iter(), |query, subcommand| {
+        rank_text(query, &subcommand.name.to_lowercase())
+    })
+}
+
+pub fn resolve_fixed_subcommand(
+    command: &'static BuiltinCommand,
+    input: &str,
+) -> Option<FixedSubcommandAction> {
+    let mut words = input.split_whitespace();
+    let first = words.next();
+    if words.next().is_some() {
+        return None;
+    }
+    match first {
+        None => command.default_subcommand,
+        Some(name) => command
+            .subcommands
+            .iter()
+            .find(|subcommand| subcommand.name == name)
+            .map(|subcommand| subcommand.action),
+    }
+}
+
 pub fn completion_context(line: &str) -> Option<(&'static BuiltinCommand, &str)> {
     let body = line.strip_prefix('/')?;
     let skill = builtin_command("skill").expect("skill command is registered");
@@ -363,6 +445,28 @@ mod tests {
         assert_eq!(completion_context("/model ").unwrap().1, "");
         assert_eq!(completion_context("/effort h").unwrap().1, "h");
         assert_eq!(completion_context("/skill").unwrap().1, "");
+        let history = builtin_command("history").unwrap();
+        assert_eq!(completion_context("/history ").unwrap().1, "");
+        assert_eq!(
+            resolve_fixed_subcommand(history, ""),
+            Some(FixedSubcommandAction::HistoryShow)
+        );
+        assert_eq!(
+            resolve_fixed_subcommand(history, "show"),
+            Some(FixedSubcommandAction::HistoryShow)
+        );
+        assert_eq!(
+            resolve_fixed_subcommand(history, " copy-10  "),
+            Some(FixedSubcommandAction::HistoryCopy10)
+        );
+        assert_eq!(resolve_fixed_subcommand(history, "copy extra"), None);
+        assert_eq!(
+            match_fixed_subcommands(history, "cop")
+                .iter()
+                .map(|item| item.name)
+                .collect::<Vec<_>>(),
+            ["copy", "copy-10"]
+        );
     }
 
     #[test]

@@ -79,7 +79,9 @@ async fn main() -> anyhow::Result<()> {
     run(cli.launch).await
 }
 
-struct PiRuntimePorts;
+struct PiRuntimePorts {
+    history: Arc<std::sync::Mutex<e_pi::execution_history_store::HistoryRecorder>>,
+}
 
 impl UiActionPorts for PiRuntimePorts {
     async fn complete_paths(
@@ -91,6 +93,20 @@ impl UiActionPorts for PiRuntimePorts {
             .await
             .unwrap_or_default()
     }
+    fn query_history(
+        &mut self,
+        request: e_tui::execution_history::HistoryQueryRequest,
+    ) -> impl std::future::Future<
+        Output = Result<e_tui::execution_history::HistoryQueryResult, String>,
+    > + Send {
+        let history = Arc::clone(&self.history);
+        async move {
+            tokio::task::spawn_blocking(move || history.lock().unwrap().query(&request))
+                .await
+                .map_err(|error| format!("execution-history query worker failed: {error}"))?
+        }
+    }
+
     fn load_config(&mut self) -> Result<(Config, Vec<ThemeFile>), String> {
         let mut config = e_pi::config::load();
         let themes = e_pi::effects::load_themes(&e_pi::config::themes_dir());
@@ -150,13 +166,47 @@ async fn route_output(
     output: AdapterOutput,
     rpc: &tokio::sync::mpsc::Sender<RpcCommand>,
     pending: &mut VecDeque<AgentEvent>,
+    history: &Arc<std::sync::Mutex<e_pi::execution_history_store::HistoryRecorder>>,
+    reported_history_error: &mut Option<String>,
 ) -> Result<(), String> {
     for command in output.commands {
         rpc.send(command)
             .await
             .map_err(|_| "Pi RPC stdin channel closed".to_owned())?;
     }
-    pending.extend(output.events);
+    for mut event in output.events {
+        let attached = matches!(
+            &event,
+            AgentEvent::Session(e_tui::agent::SessionEvent::Attached(_))
+        );
+        let history_result = {
+            let mut recorder = history.lock().unwrap();
+            let result = recorder.observe(&event);
+            recorder.enrich_resume(&mut event);
+            result
+        };
+        let history_error = match history_result {
+            Ok(()) if attached => {
+                *reported_history_error = None;
+                None
+            }
+            Ok(()) => None,
+            Err(error) if reported_history_error.as_ref() != Some(&error) => {
+                *reported_history_error = Some(error.clone());
+                Some(error)
+            }
+            Err(_) => None,
+        };
+        pending.push_back(event);
+        if let Some(error) = history_error {
+            pending.push_back(AgentEvent::Interaction(
+                e_tui::agent::InteractionEvent::Error {
+                    code: "history-recording".into(),
+                    message: error,
+                },
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -197,6 +247,10 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
         e_pi::session_index::project_session_root(&launch.cwd),
     );
     let mut pending_inbound = VecDeque::new();
+    let history = Arc::new(std::sync::Mutex::new(
+        e_pi::execution_history_store::HistoryRecorder::new("e-pi"),
+    ));
+    let mut reported_history_error = None;
     route_output(
         AdapterOutput {
             commands: adapter.startup_commands(),
@@ -204,6 +258,8 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
         },
         &rpc,
         &mut pending_inbound,
+        &history,
+        &mut reported_history_error,
     )
     .await
     .map_err(anyhow::Error::msg)?;
@@ -230,7 +286,9 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
     let mut events = ProductionTerminalEvents::new(platform_input::native_mods);
     #[cfg(not(windows))]
     let mut events = ProductionTerminalEvents::new();
-    let mut runtime_ports = PiRuntimePorts;
+    let mut runtime_ports = PiRuntimePorts {
+        history: Arc::clone(&history),
+    };
     let mut scheduler = FrameScheduler::new(runtime_ports.now());
     let mut committed_presentation = e_tui::ui::Presentation::default();
     let mut spinner_deadline: Option<Instant> = None;
@@ -276,7 +334,7 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
                 maybe = process.recv() => {
                     match maybe {
                         Some(PiProcessEvent::Record(record)) => {
-                            if let Err(error) = route_output(adapter.record(record), &rpc, &mut pending_inbound).await {
+                            if let Err(error) = route_output(adapter.record(record), &rpc, &mut pending_inbound, &history, &mut reported_history_error).await {
                                 fatal = Some(error);
                                 break 'outer;
                             }
@@ -303,7 +361,7 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
                         fatal = Some("Pi adapter request channel closed".into());
                         break 'outer;
                     };
-                    if let Err(error) = route_output(adapter.request(request), &rpc, &mut pending_inbound).await {
+                    if let Err(error) = route_output(adapter.request(request), &rpc, &mut pending_inbound, &history, &mut reported_history_error).await {
                         fatal = Some(error);
                         break 'outer;
                     }
@@ -432,6 +490,7 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
                     input_page_open: state.interaction.input_page.is_some(),
                     approval_open: !drafting && state.interaction.approval.is_some(),
                     reading_view_open: state.reading.is_some(),
+                    history_view_open: state.history_page.is_some(),
                 }
             };
             let route = route_terminal_event(event, focus, &config.key_mapping);
@@ -643,6 +702,10 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
         }
     }
 
+    let history_shutdown = history.lock().unwrap().shutdown();
+    if let Err(error) = history_shutdown {
+        eprintln!("{error}");
+    }
     process.shutdown().await;
     terminal.restore_terminal().ok();
     if let Some(reason) = fatal {

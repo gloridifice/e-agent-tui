@@ -4,10 +4,11 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{
     agent::{
-        timeline::{TimelineFact, TimelineRecord},
+        timeline::{TimelineFact, TimelineRecord, ToolExecutionMetrics},
         tool::{ActivityState as AgentActivityState, ToolCapability, ToolReference},
     },
     display::{ActivityContinuation, ActivityRow, ActivityState, DisplayId},
+    execution_history::ObservedOutputLines,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -51,6 +52,7 @@ struct FileItem {
     call_id: String,
     file: String,
     ok: Option<bool>,
+    execution_metrics: Option<ToolExecutionMetrics>,
 }
 
 #[derive(Debug, Clone)]
@@ -139,6 +141,7 @@ impl ToolProjectionState {
                 call_id: call_id.clone(),
                 file: path.clone(),
                 ok: None,
+                execution_metrics: None,
             });
             self.calls.insert(
                 call_id.clone(),
@@ -186,6 +189,7 @@ impl ToolProjectionState {
             output,
             state,
             output_truncated,
+            execution_metrics,
             ..
         } = &event.fact
         else {
@@ -205,6 +209,7 @@ impl ToolProjectionState {
                 .find(|item| item.call_id == *activity_id)
             {
                 item.ok = Some(ok);
+                item.execution_metrics = *execution_metrics;
             }
             return Some(ToolMutation::Upsert(file_group_row(group, now_ms)));
         }
@@ -218,9 +223,16 @@ impl ToolProjectionState {
         };
         row.start_ms = Some(call.start_ms);
         if !call.create {
-            row.duration_ms = Some(now_ms.saturating_sub(call.start_ms));
-            row.output_lines = Some(output.lines().count());
-            row.output_lines_truncated = *output_truncated;
+            if let Some(metrics) = execution_metrics {
+                row.duration_ms = metrics.duration_ms;
+                row.output_lines = metrics.output_lines;
+                row.output_lines_truncated = metrics.output_lines_truncated;
+            } else {
+                row.duration_ms = Some(now_ms.saturating_sub(call.start_ms));
+                let lines = ObservedOutputLines::from_output(output, *output_truncated);
+                row.output_lines = Some(lines.count);
+                row.output_lines_truncated = lines.truncated;
+            }
         }
         Some(ToolMutation::Upsert(row))
     }
@@ -268,7 +280,31 @@ fn file_group_row(group: &FileGroupState, now_ms: u64) -> ActivityRow {
         ActivityState::Failure
     };
     if !row.state.is_active() {
-        row.duration_ms = Some(now_ms.saturating_sub(group.start_ms));
+        let historical = group
+            .items
+            .iter()
+            .all(|item| item.execution_metrics.is_some());
+        row.duration_ms = if historical {
+            let start = group
+                .items
+                .iter()
+                .filter_map(|item| {
+                    item.execution_metrics
+                        .and_then(|metrics| metrics.started_unix_ms)
+                })
+                .min();
+            let end = group
+                .items
+                .iter()
+                .filter_map(|item| {
+                    item.execution_metrics
+                        .and_then(|metrics| metrics.ended_unix_ms)
+                })
+                .max();
+            start.zip(end).map(|(start, end)| end.saturating_sub(start))
+        } else {
+            Some(now_ms.saturating_sub(group.start_ms))
+        };
     }
     row
 }
@@ -348,6 +384,53 @@ mod tests {
             classify_file_call(&activity, Some(r"G:\repo")),
             Some((FileAction::Edit, "src/lib.rs".into()))
         );
+    }
+
+    fn record(fact: TimelineFact) -> TimelineRecord {
+        TimelineRecord {
+            sequence: None,
+            time_ms: None,
+            surface: None,
+            source_sequences: Vec::new(),
+            fact,
+        }
+    }
+
+    #[test]
+    fn folded_historical_files_use_trace_span() {
+        let mut projection = ToolProjectionState::default();
+        let mut first = edit_with_hunks(&[Some("a.rs")]);
+        first.id = "first".into();
+        let mut second = edit_with_hunks(&[Some("b.rs")]);
+        second.id = "second".into();
+        projection.project_call(&record(TimelineFact::ToolCall(first)), None, true, 9_000);
+        projection.project_call(&record(TimelineFact::ToolCall(second)), None, true, 9_000);
+        let result = |id: &str, start, end| {
+            record(TimelineFact::ToolResult {
+                activity_id: id.into(),
+                output: "ignored".into(),
+                state: ActivityState::Success,
+                output_truncated: false,
+                execution_metrics: Some(ToolExecutionMetrics {
+                    duration_ms: Some(end - start),
+                    output_lines: Some(1),
+                    output_lines_truncated: false,
+                    started_unix_ms: Some(start),
+                    ended_unix_ms: Some(end),
+                }),
+                starts_thinking: false,
+                mutation_diff: None,
+                mutation_hunks: Vec::new(),
+            })
+        };
+        projection.project_result(&result("first", 100, 200), 9_001);
+        let ToolMutation::Upsert(row) = projection
+            .project_result(&result("second", 300, 500), 9_002)
+            .unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(row.duration_ms, Some(400));
     }
 
     #[test]

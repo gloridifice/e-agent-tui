@@ -18,6 +18,7 @@ pub struct TerminalFocus {
     pub input_page_open: bool,
     pub approval_open: bool,
     pub reading_view_open: bool,
+    pub history_view_open: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +33,7 @@ pub enum TerminalRoute {
     InputPage(KeyEvent),
     Approval(KeyEvent),
     Reading(KeyEvent),
+    History(KeyEvent),
     Ordinary(KeyEvent),
     Ignore,
 }
@@ -81,7 +83,9 @@ pub fn route_terminal_event_with_mapping(
         },
         Event::FocusLost | Event::Resize(_, _) => TerminalRoute::Pointer(PointerEvent::FocusLost),
         Event::FocusGained => TerminalRoute::Ignore,
-        Event::Paste(_) if focus.reading_view_open => TerminalRoute::Ignore,
+        Event::Paste(_) if focus.reading_view_open || focus.history_view_open => {
+            TerminalRoute::Ignore
+        }
         // A terminal that consumed the paste shortcut but had no text (Windows
         // Terminal with an image-only clipboard) delivers an EMPTY bracketed
         // paste instead of nothing at all. Treat that as the terminal handing
@@ -98,6 +102,7 @@ pub fn route_terminal_event_with_mapping(
         Event::Paste(_) if focus.approval_open || focus.help_visible => TerminalRoute::Ignore,
         Event::Paste(text) => TerminalRoute::Paste { text },
         Event::Key(key) if key.kind == KeyEventKind::Release => TerminalRoute::Ignore,
+        Event::Key(key) if focus.history_view_open => TerminalRoute::History(key),
         Event::Key(key) if focus.help_visible => TerminalRoute::Help {
             dismiss: mapping.resolve(Scope::Help, &key) == Some(Action::Close)
                 || mapping.resolve(Scope::Global, &key) == Some(Action::PrintHelp),

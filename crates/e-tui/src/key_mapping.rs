@@ -38,6 +38,9 @@ pub enum Action {
     MoveDown,
     MoveUpFast,
     MoveDownFast,
+    MoveUpHalf,
+    MoveDownHalf,
+    ToggleView,
     MoveStart,
     MoveEnd,
     DeleteBackward,
@@ -84,6 +87,8 @@ pub enum Scope {
     MessageSearch,
     ReadMode,
     ReadModeItem,
+    FullScreen,
+    History,
     Page,
     PageEdit,
     PageChoice,
@@ -95,7 +100,7 @@ pub enum Scope {
 }
 
 impl Scope {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 19] = [
         Self::Global,
         Self::Message,
         Self::MessageIdle,
@@ -105,6 +110,8 @@ impl Scope {
         Self::MessageSearch,
         Self::ReadMode,
         Self::ReadModeItem,
+        Self::FullScreen,
+        Self::History,
         Self::Page,
         Self::PageEdit,
         Self::PageChoice,
@@ -126,6 +133,8 @@ impl Scope {
             Self::MessageSearch => "message.search",
             Self::ReadMode => "read_mode",
             Self::ReadModeItem => "read_mode.item",
+            Self::FullScreen => "full_screen",
+            Self::History => "history",
             Self::Page => "page",
             Self::PageEdit => "page.edit",
             Self::PageChoice => "page.choice",
@@ -352,6 +361,9 @@ impl KeyMapping {
         items.remove(&Action::EnterItems);
         items.extend(source[&Scope::ReadModeItem].clone());
         effective.insert(Scope::ReadModeItem, items);
+        let mut history = source[&Scope::FullScreen].clone();
+        history.extend(source[&Scope::History].clone());
+        effective.insert(Scope::History, history);
         let result = Self {
             source: Arc::new(source),
             effective: Arc::new(effective),
@@ -431,9 +443,18 @@ impl KeyMapping {
     }
 
     fn binding_path(&self, scope: Scope, action: Action) -> String {
-        let owner = [scope, Scope::Message, Scope::MessageEdit, Scope::ReadMode]
-            .into_iter()
-            .find(|candidate| self.source[candidate].contains_key(&action))
+        let inherited =
+            if scope == Scope::History && self.source[&Scope::FullScreen].contains_key(&action) {
+                Some(Scope::FullScreen)
+            } else {
+                [Scope::Message, Scope::MessageEdit, Scope::ReadMode]
+                    .into_iter()
+                    .find(|candidate| self.source[candidate].contains_key(&action))
+            };
+        let owner = self.source[&scope]
+            .contains_key(&action)
+            .then_some(scope)
+            .or(inherited)
             .expect("effective bindings have a source owner");
         format!("{}.{}", owner.name(), action.name())
     }
@@ -474,8 +495,10 @@ impl KeyMapping {
     }
 
     fn global_is_active(scope: Scope, action: Action) -> bool {
-        !(matches!(scope, Scope::ReadMode | Scope::ReadModeItem)
-            && matches!(action, Action::PageUp | Action::PageDown))
+        !(matches!(
+            scope,
+            Scope::ReadMode | Scope::ReadModeItem | Scope::FullScreen | Scope::History
+        ) && matches!(action, Action::PageUp | Action::PageDown))
     }
 
     pub fn resolve_global(&self, scope: Scope, key: &KeyEvent) -> Option<Action> {
@@ -687,6 +710,28 @@ mod tests {
         assert!(error.contains("message.paste"));
         assert!(error.contains("message.edit.move_up"));
         assert!(!error.contains("message.idle.move_up"));
+    }
+
+    #[test]
+    fn history_scope_is_remappable_and_disableable() {
+        let mapping = KeyMapping::from_user_toml_for(
+            "[full_screen]\nexit='nop'\n[history]\ntoggle_view='x'",
+            Platform::Other,
+        )
+        .unwrap();
+        assert_eq!(
+            mapping.resolve(Scope::History, &key(KeyCode::Char('x'), KeyModifiers::NONE)),
+            Some(Action::ToggleView)
+        );
+        assert_eq!(
+            mapping.resolve(Scope::History, &key(KeyCode::Tab, KeyModifiers::NONE)),
+            None
+        );
+        assert_eq!(
+            mapping.resolve(Scope::History, &key(KeyCode::Char('q'), KeyModifiers::NONE)),
+            None
+        );
+        assert_eq!(mapping.label(Scope::History, Action::Exit), "—");
     }
 
     #[test]

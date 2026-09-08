@@ -18,6 +18,9 @@ fn display_item_animation_active(item: &DisplayItem) -> bool {
 /// Whether an animation deadline is needed. This is separate from advancing
 /// the clock so the event-driven main loop can remain asleep when idle.
 pub fn animation_active(state: &RuntimeState, _now: std::time::Instant) -> bool {
+    if state.history_page.is_some() {
+        return false;
+    }
     if let Some(draft) = &state.session.new_conversation {
         return draft.pending_input.is_some();
     }

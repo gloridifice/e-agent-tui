@@ -394,6 +394,7 @@ fn normalize_host_fact(kind: HostEventKind) -> TimelineFact {
             },
             output,
             output_truncated,
+            execution_metrics: None,
             starts_thinking: true,
             mutation_diff: None,
             mutation_hunks: mutation_hunks

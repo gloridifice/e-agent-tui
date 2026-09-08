@@ -52,11 +52,16 @@ impl Harness {
     }
 
     fn press(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Vec<UiAction> {
+        let (reading_view_open, history_view_open) = {
+            let state = self.state.lock().unwrap();
+            (state.reading.is_some(), state.history_page.is_some())
+        };
         let focus = TerminalFocus {
             help_visible: self.interaction.help_visible,
             input_page_open: self.interaction.input_page.is_some(),
             approval_open: self.interaction.approval.is_some(),
-            reading_view_open: self.state.lock().unwrap().reading.is_some(),
+            reading_view_open,
+            history_view_open,
         };
         let route = route_terminal_event_with_mapping(
             Event::Key(KeyEvent::new(code, modifiers)),

@@ -4,6 +4,7 @@ pub mod bridge;
 pub mod bridge_io;
 pub mod config;
 pub mod dsh_env;
+pub mod execution_history_store;
 pub mod launcher;
 mod path_completion;
 pub mod preview_resolver;

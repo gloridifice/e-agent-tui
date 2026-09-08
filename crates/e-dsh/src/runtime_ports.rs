@@ -43,8 +43,25 @@ impl BridgeTransportPort for mpsc::Sender<ClientMessage> {
     }
 }
 
-#[derive(Default)]
-pub struct ProductionRuntimePorts;
+pub struct ProductionRuntimePorts {
+    history: std::sync::Arc<std::sync::Mutex<crate::execution_history_store::HistoryRecorder>>,
+}
+
+impl ProductionRuntimePorts {
+    pub fn with_history(
+        history: std::sync::Arc<std::sync::Mutex<crate::execution_history_store::HistoryRecorder>>,
+    ) -> Self {
+        Self { history }
+    }
+}
+
+impl Default for ProductionRuntimePorts {
+    fn default() -> Self {
+        Self::with_history(std::sync::Arc::new(std::sync::Mutex::new(
+            crate::execution_history_store::HistoryRecorder::new("e-dsh"),
+        )))
+    }
+}
 
 impl UiActionPorts for ProductionRuntimePorts {
     async fn complete_paths(
@@ -56,6 +73,19 @@ impl UiActionPorts for ProductionRuntimePorts {
             .await
             .unwrap_or_default()
     }
+    fn query_history(
+        &mut self,
+        request: e_tui::execution_history::HistoryQueryRequest,
+    ) -> impl Future<Output = Result<e_tui::execution_history::HistoryQueryResult, String>> + Send
+    {
+        let history = std::sync::Arc::clone(&self.history);
+        async move {
+            tokio::task::spawn_blocking(move || history.lock().unwrap().query(&request))
+                .await
+                .map_err(|error| format!("execution-history query worker failed: {error}"))?
+        }
+    }
+
     fn load_config(&mut self) -> Result<(Config, Vec<ThemeFile>), String> {
         let mut config = config::load();
         let themes = theme::load_themes(&config::themes_dir());

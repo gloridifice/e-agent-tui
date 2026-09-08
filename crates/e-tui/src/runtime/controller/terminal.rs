@@ -17,6 +17,159 @@ pub(super) fn apply_terminal_route(
     selection_frame: &SelectionFrame,
     ui: &mut TerminalUiState<'_>,
 ) -> Vec<UiAction> {
+    if state.lock().unwrap().history_page.is_some() {
+        if let TerminalRoute::Pointer(pointer) = &route {
+            if !matches!(pointer, PointerEvent::Wheel { .. }) {
+                let context = {
+                    let app = state.lock().unwrap();
+                    crate::ui::selection_context(
+                        &app,
+                        ui.input_page.as_ref(),
+                        ui.approval.as_ref(),
+                        *ui.help_visible,
+                    )
+                };
+                if !selection_frame.matches_viewport(size.width, size.height)
+                    || selection_frame.context() != context
+                {
+                    ui.mouse_selection.clear();
+                    return Vec::new();
+                }
+                let update = ui.mouse_selection.handle(*pointer, selection_frame);
+                return update
+                    .copy
+                    .map(UiAction::WriteClipboard)
+                    .into_iter()
+                    .collect();
+            }
+        }
+        ui.mouse_selection.clear();
+        let mut app = state.lock().unwrap();
+        let Some(page) = app.history_page.as_mut() else {
+            return Vec::new();
+        };
+        let mut changed = false;
+        let mut close = false;
+        let mut moved_down = false;
+        match route {
+            TerminalRoute::History(key) => {
+                let current = page.offset();
+                let half = page.body_height.max(1).div_ceil(2);
+                let full = page.body_height.max(1);
+                match ui.config.key_mapping.resolve(Scope::History, &key) {
+                    Some(Action::Exit) => {
+                        close = true;
+                        changed = true;
+                    }
+                    Some(Action::ToggleView) => {
+                        page.toggle();
+                        changed = true;
+                    }
+                    Some(Action::MoveDown) => {
+                        page.set_offset(current.saturating_add(1));
+                        moved_down = true;
+                        changed = true;
+                    }
+                    Some(Action::MoveUp) => {
+                        page.set_offset(current.saturating_sub(1));
+                        changed = true;
+                    }
+                    Some(Action::MoveDownHalf) => {
+                        page.set_offset(current.saturating_add(half));
+                        moved_down = true;
+                        changed = true;
+                    }
+                    Some(Action::MoveUpHalf) => {
+                        page.set_offset(current.saturating_sub(half));
+                        changed = true;
+                    }
+                    Some(Action::MoveDownFast) => {
+                        page.set_offset(current.saturating_add(full));
+                        moved_down = true;
+                        changed = true;
+                    }
+                    Some(Action::MoveUpFast) => {
+                        page.set_offset(current.saturating_sub(full));
+                        changed = true;
+                    }
+                    _ => {}
+                }
+            }
+            TerminalRoute::Pointer(PointerEvent::Wheel { up }) => {
+                let current = page.offset();
+                page.set_offset(if up {
+                    current.saturating_sub(3)
+                } else {
+                    moved_down = true;
+                    current.saturating_add(3)
+                });
+                changed = true;
+            }
+            _ => {}
+        }
+        let query_spec = if !close && !page.loading_more {
+            if page.view == crate::history_page::HistoryView::Longest
+                && page.longest_calls.is_none()
+            {
+                Some((
+                    crate::execution_history::HistoryQueryKind::Longest50,
+                    0,
+                    None,
+                    page.session_id.clone(),
+                    page.cwd.clone(),
+                ))
+            } else if page.view == crate::history_page::HistoryView::Turns
+                && moved_down
+                && page.has_more
+            {
+                Some((
+                    crate::execution_history::HistoryQueryKind::Show,
+                    page.next_offset,
+                    page.watermark,
+                    page.session_id.clone(),
+                    page.cwd.clone(),
+                ))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if close {
+            app.history_page = None;
+        }
+        let mut actions: Vec<_> = changed
+            .then_some(UiAction::RequestDraw(crate::DrawPriority::Interactive))
+            .into_iter()
+            .collect();
+        if let Some((kind, after_offset, watermark, session_id, cwd)) = query_spec {
+            app.next_history_request_id = app.next_history_request_id.saturating_add(1);
+            let request_id = app.next_history_request_id;
+            if let Some(page) = app.history_page.as_mut() {
+                page.request_id = request_id;
+                page.loading_more = true;
+            }
+            actions.push(UiAction::QueryHistory(
+                crate::execution_history::HistoryQueryRequest {
+                    request_id,
+                    identity: crate::execution_history::TraceIdentity {
+                        frontend: match app.frontend {
+                            crate::FrontendKind::Dsh => "e-dsh",
+                            crate::FrontendKind::Pi => "e-pi",
+                        }
+                        .into(),
+                        session_id,
+                        cwd,
+                    },
+                    kind,
+                    input_guard: None,
+                    after_offset,
+                    watermark,
+                },
+            ));
+        }
+        return actions;
+    }
     let mut effects = Vec::new();
     match route {
         route @ (TerminalRoute::Pointer(PointerEvent::Wheel { up })
@@ -237,7 +390,7 @@ pub(super) fn apply_terminal_route(
             ui.mouse_selection.clear();
             effects.extend(apply_ordinary_key(key, size, now, state, ui));
         }
-        TerminalRoute::Ignore => {}
+        TerminalRoute::History(_) | TerminalRoute::Ignore => {}
     }
     effects
 }
@@ -475,6 +628,73 @@ pub(super) fn apply_ordinary_key(
                 };
                 agent_action(request)
             }));
+        if let Some(history_action) = command.history {
+            let request = {
+                let mut app = state.lock().unwrap();
+                let identity = app
+                    .session
+                    .session_id
+                    .clone()
+                    .zip(app.session.session_cwd.clone())
+                    .map(
+                        |(session_id, cwd)| crate::execution_history::TraceIdentity {
+                            frontend: match app.frontend {
+                                crate::FrontendKind::Dsh => "e-dsh",
+                                crate::FrontendKind::Pi => "e-pi",
+                            }
+                            .into(),
+                            session_id,
+                            cwd,
+                        },
+                    );
+                identity.map(|identity| {
+                    app.next_history_request_id = app.next_history_request_id.saturating_add(1);
+                    let request_id = app.next_history_request_id;
+                    let kind = match history_action {
+                        crate::command_catalog::FixedSubcommandAction::HistoryShow => {
+                            crate::execution_history::HistoryQueryKind::Show
+                        }
+                        crate::command_catalog::FixedSubcommandAction::HistoryPath => {
+                            crate::execution_history::HistoryQueryKind::Path
+                        }
+                        crate::command_catalog::FixedSubcommandAction::HistoryCopy => {
+                            crate::execution_history::HistoryQueryKind::Copy
+                        }
+                        crate::command_catalog::FixedSubcommandAction::HistoryCopy10 => {
+                            crate::execution_history::HistoryQueryKind::CopyLongest10
+                        }
+                    };
+                    if kind == crate::execution_history::HistoryQueryKind::Show {
+                        app.history_page = Some(crate::history_page::HistoryPage::loading(
+                            request_id,
+                            identity.session_id.clone(),
+                            identity.cwd.clone(),
+                        ));
+                    }
+                    crate::execution_history::HistoryQueryRequest {
+                        request_id,
+                        identity,
+                        kind,
+                        input_guard: (kind == crate::execution_history::HistoryQueryKind::Path)
+                            .then(|| crate::execution_history::HistoryInputGuard {
+                                text: ui.input.buf.clone(),
+                                cursor: ui.input.cursor,
+                            }),
+                        after_offset: 0,
+                        watermark: None,
+                    }
+                })
+            };
+            if let Some(request) = request {
+                ui.mouse_selection.clear();
+                outcome.effects.push(UiAction::QueryHistory(request));
+            } else {
+                state.lock().unwrap().push_error_message(crate::i18n::tr(
+                    ui.config.language,
+                    "command.history.unavailable",
+                ));
+            }
+        }
         if command.activate_reading {
             let viewport_height = {
                 let app = state.lock().unwrap();

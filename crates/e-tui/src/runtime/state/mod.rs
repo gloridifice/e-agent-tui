@@ -698,6 +698,7 @@ mod tests {
                 output: "ok".into(),
                 state: AgentActivityState::Success,
                 output_truncated: false,
+                execution_metrics: None,
                 starts_thinking: true,
                 mutation_diff: Some(MutationDiff {
                     path: None,
@@ -754,6 +755,112 @@ mod tests {
     }
 
     #[test]
+    fn historical_tool_metrics_do_not_derive_duration_from_replay_time() {
+        let mut state = RuntimeState::default();
+        state.config.read_merge = false;
+        state.apply_host_event(&record(1, TimelineFact::ToolCall(edit_call())));
+        state.apply_host_event(&record(
+            2,
+            TimelineFact::ToolResult {
+                activity_id: "edit-1".into(),
+                output: "native output is not a metric source".into(),
+                state: AgentActivityState::Success,
+                output_truncated: false,
+                execution_metrics: Some(crate::agent::timeline::ToolExecutionMetrics {
+                    duration_ms: Some(777),
+                    output_lines: Some(9),
+                    output_lines_truncated: true,
+                    started_unix_ms: Some(100),
+                    ended_unix_ms: Some(877),
+                }),
+                starts_thinking: false,
+                mutation_diff: None,
+                mutation_hunks: Vec::new(),
+            },
+        ));
+        let row = state
+            .transcript
+            .nodes()
+            .iter()
+            .find_map(|node| match &node.item {
+                DisplayItem::Activity(row) => Some(row),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(row.duration_ms, Some(777));
+        assert_eq!(row.output_lines, Some(9));
+        assert!(row.output_lines_truncated);
+
+        let mut missing = RuntimeState::default();
+        missing.config.read_merge = false;
+        missing.apply_host_event(&record(1, TimelineFact::ToolCall(edit_call())));
+        missing.apply_host_event(&record(
+            2,
+            TimelineFact::ToolResult {
+                activity_id: "edit-1".into(),
+                output: "one\ntwo".into(),
+                state: AgentActivityState::Success,
+                output_truncated: false,
+                execution_metrics: Some(crate::agent::timeline::ToolExecutionMetrics {
+                    duration_ms: None,
+                    output_lines: Some(2),
+                    output_lines_truncated: false,
+                    started_unix_ms: None,
+                    ended_unix_ms: None,
+                }),
+                starts_thinking: false,
+                mutation_diff: None,
+                mutation_hunks: Vec::new(),
+            },
+        ));
+        let row = missing
+            .transcript
+            .nodes()
+            .iter()
+            .find_map(|node| match &node.item {
+                DisplayItem::Activity(row) => Some(row),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(row.duration_ms, None);
+        assert_eq!(row.output_lines, Some(2));
+
+        let mut split = RuntimeState::default();
+        split.config.read_merge = false;
+        split.apply_host_event(&record(
+            2,
+            TimelineFact::ToolResult {
+                activity_id: "edit-1".into(),
+                output: "ignored".into(),
+                state: AgentActivityState::Success,
+                output_truncated: false,
+                execution_metrics: Some(crate::agent::timeline::ToolExecutionMetrics {
+                    duration_ms: Some(333),
+                    output_lines: Some(4),
+                    output_lines_truncated: false,
+                    started_unix_ms: Some(100),
+                    ended_unix_ms: Some(433),
+                }),
+                starts_thinking: false,
+                mutation_diff: None,
+                mutation_hunks: Vec::new(),
+            },
+        ));
+        split.apply_host_event(&record(1, TimelineFact::ToolCall(edit_call())));
+        let row = split
+            .transcript
+            .nodes()
+            .iter()
+            .find_map(|node| match &node.item {
+                DisplayItem::Activity(row) => Some(row),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(row.duration_ms, Some(333));
+        assert_eq!(row.output_lines, Some(4));
+    }
+
+    #[test]
     fn pi_tool_result_waits_for_the_following_turn_start() {
         let mut state = RuntimeState::default();
         state.apply_host_event(&record(1, TimelineFact::ToolCall(edit_call())));
@@ -764,6 +871,7 @@ mod tests {
                 output: "ok".into(),
                 state: AgentActivityState::Success,
                 output_truncated: false,
+                execution_metrics: None,
                 starts_thinking: false,
                 mutation_diff: None,
                 mutation_hunks: Vec::new(),

@@ -15,6 +15,12 @@ toggle_multiline = "nop"
 
 [read_mode]
 exit = ["esc", "q"]
+
+[full_screen]
+move_down_half = "ctrl-d"
+
+[history]
+toggle_view = "tab"
 ```
 
 ## Values and reload
@@ -31,6 +37,8 @@ exit = ["esc", "q"]
 The dotted tables describe registered contexts, not arbitrary command namespaces. Ordinary input combines `message`, `message.edit`, and either `message.idle` or `message.working`. Search and completion replace their overlapping navigation/accept/cancel bindings, while retaining relevant message controls. Disabled child actions do not fall back to a parent binding.
 
 `read_mode.item` inherits exit/copy and fast movement and replaces Block navigation. `read_mode.move_up_fast` (PageUp) and `move_down_fast` (PageDown) repeat ordinary up/down cursor movement 15 times, following any Item-to-Block transition and stopping at document boundaries. The viewport follows the selection; this is not a 15-row viewport scroll. Global page scrolling is inactive while Reading owns input, so disabling or remapping fast movement does not fall back to global paging. By default Esc/q exits Reading from either level; Backspace returns only from Items to Blocks. Copy always uses the complete owning Block source, not visible clipped text.
+
+Full-screen browsing combines `full_screen` navigation with its page-specific scope. Execution history uses `history` for `toggle_view` and inherits row, half-page, full-page, and exit actions from `full_screen`; disabling a history-specific action does not fall through to composer or transcript behavior. The fixed footer is generated from the effective bindings after overrides. Mouse-wheel movement and visible-screen text selection remain available independently of keyboard mappings.
 
 Input Page browsing, choice editing, text editing, resume filtering, and question answering have separate contexts. `page.question.edit` retains arrow-based question switching during free-text answers without interpreting hjklq as navigation. Page-opening and Reading-entry shortcuts do not replace an active page, Reading View, or pending approval. Help remains available. Approvals react only to explicit allow/deny bindings; unrelated keys are ignored.
 

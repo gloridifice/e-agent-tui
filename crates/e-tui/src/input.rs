@@ -30,7 +30,8 @@ use crate::agent::{ModelDescriptor, ModelProvider, ReasoningEffort, Skill};
 use crate::catalog::CatalogModel;
 pub use crate::command_catalog::NewMode;
 use crate::command_catalog::{
-    candidate_description, completion_context, match_command_catalog, CommandSource, CompletionKind,
+    candidate_description, completion_context, match_command_catalog, match_fixed_subcommands,
+    CommandSource, CompletionKind,
 };
 use crate::{
     action::{PromptImage, PromptInput, PromptPart},
@@ -206,6 +207,7 @@ pub struct Suggestion {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SuggestionKind {
     Commands,
+    Subcommands,
     Modes,
     Models,
     Efforts,
@@ -994,6 +996,30 @@ impl InputState {
         if let Some((command, query)) = completion_context(&self.buf) {
             if !query.contains([' ', '\n']) {
                 match command.completion {
+                    CompletionKind::FixedSubcommands => {
+                        let ranked = match_fixed_subcommands(command, query);
+                        if ranked.is_empty() {
+                            self.suggest = None;
+                            return;
+                        }
+                        let matches: Vec<String> = ranked
+                            .iter()
+                            .map(|subcommand| format!("/{} {}", command.name, subcommand.name))
+                            .collect();
+                        let descriptions = ranked
+                            .iter()
+                            .map(|subcommand| tr(self.language, subcommand.description_key))
+                            .collect();
+                        self.suggest = Some(Suggestion {
+                            query: self.buf.clone(),
+                            sel: 0,
+                            sources: vec![CommandSource::Builtin; matches.len()],
+                            matches,
+                            descriptions,
+                            kind: SuggestionKind::Subcommands,
+                        });
+                        return;
+                    }
                     CompletionKind::NewMode => {
                         let ranked = match_new_modes(query, &catalogs.new_modes);
                         if ranked.is_empty() {
@@ -2054,6 +2080,44 @@ mod tests {
         assert!(s.suggest.is_some());
         s.handle_key(&key(KeyCode::Char(' ')), true);
         assert!(s.suggest.is_none());
+    }
+
+    #[test]
+    fn history_subcommands_are_described_filtered_and_fill_without_execution() {
+        let mut s = state();
+        for c in "/history ".chars() {
+            s.handle_key(&key(KeyCode::Char(c)), true);
+        }
+        let suggest = s.suggest.as_ref().unwrap();
+        assert_eq!(suggest.kind, SuggestionKind::Subcommands);
+        assert_eq!(
+            suggest.matches,
+            [
+                "/history show",
+                "/history path",
+                "/history copy",
+                "/history copy-10"
+            ]
+        );
+        assert!(suggest
+            .descriptions
+            .iter()
+            .all(|description| !description.is_empty()));
+        let mut filtered = state();
+        for c in "/history cop".chars() {
+            filtered.handle_key(&key(KeyCode::Char(c)), true);
+        }
+        assert_eq!(
+            filtered.suggest.as_ref().unwrap().matches,
+            ["/history copy", "/history copy-10"]
+        );
+        filtered.handle_key(&key(KeyCode::Down), true);
+        assert_eq!(filtered.buf, "/history copy-10");
+        assert_eq!(
+            filtered.handle_key(&key(KeyCode::Esc), true),
+            InputAction::None
+        );
+        assert_eq!(filtered.buf, "/history cop");
     }
 
     fn sample_skills() -> Vec<Skill> {

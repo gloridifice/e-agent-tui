@@ -212,6 +212,10 @@ pub enum EffectResult {
         truncated: bool,
     },
     ClipboardFailed(String),
+    HistoryQueried {
+        request: crate::execution_history::HistoryQueryRequest,
+        result: Result<crate::execution_history::HistoryQueryResult, String>,
+    },
     PreviewResolved {
         request_id: PreviewRequestId,
         key: PreviewKey,
@@ -232,6 +236,7 @@ pub enum UiAction {
     CompletePaths(crate::path_completion::PathCompletionRequest),
     Agent(AgentRequest),
     ResolvePreview(PreviewRequest),
+    QueryHistory(crate::execution_history::HistoryQueryRequest),
     PersistConfig(Config),
     ReloadConfig,
     PersistSessionId(String),

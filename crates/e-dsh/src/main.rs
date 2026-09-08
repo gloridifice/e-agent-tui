@@ -298,7 +298,10 @@ async fn run(
     let mut events = ProductionTerminalEvents::new(e_dsh::win_input::native_mods);
     #[cfg(not(windows))]
     let mut events = ProductionTerminalEvents::new();
-    let mut runtime_ports = ProductionRuntimePorts;
+    let history = Arc::new(std::sync::Mutex::new(
+        e_dsh::execution_history_store::HistoryRecorder::new("e-dsh"),
+    ));
+    let mut runtime_ports = ProductionRuntimePorts::with_history(Arc::clone(&history));
     let mut scheduler = FrameScheduler::new(runtime_ports.now());
     let mut committed_presentation = e_tui::ui::Presentation::default();
     let mut spinner_deadline: Option<Instant> = None;
@@ -308,6 +311,7 @@ async fn run(
         120,
     );
     let mut pending_update_elapsed = Duration::ZERO;
+    let mut reported_history_error = None;
     let mut fatal: Option<String> = None;
     let mut first_draw_done = false;
 
@@ -400,7 +404,30 @@ async fn run(
             let mut count = 0usize;
             while let Some(msg) = next.take() {
                 count += 1;
-                let event = e_dsh::bridge::adapter::normalize_server_message(msg);
+                let mut event = e_dsh::bridge::adapter::normalize_server_message(msg);
+                let attached = matches!(
+                    &event,
+                    e_tui::AgentEvent::Session(e_tui::agent::SessionEvent::Attached(_))
+                );
+                let history_result = {
+                    let mut recorder = history.lock().unwrap();
+                    let result = recorder.observe(&event);
+                    recorder.enrich_resume(&mut event);
+                    result
+                };
+                let history_error = match history_result {
+                    Ok(()) => {
+                        if attached {
+                            reported_history_error = None;
+                        }
+                        None
+                    }
+                    Err(error) if reported_history_error.as_ref() != Some(&error) => {
+                        reported_history_error = Some(error.clone());
+                        Some(error)
+                    }
+                    Err(_) => None,
+                };
                 let is_snapshot = matches!(
                     &event,
                     e_tui::AgentEvent::Timeline(e_tui::agent::TimelineEvent::Snapshot { .. })
@@ -427,7 +454,13 @@ async fn run(
                     queue: &mut interaction.queue,
                 };
                 let effects = RuntimeController::apply_agent(event, &state_r, &mut ui);
-                state_r.lock().unwrap().interaction = interaction;
+                {
+                    let mut state = state_r.lock().unwrap();
+                    state.interaction = interaction;
+                    if let Some(error) = history_error {
+                        state.push_error_message(error);
+                    }
+                }
                 let mut agent = DshAgentPort { outbound: &tx_out };
                 let execution =
                     execute_ui_actions(effects, &mut agent, &mut scheduler, &mut runtime_ports)
@@ -473,6 +506,7 @@ async fn run(
                     input_page_open: state.interaction.input_page.is_some(),
                     approval_open: !drafting && state.interaction.approval.is_some(),
                     reading_view_open: state.reading.is_some(),
+                    history_view_open: state.history_page.is_some(),
                 }
             };
             let route = route_terminal_event(event, focus, &config.key_mapping);
@@ -682,6 +716,10 @@ async fn run(
         }
     }
 
+    let history_shutdown = history.lock().unwrap().shutdown();
+    if let Err(error) = history_shutdown {
+        eprintln!("{error}");
+    }
     bridge_io.shutdown();
     terminal.restore_terminal().ok();
     if let Some(reason) = fatal {
@@ -832,7 +870,7 @@ mod tests {
     #[tokio::test]
     async fn preview_executor_returns_owned_completion_without_ui_state() {
         let now = Instant::now();
-        let mut ports = ProductionRuntimePorts;
+        let mut ports = ProductionRuntimePorts::default();
         let (transport, _receiver) = tokio::sync::mpsc::channel(1);
         let mut scheduler = FrameScheduler::new(now);
         let request = e_tui::PreviewRequest {

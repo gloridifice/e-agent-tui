@@ -68,6 +68,18 @@ move_up = ["up", "k"]
 move_down = ["down", "j"]
 back_to_blocks = "backspace"
 
+[full_screen]
+move_up = ["up", "k"]
+move_down = ["down", "j"]
+move_up_half = "u"
+move_down_half = "d"
+move_up_fast = ["pageup", "b"]
+move_down_fast = ["pagedown", "f"]
+exit = ["esc", "q"]
+
+[history]
+toggle_view = "tab"
+
 [page]
 move_left = ["left", "h"]
 move_right = ["right", "l"]

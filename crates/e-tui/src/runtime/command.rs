@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 pub use crate::command_catalog::{
     builtin_command, completion_context, match_command_catalog, BuiltinCommand, CommandCandidate,
-    CommandSource, CompletionKind, BUILTIN_COMMANDS,
+    CommandSource, CompletionKind, FixedSubcommandAction, BUILTIN_COMMANDS,
 };
 use crate::runtime::state::RuntimeState;
 use crate::{
@@ -19,7 +19,7 @@ use crate::{
     AgentRequest, Config, Theme,
 };
 use crate::{
-    command_catalog::{CommandAction, NewMode},
+    command_catalog::{resolve_fixed_subcommand, CommandAction, NewMode},
     i18n::{tr, tr_args, Language},
     input_page::InputPageSession,
     settings, ThemeFile,
@@ -34,6 +34,7 @@ pub struct CommandOutcome {
     pub reload_config: bool,
     pub new_conversation: bool,
     pub activate_reading: bool,
+    pub history: Option<FixedSubcommandAction>,
     pub quit: bool,
 }
 
@@ -335,6 +336,18 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
                 outcome.activate_reading = true;
             }
         }
+        CommandAction::History => {
+            if context.question_open || context.approval_open {
+                push_error(
+                    context.state,
+                    tr(context.language, "command.history.blocked"),
+                );
+            } else if let Some(action) = resolve_fixed_subcommand(command, raw_input) {
+                outcome.history = Some(action);
+            } else {
+                push_error(context.state, tr(context.language, "command.history.usage"));
+            }
+        }
         CommandAction::Quit => {
             if !reject_arguments(&context, name, raw_input) {
                 outcome.quit = true;
@@ -566,6 +579,57 @@ mod tests {
             };
             assert_eq!(block.content == expected, valid);
             assert!(!block.streaming);
+        }
+    }
+
+    #[test]
+    fn history_default_and_fixed_actions_dispatch_locally_and_reject_extras() {
+        for (line, expected) in [
+            ("/history", Some(FixedSubcommandAction::HistoryShow)),
+            ("/history show", Some(FixedSubcommandAction::HistoryShow)),
+            ("/history path", Some(FixedSubcommandAction::HistoryPath)),
+            ("/history copy", Some(FixedSubcommandAction::HistoryCopy)),
+            (
+                "/history copy-10",
+                Some(FixedSubcommandAction::HistoryCopy10),
+            ),
+            ("/history missing", None),
+            ("/history copy extra", None),
+        ] {
+            let state = Arc::new(Mutex::new(RuntimeState::default()));
+            let mut input_page = None;
+            let mut config = Config::default();
+            let mut themes = Vec::new();
+            let mut paste = config.paste_placeholder_chars;
+            let mut input_history = config.history_limit;
+            let mut theme = config.theme();
+            let outcome = handle_local_command(
+                line.into(),
+                LocalCommandContext {
+                    language: config.language,
+                    input_page: &mut input_page,
+                    integrated_commands: &[],
+                    config: &mut config,
+                    themes: &mut themes,
+                    new_modes: &[],
+                    model_providers: &[],
+                    current_model: None,
+                    input_paste_placeholder_chars: &mut paste,
+                    input_history_limit: &mut input_history,
+                    theme: &mut theme,
+                    question_open: false,
+                    approval_open: false,
+                    state: &state,
+                },
+            );
+            assert_eq!(outcome.history, expected, "{line}");
+            assert!(outcome.outbound.is_empty(), "{line}");
+            if expected.is_none() {
+                assert!(
+                    !state.lock().unwrap().transcript.nodes().is_empty(),
+                    "{line}"
+                );
+            }
         }
     }
 

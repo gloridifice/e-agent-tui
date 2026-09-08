@@ -34,6 +34,7 @@ pub fn selection_context(
     approval.map(|approval| &approval.id).hash(&mut hash);
     help_visible.hash(&mut hash);
     state.reading.is_some().hash(&mut hash);
+    state.history_page.is_some().hash(&mut hash);
     state.preview.fullscreen.hash(&mut hash);
     hash.finish()
 }

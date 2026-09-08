@@ -42,6 +42,15 @@ pub enum LifecycleOutcome {
     Cancelled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolExecutionMetrics {
+    pub duration_ms: Option<u64>,
+    pub output_lines: Option<usize>,
+    pub output_lines_truncated: bool,
+    pub started_unix_ms: Option<u64>,
+    pub ended_unix_ms: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum TimelineFact {
     UserMessage {
@@ -71,6 +80,9 @@ pub enum TimelineFact {
         output: String,
         state: super::tool::ActivityState,
         output_truncated: bool,
+        /// Present only on native history/snapshot records. `Some` with an
+        /// unknown duration prevents replay time from masquerading as zero.
+        execution_metrics: Option<ToolExecutionMetrics>,
         /// Whether this result immediately begins a new model-thinking phase.
         /// Backends that emit the next model call as an explicit `TurnStart`
         /// leave this false so the lifecycle is not counted twice.

@@ -152,6 +152,60 @@ pub(super) fn apply_effect_result(
             }
             true
         }
+        EffectResult::HistoryQueried { request, result } => {
+            let mut app = state.lock().unwrap();
+            if app.session.session_id.as_deref() != Some(request.identity.session_id.as_str())
+                || app.session.session_cwd.as_deref() != Some(request.identity.cwd.as_str())
+            {
+                return false;
+            }
+            match (request.kind, result) {
+                (
+                    kind @ (crate::execution_history::HistoryQueryKind::Show
+                    | crate::execution_history::HistoryQueryKind::Longest50),
+                    Ok(result),
+                ) => app
+                    .history_page
+                    .as_mut()
+                    .is_some_and(|page| page.complete(request.request_id, kind, result)),
+                (
+                    crate::execution_history::HistoryQueryKind::Show
+                    | crate::execution_history::HistoryQueryKind::Longest50,
+                    Err(error),
+                ) => app
+                    .history_page
+                    .as_mut()
+                    .is_some_and(|page| page.fail(request.request_id, error)),
+                (crate::execution_history::HistoryQueryKind::Path, Ok(result)) => {
+                    let unchanged = request.input_guard.as_ref().is_some_and(|guard| {
+                        app.interaction.input.buf == guard.text
+                            && app.interaction.input.cursor == guard.cursor
+                    });
+                    if unchanged
+                        && app.history_page.is_none()
+                        && app.reading.is_none()
+                        && app.interaction.input_page.is_none()
+                        && app.interaction.approval.is_none()
+                        && !app.interaction.help_visible
+                    {
+                        app.interaction.input.paste(&result.path);
+                        true
+                    } else {
+                        false
+                    }
+                }
+                (_, Err(error)) => {
+                    let language = app.config.language;
+                    app.push_error_message(tr_args(
+                        language,
+                        "command.history.query_failed",
+                        &[("error", error)],
+                    ));
+                    true
+                }
+                (_, Ok(_)) => false,
+            }
+        }
         EffectResult::PreviewResolved {
             request_id,
             key,
@@ -300,6 +354,72 @@ mod tests {
                 .matches,
             ["@foo/"]
         );
+    }
+
+    #[test]
+    fn history_path_insertion_is_guarded_and_session_scoped() {
+        let state = Mutex::new(RuntimeState::default());
+        let request = {
+            let mut app = state.lock().unwrap();
+            app.session.session_id = Some("session".into());
+            app.session.session_cwd = Some("项目 root".into());
+            app.interaction.input.restore_text("prefix ".into());
+            crate::execution_history::HistoryQueryRequest {
+                request_id: 1,
+                identity: crate::execution_history::TraceIdentity {
+                    frontend: "e-pi".into(),
+                    session_id: "session".into(),
+                    cwd: "项目 root".into(),
+                },
+                kind: crate::execution_history::HistoryQueryKind::Path,
+                input_guard: Some(crate::execution_history::HistoryInputGuard {
+                    text: app.interaction.input.buf.clone(),
+                    cursor: app.interaction.input.cursor,
+                }),
+                after_offset: 0,
+                watermark: None,
+            }
+        };
+        let result = crate::execution_history::HistoryQueryResult {
+            path: "C:/项目 root/.e/e-pi/execution-history/x.jsonl".into(),
+            records: Vec::new(),
+            ranked_calls: Vec::new(),
+            warnings: Vec::new(),
+            watermark: 0,
+            next_offset: 0,
+            has_more: false,
+        };
+        assert!(apply_effect_result(
+            EffectResult::HistoryQueried {
+                request: request.clone(),
+                result: Ok(result.clone()),
+            },
+            &state,
+            Instant::now(),
+        ));
+        assert!(state
+            .lock()
+            .unwrap()
+            .interaction
+            .input
+            .buf
+            .ends_with("x.jsonl"));
+
+        state
+            .lock()
+            .unwrap()
+            .interaction
+            .input
+            .restore_text("edited".into());
+        assert!(!apply_effect_result(
+            EffectResult::HistoryQueried {
+                request,
+                result: Ok(result),
+            },
+            &state,
+            Instant::now(),
+        ));
+        assert_eq!(state.lock().unwrap().interaction.input.buf, "edited");
     }
 
     #[test]

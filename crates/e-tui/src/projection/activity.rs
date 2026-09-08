@@ -9,6 +9,7 @@ pub struct PendingToolResult {
     pub output: String,
     pub is_error: bool,
     pub output_truncated: bool,
+    pub execution_metrics: Option<crate::agent::timeline::ToolExecutionMetrics>,
     pub time_ms: u64,
     pub surface_seq: Option<u64>,
     pub mutation_diff: Option<MutationDiff>,

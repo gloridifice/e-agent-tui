@@ -84,6 +84,14 @@ You can run `/econfig` in `e` to open or show the config path of your device.
 - `key_mapping.toml`: Key mapping overrides.
 - `themes/`: custom theme folder.
 
+### Execution history
+
+While `dshe` or `pie` is attached to a session, it records output-free execution metadata under the session's actual working directory: `.e/e-dsh/execution-history/` or `.e/e-pi/execution-history/`. The trace contains commands, references, timings, outcomes, and observed line counts, but not tool output, file contents, patches, or model text. Commands themselves can contain sensitive values, so review a trace before sharing it.
+
+Use `/history` (or `/history show`) to open the full-screen timeline. `/history path` inserts the absolute trace path, `/history copy` copies chronological history, and `/history copy-10` copies the ten longest measured operations. In the page, Tab switches between grouped turns and the session-wide Top 50; `j`/`k`, `d`/`u`, `f`/`b`, PageUp/PageDown, mouse wheel, and `q`/Esc navigate or exit. These keys are configurable in the `full_screen` and `history` scopes.
+
+Recording covers activity observed while an `e` client is attached. It follows the session cwd exactly and does not move storage to a Git root.
+
 ### Key mapping
 
 Bindings are configurable in `<config_path>/key_mapping.toml`; see [key mappings](docs/key-mapping.md) and the complete [defaults](crates/e-tui/assets/default_key_mapping.toml). Below, **Main** means Command on macOS and Ctrl on Windows/Linux (the terminal must forward the shortcut).
@@ -92,7 +100,7 @@ In `/model`, **Shift+letter** marks/unmarks the focused model; the plain **lette
 
 Prefix a prompt with `//<mark>` (for example `//i commit`) to use that model for one turn. The Umber model-name preview is not sent. The status-bar model becomes italic; ASAP steering keeps the temporary model, while after-turn messages wait for the original model and reasoning effort to be restored.
 
-Mouse: drag any visible TUI text to copy on release, including input, status, paths, and popups. Multiline selection follows screen rows across both panes; the display pauses during selection while background work continues. A press on the separator resizes instead. Reading View copy still copies the complete source block.
+Mouse: drag any visible TUI text to copy on release, including input, status, paths, full-screen history, and popups. Multiline selection follows screen rows across both panes; the display pauses during selection while background work continues. A press on the separator resizes instead. Reading View copy still copies the complete source block.
 
 ### Themes
 

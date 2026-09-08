@@ -285,6 +285,103 @@ style_group!(SeparatorRef => SeparatorTheme {
     placeholder,
 });
 
+style_group!(HistoryOperationRef => HistoryOperationTheme {
+    model, read, edit, bash, search, other,
+});
+
+style_group!(HistoryDurationRef => HistoryDurationTheme {
+    highest, second, top_five, remaining, unknown,
+});
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HistoryRef {
+    text: StyleRef,
+    heading: StyleRef,
+    metadata: StyleRef,
+    total_elapsed: StyleRef,
+    separator: StyleRef,
+    hint: StyleRef,
+    progress: StyleRef,
+    bar_text: StyleRef,
+    operation: HistoryOperationRef,
+    duration: HistoryDurationRef,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct HistoryTheme {
+    pub text: ThemeStyle,
+    pub heading: ThemeStyle,
+    pub metadata: ThemeStyle,
+    pub total_elapsed: ThemeStyle,
+    pub separator: ThemeStyle,
+    pub hint: ThemeStyle,
+    pub progress: ThemeStyle,
+    pub bar_text: ThemeStyle,
+    pub operation: HistoryOperationTheme,
+    pub duration: HistoryDurationTheme,
+}
+
+impl HistoryRef {
+    fn resolve(&self, colors: &BTreeMap<String, Color>) -> Result<HistoryTheme, String> {
+        Ok(HistoryTheme {
+            text: self.text.resolve(colors)?,
+            heading: self.heading.resolve(colors)?,
+            metadata: self.metadata.resolve(colors)?,
+            total_elapsed: self.total_elapsed.resolve(colors)?,
+            separator: self.separator.resolve(colors)?,
+            hint: self.hint.resolve(colors)?,
+            progress: self.progress.resolve(colors)?,
+            bar_text: self.bar_text.resolve(colors)?,
+            operation: self.operation.resolve(colors)?,
+            duration: self.duration.resolve(colors)?,
+        })
+    }
+}
+
+impl HistoryTheme {
+    fn from_existing(
+        surface: SurfaceTheme,
+        code: CodeTheme,
+        status: WorkingStatusTheme,
+        separator: SeparatorTheme,
+    ) -> Self {
+        let foreground = |style: ThemeStyle| ThemeStyle {
+            bg: None,
+            padding: Padding::All(0),
+            ..style
+        };
+        Self {
+            text: foreground(surface.primary_text),
+            heading: foreground(surface.primary_text),
+            metadata: foreground(surface.muted_text),
+            total_elapsed: foreground(surface.primary_text),
+            separator: foreground(separator.line),
+            hint: foreground(separator.line),
+            progress: foreground(code.r#type),
+            bar_text: ThemeStyle {
+                fg: surface.base.bg.unwrap_or(Color::Reset),
+                ..foreground(surface.primary_text)
+            },
+            operation: HistoryOperationTheme {
+                model: foreground(surface.muted_text),
+                read: foreground(code.string),
+                edit: foreground(code.keyword),
+                bash: foreground(code.r#type),
+                search: foreground(code.constant),
+                other: foreground(surface.muted_text),
+            },
+            duration: HistoryDurationTheme {
+                highest: foreground(status.failure),
+                second: foreground(code.r#type),
+                top_five: foreground(surface.primary_text),
+                remaining: foreground(surface.muted_text),
+                unknown: foreground(surface.muted_text),
+            },
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SemanticsRef {
@@ -301,6 +398,8 @@ struct SemanticsRef {
     overlay: OverlayRef,
     diff: DiffRef,
     separator: SeparatorRef,
+    #[serde(default)]
+    history: Option<HistoryRef>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -329,6 +428,7 @@ pub struct Theme {
     pub overlay: OverlayTheme,
     pub diff: DiffTheme,
     pub separator: SeparatorTheme,
+    pub history: HistoryTheme,
 
     // Compatibility aliases for render paths that combine semantic roles.
     pub bg: Color,
@@ -431,6 +531,13 @@ fn resolve_document(document: ThemeDocument) -> Result<ThemeFile, String> {
     let overlay = document.semantics.overlay.resolve(&colors)?;
     let diff = document.semantics.diff.resolve(&colors)?;
     let separator = document.semantics.separator.resolve(&colors)?;
+    let history = document
+        .semantics
+        .history
+        .as_ref()
+        .map(|history| history.resolve(&colors))
+        .transpose()?
+        .unwrap_or_else(|| HistoryTheme::from_existing(surface, code, working_status, separator));
 
     // `fg` is the only required style property. Background-oriented roles
     // gracefully inherit when `bg` is omitted rather than making the schema
@@ -464,6 +571,7 @@ fn resolve_document(document: ThemeDocument) -> Result<ThemeFile, String> {
         overlay,
         diff,
         separator,
+        history,
     };
 
     Ok(ThemeFile {
@@ -569,6 +677,78 @@ mod tests {
         let missing_code_weak =
             FERRA_SOURCE.replace("[semantics.code_weak]", "[ignored.code_weak]");
         assert!(parse_theme(&missing_code_weak).is_none());
+    }
+
+    #[test]
+    fn history_schema_accepts_builtins_and_legacy_custom_palettes() {
+        fn rename_references(value: &mut toml::Value) {
+            if let Some(table) = value.as_table_mut() {
+                for (key, value) in table {
+                    if key == "fg" || key == "bg" {
+                        *value = toml::Value::String(format!("custom_{}", value.as_str().unwrap()));
+                    } else {
+                        rename_references(value);
+                    }
+                }
+            }
+        }
+        for (name, source) in builtin_theme_sources() {
+            let mut document: toml::Value = toml::from_str(source).unwrap();
+            assert!(document["semantics"].get("history").is_some(), "{name}");
+            assert!(parse_theme(source).is_some(), "{name}");
+            document["semantics"]
+                .as_table_mut()
+                .unwrap()
+                .remove("history");
+            let palette = document["colors"].as_table_mut().unwrap();
+            *palette = std::mem::take(palette)
+                .into_iter()
+                .map(|(key, value)| (format!("custom_{key}"), value))
+                .collect();
+            rename_references(&mut document["semantics"]);
+            assert!(
+                parse_theme(&toml::to_string(&document).unwrap()).is_some(),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_history_schema_rejects_partial_unknown_and_unresolved_roles() {
+        let document: toml::Value = toml::from_str(FERRA_SOURCE).unwrap();
+        for group in [None, Some("operation"), Some("duration")] {
+            let roles = match group {
+                Some(group) => &document["semantics"]["history"][group],
+                None => &document["semantics"]["history"],
+            }
+            .as_table()
+            .unwrap();
+            for key in roles.keys() {
+                let mut incomplete = document.clone();
+                let target = &mut incomplete["semantics"]["history"];
+                let target = match group {
+                    Some(group) => &mut target[group],
+                    None => target,
+                };
+                target.as_table_mut().unwrap().remove(key);
+                assert!(parse_theme(&toml::to_string(&incomplete).unwrap()).is_none());
+            }
+            let mut unknown = document.clone();
+            let target = &mut unknown["semantics"]["history"];
+            let target = match group {
+                Some(group) => &mut target[group],
+                None => target,
+            };
+            target
+                .as_table_mut()
+                .unwrap()
+                .insert("unexpected".into(), roles.values().next().unwrap().clone());
+            assert!(parse_theme(&toml::to_string(&unknown).unwrap()).is_none());
+        }
+        let mut unresolved = document;
+        unresolved["semantics"]["history"]["operation"]["bash"]["fg"] =
+            "absent_palette_entry".into();
+        assert!(parse_theme(&toml::to_string(&unresolved).unwrap()).is_none());
     }
 
     #[test]

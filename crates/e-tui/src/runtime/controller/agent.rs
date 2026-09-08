@@ -128,6 +128,7 @@ pub(super) fn apply_session(
                 let switched = app.session.session_id.as_deref() != Some(attached.id.as_str());
                 if switched {
                     app.reset_transcript();
+                    app.history_page = None;
                     app.interaction.question = None;
                 }
                 app.session.session_id = Some(attached.id.clone());
@@ -314,6 +315,7 @@ pub(super) fn apply_interaction(
         InteractionEvent::Approval {
             id, label, reason, ..
         } => {
+            state.lock().unwrap().history_page = None;
             *ui.approval = Some(ApprovalCard {
                 id,
                 tool_name: label,
@@ -325,6 +327,7 @@ pub(super) fn apply_interaction(
             session_id,
             questions,
         } => {
+            state.lock().unwrap().history_page = None;
             *ui.question = Some(request_id.clone());
             *ui.input_page = Some(InputPageSession::question(QuestionBatch::new(
                 request_id, session_id, questions,

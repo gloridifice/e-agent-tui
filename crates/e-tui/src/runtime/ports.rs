@@ -26,6 +26,16 @@ pub trait UiActionPorts {
         &mut self,
         request: &crate::path_completion::PathCompletionRequest,
     ) -> impl Future<Output = Vec<crate::path_completion::PathCandidate>> + Send;
+    fn query_history(
+        &mut self,
+        request: crate::execution_history::HistoryQueryRequest,
+    ) -> impl Future<Output = Result<crate::execution_history::HistoryQueryResult, String>> + Send
+    {
+        std::future::ready(Err(format!(
+            "execution history is unavailable for session {}",
+            request.identity.session_id
+        )))
+    }
     fn load_config(&mut self) -> Result<(Config, Vec<ThemeFile>), String>;
     fn persist_config(&mut self, config: &Config) -> Result<(), String>;
     fn persist_session_id(&mut self, session_id: String);
@@ -103,6 +113,17 @@ impl UiActionPorts for ScriptedUiActionPorts {
     ) -> Vec<crate::path_completion::PathCandidate> {
         Vec::new()
     }
+    fn query_history(
+        &mut self,
+        request: crate::execution_history::HistoryQueryRequest,
+    ) -> impl Future<Output = Result<crate::execution_history::HistoryQueryResult, String>> + Send
+    {
+        std::future::ready(Err(format!(
+            "no scripted history for {}",
+            request.identity.session_id
+        )))
+    }
+
     fn load_config(&mut self) -> Result<(Config, Vec<ThemeFile>), String> {
         self.loaded_config
             .take()

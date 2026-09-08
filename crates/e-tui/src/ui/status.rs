@@ -83,7 +83,20 @@ pub(super) fn render_status(
         .filter(|model| !model.trim().is_empty())
     {
         left_spans.push(Span::styled(" ", dim));
-        left_spans.push(Span::styled(model.to_owned(), dim));
+        let temporary = state
+            .session
+            .temporary_model
+            .as_ref()
+            .is_some_and(|temporary| {
+                state.session.provider.as_deref() == Some(temporary.target.provider.as_str())
+                    && model == temporary.target.model
+            });
+        let style = if temporary {
+            dim.add_modifier(Modifier::ITALIC)
+        } else {
+            dim
+        };
+        left_spans.push(Span::styled(model.to_owned(), style));
     }
     if let Some(rate) = (!drafting).then(|| state.cache_hit_rate()).flatten() {
         left_spans.push(Span::styled(" ", dim));
@@ -285,6 +298,53 @@ mod tests {
                     assert!(line.starts_with(&format!("e·{} ", frontend.label())));
                     assert!(line.contains("Ctrl+H"), "help remains visible: {line:?}");
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn temporary_model_status_is_italic_until_restoration() {
+        let mut state = TuiApp::default();
+        state.session.provider = Some("p".into());
+        state.session.model = Some("luna".into());
+        state.session.temporary_model = Some(crate::app::TemporaryModel {
+            original: crate::agent::ModelSelection {
+                provider: "p".into(),
+                model: "base".into(),
+                reasoning_effort: None,
+            },
+            target: crate::agent::ModelSelection {
+                provider: "p".into(),
+                model: "luna".into(),
+                reasoning_effort: None,
+            },
+            phase: crate::app::TemporaryModelPhase::Active,
+            materializing: false,
+        });
+        for temporary in [true, false] {
+            if !temporary {
+                state.session.temporary_model = None;
+            }
+            let mut terminal = Terminal::new(TestBackend::new(80, 1)).unwrap();
+            terminal
+                .draw(|frame| {
+                    render_status(
+                        frame,
+                        frame.area(),
+                        &state,
+                        &ScrollState::default(),
+                        &Theme::ferra(),
+                    )
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let line = (0..80).map(|x| buffer[(x, 0)].symbol()).collect::<String>();
+            let start = line[..line.find("luna").unwrap()].chars().count() as u16;
+            for x in start..start + 4 {
+                assert_eq!(
+                    buffer[(x, 0)].modifier.contains(Modifier::ITALIC),
+                    temporary
+                );
             }
         }
     }

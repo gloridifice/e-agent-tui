@@ -22,6 +22,7 @@ use crate::{
     theme::Theme,
 };
 
+use super::layout::{main_page_rect, MAIN_PAGE_MARGIN};
 use super::pane;
 
 /// Minimum usable Preview content width at the split threshold.
@@ -38,7 +39,6 @@ pub const PREVIEW_SPLIT_RIGHT_PADDING: u16 = PREVIEW_RIGHT_MARGIN_COLUMNS;
 pub const PREVIEW_FULLSCREEN_LEFT_PADDING: u16 = 1;
 pub const PREVIEW_FULLSCREEN_RIGHT_PADDING: u16 = 1;
 /// Ordinary Main content keeps one blank column at each pane edge.
-pub const MAIN_PAGE_MARGIN: u16 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScreenLayout {
@@ -344,53 +344,6 @@ pub(super) fn render_with_cursor(
         }
     }
     cursor
-}
-
-/// Horizontal insets for the Main page. Main-only mode reserves the
-/// collapsed separator, one blank column before it, and one terminal edge
-/// column so content cannot overwrite the grip.
-fn main_page_insets(reserve_collapsed_separator: bool) -> (u16, u16) {
-    let right = if reserve_collapsed_separator {
-        PREVIEW_SEPARATOR_COLUMNS + PREVIEW_SEPARATOR_GAP_COLUMNS + PREVIEW_RIGHT_MARGIN_COLUMNS
-    } else {
-        MAIN_PAGE_MARGIN
-    };
-    (MAIN_PAGE_MARGIN, right)
-}
-
-/// Content (page) width for a main pane: `max_width` capped by the pane width
-/// minus the layout-specific horizontal insets.
-fn content_page_width(main: Rect, max_width: u16, reserve_collapsed_separator: bool) -> u16 {
-    let (left, right) = main_page_insets(reserve_collapsed_separator);
-    let available = main.width.saturating_sub(left.saturating_add(right));
-    if max_width > 0 {
-        max_width.min(available)
-    } else {
-        available
-    }
-}
-
-/// Content page rectangle for a main pane, owning the margin/cap/align policy.
-/// Shared by rendering and the runtime scroll path (`ui::input_bar_width`) so
-/// both resolve the same content width.
-pub(super) fn main_page_rect(
-    main: Rect,
-    state: &TuiApp,
-    reserve_collapsed_separator: bool,
-) -> Rect {
-    let (left, right) = main_page_insets(reserve_collapsed_separator);
-    let max_width = state.config.page_max_width as u16;
-    let width = content_page_width(main, max_width, reserve_collapsed_separator);
-    let slack = main
-        .width
-        .saturating_sub(left.saturating_add(right).saturating_add(width));
-    let offset = match state.config.page_align.as_str() {
-        "left" => 0,
-        "right" => slack,
-        _ => slack / 2,
-    };
-    let x = main.x.saturating_add(left).saturating_add(offset);
-    Rect::new(x, main.y, width, main.height)
 }
 
 fn render_reading_rail(

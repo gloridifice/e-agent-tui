@@ -37,6 +37,9 @@ mod effect;
 mod input;
 #[cfg(test)]
 mod key_mapping_tests;
+mod model;
+#[cfg(test)]
+mod model_tests;
 #[cfg(test)]
 mod selection_tests;
 mod terminal;
@@ -92,6 +95,7 @@ pub struct RuntimeUiState<'a> {
 
 #[derive(Default)]
 pub struct InputHandlerOutcome {
+    pub restore_prompt: Option<PromptInput>,
     pub command: Option<PendingCommand>,
     pub activate_reading: bool,
     pub effects: Vec<UiAction>,

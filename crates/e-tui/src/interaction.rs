@@ -164,6 +164,19 @@ pub enum PromptDelivery {
 pub struct PendingPrompt {
     pub prompt: crate::PromptInput,
     pub delivery: PromptDelivery,
+    pub model: Option<crate::agent::ModelSelection>,
+    pub new_mode: Option<String>,
+}
+
+impl PendingPrompt {
+    pub fn new(prompt: crate::PromptInput, delivery: PromptDelivery) -> Self {
+        Self {
+            prompt,
+            delivery,
+            model: None,
+            new_mode: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -179,7 +192,26 @@ pub struct PendingPromptQueue {
 
 impl PendingPromptQueue {
     pub fn push(&mut self, prompt: crate::PromptInput, delivery: PromptDelivery) {
-        self.local.push(PendingPrompt { prompt, delivery });
+        self.push_pending(PendingPrompt::new(prompt, delivery));
+    }
+
+    pub fn push_pending(&mut self, pending: PendingPrompt) {
+        self.local.push(pending);
+        self.rebuild();
+    }
+
+    pub fn fail_model(&mut self, model: &crate::agent::ModelSelection) -> Option<PendingPrompt> {
+        let index = self
+            .local
+            .iter()
+            .position(|pending| pending.model.as_ref() == Some(model))?;
+        let pending = self.local.remove(index);
+        self.rebuild();
+        Some(pending)
+    }
+
+    pub fn retain_failed(&mut self, pending: PendingPrompt) {
+        self.failed.push(pending);
         self.rebuild();
     }
 
@@ -228,7 +260,8 @@ impl PendingPromptQueue {
         }
         self.local
             .retain(|entry| entry.delivery != PromptDelivery::Asap);
-        self.failed.clear();
+        self.failed
+            .retain(|entry| entry.delivery != PromptDelivery::Asap);
         self.clearing = self.has_backend();
         self.rebuild();
     }
@@ -264,35 +297,44 @@ impl PendingPromptQueue {
     pub fn update_remote(&mut self, prompts: Vec<String>) {
         self.remote = prompts
             .into_iter()
-            .map(|text| PendingPrompt {
-                prompt: text.into(),
-                delivery: PromptDelivery::Asap,
-            })
+            .map(|text| PendingPrompt::new(text.into(), PromptDelivery::Asap))
             .collect();
         self.rebuild();
     }
 
     pub fn cancel_latest(&mut self) -> Option<PendingPrompt> {
-        let pending = self.local.pop();
+        let pending = self.local.pop().or_else(|| self.failed.pop());
         self.rebuild();
         pending
     }
 
-    pub fn take_next(&mut self, agent_running: bool) -> Option<PendingPrompt> {
+    fn next_index(&self, agent_running: bool) -> Option<usize> {
         if self.sending.is_some() || self.clearing {
             return None;
         }
-        let index = self
-            .local
+        self.local
             .iter()
-            .position(|entry| entry.delivery == PromptDelivery::Asap)
+            .position(|entry| entry.new_mode.is_some())
+            .or_else(|| {
+                self.local
+                    .iter()
+                    .position(|entry| entry.delivery == PromptDelivery::Asap)
+            })
             .or_else(|| {
                 (!agent_running
                     && self.remote.is_empty()
                     && self.failed.is_empty()
                     && !self.local.is_empty())
                 .then_some(0)
-            })?;
+            })
+    }
+
+    pub fn peek_next(&self, agent_running: bool) -> Option<&PendingPrompt> {
+        self.local.get(self.next_index(agent_running)?)
+    }
+
+    pub fn take_next(&mut self, agent_running: bool) -> Option<PendingPrompt> {
+        let index = self.next_index(agent_running)?;
         let pending = self.local.remove(index);
         self.rebuild();
         Some(pending)

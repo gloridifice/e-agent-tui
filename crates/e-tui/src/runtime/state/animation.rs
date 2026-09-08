@@ -6,6 +6,15 @@ use super::{Msg, ThinkState, ToolState, SETTLE_TRANSITION_MS};
 #[cfg(test)]
 use ratatui::style::Color;
 
+fn display_item_animation_active(item: &DisplayItem) -> bool {
+    match item {
+        DisplayItem::Activity(row) => row.state.is_active(),
+        DisplayItem::Block(block) => block.streaming && block.format != TranscriptFormat::Reasoning,
+        DisplayItem::Composite { activity, .. } => activity.state.is_active(),
+        DisplayItem::Thinking(node) => node.row.state.is_active(),
+        DisplayItem::Card(_) => false,
+    }
+}
 /// Whether an animation deadline is needed. This is separate from advancing
 /// the clock so the event-driven main loop can remain asleep when idle.
 pub fn animation_active(state: &RuntimeState, _now: std::time::Instant) -> bool {
@@ -20,15 +29,7 @@ pub fn animation_active(state: &RuntimeState, _now: std::time::Instant) -> bool 
         .transcript
         .nodes()
         .iter()
-        .any(|node| match &node.item {
-            DisplayItem::Activity(row) => row.state.is_active(),
-            DisplayItem::Block(block) => {
-                block.streaming && block.format != TranscriptFormat::Reasoning
-            }
-            DisplayItem::Composite { activity, .. } => activity.state.is_active(),
-            DisplayItem::Thinking(node) => node.row.state.is_active(),
-            DisplayItem::Card(_) => false,
-        })
+        .any(|node| display_item_animation_active(&node.item))
         || state.session.working
         || state.session.status == AgentStatus::Running
 }
@@ -50,15 +51,7 @@ pub fn tick_spinners(state: &mut RuntimeState, now: std::time::Instant) -> bool 
     let mut any_pending = state.session.working || state.session.status == AgentStatus::Running;
     let mut dirty = Vec::new();
     for (index, node) in state.transcript.nodes().iter().enumerate() {
-        let pending = match &node.item {
-            DisplayItem::Activity(row) => row.state.is_active(),
-            DisplayItem::Block(block) => {
-                block.streaming && block.format != TranscriptFormat::Reasoning
-            }
-            DisplayItem::Composite { activity, .. } => activity.state.is_active(),
-            DisplayItem::Thinking(node) => node.row.state.is_active(),
-            DisplayItem::Card(_) => false,
-        };
+        let pending = display_item_animation_active(&node.item);
         if pending {
             any_pending = true;
             dirty.push(index);

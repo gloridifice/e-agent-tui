@@ -411,6 +411,9 @@ pub(super) fn apply_ordinary_key(
         ui.mouse_selection.clear();
     }
     let mut outcome = super::input::apply_input_action(action, state, ui.queue);
+    if let Some(prompt) = outcome.restore_prompt.take() {
+        ui.input.restore_prompt(prompt);
+    }
     if outcome.activate_reading {
         outcome.effects.extend(enter_reading(size, now, state, ui));
     }

@@ -7,6 +7,7 @@ pub(super) fn render_input(
     input: &InputState,
     theme: &Theme,
     padding: u16,
+    model_hint: Option<&str>,
 ) -> Option<Position> {
     let bark = Style::default().fg(theme.input.hint.fg);
     render_ruled_chrome(frame, area, theme);
@@ -51,7 +52,7 @@ pub(super) fn render_input(
         return None;
     }
 
-    let display = input.display_text();
+    let (display, hint_range) = input.display_with_model_hint(model_hint);
     // Wrap every display line at the inner width so long content stays
     // inside the input box; each chunk remembers its source character range
     // within `display.text`. Word wrapping may consume whitespace at a row
@@ -112,32 +113,29 @@ pub(super) fn render_input(
     };
     let end = (start + visible_rows).min(total);
 
-    // Split a row segment into styled spans: characters inside a paste
-    // placeholder use the placeholder tone, everything else the text tone.
+    let char_style = |index| {
+        if hint_range.contains(&index) {
+            theme.activity.label.style()
+        } else if display.is_paste_char(index) {
+            theme.input.placeholder.style()
+        } else {
+            theme.input.text.style()
+        }
+    };
     let styled_spans = |text: &str, off: usize| -> Vec<Span<'static>> {
         let mut spans: Vec<Span<'static>> = Vec::new();
         let mut current = String::new();
-        let mut current_placeholder = display.is_paste_char(off);
+        let mut current_style = char_style(off);
         for (i, c) in text.chars().enumerate() {
-            let is_placeholder = display.is_paste_char(off + i);
-            if is_placeholder != current_placeholder {
-                let style = if current_placeholder {
-                    theme.input.placeholder.style()
-                } else {
-                    theme.input.text.style()
-                };
-                spans.push(Span::styled(std::mem::take(&mut current), style));
-                current_placeholder = is_placeholder;
+            let style = char_style(off + i);
+            if style != current_style {
+                spans.push(Span::styled(std::mem::take(&mut current), current_style));
+                current_style = style;
             }
             current.push(c);
         }
         if !current.is_empty() {
-            let style = if current_placeholder {
-                theme.input.placeholder.style()
-            } else {
-                theme.input.text.style()
-            };
-            spans.push(Span::styled(current, style));
+            spans.push(Span::styled(current, current_style));
         }
         spans
     };
@@ -223,50 +221,18 @@ fn render_ruled_chrome(frame: &mut Frame, area: ratatui::layout::Rect, theme: &T
     }
     let top = area.y;
     let bottom = area.bottom().saturating_sub(1);
-    render_rule(frame, area, top, theme);
+    crate::ui::component::rule::render_at(frame, area, top, theme);
     if bottom != top {
-        render_rule(frame, area, bottom, theme);
-    }
-}
-
-fn rule_color(offset: u16, width: u16, theme: &Theme) -> Color {
-    if offset < 2 || offset >= width.saturating_sub(2) {
-        theme.diff.separator.fg
-    } else {
-        theme.input.hint.fg
+        crate::ui::component::rule::render_at(frame, area, bottom, theme);
     }
 }
 
 pub(super) fn ruled_line(width: usize, theme: &Theme) -> Line<'static> {
-    if width <= 4 {
-        return Line::from(Span::styled(
-            "─".repeat(width),
-            Style::default().fg(theme.diff.separator.fg),
-        ));
-    }
-    Line::from(vec![
-        Span::styled("──", Style::default().fg(theme.diff.separator.fg)),
-        Span::styled(
-            "─".repeat(width - 4),
-            Style::default().fg(theme.input.hint.fg),
-        ),
-        Span::styled("──", Style::default().fg(theme.diff.separator.fg)),
-    ])
+    crate::ui::component::rule::line(width, theme)
 }
 
 pub(super) fn render_rule(frame: &mut Frame, area: ratatui::layout::Rect, y: u16, theme: &Theme) {
-    if area.width == 0 || y < area.y || y >= area.bottom() {
-        return;
-    }
-    for offset in 0..area.width {
-        if let Some(cell) = frame
-            .buffer_mut()
-            .cell_mut(Position::new(area.x.saturating_add(offset), y))
-        {
-            cell.set_symbol("─")
-                .set_fg(rule_color(offset, area.width, theme));
-        }
-    }
+    crate::ui::component::rule::render_at(frame, area, y, theme);
 }
 
 #[cfg(test)]
@@ -285,7 +251,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                render_input(frame, frame.area(), &input, &theme, 0);
+                render_input(frame, frame.area(), &input, &theme, 0, None);
             })
             .unwrap();
         assert_eq!(terminal.backend().buffer()[(9, 1)].symbol(), "█");
@@ -295,13 +261,47 @@ mod tests {
         input.cursor -= 1;
         terminal
             .draw(|frame| {
-                render_input(frame, frame.area(), &input, &theme, 0);
+                render_input(frame, frame.area(), &input, &theme, 0, None);
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
         assert_eq!(buffer[(7, 1)].symbol(), "█");
         assert_eq!(buffer[(9, 1)].symbol(), " ");
         assert_ne!(buffer[(9, 1)].bg, theme.input.cursor.bg.unwrap());
+    }
+
+    #[test]
+    fn model_prefix_preview_wraps_without_moving_the_raw_cursor() {
+        let theme = Theme::ferra();
+        let mut input = InputState::new(&Config::default());
+        input.restore_text("//i commit".into());
+        for width in [12, 48] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 7)).unwrap();
+            let mut anchor = None;
+            terminal
+                .draw(|frame| {
+                    anchor =
+                        render_input(frame, frame.area(), &input, &theme, 1, Some("gpt-5.6-luna"));
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let text = (1..6)
+                .map(|y| {
+                    (2..width - 1)
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect::<String>()
+                        .trim_end()
+                        .to_owned()
+                })
+                .collect::<String>();
+            assert!(text.contains("//i"));
+            assert!(text.contains("gpt-5.6-luna"));
+            assert!(text.contains("commit"));
+            let cursor = anchor.unwrap();
+            assert_eq!(buffer[(cursor.x, cursor.y)].symbol(), "█");
+            assert_eq!(input.buf, "//i commit");
+            assert_eq!(input.cursor, 10);
+        }
     }
 
     #[test]
@@ -316,7 +316,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(48, 3)).unwrap();
         terminal
             .draw(|frame| {
-                render_input(frame, frame.area(), &input, &theme, 1);
+                render_input(frame, frame.area(), &input, &theme, 1, None);
             })
             .unwrap();
         let buffer = terminal.backend().buffer();

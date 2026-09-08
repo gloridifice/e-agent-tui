@@ -90,6 +90,8 @@ Bindings are configurable in `<config_path>/key_mapping.toml`; see [key mappings
 
 In `/model`, **Shift+letter** marks/unmarks the focused model; the plain **letter** switches to it and closes the menu. Marks are saved and shown as Bark-colored ` [a]` suffixes. Letters already mapped in the menu are reserved (by default `h/j/k/l/q`).
 
+Prefix a prompt with `//<mark>` (for example `//i commit`) to use that model for one turn. The Umber model-name preview is not sent. The status-bar model becomes italic; ASAP steering keeps the temporary model, while after-turn messages wait for the original model and reasoning effort to be restored.
+
 Mouse: drag any visible TUI text to copy on release, including input, status, paths, and popups. Multiline selection follows screen rows across both panes; the display pauses during selection while background work continues. A press on the separator resizes instead. Reading View copy still copies the complete source block.
 
 ### Themes

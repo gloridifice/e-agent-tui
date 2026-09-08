@@ -20,6 +20,13 @@ use theme::render_theme_page;
 use super::*;
 use crate::key_mapping::{Action as KeyAction, Scope as KeyScope};
 
+#[derive(Clone, Copy)]
+pub(super) struct InputPageRegions {
+    pub(super) header: ratatui::layout::Rect,
+    pub(super) body: ratatui::layout::Rect,
+    pub(super) footer: ratatui::layout::Rect,
+}
+
 fn page_key_hints(config: &crate::Config, scope: KeyScope) -> String {
     use KeyAction::*;
     if scope == KeyScope::Page {
@@ -81,19 +88,7 @@ fn input_page_shell(
 }
 
 fn render_ruled_line(frame: &mut Frame, area: ratatui::layout::Rect, theme: &Theme) {
-    for offset in 0..area.width {
-        let color = if offset < 2 || offset >= area.width.saturating_sub(2) {
-            theme.diff.separator.fg
-        } else {
-            theme.input.hint.fg
-        };
-        if let Some(cell) = frame
-            .buffer_mut()
-            .cell_mut(Position::new(area.x.saturating_add(offset), area.y))
-        {
-            cell.set_symbol("─").set_fg(color);
-        }
-    }
+    crate::ui::component::rule::render(frame, area, theme);
 }
 
 fn input_page_item_style(theme: &Theme, focused: bool, selected: bool) -> Style {
@@ -182,18 +177,7 @@ pub use crate::wrap::wrap_text;
 /// Trim `text` to at most `width` display columns, appending `…` when it
 /// overflows (the ellipsis itself counts against the budget).
 pub(super) fn trim_to_width(text: &str, width: usize) -> String {
-    let mut out = String::new();
-    let mut used = 0;
-    for ch in text.chars() {
-        let w = UnicodeWidthStr::width(ch.to_string().as_str());
-        if used + w + 1 > width {
-            out.push('…');
-            break;
-        }
-        used += w;
-        out.push(ch);
-    }
-    out
+    crate::wrap::ellipsize_text(text, width)
 }
 
 #[cfg(test)]
@@ -227,7 +211,7 @@ mod tests {
         let input = InputState::new(&crate::Config::default());
         for (height, expected) in [(30, 20), (90, 46), (3, 0)] {
             assert_eq!(
-                bottom_area_rows(height, 80, &input, Some(preferred_rows(&page)), 1),
+                bottom_area_rows(height, 80, &input, Some(preferred_rows(&page)), 1, None),
                 expected
             );
         }

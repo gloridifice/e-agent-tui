@@ -137,6 +137,7 @@ pub(super) fn apply_session(
                     .as_ref()
                     .is_some_and(|draft| draft.pending_input.is_some());
                 if !materialization_pending {
+                    app.session.temporary_model = None;
                     app.session.new_conversation = None;
                 } else if switched {
                     if let Some(draft) = app.session.new_conversation.as_mut() {
@@ -282,6 +283,7 @@ pub(super) fn apply_catalog(
             app.catalogs.current_model = current.clone();
             let catalogs = app.catalogs.clone();
             if let Some(current) = current {
+                super::model::confirm(&mut app, &current);
                 app.session.provider = Some(current.provider);
                 app.session.model = Some(current.model);
             }
@@ -359,6 +361,49 @@ pub(super) fn apply_agent_error(
 ) -> Vec<UiAction> {
     if code == "fatal" {
         return vec![UiAction::Fatal(message.to_owned())];
+    }
+    if matches!(
+        code,
+        "model-failed" | "pi-rpc-set_model" | "pi-rpc-set_thinking_level" | "pi-rpc-get_state"
+    ) {
+        let mut app = state.lock().unwrap();
+        if let Some(model) = app.session.temporary_model.clone() {
+            use crate::app::TemporaryModelPhase as Phase;
+            if matches!(model.phase, Phase::Selecting | Phase::Restoring) {
+                let language = app.config.language;
+                app.push_error_message(tr_args(
+                    language,
+                    "controller.runtime_error",
+                    &[("code", code.to_owned()), ("message", message.to_owned())],
+                ));
+                if model.phase == Phase::Restoring {
+                    app.session.temporary_model.as_mut().unwrap().phase = Phase::RestoreFailed;
+                    app.push_error_message(tr_args(
+                        language,
+                        "model_prefix.restore_failed",
+                        &[(
+                            "model",
+                            format!("{}/{}", model.original.provider, model.original.model),
+                        )],
+                    ));
+                    return Vec::new();
+                }
+                if let Some(pending) = ui.queue.fail_model(&model.target) {
+                    if pending.new_mode.is_some() {
+                        app.restore_new_conversation_input();
+                    }
+                    if ui.input.buf.is_empty() {
+                        ui.input.restore_prompt(pending.prompt);
+                    } else {
+                        ui.queue.retain_failed(pending);
+                    }
+                }
+                return super::model::restore(&mut app)
+                    .map(UiAction::Agent)
+                    .into_iter()
+                    .collect();
+            }
+        }
     }
     if matches!(
         code,

@@ -33,15 +33,7 @@ pub const ACTIVITY_SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "�
 pub const SETTLE_TRANSITION_MS: u128 = 500;
 
 pub fn lerp_color(from: Color, to: Color, t: f64) -> Color {
-    let t = t.clamp(0.0, 1.0);
-    match (from, to) {
-        (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) => {
-            let lerp =
-                |a: u8, b: u8| (f64::from(a) + (f64::from(b) - f64::from(a)) * t).round() as u8;
-            Color::Rgb(lerp(r1, r2), lerp(g1, g2), lerp(b1, b2))
-        }
-        _ => to,
-    }
+    crate::color::lerp_rgb(from, to, t)
 }
 
 pub fn breathing_color(theme: &Theme, phase: f64) -> Color {
@@ -98,6 +90,23 @@ pub struct NewConversationDraft {
     pub notice: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TemporaryModelPhase {
+    Selecting,
+    Ready,
+    Active,
+    Restoring,
+    RestoreFailed,
+}
+
+#[derive(Debug, Clone)]
+pub struct TemporaryModel {
+    pub original: crate::agent::ModelSelection,
+    pub target: crate::agent::ModelSelection,
+    pub phase: TemporaryModelPhase,
+    pub materializing: bool,
+}
+
 /// State whose lifetime is the currently attached (or deferred-new) session.
 #[derive(Debug)]
 pub struct SessionModel {
@@ -107,6 +116,7 @@ pub struct SessionModel {
     pub active_commands: usize,
     pub provider: Option<String>,
     pub model: Option<String>,
+    pub temporary_model: Option<TemporaryModel>,
     pub current_mode: Option<String>,
     pub current_mode_seq: Option<u64>,
     pub token_usage: TokenUsage,
@@ -131,6 +141,7 @@ impl Default for SessionModel {
             active_commands: 0,
             provider: None,
             model: None,
+            temporary_model: None,
             current_mode: None,
             current_mode_seq: None,
             token_usage: TokenUsage::default(),

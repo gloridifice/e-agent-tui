@@ -64,6 +64,10 @@ pub(super) fn help_overlay(config: &crate::Config, theme: &Theme) -> Vec<Line<'s
     }
     rows.push(Line::styled(tr(config.language, "help.model_marks"), style));
     rows.push(Line::styled(
+        tr(config.language, "help.model_prefix"),
+        style,
+    ));
+    rows.push(Line::styled(
         tr(config.language, "help.path_completion"),
         style,
     ));

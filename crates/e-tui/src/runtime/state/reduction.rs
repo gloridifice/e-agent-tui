@@ -10,8 +10,8 @@ use super::{
     ActivityMutation, ActivityRow, ActivityState, AgentStatus, AssistantMutation, CardRole,
     CommandProjection, DisplayId, DisplayItem, LifecycleProjection, PendingActivityEnrichment,
     PendingActivityResult, PendingToolResult, PreviewContent, PreviewKey, PreviewRef,
-    PreviewRevision, RenderOptions, RuntimeState, ThinkingNode, TimelineFact, TimelineRecord,
-    ToolMetrics, ToolMutation, TranscriptBlock, WorkflowProjection,
+    PreviewRevision, RuntimeState, ThinkingNode, TimelineFact, TimelineRecord, ToolMetrics,
+    ToolMutation, TranscriptBlock, WorkflowProjection,
 };
 use crate::projection::{command, lifecycle, retry, workflow};
 
@@ -606,14 +606,11 @@ impl RuntimeState {
             })
             .unwrap_or_else(|| incoming.content.clone());
         let theme = self.config.theme();
-        let options = RenderOptions {
-            language: self.config.language,
-            expanded: self.render.expanded.clone(),
-            collapse_rows: self.config.atomic_collapse_rows,
-            mermaid_enabled: self.config.mermaid_enabled,
-            markdown_strength: Default::default(),
-            content_width: Some(self.render.transcript_cache.width),
-        };
+        let options = crate::render::transcript_options(
+            &self.config,
+            &self.render.expanded,
+            self.render.transcript_cache.width,
+        );
         let lines = {
             let render = &mut self.render;
             render

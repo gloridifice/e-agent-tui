@@ -80,7 +80,10 @@ pub(crate) fn markdown(config: &crate::Config, integrated: &[CommandDescriptor])
         .collect::<Vec<_>>();
 
     let mut output = crate::i18n::tr(language, "help.body").trim_end().to_owned();
-    output.push('\n');
+    output.push_str(&format!(
+        "\n\n{}\n",
+        crate::i18n::tr(language, "help.model_prefix")
+    ));
     for scope in crate::key_mapping::Scope::ALL {
         output.push_str(&format!("\n### {}\n\n", scope.name()));
         if scope == crate::key_mapping::Scope::Page {

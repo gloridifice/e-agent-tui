@@ -39,6 +39,20 @@ impl From<ModelMarks> for Vec<ModelMark> {
     }
 }
 
+/// Return the mark and the byte offset of the prompt body.
+pub fn prefix(text: &str) -> Option<(char, usize)> {
+    let rest = text.strip_prefix("//")?;
+    let letter = rest.chars().next()?;
+    if !letter.is_ascii_lowercase() {
+        return None;
+    }
+    let tail = &rest[1..];
+    if !tail.is_empty() && !tail.starts_with(char::is_whitespace) {
+        return None;
+    }
+    Some((letter, text.len() - tail.trim_start().len()))
+}
+
 impl ModelMarks {
     pub fn get(&self, letter: char) -> Option<&ModelMark> {
         self.0.iter().find(|mark| mark.letter == letter)

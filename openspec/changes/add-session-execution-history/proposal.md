@@ -1,0 +1,35 @@
+## Why
+
+Resumed sessions cannot reliably recover execution durations, and native conversation files retain much more content than is needed to inspect execution order and cost in time. Users need discoverable project-local execution records, restorable activity metrics, and an in-terminal time-scaled history view without altering the conversation.
+
+## What Changes
+
+- Record observed Pi and DSH execution lifecycles in versioned, append-only JSONL under `<session.cwd>/.e/e-pi/execution-history/<session-key>.jsonl` or the corresponding `e-dsh` directory. Follow the backend-confirmed cwd, never automatically promote it to a Git root or relocate native session files.
+- Retain operation summaries, correlation/order, timestamps, timing provenance, outcomes, and the same line-count/truncation metrics used by live activity rows. Exclude tool output, file bodies, patches, model text, and raw argument objects. Resume enriches matching activity metrics without creating duplicate executions.
+- Add `/history` (alias of `/history show`), `/history path` (insert the absolute path into the composer without sending), `/history copy` (human-readable chronological export), and `/history copy-10` (ten longest measured completed operations).
+- Add declarative fixed subcommands with fill text and localized descriptions through the existing command catalog and suggestion pipeline. Reuse candidate/ranking mechanics with dynamic `/model` and `/effort` arguments, preserving their native argument semantics and catalog refresh behavior.
+- Add a reusable full-screen page owner, separate from configuration Input Pages and Reading View. History replaces the normal transcript/composer/status/Preview composition without destroying its state. Shared scroll defaults are `j/k`, `d/u` (half page), `f/b` and PageDown/PageUp (full page), with `q`/Esc to leave; all pass through effective key mappings.
+- Render the approved prototype's operation-colored time axis and concurrent lanes without its title/header section. Retain endpoint times, a compact legend, exact-duration records and accessible non-color outcomes; no browser hover dependency.
+
+## Capabilities
+
+### New Capabilities
+
+- `session-execution-history`: local capture/persistence, truthful timing and activity metrics, history commands, export, and time-scaled presentation.
+- `slash-command-subcommands`: centrally declared subcommands, described completion, local dispatch/defaults, and compatibility with dynamic arguments.
+- `full-screen-pages`: whole-screen page lifecycle, independent scroll/navigation, preserved conversation state, and bounded rendering.
+
+### Modified Capabilities
+
+None. The existing Input Page roster and configuration-page interactions are not migrated. New full-screen behavior is scoped to its own active context; normal conversation, Reading, native session storage, and provider wire semantics remain unchanged.
+
+## Impact
+
+- `e-tui` owns provider-neutral execution records/metric helpers, pure export/layout policy, command descriptors, full-screen interaction state and rendering. `e-pi` and `e-dsh` own capture at their adapter ingress, backend identity/clock translation, JSONL persistence/query and clipboard effects through narrow runtime ports outside UI locks. No frontend filesystem access, new provider protocol, Pi extension, or DSH bridge change is planned.
+- Capture is limited to operations observed while `pie`/`dshe` is attached. Native-only or disconnected execution is not claimed as recorded; old native history is not silently converted into measured live execution. This is a local trace, not tamper-proof compliance evidence. No output reconstruction, automatic retention deletion, or migration of old session storage is included.
+- Proposed defaults: enable capture for materialized sessions; use a stable path-safe session key with checked identity in the header, separate run IDs on resume, and one writer per session file (a competing writer gets a visible recording-unavailable state). Ignore only the two execution-history subdirectories via `.e/.gitignore`, preserving existing entries. Do not silently fall back to a user directory on failure.
+- `copy-10` ranks individually measured tool, executable-command, and explicit model-operation spans, not enclosing turns/runs or idle time; failures/cancellations with known durations remain eligible. Unknown durations are omitted and ties retain execution order. Model spans are included only when observed boundaries support them, never guessed from generated reasoning text. Copy/page reads use a stable request watermark so ongoing work cannot make an export endless.
+- Full-screen entry preserves the existing semantic store, draft/atomic blocks, cursor, scroll anchor/follow preference, and inactive view state. Backend reduction and recording continue; page navigation does not modify hidden conversation state. Return preserves the pre-entry anchor instead of forcing the latest output into view. Backend changes and resizes are reconciled, not rolled back to an obsolete cloned store. An incoming blocking approval/question exits the page before taking input ownership.
+- Observed seams: `command_catalog::{BuiltinCommand, CompletionKind}` and `input::completion` already centralize declarations/ranking; `runtime::command` handles model/effort arguments. `ui::screen` currently selects Main/Split/Preview-only composition; `InputPageSession` replaces only the composer. `projection::tool` currently derives output lines from result text; Pi `record_fact` currently emits no event time. Capture must use the same normalized metrics and ingress timing rather than replay-time UI clocks.
+- Coordinate with active `refactor-e-tui-audit-findings` module moves and completion consolidation; do not revive removed paths or overwrite its dirty-tree work. Reviewed `input-page`, `kernel-neutral-agent-tui`, `dsh-event-projection`, `terminal-render-performance`, and active Pi frontend, configurable-key-mapping and screen-selection deltas. Existing stale main Input Page roster prose is not a reason to rewrite unrelated specs.
+- The local demo at `target/prototype/execution_heatmap.py` is visual reference only and may be absent from a fresh checkout. The delta requirements, not ignored prototype files, govern delivery. Update only public command/storage/key documentation and stable architecture boundaries during implementation.

@@ -22,8 +22,6 @@ use crate::{
     transcript_layout::wrap_line,
     ui::component::{ansi, diff},
 };
-use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
 
 pub fn render(
     frame: &mut Frame,
@@ -405,27 +403,7 @@ fn tool_sections(
 }
 
 fn clip_line(line: Line<'static>, width: usize) -> Line<'static> {
-    if line.width() <= width {
-        return line;
-    }
-    let style = line.style;
-    let mut used = 0usize;
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    'spans: for span in line.spans {
-        for grapheme in span.content.graphemes(true) {
-            let grapheme_width = UnicodeWidthStr::width(grapheme);
-            if used + grapheme_width > width {
-                break 'spans;
-            }
-            used += grapheme_width;
-            if let Some(last) = spans.last_mut().filter(|last| last.style == span.style) {
-                last.content.to_mut().push_str(grapheme);
-            } else {
-                spans.push(Span::styled(grapheme.to_owned(), span.style));
-            }
-        }
-    }
-    Line::from(spans).patch_style(style)
+    crate::wrap::clip_line(line, width)
 }
 
 fn location_text(path: &str, range: &Option<LineSelection>) -> String {

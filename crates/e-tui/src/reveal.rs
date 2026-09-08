@@ -120,6 +120,57 @@ fn fade_age_at(groups: &[FadeGroup], index: usize) -> Option<usize> {
         .map(|group| group.age)
 }
 
+#[derive(Debug, Clone, Default)]
+struct FadeState {
+    groups: Vec<FadeGroup>,
+    due: Option<Instant>,
+}
+
+impl FadeState {
+    fn is_empty(&self) -> bool {
+        self.groups.is_empty()
+    }
+
+    fn clear(&mut self) {
+        self.groups.clear();
+        self.due = None;
+    }
+
+    fn truncate(&mut self, revealed: usize) {
+        truncate_fade_groups(&mut self.groups, revealed);
+    }
+
+    fn tick(&mut self, now: Instant) -> bool {
+        if !self.due.is_some_and(|due| due <= now) {
+            return false;
+        }
+        self.due = None;
+        let changed = age_fade_groups(&mut self.groups);
+        if !self.groups.is_empty() {
+            self.due = Some(now + MIN_REVEAL_FRAME_INTERVAL);
+        }
+        changed
+    }
+
+    fn next_due(&self) -> Option<Instant> {
+        self.due
+    }
+
+    fn admit(&mut self, start: usize, end: usize, now: Instant) {
+        if start >= end {
+            return;
+        }
+        self.groups.push(FadeGroup { start, end, age: 0 });
+        if self.due.is_none() {
+            self.due = Some(now + MIN_REVEAL_FRAME_INTERVAL);
+        }
+    }
+
+    fn age_at(&self, index: usize) -> Option<usize> {
+        fade_age_at(&self.groups, index)
+    }
+}
+
 /// Character-paced transcript lane with a separately admitted stable prefix.
 #[derive(Debug, Clone, Default)]
 pub struct RevealTrack {
@@ -131,9 +182,8 @@ pub struct RevealTrack {
     stable_frontier: usize,
     finite: bool,
     rate: u16,
-    groups: Vec<FadeGroup>,
+    fade: FadeState,
     reveal_due: Option<Instant>,
-    fade_due: Option<Instant>,
     hold_started: Option<Instant>,
     last_growth: Option<Instant>,
     admission_due: Option<Instant>,
@@ -234,7 +284,7 @@ impl RevealTrack {
                 }
                 self.admitted = self.admitted.min(common);
             }
-            truncate_fade_groups(&mut self.groups, self.revealed);
+            self.fade.truncate(self.revealed);
             self.signature = signature;
         }
 
@@ -265,11 +315,10 @@ impl RevealTrack {
 
         self.update_rate(rate, now);
         if rate == 0 {
-            changed |= self.revealed != self.admitted || !self.groups.is_empty();
+            changed |= self.revealed != self.admitted || !self.fade.is_empty();
             self.revealed = self.admitted;
-            self.groups.clear();
+            self.fade.clear();
             self.reveal_due = None;
-            self.fade_due = None;
             return changed;
         }
 
@@ -286,22 +335,14 @@ impl RevealTrack {
         let rate = chars_per_second.min(crate::config::RevealRate::MAX);
         self.update_rate(rate, now);
         if rate == 0 {
-            let changed = self.revealed != self.admitted || !self.groups.is_empty();
+            let changed = self.revealed != self.admitted || !self.fade.is_empty();
             self.revealed = self.admitted;
-            self.groups.clear();
+            self.fade.clear();
             self.reveal_due = None;
-            self.fade_due = None;
             return changed;
         }
 
-        let mut changed = false;
-        if self.fade_due.is_some_and(|due| due <= now) {
-            self.fade_due = None;
-            changed |= age_fade_groups(&mut self.groups);
-            if !self.groups.is_empty() {
-                self.fade_due = Some(now + MIN_REVEAL_FRAME_INTERVAL);
-            }
-        }
+        let mut changed = self.fade.tick(now);
 
         let mut admitted_now = false;
         if self.admission_due.is_some_and(|due| due <= now) {
@@ -328,7 +369,7 @@ impl RevealTrack {
     pub fn next_due(&self) -> Option<Instant> {
         earliest_deadline(
             earliest_deadline(self.admission_due, self.reveal_due),
-            self.fade_due,
+            self.fade.next_due(),
         )
     }
 
@@ -345,7 +386,7 @@ impl RevealTrack {
             && self.finite
             && self.admitted >= self.signature.grapheme_count()
             && self.revealed >= self.signature.grapheme_count()
-            && self.groups.is_empty()
+            && self.fade.is_empty()
             && self.admission_due.is_none()
     }
 
@@ -378,14 +419,7 @@ impl RevealTrack {
             return;
         }
         self.revealed += count;
-        self.groups.push(FadeGroup {
-            start,
-            end: self.revealed,
-            age: 0,
-        });
-        if self.fade_due.is_none() {
-            self.fade_due = Some(now + MIN_REVEAL_FRAME_INTERVAL);
-        }
+        self.fade.admit(start, self.revealed, now);
     }
 
     fn clear_hold(&mut self) {
@@ -395,7 +429,7 @@ impl RevealTrack {
     }
 
     fn fade_age_at(&self, index: usize) -> Option<usize> {
-        fade_age_at(&self.groups, index)
+        self.fade.age_at(index)
     }
 }
 
@@ -416,9 +450,8 @@ pub struct LineRevealTrack {
     revealed: usize,
     rate: u16,
     mode: LineRevealMode,
-    groups: Vec<FadeGroup>,
+    fade: FadeState,
     reveal_due: Option<Instant>,
-    fade_due: Option<Instant>,
 }
 
 impl LineRevealTrack {
@@ -453,7 +486,7 @@ impl LineRevealTrack {
                 self.revealed = common;
                 changed = true;
             }
-            truncate_fade_groups(&mut self.groups, self.revealed);
+            self.fade.truncate(self.revealed);
             self.signature = signature;
         }
         self.row_ends = row_ends;
@@ -461,11 +494,10 @@ impl LineRevealTrack {
         self.update_rate(rate, now);
 
         if rate == 0 {
-            changed |= self.revealed != target_len || !self.groups.is_empty();
+            changed |= self.revealed != target_len || !self.fade.is_empty();
             self.revealed = target_len;
-            self.groups.clear();
+            self.fade.clear();
             self.reveal_due = None;
-            self.fade_due = None;
             return changed;
         }
 
@@ -493,22 +525,14 @@ impl LineRevealTrack {
         self.update_rate(rate, now);
         if rate == 0 {
             let target = self.signature.grapheme_count();
-            let changed = self.revealed != target || !self.groups.is_empty();
+            let changed = self.revealed != target || !self.fade.is_empty();
             self.revealed = target;
-            self.groups.clear();
+            self.fade.clear();
             self.reveal_due = None;
-            self.fade_due = None;
             return changed;
         }
 
-        let mut changed = false;
-        if self.fade_due.is_some_and(|due| due <= now) {
-            self.fade_due = None;
-            changed |= age_fade_groups(&mut self.groups);
-            if !self.groups.is_empty() {
-                self.fade_due = Some(now + MIN_REVEAL_FRAME_INTERVAL);
-            }
-        }
+        let mut changed = self.fade.tick(now);
         if self.mode == LineRevealMode::Rows && self.reveal_due.is_some_and(|due| due <= now) {
             self.reveal_due = None;
             if self.next_row_end().is_some() {
@@ -521,7 +545,7 @@ impl LineRevealTrack {
     }
 
     pub fn next_due(&self) -> Option<Instant> {
-        earliest_deadline(self.reveal_due, self.fade_due)
+        earliest_deadline(self.reveal_due, self.fade.next_due())
     }
 
     pub fn revealed(&self) -> usize {
@@ -529,9 +553,7 @@ impl LineRevealTrack {
     }
 
     pub fn is_complete(&self) -> bool {
-        self.initialized
-            && self.revealed >= self.signature.grapheme_count()
-            && self.groups.is_empty()
+        self.initialized && self.revealed >= self.signature.grapheme_count() && self.fade.is_empty()
     }
 
     fn update_rate(&mut self, rate: u16, now: Instant) {
@@ -568,14 +590,7 @@ impl LineRevealTrack {
         }
         let start = self.revealed;
         self.revealed = target;
-        self.groups.push(FadeGroup {
-            start,
-            end: target,
-            age: 0,
-        });
-        if self.fade_due.is_none() {
-            self.fade_due = Some(now + MIN_REVEAL_FRAME_INTERVAL);
-        }
+        self.fade.admit(start, target, now);
     }
 
     fn schedule_reveal(&mut self, now: Instant) {
@@ -591,7 +606,7 @@ impl LineRevealTrack {
     }
 
     fn fade_age_at(&self, index: usize) -> Option<usize> {
-        fade_age_at(&self.groups, index)
+        self.fade.age_at(index)
     }
 }
 
@@ -740,17 +755,7 @@ where
 }
 
 pub fn blend_rgb(background: Color, foreground: Color, weight: f64) -> Color {
-    let weight = weight.clamp(0.0, 1.0);
-    match (background, foreground) {
-        (Color::Rgb(br, bg, bb), Color::Rgb(fr, fg, fb)) => {
-            let channel = |background: u8, foreground: u8| {
-                (f64::from(background) + (f64::from(foreground) - f64::from(background)) * weight)
-                    .round() as u8
-            };
-            Color::Rgb(channel(br, fr), channel(bg, fg), channel(bb, fb))
-        }
-        _ => foreground,
-    }
+    crate::color::lerp_rgb(background, foreground, weight)
 }
 
 #[derive(Debug)]

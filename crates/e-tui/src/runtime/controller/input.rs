@@ -25,9 +25,43 @@ fn submit_prompt(
     queue: &mut PendingPromptQueue,
     outcome: &mut InputHandlerOutcome,
 ) {
+    let target = {
+        let app = state.lock().unwrap();
+        super::model::prefixed_prompt(&app, &prompt)
+    };
+    let target = match target {
+        Ok(target) => target,
+        Err(key) => {
+            let mut app = state.lock().unwrap();
+            let language = app.config.language;
+            app.push_error_message(tr(language, key));
+            outcome.restore_prompt = Some(prompt);
+            return;
+        }
+    };
+    let defer_new = {
+        let app = state.lock().unwrap();
+        app.is_new_conversation() && app.session.temporary_model.is_some()
+    };
+    if target.is_some() || defer_new {
+        let mut app = state.lock().unwrap();
+        let mut pending = crate::interaction::PendingPrompt::new(prompt.clone(), delivery);
+        pending.model = target;
+        if app.is_new_conversation() {
+            let Some(AgentRequest::NewInput { mode, .. }) =
+                app.materialize_new_conversation(super::model::stripped_prompt(&prompt))
+            else {
+                outcome.restore_prompt = Some(prompt);
+                return;
+            };
+            pending.new_mode = Some(mode);
+        }
+        queue.push_pending(pending);
+        return;
+    }
     let new_input = {
         let mut state = state.lock().unwrap();
-        if state.is_new_conversation() {
+        if state.is_new_conversation() && state.session.temporary_model.is_none() {
             state.materialize_new_conversation(prompt.clone())
         } else {
             None

@@ -2,7 +2,7 @@ use ratatui::{
     style::{Color, Style},
     text::{Line, Span},
 };
-use unicode_segmentation::UnicodeSegmentation;
+#[cfg(test)]
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
@@ -132,49 +132,11 @@ fn spans_width(spans: &[Span<'static>]) -> usize {
 }
 
 fn truncate_text(text: &str, width: usize) -> String {
-    truncate_span(Span::raw(text.to_owned()), width)
-        .content
-        .into_owned()
+    crate::wrap::clip_text(text, width)
 }
 
 fn truncate_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
-    let mut remaining = width;
-    let mut out = Vec::new();
-    for span in spans {
-        if remaining == 0 {
-            break;
-        }
-        let span_width = span.width();
-        if span_width <= remaining {
-            remaining -= span_width;
-            out.push(span);
-        } else {
-            let clipped = truncate_span(span, remaining);
-            if !clipped.content.is_empty() {
-                out.push(clipped);
-            }
-            break;
-        }
-    }
-    out
-}
-
-fn truncate_span(span: Span<'static>, width: usize) -> Span<'static> {
-    let text = span.content.as_ref();
-    if text.width() <= width {
-        return span;
-    }
-    let mut used = 0;
-    let mut end = 0;
-    for (index, grapheme) in text.grapheme_indices(true) {
-        let next = used + grapheme.width();
-        if next > width {
-            break;
-        }
-        used = next;
-        end = index + grapheme.len();
-    }
-    Span::styled(text[..end].to_owned(), span.style)
+    crate::wrap::clip_line(Line::from(spans), width).spans
 }
 
 #[derive(Debug)]

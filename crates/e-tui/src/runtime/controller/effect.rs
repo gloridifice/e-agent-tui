@@ -167,13 +167,76 @@ pub(super) fn apply_effect_result(
 
 pub(super) fn dispatch_next_queued(state: &Mutex<RuntimeState>) -> Vec<UiAction> {
     let mut state = state.lock().unwrap();
+    if super::model::blocked(&state) {
+        return Vec::new();
+    }
     let was_idle = state.is_agent_idle();
-    let Some(pending) = state.take_next_queued() else {
+    let drafting = state.is_new_conversation();
+    let asap_only = !drafting && !state.is_fully_idle();
+    let next = state
+        .interaction
+        .queue
+        .peek_next(asap_only)
+        .filter(|pending| !drafting || pending.new_mode.is_some());
+    if super::model::should_restore(&state, next) {
+        if drafting && next.is_none_or(|pending| pending.new_mode.is_none()) {
+            state.restore_new_conversation_input();
+        }
+        return super::model::restore(&mut state)
+            .map(agent_action)
+            .into_iter()
+            .collect();
+    }
+    let Some(next) = next else { return Vec::new() };
+    if next.new_mode.is_some() && next.model.is_none() && state.session.temporary_model.is_some() {
+        return Vec::new();
+    }
+    if next.new_mode.is_none() && !was_idle && state.session.status != crate::SessionStatus::Running
+    {
+        return Vec::new();
+    }
+    let target = next.model.clone();
+    if let Some(target) = &target {
+        match super::model::select(&mut state, target) {
+            Ok(Some(request)) => return vec![agent_action(request)],
+            Ok(None) => {}
+            Err(key) => {
+                let language = state.config.language;
+                state.push_error_message(tr(language, key));
+                if let Some(pending) = state.interaction.queue.fail_model(target) {
+                    if pending.new_mode.is_some() {
+                        state.restore_new_conversation_input();
+                    }
+                    if state.interaction.input.buf.is_empty() {
+                        state.interaction.input.restore_prompt(pending.prompt);
+                    } else {
+                        state.interaction.queue.retain_failed(pending);
+                    }
+                }
+                return Vec::new();
+            }
+        }
+    }
+    let Some(mut pending) = state.interaction.queue.take_next(asap_only) else {
         return Vec::new();
     };
+    if pending.model.is_some() {
+        pending.prompt = super::model::stripped_prompt(&pending.prompt);
+        if let Some(model) = state.session.temporary_model.as_mut() {
+            model.phase = crate::app::TemporaryModelPhase::Active;
+        }
+    }
     let steering = pending.delivery == crate::interaction::PromptDelivery::Asap
         && (!was_idle || state.interaction.queue.has_backend());
-    let request = if steering {
+    let request = if let Some(mode) = pending.new_mode {
+        if let Some(model) = state.session.temporary_model.as_mut() {
+            model.materializing = true;
+        }
+        AgentRequest::NewInput {
+            mode,
+            prompt: pending.prompt,
+        }
+    } else if steering {
         state.interaction.queue.begin_submission(pending.clone());
         AgentRequest::Steer {
             prompt: pending.prompt,

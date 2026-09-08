@@ -13,6 +13,7 @@ pub mod app;
 pub mod assets;
 pub mod cache;
 pub mod catalog;
+mod color;
 pub mod command_catalog;
 pub mod config;
 pub mod copy;

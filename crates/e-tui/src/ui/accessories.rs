@@ -395,10 +395,10 @@ mod tests {
             render_queue(
                 frame,
                 area,
-                &[PendingPrompt {
-                    prompt: crate::PromptInput::text("abcdefghijklmnop"),
-                    delivery: PromptDelivery::Asap,
-                }],
+                &[PendingPrompt::new(
+                    "abcdefghijklmnop".into(),
+                    PromptDelivery::Asap,
+                )],
                 1,
                 theme,
                 Language::English,
@@ -487,22 +487,10 @@ mod tests {
     #[test]
     fn queue_renders_asap_before_after_turn_without_losing_class_order() {
         let queue = [
-            PendingPrompt {
-                prompt: crate::PromptInput::text("a"),
-                delivery: PromptDelivery::Asap,
-            },
-            PendingPrompt {
-                prompt: crate::PromptInput::text("b"),
-                delivery: PromptDelivery::AfterTurn,
-            },
-            PendingPrompt {
-                prompt: crate::PromptInput::text("c"),
-                delivery: PromptDelivery::Asap,
-            },
-            PendingPrompt {
-                prompt: crate::PromptInput::text("d"),
-                delivery: PromptDelivery::AfterTurn,
-            },
+            PendingPrompt::new("a".into(), PromptDelivery::Asap),
+            PendingPrompt::new("b".into(), PromptDelivery::AfterTurn),
+            PendingPrompt::new("c".into(), PromptDelivery::Asap),
+            PendingPrompt::new("d".into(), PromptDelivery::AfterTurn),
         ];
         let rows = strip_rows(20, 4, |frame, area, theme| {
             render_queue(frame, area, &queue, 4, theme, Language::English);
@@ -534,18 +522,9 @@ mod tests {
                 frame,
                 area,
                 &[
-                    PendingPrompt {
-                        prompt: crate::PromptInput::text("a"),
-                        delivery: PromptDelivery::Asap,
-                    },
-                    PendingPrompt {
-                        prompt: crate::PromptInput::text("b"),
-                        delivery: PromptDelivery::AfterTurn,
-                    },
-                    PendingPrompt {
-                        prompt: crate::PromptInput::text("c"),
-                        delivery: PromptDelivery::Asap,
-                    },
+                    PendingPrompt::new("a".into(), PromptDelivery::Asap),
+                    PendingPrompt::new("b".into(), PromptDelivery::AfterTurn),
+                    PendingPrompt::new("c".into(), PromptDelivery::Asap),
                 ],
                 1,
                 theme,

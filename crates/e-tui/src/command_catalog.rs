@@ -226,7 +226,7 @@ fn is_subsequence(query: &str, name: &str) -> bool {
         .all(|character| chars.any(|candidate| candidate == character))
 }
 
-fn rank(query: &str, name: &str) -> Option<u8> {
+pub(crate) fn rank_text(query: &str, name: &str) -> Option<u8> {
     if query.is_empty() || name.starts_with(query) {
         Some(0)
     } else if name.contains(query) {
@@ -236,6 +236,33 @@ fn rank(query: &str, name: &str) -> Option<u8> {
     } else {
         None
     }
+}
+
+pub(crate) fn rank_fields(query: &str, fields: impl IntoIterator<Item = String>) -> Option<u8> {
+    fields
+        .into_iter()
+        .filter_map(|field| rank_text(query, &field))
+        .min()
+}
+
+pub(crate) fn rank_candidates<T, I, F>(query: &str, items: I, score: F) -> Vec<T>
+where
+    I: IntoIterator<Item = T>,
+    F: Fn(&str, &T) -> Option<u8>,
+{
+    let mut groups: [Vec<T>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    for item in items {
+        if let Some(group) = score(query, &item) {
+            if let Some(bucket) = groups.get_mut(usize::from(group)) {
+                bucket.push(item);
+            }
+        }
+    }
+    groups.into_iter().flatten().collect()
+}
+
+fn rank(query: &str, name: &str) -> Option<u8> {
+    rank_text(query, name)
 }
 
 /// Merge optimized commands with the current DSH registry and fuzzy-rank the

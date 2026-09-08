@@ -29,6 +29,22 @@ pub struct CatalogModel {
 }
 
 impl CatalogModel {
+    pub fn marked_model<'a>(
+        &self,
+        marks: &'a crate::model_marks::ModelMarks,
+        letter: char,
+    ) -> Option<(&'a crate::model_marks::ModelMark, &ModelDescriptor)> {
+        let mark = marks.get(letter)?;
+        let model = self
+            .model_providers
+            .iter()
+            .find(|provider| provider.id == mark.provider)?
+            .models
+            .iter()
+            .find(|model| model.id == mark.model)?;
+        Some((mark, model))
+    }
+
     /// Resolve the exact current provider/model route — never cross-provider
     /// by model id.
     pub fn current_model_descriptor(&self) -> Option<&ModelDescriptor> {

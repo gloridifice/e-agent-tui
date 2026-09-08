@@ -6,11 +6,7 @@
 
 use std::collections::HashMap;
 
-use ratatui::{
-    style::Style,
-    text::{Line, Span},
-};
-use unicode_width::UnicodeWidthChar;
+use ratatui::text::Line;
 
 use crate::{
     config::Theme,
@@ -118,48 +114,22 @@ pub struct ProvenanceLayoutRow {
 }
 
 /// Width-aware greedy word wrapping shared with preview and the input bar.
-pub use crate::wrap::{wrap_line, wrapped_rows};
+pub use crate::wrap::{
+    clip_line, clip_text, ellipsize_line, ellipsize_text, wrap_line, wrapped_rows,
+};
 
 /// Keep an activity on one display row at the resolved page width.
 pub fn truncate_activity_line(line: Line<'static>, width: usize) -> Line<'static> {
-    if line.width() <= width {
-        return line;
-    }
-    let base = line.style;
-    if width == 0 {
-        return Line::default().patch_style(base);
-    }
-
-    let budget = width - 1;
-    let mut used = 0usize;
-    let mut spans = Vec::new();
-    let mut ellipsis_style = Style::default();
-    'outer: for span in line.spans {
-        let mut kept = String::new();
-        ellipsis_style = span.style;
-        for character in span.content.chars() {
-            let char_width = UnicodeWidthChar::width(character).unwrap_or(0);
-            if used + char_width > budget {
-                if !kept.is_empty() {
-                    spans.push(Span::styled(kept, span.style));
-                }
-                break 'outer;
-            }
-            kept.push(character);
-            used += char_width;
-        }
-        if !kept.is_empty() {
-            spans.push(Span::styled(kept, span.style));
-        }
-    }
-    spans.push(Span::styled("…", ellipsis_style));
-    Line::from(spans).patch_style(base)
+    crate::wrap::ellipsize_line(line, width)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::style::Color;
+    use ratatui::{
+        style::{Color, Style},
+        text::Span,
+    };
 
     #[test]
     fn markdown_registry_reuses_display_unit_range_when_source_grows() {
@@ -237,5 +207,19 @@ mod tests {
         let line = truncate_activity_line(Line::from("abcdef"), 4);
         assert_eq!(line.to_string(), "abc…");
         assert_eq!(line.width(), 4);
+    }
+    #[test]
+    fn clipping_is_exact_fit_and_grapheme_safe_across_styles() {
+        use ratatui::style::Color;
+
+        assert_eq!(ellipsize_text("abc", 3), "abc");
+        assert_eq!(ellipsize_text("abcd", 3), "ab…");
+        let line = Line::from(vec![
+            Span::styled("e", Style::default().fg(Color::Red)),
+            Span::styled("\u{301}👩", Style::default().fg(Color::Blue)),
+            Span::styled("\u{200d}💻x", Style::default().fg(Color::Green)),
+        ]);
+        assert_eq!(clip_line(line.clone(), 1).to_string(), "e\u{301}");
+        assert_eq!(ellipsize_line(line, 2).to_string(), "e\u{301}…");
     }
 }

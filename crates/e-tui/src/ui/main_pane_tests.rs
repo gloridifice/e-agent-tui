@@ -563,19 +563,27 @@ fn input_box_rows_follow_wrapped_content() {
     let config = crate::config::Config::default();
     let mut input = InputState::new(&config);
     // 40-column bar with 2-column gutters and one prompt column → inner 35.
-    assert_eq!(input_rows(&input, 40, 2), 1, "empty input is one row");
+    assert_eq!(input_rows(&input, 40, 2, None), 1, "empty input is one row");
     input.buf = "x".repeat(35);
-    assert_eq!(input_rows(&input, 40, 2), 1, "exactly one row fits");
+    assert_eq!(input_rows(&input, 40, 2, None), 1, "exactly one row fits");
     input.buf = "x".repeat(36);
-    assert_eq!(input_rows(&input, 40, 2), 2, "one overflow column wraps");
+    assert_eq!(
+        input_rows(&input, 40, 2, None),
+        2,
+        "one overflow column wraps"
+    );
     input.buf = "x".repeat(200);
-    assert_eq!(input_rows(&input, 40, 2), INPUT_MAX_ROWS, "cap at 5 rows");
+    assert_eq!(
+        input_rows(&input, 40, 2, None),
+        INPUT_MAX_ROWS,
+        "cap at 5 rows"
+    );
     // Trailing newline still counts as an extra row (Shift+Enter growth).
     input.buf = "a\n".into();
-    assert_eq!(input_rows(&input, 40, 2), 2);
+    assert_eq!(input_rows(&input, 40, 2, None), 2);
     // A single long line wraps inside a narrow bar and grows the box.
     input.buf = "a very long single line that wraps".into();
-    let rows = input_rows(&input, 16, 0);
+    let rows = input_rows(&input, 16, 0, None);
     assert!((2..=INPUT_MAX_ROWS).contains(&rows));
 }
 
@@ -2332,10 +2340,10 @@ fn overlays_paint_queue_and_approval_accessories() {
         tool_name: "bash".into(),
         reason: "run the test".into(),
     };
-    let queue = vec![crate::interaction::PendingPrompt {
-        prompt: crate::PromptInput::text("排队提示"),
-        delivery: crate::interaction::PromptDelivery::Asap,
-    }];
+    let queue = vec![crate::interaction::PendingPrompt::new(
+        "排队提示".into(),
+        crate::interaction::PromptDelivery::Asap,
+    )];
     let backend = TestBackend::new(80, 40);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
@@ -2394,9 +2402,11 @@ fn chinese_approval_and_queue_accessories_localize_chrome() {
         reason: "run the test".into(),
     };
     let queue = (1..=10)
-        .map(|index| crate::interaction::PendingPrompt {
-            prompt: crate::PromptInput::text(format!("queued {index}")),
-            delivery: crate::interaction::PromptDelivery::AfterTurn,
+        .map(|index| {
+            crate::interaction::PendingPrompt::new(
+                format!("queued {index}").into(),
+                crate::interaction::PromptDelivery::AfterTurn,
+            )
         })
         .collect::<Vec<_>>();
     let mut terminal = Terminal::new(TestBackend::new(80, 15)).unwrap();

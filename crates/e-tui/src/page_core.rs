@@ -142,6 +142,24 @@ impl FocusState {
     }
 }
 
+pub(crate) fn linear_focus_nodes(ids: &[FocusId], horizontal: bool) -> Vec<FocusNode> {
+    ids.iter()
+        .enumerate()
+        .map(|(index, id)| {
+            let previous = index.checked_sub(1).and_then(|i| ids.get(i)).cloned();
+            let next = ids.get(index + 1).cloned();
+            let mut node = FocusNode::new(id.clone());
+            if horizontal {
+                node.left = previous.clone();
+                node.right = next.clone();
+            }
+            node.up = previous;
+            node.down = next;
+            node
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextEditor {
     pub buf: String,

@@ -11,6 +11,7 @@ pub(crate) fn render(
     input: &InputState,
     theme: &Theme,
     horizontal_padding: u16,
+    model_hint: Option<&str>,
 ) -> Option<Position> {
-    super::super::input::render_input(frame, area, input, theme, horizontal_padding)
+    super::super::input::render_input(frame, area, input, theme, horizontal_padding, model_hint)
 }

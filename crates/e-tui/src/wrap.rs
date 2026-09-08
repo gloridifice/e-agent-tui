@@ -14,7 +14,10 @@
 
 use std::ops::Range;
 
-use ratatui::text::{Line, Span};
+use ratatui::{
+    style::Style,
+    text::{Line, Span},
+};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -347,6 +350,84 @@ pub fn wrapped_rows(line: &Line<'static>, width: usize) -> usize {
         text.push_str(span.content.as_ref());
     }
     word_wrap_ranges(&text, width).len().max(1)
+}
+
+/// Clip a styled line to the display width without adding a marker. Grapheme
+/// boundaries are computed over the concatenated line, so a combining mark or
+/// ZWJ sequence split across adjacent style spans remains one unit.
+pub fn clip_line(line: Line<'static>, width: usize) -> Line<'static> {
+    clip_line_with_marker(line, width, None)
+}
+
+/// Clip a styled line and append one ellipsis when it overflows. The marker
+/// consumes one display column and uses the last retained span style.
+pub fn ellipsize_line(line: Line<'static>, width: usize) -> Line<'static> {
+    clip_line_with_marker(line, width, Some("…"))
+}
+
+fn clip_line_with_marker(line: Line<'static>, width: usize, marker: Option<&str>) -> Line<'static> {
+    let base = line.style;
+    if width == 0 {
+        return Line::default().patch_style(base);
+    }
+    if line.width() <= width {
+        return line;
+    }
+    let marker_width = marker.map_or(0, UnicodeWidthStr::width);
+    let budget = width.saturating_sub(marker_width);
+    let mut text = String::new();
+    let mut styles = Vec::with_capacity(line.spans.len());
+    for span in &line.spans {
+        let start = text.len();
+        text.push_str(span.content.as_ref());
+        styles.push((start, text.len(), span.style));
+    }
+    let mut used = 0usize;
+    let mut spans = Vec::new();
+    for (start, grapheme) in text.grapheme_indices(true) {
+        let grapheme_width = UnicodeWidthStr::width(grapheme);
+        if used + grapheme_width > budget {
+            break;
+        }
+        used += grapheme_width;
+        let style = styles
+            .iter()
+            .find(|(from, to, _)| *from <= start && start < *to)
+            .map(|(_, _, style)| *style)
+            .unwrap_or(base);
+        push_merged_span(&mut spans, grapheme.to_owned(), base.patch(style));
+    }
+    if let Some(marker) = marker {
+        let style = spans.last().map_or(base, |span: &Span<'static>| span.style);
+        spans.push(Span::styled(marker.to_owned(), style));
+    }
+    Line::from(spans).patch_style(base)
+}
+
+pub fn clip_text(text: &str, width: usize) -> String {
+    let line = clip_line(Line::from(text.to_owned()), width);
+    line.spans
+        .into_iter()
+        .map(|span| span.content.into_owned())
+        .collect()
+}
+
+pub fn ellipsize_text(text: &str, width: usize) -> String {
+    let line = ellipsize_line(Line::from(text.to_owned()), width);
+    line.spans
+        .into_iter()
+        .map(|span| span.content.into_owned())
+        .collect()
+}
+
+fn push_merged_span(spans: &mut Vec<Span<'static>>, text: String, style: Style) {
+    if let Some(last) = spans.last_mut() {
+        if last.style == style {
+            last.content.to_mut().push_str(&text);
+            return;
+        }
+    }
+    spans.push(Span::styled(text, style));
 }
 
 #[cfg(test)]

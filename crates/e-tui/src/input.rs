@@ -13,6 +13,9 @@ use crate::key_mapping::{
 };
 use std::ops::Range;
 
+mod completion;
+pub use completion::{match_efforts, match_models, match_new_modes, match_skills};
+
 #[cfg(test)]
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -22,6 +25,7 @@ use unicode_width::UnicodeWidthStr;
 
 #[cfg(test)]
 use crate::agent::CommandDescriptor;
+#[cfg(test)]
 use crate::agent::{ModelDescriptor, ModelProvider, ReasoningEffort, Skill};
 use crate::catalog::CatalogModel;
 pub use crate::command_catalog::NewMode;
@@ -89,6 +93,74 @@ struct ImageBlock {
     start: usize,
     end: usize,
     image: PromptImage,
+}
+
+trait AtomicBlockRange {
+    fn start(&self) -> usize;
+    fn end(&self) -> usize;
+    fn shift(&mut self, delta: isize);
+}
+
+impl AtomicBlockRange for PasteBlock {
+    fn start(&self) -> usize {
+        self.start
+    }
+
+    fn end(&self) -> usize {
+        self.end
+    }
+
+    fn shift(&mut self, delta: isize) {
+        if delta >= 0 {
+            self.start += delta as usize;
+            self.end += delta as usize;
+        } else {
+            self.start -= delta.unsigned_abs();
+            self.end -= delta.unsigned_abs();
+        }
+    }
+}
+
+impl AtomicBlockRange for ImageBlock {
+    fn start(&self) -> usize {
+        self.start
+    }
+
+    fn end(&self) -> usize {
+        self.end
+    }
+
+    fn shift(&mut self, delta: isize) {
+        if delta >= 0 {
+            self.start += delta as usize;
+            self.end += delta as usize;
+        } else {
+            self.start -= delta.unsigned_abs();
+            self.end -= delta.unsigned_abs();
+        }
+    }
+}
+
+fn shift_atomic_ranges<T: AtomicBlockRange>(blocks: &mut [T], at: usize, amount: usize) {
+    for block in blocks {
+        if block.start() >= at {
+            block.shift(amount as isize);
+        }
+    }
+}
+
+fn remove_atomic_ranges<T: AtomicBlockRange>(
+    blocks: &mut Vec<T>,
+    start: usize,
+    end: usize,
+    removed: usize,
+) {
+    blocks.retain(|block| block.end() <= start || block.start() >= end);
+    for block in blocks {
+        if block.start() >= end {
+            block.shift(-(removed as isize));
+        }
+    }
 }
 
 /// Display projection of the expanded input buffer. Large paste contents are
@@ -527,117 +599,6 @@ pub fn match_commands(query: &str) -> Vec<String> {
         .collect()
 }
 
-/// Every char of `q` appears in `name` in order (classic fuzzy subsequence).
-fn is_subsequence(q: &str, name: &str) -> bool {
-    let mut chars = name.chars();
-    q.chars().all(|c| chars.any(|n| n == c))
-}
-
-/// Ranked fuzzy match against the `/new` modes: id-prefix matches first,
-/// then id/display-name substring matches, then subsequence matches; each
-/// group keeps the roster order. An empty query returns every mode.
-pub fn match_new_modes<'a>(query: &str, modes: &'a [NewMode]) -> Vec<&'a NewMode> {
-    let q = query.to_lowercase();
-    let mut prefix: Vec<&NewMode> = Vec::new();
-    let mut substring: Vec<&NewMode> = Vec::new();
-    let mut fuzzy: Vec<&NewMode> = Vec::new();
-    for mode in modes {
-        let id = mode.id.to_lowercase();
-        let name = mode.name.as_deref().unwrap_or("").to_lowercase();
-        if q.is_empty() {
-            prefix.push(mode);
-        } else if id.starts_with(&q) {
-            prefix.push(mode);
-        } else if id.contains(&q) || (!name.is_empty() && name.contains(&q)) {
-            substring.push(mode);
-        } else if is_subsequence(&q, &id) || (!name.is_empty() && is_subsequence(&q, &name)) {
-            fuzzy.push(mode);
-        }
-    }
-    // Roster order is the declared `order` — keep it stable inside each
-    // group instead of re-sorting alphabetically.
-    prefix.extend(substring);
-    prefix.extend(fuzzy);
-    prefix
-}
-
-/// Fuzzy-rank model routes using the same searchable fields as Pi: model id,
-/// provider id, canonical `provider/model`, and the display name. Completion
-/// always fills the canonical route so duplicate model ids remain unambiguous.
-pub fn match_models<'a>(
-    query: &str,
-    providers: &'a [ModelProvider],
-) -> Vec<(&'a ModelProvider, &'a ModelDescriptor)> {
-    let query = query.to_lowercase();
-    let mut prefix = Vec::new();
-    let mut substring = Vec::new();
-    let mut fuzzy = Vec::new();
-    for provider in providers {
-        for model in &provider.models {
-            let fields = [
-                model.id.to_lowercase(),
-                provider.id.to_lowercase(),
-                format!("{}/{}", provider.id, model.id).to_lowercase(),
-                model.name.to_lowercase(),
-            ];
-            if query.is_empty() || fields.iter().any(|field| field.starts_with(&query)) {
-                prefix.push((provider, model));
-            } else if fields.iter().any(|field| field.contains(&query)) {
-                substring.push((provider, model));
-            } else if fields.iter().any(|field| is_subsequence(&query, field)) {
-                fuzzy.push((provider, model));
-            }
-        }
-    }
-    prefix.extend(substring);
-    prefix.extend(fuzzy);
-    prefix
-}
-
-/// Fuzzy-rank the exact current model route's effort ids and display names.
-/// Completion always fills the provider-declared id and keeps roster order.
-pub fn match_efforts<'a>(query: &str, efforts: &'a [ReasoningEffort]) -> Vec<&'a ReasoningEffort> {
-    let query = query.to_lowercase();
-    let mut prefix = Vec::new();
-    let mut substring = Vec::new();
-    let mut fuzzy = Vec::new();
-    for effort in efforts {
-        let fields = [effort.id.to_lowercase(), effort.name.to_lowercase()];
-        if query.is_empty() || fields.iter().any(|field| field.starts_with(&query)) {
-            prefix.push(effort);
-        } else if fields.iter().any(|field| field.contains(&query)) {
-            substring.push(effort);
-        } else if fields.iter().any(|field| is_subsequence(&query, field)) {
-            fuzzy.push(effort);
-        }
-    }
-    prefix.extend(substring);
-    prefix.extend(fuzzy);
-    prefix
-}
-
-/// Fuzzy-rank skills by exact addressable name. The bridge already sends the
-/// winning user-invocable roster sorted by name.
-pub fn match_skills<'a>(query: &str, skills: &'a [Skill]) -> Vec<&'a Skill> {
-    let q = query.to_lowercase();
-    let mut prefix = Vec::new();
-    let mut substring = Vec::new();
-    let mut fuzzy = Vec::new();
-    for skill in skills {
-        let name = skill.name.to_lowercase();
-        if q.is_empty() || name.starts_with(&q) {
-            prefix.push(skill);
-        } else if name.contains(&q) {
-            substring.push(skill);
-        } else if is_subsequence(&q, &name) {
-            fuzzy.push(skill);
-        }
-    }
-    prefix.extend(substring);
-    prefix.extend(fuzzy);
-    prefix
-}
-
 impl InputState {
     /// Compatibility helper for catalog-free callers and focused input tests.
     /// Production routes through `handle_key_with_catalog`.
@@ -1010,7 +971,10 @@ impl InputState {
     /// the list and its query stay pinned, so the highlight follows the
     /// filled value and Esc can still restore the typed query.
     fn refresh_suggest(&mut self, catalogs: &CatalogModel) {
-        if !self.paste_blocks.is_empty() || !self.image_blocks.is_empty() {
+        if !self.paste_blocks.is_empty()
+            || !self.image_blocks.is_empty()
+            || self.buf.starts_with("//")
+        {
             self.suggest = None;
             return;
         }
@@ -1170,18 +1134,8 @@ impl InputState {
     }
 
     fn shift_blocks_for_insert(&mut self, at: usize, count: usize) {
-        for block in &mut self.paste_blocks {
-            if block.start >= at {
-                block.start += count;
-                block.end += count;
-            }
-        }
-        for block in &mut self.image_blocks {
-            if block.start >= at {
-                block.start += count;
-                block.end += count;
-            }
-        }
+        shift_atomic_ranges(&mut self.paste_blocks, at, count);
+        shift_atomic_ranges(&mut self.image_blocks, at, count);
     }
 
     fn block_ranges(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
@@ -1219,22 +1173,8 @@ impl InputState {
         let removed = end - start;
         // Drop any block the removal touched (fully or partially); a block
         // whose content was edited is no longer an atomic paste.
-        self.paste_blocks
-            .retain(|block| block.end <= start || block.start >= end);
-        self.image_blocks
-            .retain(|block| block.end <= start || block.start >= end);
-        for block in &mut self.paste_blocks {
-            if block.start >= end {
-                block.start -= removed;
-                block.end -= removed;
-            }
-        }
-        for block in &mut self.image_blocks {
-            if block.start >= end {
-                block.start -= removed;
-                block.end -= removed;
-            }
-        }
+        remove_atomic_ranges(&mut self.paste_blocks, start, end, removed);
+        remove_atomic_ranges(&mut self.image_blocks, start, end, removed);
         self.cursor = start;
     }
 
@@ -1401,7 +1341,7 @@ impl InputState {
         if self.multiline {
             self.multiline = false;
         }
-        if command_line.starts_with('/') {
+        if command_line.starts_with('/') && !command_line.starts_with("//") {
             InputAction::Command {
                 line: command_line,
                 images,
@@ -1498,6 +1438,38 @@ impl InputState {
             .collect::<Vec<_>>();
         blocks.sort_by_key(|(start, _, _)| *start);
         blocks
+    }
+
+    pub fn model_hint<'a>(&self, config: &Config, catalogs: &'a CatalogModel) -> Option<&'a str> {
+        let (letter, _) = crate::model_marks::prefix(&self.buf)?;
+        if self.display_blocks().iter().any(|(start, _, _)| *start < 3) {
+            return None;
+        }
+        let (_, model) = catalogs.marked_model(&config.model_marks, letter)?;
+        Some(if model.name.is_empty() {
+            &model.id
+        } else {
+            &model.name
+        })
+    }
+
+    pub fn display_with_model_hint(&self, hint: Option<&str>) -> (InputDisplay, Range<usize>) {
+        let mut display = self.display_text();
+        let Some(hint) = hint.filter(|_| crate::model_marks::prefix(&display.text).is_some())
+        else {
+            return (display, 0..0);
+        };
+        let preview = format!(" {hint}");
+        let count = preview.chars().count();
+        display.text.insert_str(3, &preview);
+        if display.cursor > 3 {
+            display.cursor += count;
+        }
+        for range in &mut display.paste_ranges {
+            range.start += count;
+            range.end += count;
+        }
+        (display, 3..3 + count)
     }
 
     pub fn display_text(&self) -> InputDisplay {
@@ -1762,6 +1734,73 @@ mod tests {
         s.complete_paths(request, path_candidates(&["foo bar/a.rs"]));
         s.handle_key(&key(KeyCode::Tab), true);
         assert_eq!(s.buf, "@\"foo bar/a.rs\"");
+    }
+
+    #[test]
+    fn model_prefix_preview_never_enters_editor_history_or_submission() {
+        let mut s = state();
+        let mut config = Config::default();
+        config.model_marks.toggle('i', "p", "luna");
+        let catalogs = CatalogModel {
+            model_providers: vec![crate::agent::ModelProvider {
+                id: "p".into(),
+                name: "P".into(),
+                models: vec![crate::agent::ModelDescriptor {
+                    id: "luna".into(),
+                    name: "gpt-5.6-luna".into(),
+                    description: None,
+                    reasoning: None,
+                    context_window: None,
+                }],
+            }],
+            ..Default::default()
+        };
+        for c in "//i".chars() {
+            s.handle_key_with_catalog(&key(KeyCode::Char(c)), true, &catalogs);
+        }
+        assert!(s.suggest.is_none());
+        let hint = s.model_hint(&config, &catalogs);
+        let (display, range) = s.display_with_model_hint(hint);
+        assert_eq!(display.text, "//i gpt-5.6-luna");
+        assert_eq!(display.cursor, 3);
+        assert_eq!(range, 3..16);
+        assert_eq!(s.buf, "//i");
+        for c in " commit".chars() {
+            s.handle_key_with_catalog(&key(KeyCode::Char(c)), true, &catalogs);
+        }
+        let (display, _) = s.display_with_model_hint(s.model_hint(&config, &catalogs));
+        assert_eq!(display.text, "//i gpt-5.6-luna commit");
+        assert_eq!(display.cursor, display.text.chars().count());
+        assert!(
+            matches!(s.handle_key_with_catalog(&key(KeyCode::Enter), true, &catalogs),
+            InputAction::Send(prompt) if prompt == "//i commit")
+        );
+        assert_eq!(s.history.last().unwrap(), "//i commit");
+        s.restore_text("//i commit".into());
+        assert!(s.model_hint(&config, &CatalogModel::default()).is_none());
+    }
+
+    #[test]
+    fn model_prefix_preview_preserves_atomic_blocks_and_image_payloads() {
+        let mut s = state();
+        s.restore_text("//i ".into());
+        s.paste_placeholder_chars = 2;
+        s.paste("中文内容");
+        s.paste_image(PromptImage {
+            media_type: "image/png".into(),
+            data: vec![1, 2],
+            name: None,
+        });
+        let raw = s.display_text();
+        let (display, _) = s.display_with_model_hint(Some("luna"));
+        assert_eq!(display.cursor, raw.cursor + 5);
+        assert_eq!(display.paste_ranges[0].start, raw.paste_ranges[0].start + 5);
+        assert_eq!(display.paste_ranges[1].start, raw.paste_ranges[1].start + 5);
+        let InputAction::Send(prompt) = s.commit() else {
+            panic!("expected prompt")
+        };
+        assert!(prompt.has_images());
+        assert_eq!(prompt.parts[0], PromptPart::Text("//i 中文内容".into()));
     }
 
     #[test]

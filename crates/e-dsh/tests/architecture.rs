@@ -12,18 +12,143 @@ fn production_source(source: &str) -> &str {
     let mut offset = 0usize;
     for (index, line) in lines.iter().enumerate() {
         let body = line.trim_end_matches(['\r', '\n']);
-        if body.trim() == "#[cfg(test)]"
-            && lines
-                .iter()
-                .skip(index + 1)
-                .find(|line| !line.trim().is_empty())
-                .is_some_and(|line| line.trim_start().starts_with("mod tests"))
+        if body.trim() != "#[cfg(test)]" {
+            offset += line.len();
+            continue;
+        }
+        let mut next = index + 1;
+        while let Some(candidate) = lines.get(next) {
+            let trimmed = candidate.trim();
+            if trimmed.is_empty() || trimmed.starts_with("#[path") || trimmed.starts_with("#[cfg") {
+                next += 1;
+            } else {
+                break;
+            }
+        }
+        if lines
+            .get(next)
+            .and_then(|candidate| declared_module_name(candidate))
+            .is_some()
         {
             return &source[..offset];
         }
         offset += line.len();
     }
     source
+}
+
+/// Replace comments and literals while preserving byte positions and line
+/// breaks. The architecture scanner is intentionally lightweight, but it must
+/// inspect Rust syntax rather than arbitrary text: paths in examples and
+/// comments are not module dependencies.
+fn code_only_source(source: &str) -> String {
+    let chars: Vec<char> = source.chars().collect();
+    let mut out = String::with_capacity(source.len());
+    let mut index = 0usize;
+    let mut block_depth = 0usize;
+    while index < chars.len() {
+        let current = chars[index];
+        let next = chars.get(index + 1).copied();
+        if block_depth > 0 {
+            if current == '/' && next == Some('*') {
+                block_depth += 1;
+                out.push(' ');
+                out.push(' ');
+                index += 2;
+            } else if current == '*' && next == Some('/') {
+                block_depth = block_depth.saturating_sub(1);
+                out.push(' ');
+                out.push(' ');
+                index += 2;
+            } else {
+                out.push(if current == '\n' { '\n' } else { ' ' });
+                index += 1;
+            }
+            continue;
+        }
+        if current == '/' && next == Some('/') {
+            out.push(' ');
+            out.push(' ');
+            index += 2;
+            while index < chars.len() && chars[index] != '\n' {
+                out.push(' ');
+                index += 1;
+            }
+            continue;
+        }
+        if current == '/' && next == Some('*') {
+            block_depth = 1;
+            out.push(' ');
+            out.push(' ');
+            index += 2;
+            continue;
+        }
+        // Raw strings, including byte raw strings, are removed as one token.
+        let raw_start = current == 'r' || (current == 'b' && next == Some('r'));
+        let quote_index = if raw_start {
+            let mut probe = index + usize::from(current == 'b');
+            if chars.get(probe) == Some(&'r') {
+                probe += 1;
+            }
+            let hashes = chars[probe..]
+                .iter()
+                .take_while(|character| **character == '#')
+                .count();
+            (chars.get(probe + hashes) == Some(&'"')).then_some((probe + hashes, hashes))
+        } else {
+            None
+        };
+        if let Some((quote, hashes)) = quote_index {
+            for character in &chars[index..=quote] {
+                out.push(if *character == '\n' { '\n' } else { ' ' });
+            }
+            index = quote + 1;
+            while index < chars.len() {
+                if chars[index] == '"'
+                    && chars
+                        .get(index + 1..index + 1 + hashes)
+                        .is_some_and(|suffix| suffix.iter().all(|character| *character == '#'))
+                {
+                    for _ in 0..=hashes {
+                        out.push(' ');
+                    }
+                    index += hashes + 1;
+                    break;
+                }
+                out.push(if chars[index] == '\n' { '\n' } else { ' ' });
+                index += 1;
+            }
+            continue;
+        }
+        if current == '"' {
+            out.push(' ');
+            index += 1;
+            while index < chars.len() {
+                let character = chars[index];
+                out.push(if character == '\n' { '\n' } else { ' ' });
+                index += 1;
+                if character == '\\' && index < chars.len() {
+                    out.push(if chars[index] == '\n' { '\n' } else { ' ' });
+                    index += 1;
+                } else if character == '"' {
+                    break;
+                }
+            }
+            continue;
+        }
+        // A short quoted character is a literal; a lifetime such as `'a` is
+        // deliberately left alone because it is not a path-bearing token.
+        if current == '\'' && chars.get(index + 2) == Some(&'\'') {
+            out.push(' ');
+            out.push(' ');
+            out.push(' ');
+            index += 3;
+            continue;
+        }
+        out.push(current);
+        index += 1;
+    }
+    out
 }
 
 #[test]
@@ -90,6 +215,7 @@ fn runners_share_selection_policy_and_publish_only_after_submission() {
 struct SourceModule {
     id: String,
     path: Vec<String>,
+    file: PathBuf,
     source: String,
 }
 
@@ -136,7 +262,15 @@ fn declared_module_name(line: &str) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
-fn test_only_module_paths(sources: &[SourceModule]) -> BTreeSet<String> {
+fn path_attribute(line: &str) -> Option<String> {
+    let line = line.trim();
+    let body = line.strip_prefix("#[path")?.trim_start();
+    let body = body.strip_prefix('=')?.trim_start();
+    let body = body.strip_prefix('"')?;
+    body.split_once('"').map(|(path, _)| path.to_owned())
+}
+
+fn test_only_module_paths(root: &Path, sources: &[SourceModule]) -> BTreeSet<String> {
     let mut paths = BTreeSet::new();
     for module in sources {
         let lines: Vec<_> = module.source.lines().collect();
@@ -144,15 +278,36 @@ fn test_only_module_paths(sources: &[SourceModule]) -> BTreeSet<String> {
             if line.trim() != "#[cfg(test)]" {
                 continue;
             }
-            if let Some(name) = lines
-                .iter()
-                .skip(index + 1)
-                .find_map(|line| (!line.trim().is_empty()).then(|| declared_module_name(line)))
-                .flatten()
-            {
-                let mut path = module.path.clone();
-                path.push(name);
-                paths.insert(path.join("::"));
+            let mut next = index + 1;
+            let mut path = None;
+            while let Some(candidate) = lines.get(next) {
+                let trimmed = candidate.trim();
+                if trimmed.is_empty() || trimmed.starts_with("#[cfg") {
+                    next += 1;
+                } else if let Some(attribute_path) = path_attribute(trimmed) {
+                    path = Some(attribute_path);
+                    next += 1;
+                } else {
+                    break;
+                }
+            }
+            if let Some(name) = lines.get(next).and_then(|line| declared_module_name(line)) {
+                let mut module_path = module.path.clone();
+                module_path.push(name);
+                paths.insert(module_path.join("::"));
+                if let Some(path) = path {
+                    let target = module
+                        .file
+                        .parent()
+                        .expect("Rust source has a parent directory")
+                        .join(path);
+                    if target.exists() {
+                        let (target_id, _) = module_name(root, &target);
+                        paths.insert(target_id);
+                    } else if let Some(stem) = target.file_stem().and_then(|stem| stem.to_str()) {
+                        paths.insert(stem.to_owned());
+                    }
+                }
             }
         }
     }
@@ -187,12 +342,19 @@ fn path_segments(source: &str) -> Vec<String> {
         .collect()
 }
 
-fn expand_use_tree(tree: &str, prefix: &[String], paths: &mut Vec<Vec<String>>) {
+#[derive(Debug, Clone)]
+struct UseImport {
+    alias: String,
+    path: Vec<String>,
+}
+
+fn expand_use_tree(tree: &str, prefix: &[String], imports: &mut Vec<UseImport>) {
     let tree = tree.trim().trim_end_matches(';').trim();
-    let tree = tree
-        .split_once(" as ")
-        .map_or(tree, |(path, _)| path)
-        .trim();
+    let (tree, explicit_alias) = tree
+        .rsplit_once(" as ")
+        .map_or((tree, None), |(path, alias)| {
+            (path.trim(), Some(alias.trim()))
+        });
     if let Some(open) = tree.find('{') {
         let mut depth = 0usize;
         let mut close = None;
@@ -200,7 +362,7 @@ fn expand_use_tree(tree: &str, prefix: &[String], paths: &mut Vec<Vec<String>>) 
             match ch {
                 '{' => depth += 1,
                 '}' => {
-                    depth -= 1;
+                    depth = depth.saturating_sub(1);
                     if depth == 0 {
                         close = Some(open + relative);
                         break;
@@ -214,17 +376,37 @@ fn expand_use_tree(tree: &str, prefix: &[String], paths: &mut Vec<Vec<String>>) 
             nested_prefix.extend(path_segments(tree[..open].trim_end_matches(':')));
             for child in split_top_level(&tree[open + 1..close], ',') {
                 if !child.is_empty() {
-                    expand_use_tree(child, &nested_prefix, paths);
+                    expand_use_tree(child, &nested_prefix, imports);
                 }
             }
             return;
         }
     }
 
+    let local = path_segments(tree);
     let mut path = prefix.to_vec();
-    path.extend(path_segments(tree));
-    if !path.is_empty() {
-        paths.push(path);
+    if local.as_slice() == [String::from("self")] {
+        // `use crate::foo::{self, Bar}` imports `foo` under its own name.
+    } else {
+        path.extend(
+            local
+                .iter()
+                .filter(|segment| segment.as_str() != "*")
+                .cloned(),
+        );
+    }
+    if path.is_empty() || path.last().is_some_and(|segment| segment == "*") {
+        return;
+    }
+    let alias = explicit_alias.map(str::to_owned).or_else(|| {
+        if local.as_slice() == [String::from("self")] {
+            prefix.last().cloned()
+        } else {
+            path.last().cloned()
+        }
+    });
+    if let Some(alias) = alias {
+        imports.push(UseImport { alias, path });
     }
 }
 
@@ -241,54 +423,88 @@ fn use_tree_after_prefix(line: &str) -> Option<&str> {
     line[end + 1..].trim_start().strip_prefix("use ")
 }
 
-fn use_paths(source: &str) -> Vec<Vec<String>> {
-    let mut paths = Vec::new();
+fn use_imports(source: &str) -> Vec<UseImport> {
+    let mut imports = Vec::new();
     let mut statement = None::<String>;
     for line in source.lines() {
         if let Some(pending) = statement.as_mut() {
             pending.push(' ');
             pending.push_str(line.trim());
             if pending.contains(';') {
-                expand_use_tree(pending, &[], &mut paths);
+                expand_use_tree(pending, &[], &mut imports);
                 statement = None;
             }
             continue;
         }
         if let Some(tree) = use_tree_after_prefix(line) {
             if tree.contains(';') {
-                expand_use_tree(tree, &[], &mut paths);
+                expand_use_tree(tree, &[], &mut imports);
             } else {
                 statement = Some(tree.trim().to_owned());
             }
         }
     }
-    paths
+    imports
 }
 
+fn use_paths(source: &str) -> Vec<Vec<String>> {
+    use_imports(source)
+        .into_iter()
+        .map(|import| import.path)
+        .collect()
+}
+
+fn is_identifier_start(character: char) -> bool {
+    character.is_ascii_alphabetic() || character == '_'
+}
+
+fn is_identifier_continue(character: char) -> bool {
+    character.is_ascii_alphanumeric() || character == '_'
+}
+
+/// Extract every qualified identifier path from code. Unlike the former
+/// prefix search this handles local module calls (`screen::render`) and
+/// aliases, while `code_only_source` keeps comments and literals out.
 fn qualified_paths(source: &str) -> Vec<Vec<String>> {
+    let chars: Vec<char> = source.chars().collect();
     let mut paths = Vec::new();
-    for prefix in ["crate::", "self::", "super::", "e_dsh::"] {
-        let mut search = 0usize;
-        while let Some(relative) = source[search..].find(prefix) {
-            let start = search + relative;
-            let boundary = source[..start]
-                .chars()
-                .next_back()
-                .is_none_or(|ch| !(ch.is_ascii_alphanumeric() || ch == '_'));
-            if !boundary {
-                search = start + prefix.len();
-                continue;
-            }
-            let end = source[start..]
-                .char_indices()
-                .take_while(|(_, ch)| ch.is_ascii_alphanumeric() || *ch == '_' || *ch == ':')
-                .last()
-                .map_or(start + prefix.len(), |(index, ch)| {
-                    start + index + ch.len_utf8()
-                });
-            paths.push(path_segments(&source[start..end]));
-            search = end;
+    let mut index = 0usize;
+    while index < chars.len() {
+        if !is_identifier_start(chars[index])
+            || (index > 0 && is_identifier_continue(chars[index - 1]))
+        {
+            index += 1;
+            continue;
         }
+        let mut end = index + 1;
+        while end < chars.len() && is_identifier_continue(chars[end]) {
+            end += 1;
+        }
+        let mut path = vec![chars[index..end].iter().collect::<String>()];
+        let mut cursor = end;
+        while chars.get(cursor) == Some(&':') && chars.get(cursor + 1) == Some(&':') {
+            let segment_start = cursor + 2;
+            if !chars
+                .get(segment_start)
+                .is_some_and(|character| is_identifier_start(*character))
+            {
+                break;
+            }
+            let mut segment_end = segment_start + 1;
+            while segment_end < chars.len() && is_identifier_continue(chars[segment_end]) {
+                segment_end += 1;
+            }
+            path.push(chars[segment_start..segment_end].iter().collect());
+            cursor = segment_end;
+        }
+        if path.len() > 1
+            && path
+                .iter()
+                .any(|segment| !matches!(segment.as_str(), "self" | "super" | "crate" | "e"))
+        {
+            paths.push(path);
+        }
+        index = end.max(cursor);
     }
     paths
 }
@@ -297,6 +513,7 @@ fn resolve_module_path(
     path: &[String],
     current: &[String],
     modules: &BTreeMap<String, String>,
+    aliases: &BTreeMap<String, Vec<String>>,
 ) -> Option<String> {
     let (mut candidate, index) = match path.first().map(String::as_str) {
         Some("crate" | "e") => (Vec::new(), 1),
@@ -310,7 +527,8 @@ fn resolve_module_path(
             }
             (parent, index)
         }
-        Some(_) => return None,
+        Some(first) if aliases.contains_key(first) => (aliases[first].clone(), 1),
+        Some(_) => (current.to_vec(), 0),
         None => return None,
     };
     candidate.extend(
@@ -333,11 +551,37 @@ fn module_references(
     current: &[String],
     modules: &BTreeMap<String, String>,
 ) -> BTreeSet<String> {
-    let source = production_source(source);
-    use_paths(source)
+    let source = code_only_source(production_source(source));
+    let imports = use_imports(&source);
+    let mut aliases = BTreeMap::<String, Vec<String>>::new();
+    // Resolve imports repeatedly so a local alias can be used by a later
+    // import without making the scanner depend on declaration order details.
+    for _ in 0..=imports.len() {
+        let mut changed = false;
+        for import in &imports {
+            if let Some(module) = resolve_module_path(&import.path, current, modules, &aliases) {
+                let path = path_segments(&module);
+                changed |= aliases.insert(import.alias.clone(), path).is_none();
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    use_paths(&source)
         .into_iter()
-        .chain(qualified_paths(source))
-        .filter_map(|path| resolve_module_path(&path, current, modules))
+        .chain(qualified_paths(&source))
+        .filter_map(|path| resolve_module_path(&path, current, modules, &aliases))
+        // Access from a child to the module that contains it is Rust's normal
+        // parent-module visibility mechanism. Treat that containment edge as
+        // structural so a parent re-exporting the child is not misreported as
+        // an architectural cycle; sibling and ancestor feature edges remain
+        // visible to the graph.
+        .filter(|target| {
+            current
+                .get(..current.len().saturating_sub(1))
+                .is_none_or(|parent| target != &parent.join("::"))
+        })
         .collect()
 }
 
@@ -373,13 +617,14 @@ fn production_graph(root: &Path) -> Graph {
             SourceModule {
                 id,
                 path,
+                file: file.clone(),
                 source: fs::read_to_string(&file).expect("read Rust module"),
             }
         })
         .collect();
     sources.sort_by(|left, right| left.id.cmp(&right.id));
 
-    let test_only = test_only_module_paths(&sources);
+    let test_only = test_only_module_paths(root, &sources);
     sources.retain(|module| {
         !test_only.iter().any(|path| {
             module.id == *path
@@ -587,6 +832,92 @@ use crate::{
     );
 }
 
+#[test]
+fn scanner_resolves_local_calls_aliases_and_ignores_non_code_and_path_tests() {
+    let fixture = SourceFixture::new();
+    fixture.write(
+        "lib.rs",
+        r#"
+mod ui;
+mod other;
+#[cfg(test)]
+#[path = "test_support.rs"]
+mod fixtures;
+"#,
+    );
+    fixture.write(
+        "ui.rs",
+        r#"
+mod screen;
+pub use crate::other::Thing as OtherThing;
+fn render() {
+    screen::render();
+    OtherThing::call();
+    let _literal = "screen::ignored::path";
+    // other::ignored::path must not become an edge.
+}
+"#,
+    );
+    fixture.write("ui/screen.rs", "pub fn render() {}\n");
+    fixture.write("other.rs", "pub struct Thing;\n");
+    fixture.write("test_support.rs", "use crate::ui::screen::Hidden;\n");
+
+    let graph = production_graph(&fixture.root);
+    assert_eq!(
+        graph["ui"],
+        BTreeSet::from(["other".into(), "ui::screen".into()])
+    );
+    assert!(!graph.contains_key("fixtures"));
+    assert!(!graph.contains_key("test_support"));
+}
+
+#[test]
+fn scanner_reports_an_actual_nested_cycle_but_not_parent_containment() {
+    let fixture = SourceFixture::new();
+    fixture.write("lib.rs", "mod parent;\n");
+    fixture.write("parent.rs", "mod child;\npub use child::*;\n");
+    fixture.write("parent/child.rs", "use super::ParentType;\n");
+    let graph = production_graph(&fixture.root);
+    assert_eq!(graph["parent"], BTreeSet::from(["parent::child".into()]));
+    assert!(graph["parent::child"].is_empty());
+
+    fixture.write("parent/cycle.rs", "use crate::parent::child::Child;\n");
+    fixture.write("parent/child.rs", "use crate::parent::cycle::Cycle;\n");
+    let graph = production_graph(&fixture.root);
+    let cycles: Vec<_> = strongly_connected_components(&graph)
+        .into_iter()
+        .filter(|component| component.len() > 1)
+        .collect();
+    assert_eq!(
+        cycles,
+        vec![vec![
+            String::from("parent::child"),
+            String::from("parent::cycle"),
+        ]],
+    );
+}
+#[test]
+fn scanner_confirms_main_pane_back_edge_is_removed() {
+    let dsh_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let tui_root = dsh_root
+        .parent()
+        .expect("workspace crates directory")
+        .join("e-tui/src");
+    let graph = production_graph(&tui_root);
+    assert!(graph["ui"].contains("ui::screen"));
+    assert!(graph["ui::screen"].contains("ui::pane"));
+    assert!(!graph["ui::pane::main"].contains("ui"));
+    assert!(!strongly_connected_components(&graph)
+        .into_iter()
+        .any(|component| {
+            component
+                == vec![
+                    String::from("ui"),
+                    String::from("ui::pane::main"),
+                    String::from("ui::screen"),
+                ]
+        }));
+}
 #[test]
 fn tarjan_reports_cycles_and_leaves_dag_nodes_single() {
     let graph = BTreeMap::from([

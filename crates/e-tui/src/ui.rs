@@ -123,11 +123,12 @@ fn bottom_area_rows(
     area_height: u16,
     area_width: u16,
     input: &InputState,
-    input_page_open: bool,
+    input_page_rows: Option<usize>,
     padding: usize,
 ) -> u16 {
-    if input_page_open {
-        ((area_height as u32) * 2 / 3).min(area_height.saturating_sub(3) as u32) as u16
+    if let Some(rows) = input_page_rows {
+        rows.min(usize::from(area_height) * 2 / 3)
+            .min(usize::from(area_height.saturating_sub(3))) as u16
     } else {
         (input_rows(input, area_width as usize, padding) + 2) as u16
     }
@@ -168,7 +169,7 @@ pub fn transcript_view_height(
     size: TerminalSize,
     state: &TuiApp,
     input: &InputState,
-    input_page_open: bool,
+    input_page: Option<&InputPageSession>,
     approval: Option<&crate::interaction::ApprovalCard>,
     queue: &[PendingPrompt],
 ) -> usize {
@@ -176,7 +177,7 @@ pub fn transcript_view_height(
         size.height,
         input_bar_width(size.width, state),
         input,
-        input_page_open,
+        input_page.map(pages::preferred_rows),
         state.config.user_input_padding,
     );
     let accessory_budget = size.height.saturating_sub(1 + bottom_rows + 3);
@@ -306,15 +307,18 @@ pub(crate) fn render_main_pane_with_cursor(
     // of the margin/cap/align policy — so rendering and the runtime scroll
     // path always see the same width.
     let page = screen::main_page_rect(area, state, reserve_collapsed_separator);
-    let input_page_open = input_page.is_some() || settings.is_some() || login.is_some();
+    let input_page_rows = input_page
+        .as_deref()
+        .map(pages::preferred_rows)
+        .or_else(|| (settings.is_some() || login.is_some()).then_some(usize::MAX));
+    let input_page_open = input_page_rows.is_some();
     let drafting = state.session.new_conversation.is_some();
-    // Input Pages replace the input bar and take two thirds of the page height
-    // without a floating window. The transcript keeps the top third.
+    // Input Pages replace the input bar, capped at two thirds of the page height.
     let bottom_rows = bottom_area_rows(
         area.height,
         page.width,
         input,
-        input_page_open,
+        input_page_rows,
         state.config.user_input_padding,
     );
     let bottom = Constraint::Length(bottom_rows);

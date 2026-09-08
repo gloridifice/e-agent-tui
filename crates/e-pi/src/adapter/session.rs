@@ -7,7 +7,10 @@ use e_tui::agent::{
 
 use serde_json::Value;
 
-use crate::session_index;
+use crate::{
+    protocol::{RpcCommand, RpcResponse},
+    session_index,
+};
 
 use super::{
     content::{assistant_fact, content_parts, content_text, user_fact},
@@ -66,7 +69,9 @@ pub(super) fn state_response(adapter: &mut PiAdapter, data: Option<&Value>) -> A
     // switch back to the retained session.
     let switched = adapter.last_attached_session.as_deref() != Some(session_key.as_str());
     adapter.last_attached_session = Some(session_key.clone());
-    let output = if switched {
+    let mut output = if switched {
+        adapter.pending_stats_request = None;
+        adapter.stats_refresh_queued = false;
         adapter.pending_queue = super::queue::PendingQueue::default();
         // `Attached` already carries the title; mirror it in the dedup key
         // so the follow-up refresh does not emit a duplicate event.
@@ -91,6 +96,47 @@ pub(super) fn state_response(adapter: &mut PiAdapter, data: Option<&Value>) -> A
         output.events.extend(title_events(adapter));
         output
     };
+    output.merge(refresh_stats(adapter));
+    output
+}
+
+pub(super) fn refresh_stats(adapter: &mut PiAdapter) -> AdapterOutput {
+    if adapter.last_attached_session.is_none() {
+        return AdapterOutput::default();
+    }
+    if adapter.pending_stats_request.is_some() {
+        adapter.stats_refresh_queued = true;
+        return AdapterOutput::default();
+    }
+    let id = adapter.request_id("stats");
+    adapter.pending_stats_request = Some(id.clone());
+    AdapterOutput::command(RpcCommand::GetSessionStats { id: Some(id) })
+}
+
+pub(super) fn stats_response(adapter: &mut PiAdapter, response: RpcResponse) -> AdapterOutput {
+    if response.id.is_none() || response.id != adapter.pending_stats_request {
+        return AdapterOutput::default();
+    }
+    adapter.pending_stats_request = None;
+    let mut output = AdapterOutput::default();
+    if response.success {
+        if let Some(data) = response.data.as_ref().filter(|data| {
+            data.get("sessionId").and_then(Value::as_str) == Some(adapter.session_id.as_str())
+        }) {
+            if let Some(session_id) = adapter.last_attached_session.clone() {
+                output.events.push(AgentEvent::Session(SessionEvent::Cost {
+                    session_id,
+                    usd: data
+                        .get("cost")
+                        .and_then(Value::as_f64)
+                        .filter(|cost| cost.is_finite() && *cost >= 0.0),
+                }));
+            }
+        }
+    }
+    if std::mem::take(&mut adapter.stats_refresh_queued) {
+        output.merge(refresh_stats(adapter));
+    }
     output
 }
 

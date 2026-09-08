@@ -1,0 +1,47 @@
+name: lite
+version: 1
+description: Lightweight spec-aware workflow
+
+artifacts:
+  - id: proposal
+    generates: proposal.md
+    description: Brief change intent
+    template: proposal.md
+    instruction: |
+      Describe the change briefly.
+      Focus on why the change is needed and what behavior or scope changes.
+      Do not include implementation design unless it is necessary to understand the change.
+      Avoid repeating existing project documentation.
+    requires: []
+
+  - id: specs
+    generates: specs/**/*.md
+    description: Behavioral specification deltas
+    template: spec.md
+    instruction: |
+      Describe only externally observable behavior or contract changes.
+      Keep the delta minimal and limited to behavior affected by this change.
+      Do not document implementation details.
+
+      If this change intentionally preserves all specified behavior
+      (for example a refactor, cleanup, tooling change, or internal optimization),
+      it should use skip_specs: true instead of inventing a spec delta.
+    requires:
+      - proposal
+
+  - id: tasks
+    generates: tasks.md
+    description: Minimal implementation checklist
+    template: tasks.md
+    instruction: |
+      Create only concrete implementation tasks required by the proposal and specs.
+      Keep the list short.
+      Do not restate requirements or create administrative/documentation tasks
+      unless they are actually necessary.
+    requires:
+      - specs
+
+apply:
+  requires:
+    - tasks
+  tracks: tasks.md

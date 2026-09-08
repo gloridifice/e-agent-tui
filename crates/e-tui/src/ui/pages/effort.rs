@@ -36,7 +36,8 @@ pub(super) fn render_effort_page(
             regions.body,
         );
     } else {
-        let visible = regions.body.height as usize;
+        let show_default = page.shows_current_default();
+        let visible = (regions.body.height as usize).saturating_sub(usize::from(show_default));
         let focus_index = focus.current.as_ref().and_then(|id| {
             id.0.strip_prefix("effort:").and_then(|effort_id| {
                 page.efforts
@@ -70,7 +71,7 @@ pub(super) fn render_effort_page(
                 ),
             ]));
         }
-        if explicit.is_none() && page.default_effort.is_none() {
+        if show_default {
             rows.insert(
                 0,
                 Line::from(Span::styled(

@@ -191,6 +191,13 @@ pub(super) fn apply_session(
             state.lock().unwrap().session.session_title = Some(title);
             Vec::new()
         }
+        SessionEvent::Cost { session_id, usd } => {
+            let mut app = state.lock().unwrap();
+            if app.session.session_id.as_deref() == Some(session_id.as_str()) {
+                app.session.cost_usd = usd.filter(|cost| cost.is_finite() && *cost >= 0.0);
+            }
+            Vec::new()
+        }
         SessionEvent::List {
             sessions,
             titles_pending,

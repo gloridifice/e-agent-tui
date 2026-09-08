@@ -36,11 +36,16 @@ pub struct SessionSummary {
     pub created_at: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SessionEvent {
     Attached(AttachedSession),
     Status(AgentStatus),
     Title(String),
+    /// Backend-reported cumulative session cost in USD, not an invoice amount.
+    Cost {
+        session_id: String,
+        usd: Option<f64>,
+    },
     List {
         sessions: Vec<SessionSummary>,
         titles_pending: bool,

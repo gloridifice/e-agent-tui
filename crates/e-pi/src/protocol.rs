@@ -31,6 +31,10 @@ pub enum RpcCommand {
         #[serde(skip_serializing_if = "Option::is_none")]
         id: Option<String>,
     },
+    GetSessionStats {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+    },
     GetMessages {
         #[serde(skip_serializing_if = "Option::is_none")]
         id: Option<String>,

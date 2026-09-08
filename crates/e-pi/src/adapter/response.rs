@@ -117,6 +117,9 @@ fn dispatch_response(adapter: &mut PiAdapter, record: RpcRecord) -> AdapterOutpu
         Ok(response) => response,
         Err(error) => return adapter.protocol_error(error.to_string()),
     };
+    if response.command == "get_session_stats" {
+        return session::stats_response(adapter, response);
+    }
     if !response.success {
         let message = response
             .error

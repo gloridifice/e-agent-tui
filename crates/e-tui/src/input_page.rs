@@ -321,6 +321,14 @@ pub struct EffortPage {
 }
 
 impl EffortPage {
+    pub fn shows_current_default(&self) -> bool {
+        self.current
+            .as_ref()
+            .and_then(|current| current.reasoning_effort.as_ref())
+            .is_none()
+            && self.default_effort.is_none()
+    }
+
     pub fn loading() -> Self {
         Self {
             efforts: Vec::new(),

@@ -65,6 +65,13 @@ pub(super) fn render_status(
         .or(state.session.current_mode.as_deref())
         .unwrap_or(state.config.default_mode.as_str());
     let mut left_spans = indicator;
+    if state.session.session_id.is_none() {
+        left_spans.push(Span::styled(" ", dim));
+        left_spans.push(Span::styled(
+            crate::i18n::tr(state.config.language, "common.loading"),
+            dim,
+        ));
+    }
     if !mode.eq_ignore_ascii_case(state.frontend.label()) {
         left_spans.push(Span::styled(" ", dim));
         left_spans.push(Span::styled(mode.to_owned(), dim));
@@ -108,6 +115,10 @@ pub(super) fn render_status(
             format!("{percent}%/{}", format_tokens(context_window)),
             dim,
         ));
+    }
+    if let Some(cost) = (!drafting).then_some(state.session.cost_usd).flatten() {
+        left_spans.push(Span::styled(" ", dim));
+        left_spans.push(Span::styled(format!("${cost:.2}"), dim));
     }
     let left = Line::from(left_spans);
     let right_text = format!(
@@ -195,6 +206,88 @@ pub(super) fn render_title(
 mod tests {
     use super::*;
     use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn status_bar_shows_known_session_cost_but_not_the_retained_draft_cost() {
+        let mut state = TuiApp::default();
+        state.session.session_id = Some("session".into());
+        let mut terminal = Terminal::new(TestBackend::new(80, 1)).unwrap();
+        for (cost, drafting, expected) in [
+            (None, false, None),
+            (Some(0.0), false, Some("$0.00")),
+            (Some(0.123456), false, Some("$0.12")),
+            (Some(0.126), false, Some("$0.13")),
+            (Some(12.5), false, Some("$12.50")),
+            (Some(12.5), true, None),
+        ] {
+            state.session.cost_usd = cost;
+            state.session.new_conversation = drafting.then(|| crate::app::NewConversationDraft {
+                mode: "standard".into(),
+                pending_input: None,
+                pending_card: None,
+                attached: false,
+                notice: None,
+            });
+            terminal
+                .draw(|frame| {
+                    render_status(
+                        frame,
+                        frame.area(),
+                        &state,
+                        &ScrollState::default(),
+                        &Theme::ferra(),
+                    )
+                })
+                .unwrap();
+            let line = (0..80)
+                .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
+                .collect::<String>();
+            if let Some(expected) = expected {
+                assert!(line.contains(expected), "{line:?}");
+            } else {
+                assert!(!line.contains('$'), "{line:?}");
+            }
+            assert!(line.ends_with("Ctrl+H Help"), "{line:?}");
+        }
+    }
+
+    #[test]
+    fn status_bar_shows_loading_until_session_attachment() {
+        for frontend in [crate::FrontendKind::Dsh, crate::FrontendKind::Pi] {
+            for (language, loading) in [
+                (crate::Language::English, "Loading…"),
+                (crate::Language::SimplifiedChinese, "加载中…"),
+            ] {
+                let mut state = TuiApp::default();
+                state.frontend = frontend;
+                state.config.language = language;
+                let mut terminal = Terminal::new(TestBackend::new(80, 1)).unwrap();
+                for attached in [false, true] {
+                    state.session.session_id = attached.then(|| "session".into());
+                    terminal
+                        .draw(|frame| {
+                            render_status(
+                                frame,
+                                frame.area(),
+                                &state,
+                                &ScrollState::default(),
+                                &Theme::ferra(),
+                            )
+                        })
+                        .unwrap();
+                    let buffer = terminal.backend().buffer();
+                    let line = (0..80).map(|x| buffer[(x, 0)].symbol()).collect::<String>();
+                    assert_eq!(
+                        line.replace(' ', "").contains(loading),
+                        !attached,
+                        "status line: {line:?}"
+                    );
+                    assert!(line.starts_with(&format!("e·{} ", frontend.label())));
+                    assert!(line.contains("Ctrl+H"), "help remains visible: {line:?}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn new_draft_keeps_the_attached_sessions_workspace_path() {
@@ -383,6 +476,7 @@ mod tests {
     fn pi_indicator_replaces_the_redundant_pi_mode_text() {
         let mut state = TuiApp::default();
         state.frontend = crate::FrontendKind::Pi;
+        state.session.session_id = Some("session".into());
         state.config.default_mode = "pi".into();
         state.session.current_mode = Some("pi".into());
         state.session.model = Some("model".into());

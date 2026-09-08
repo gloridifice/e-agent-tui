@@ -89,6 +89,8 @@ pub struct PiAdapter {
     pending_tool_result_messages: HashSet<String>,
     extension_ui: HashMap<String, PendingExtensionUi>,
     pending_queue: queue::PendingQueue,
+    pending_stats_request: Option<String>,
+    stats_refresh_queued: bool,
 }
 
 impl PiAdapter {
@@ -117,6 +119,8 @@ impl PiAdapter {
             pending_tool_result_messages: HashSet::new(),
             extension_ui: HashMap::new(),
             pending_queue: queue::PendingQueue::default(),
+            pending_stats_request: None,
+            stats_refresh_queued: false,
         }
     }
 
@@ -182,7 +186,11 @@ impl PiAdapter {
             "agent_settled" => {
                 self.pending_tool_result_messages.clear();
                 self.is_streaming = false;
-                AdapterOutput::event(AgentEvent::Session(SessionEvent::Status(AgentStatus::Idle)))
+                let mut output = session::refresh_stats(self);
+                output
+                    .events
+                    .push(AgentEvent::Session(SessionEvent::Status(AgentStatus::Idle)));
+                output
             }
             "turn_start" => {
                 self.current_turn = self.current_turn.saturating_add(1);
@@ -202,10 +210,21 @@ impl PiAdapter {
                 error_code: None,
             }),
             "message_update" => tool::message_update(self, &record),
-            "message_end" => record
-                .field("message")
-                .map(|message| session::live_message(self, message))
-                .unwrap_or_default(),
+            "message_end" => {
+                let mut output = record
+                    .field("message")
+                    .map(|message| session::live_message(self, message))
+                    .unwrap_or_default();
+                if record.field("message").is_some_and(|message| {
+                    matches!(
+                        message.get("role").and_then(Value::as_str),
+                        Some("assistant" | "toolResult")
+                    )
+                }) {
+                    output.merge(session::refresh_stats(self));
+                }
+                output
+            }
             "tool_execution_start" => tool::tool_start(self, &record),
             "tool_execution_end" => tool::tool_end(self, &record),
             "compaction_start" => self.timeline(TimelineFact::CompactionStarted {
@@ -213,10 +232,12 @@ impl PiAdapter {
             }),
             "compaction_end" => {
                 let error = record.string("errorMessage").map(str::to_owned);
-                self.timeline(TimelineFact::CompactionFinished {
+                let mut output = self.timeline(TimelineFact::CompactionFinished {
                     id: "pi-compaction".into(),
                     error,
-                })
+                });
+                output.merge(session::refresh_stats(self));
+                output
             }
             "auto_retry_start" => self.timeline(TimelineFact::RetryScheduled {
                 id: "pi-auto-retry".into(),
@@ -360,6 +381,8 @@ impl PiAdapter {
 }
 
 mod content;
+#[cfg(test)]
+mod cost_tests;
 mod extension;
 mod model;
 mod queue;
@@ -491,7 +514,14 @@ mod tests {
     }
 
     fn reply_first(adapter: &mut PiAdapter, output: &AdapterOutput, data: Value) -> AdapterOutput {
-        let command = serde_json::to_value(&output.commands[0]).unwrap();
+        let command = serde_json::to_value(
+            output
+                .commands
+                .iter()
+                .find(|command| !matches!(command, RpcCommand::GetSessionStats { .. }))
+                .expect("foreground command"),
+        )
+        .unwrap();
         adapter.record(record(serde_json::json!({
             "type": "response", "id": command["id"], "command": command["type"],
             "success": true, "data": data,
@@ -555,7 +585,10 @@ mod tests {
         );
         assert!(matches!(
             create.commands.as_slice(),
-            [RpcCommand::NewSession { .. }]
+            [
+                RpcCommand::GetSessionStats { .. },
+                RpcCommand::NewSession { .. }
+            ]
         ));
         adapter.record(record(serde_json::json!({
             "type":"response", "id":"late-state", "command":"get_state", "success":true,
@@ -590,7 +623,7 @@ mod tests {
             }),
         );
         assert!(
-            matches!(prompt.commands.as_slice(), [RpcCommand::Prompt { message, .. }] if message == "/skill:review")
+            matches!(prompt.commands.as_slice(), [RpcCommand::GetSessionStats { .. }, RpcCommand::Prompt { message, .. }] if message == "/skill:review")
         );
         assert_eq!(adapter.current_model.as_ref().unwrap()["id"], "A");
         assert_eq!(adapter.thinking_level.as_deref(), Some("high"));
@@ -1012,8 +1045,9 @@ mod tests {
             [RpcCommand::NewSession { .. }]
         ));
 
+        let command = serde_json::to_value(&commands[0]).unwrap();
         let output = adapter.record(record(serde_json::json!({
-            "type":"response", "id":"pie-new-1", "command":"new_session", "success":true
+            "type":"response", "id":command["id"], "command":"new_session", "success":true
         })));
         assert_eq!(title_event(&output), None);
         assert!(matches!(
@@ -1037,10 +1071,10 @@ mod tests {
                 "model":{"provider":"openai", "id":"gpt-5"}
             }),
         );
-        assert!(matches!(
-            attached.commands.first(),
-            Some(RpcCommand::Prompt { .. })
-        ));
+        assert!(attached
+            .commands
+            .iter()
+            .any(|command| matches!(command, RpcCommand::Prompt { .. })));
         assert!(matches!(
             attached.events.first(),
             Some(AgentEvent::Session(SessionEvent::Attached(attached)))
@@ -1068,9 +1102,7 @@ mod tests {
             [RpcCommand::Prompt { .. }]
         ));
 
-        let refresh = adapter.record(record(serde_json::json!({
-            "type":"response", "id":"pie-command-1", "command":"prompt", "success":true
-        })));
+        let refresh = reply_first(&mut adapter, &output, Value::Null);
         assert!(matches!(
             refresh.commands.as_slice(),
             [RpcCommand::GetState { .. }]

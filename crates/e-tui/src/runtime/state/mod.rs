@@ -704,6 +704,7 @@ impl RuntimeState {
         self.session.current_mode = None;
         self.session.current_mode_seq = None;
         self.session.token_usage = TokenUsage::default();
+        self.session.cost_usd = None;
         self.session.last_usage_sample = None;
         self.session_state_events.clear();
         self.render.units.clear();

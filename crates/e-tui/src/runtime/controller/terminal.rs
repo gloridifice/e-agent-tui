@@ -29,7 +29,7 @@ pub(super) fn apply_terminal_route(
                     size,
                     &app,
                     ui.input,
-                    ui.input_page.is_some(),
+                    ui.input_page.as_ref(),
                     ui.approval.as_ref(),
                     ui.queue.entries(),
                 );
@@ -254,7 +254,7 @@ fn enter_reading(
             size,
             &app,
             ui.input,
-            false,
+            None,
             ui.approval.as_ref(),
             ui.queue.entries(),
         )
@@ -283,7 +283,7 @@ pub(super) fn apply_reading_key(
             size,
             &app,
             ui.input,
-            ui.input_page.is_some(),
+            ui.input_page.as_ref(),
             ui.approval.as_ref(),
             ui.queue.entries(),
         )
@@ -479,7 +479,7 @@ pub(super) fn apply_ordinary_key(
                     size,
                     &app,
                     ui.input,
-                    ui.input_page.is_some(),
+                    ui.input_page.as_ref(),
                     ui.approval.as_ref(),
                     ui.queue.entries(),
                 )

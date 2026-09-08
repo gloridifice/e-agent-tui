@@ -291,7 +291,8 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   formula matches it). Neither line sets a background color: line 1 is, left to right, the italic frontend-specific
   working indicator (`e·pi` in `pie`, `e·dsh` in `dshe`), `SessionModel.current_mode` unless it duplicates the
   frontend label, the current model, `CH<cache-hit %>`, the reasoning-effort label
-  `Effort:<Label>`, and context use `<percent>%/<window>` (for example `30%/276k`). The model, CH, and effort
+  `Effort:<Label>`, and context use `<percent>%/<window>` (for example `30%/276k`). Before the first session
+  attachment, a localized loading label follows the frontend indicator. The model, CH, and effort
   entries are omitted when their source data is unavailable; context appears when the exact current model has a
   typed context window, uses zero before the first assistant usage, then uses the latest sample's
   input/output/cache-read/cache-write total, and is hidden for a deferred-new draft. The effort entry is hidden
@@ -301,6 +302,11 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   flush with the right edge; line 2's
   left side is `SessionModel.session_title` (shows `新会话` when empty) and the right side is the absolute
   `SessionModel.session_cwd` path, with the title truncated with `…` when too long so the path is preserved.
+  A backend-reported cumulative USD cost follows context when available and is hidden for deferred-new drafts.
+  Pi reads full-session statistics on attachment and after billable completions rather than summing the visible
+  replay window; these totals include compacted history and backend-reported tool/summary usage. Cost is an
+  estimate from backend pricing, not an invoice. Missing cost stays hidden; DSH currently supplies no monetary
+  total. Cost updates are session-scoped and do not invalidate transcript layout.
   mode's initial value comes from `welcome.mode` (most recent selection, else the creation header), then is
   updated by `agent-preset/selected` replay, keeping the latest value by event seq (history prepend must not
   regress it); CH accumulates from assistant usage input/cache read/cache write, where history prepend may add

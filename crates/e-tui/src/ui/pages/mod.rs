@@ -40,6 +40,22 @@ fn page_key_hints(config: &crate::Config, scope: KeyScope) -> String {
     crate::help::key_hints(config, scope, actions)
 }
 
+pub(super) fn preferred_rows(page: &InputPageSession) -> usize {
+    let body_rows = match &page.page {
+        InputPage::Model(page) if !page.loading => {
+            page.providers.len().max(page.active_models().len()).max(1)
+        }
+        InputPage::Effort(page)
+            if !page.loading && !page.unavailable && !page.efforts.is_empty() =>
+        {
+            page.efforts.len() + usize::from(page.shows_current_default())
+        }
+        InputPage::Model(_) | InputPage::Effort(_) => 1,
+        _ => return usize::MAX,
+    };
+    body_rows.saturating_add(5)
+}
+
 fn input_page_shell(
     frame: &mut Frame,
     area: ratatui::layout::Rect,
@@ -184,6 +200,84 @@ pub(super) fn trim_to_width(text: &str, width: usize) -> String {
 mod tests {
     use super::*;
     use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn model_height_tracks_active_column_and_terminal_cap() {
+        let mut page = InputPageSession::model();
+        assert_eq!(preferred_rows(&page), 6);
+        let provider = |id: &str, count: usize| crate::agent::ModelProvider {
+            id: id.into(),
+            name: id.into(),
+            models: (0..count)
+                .map(|index| crate::agent::ModelDescriptor {
+                    id: index.to_string(),
+                    name: index.to_string(),
+                    description: None,
+                    context_window: None,
+                    reasoning: None,
+                })
+                .collect(),
+        };
+        page.apply_model(vec![provider("small", 1), provider("large", 40)], None);
+        assert_eq!(preferred_rows(&page), 7);
+        if let InputPage::Model(model) = &mut page.page {
+            model.active_provider = Some("large".into());
+        }
+        assert_eq!(preferred_rows(&page), 45);
+        let input = InputState::new(&crate::Config::default());
+        for (height, expected) in [(30, 20), (90, 45), (3, 0)] {
+            assert_eq!(
+                bottom_area_rows(height, 80, &input, Some(preferred_rows(&page)), 1),
+                expected
+            );
+        }
+        page.apply_model(Vec::new(), None);
+        assert_eq!(preferred_rows(&page), 6);
+    }
+
+    #[test]
+    fn effort_height_includes_default_row_and_scroll_keeps_focus_visible() {
+        let mut session = InputPageSession::effort();
+        assert_eq!(preferred_rows(&session), 6);
+        if let InputPage::Effort(page) = &mut session.page {
+            page.loading = false;
+            page.efforts = (0..5)
+                .map(|index| crate::agent::ReasoningEffort {
+                    id: index.to_string(),
+                    name: format!("Effort {index}"),
+                    description: None,
+                })
+                .collect();
+        }
+        session.rebuild_focus();
+        session.focus.set(FocusId::new("effort:4"));
+        assert_eq!(preferred_rows(&session), 11);
+        let mut terminal = Terminal::new(TestBackend::new(80, 9)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_input_page(
+                    frame,
+                    frame.area(),
+                    &mut session,
+                    &crate::Config::default(),
+                    &Theme::default(),
+                );
+            })
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("Effort 4"));
+        assert_eq!(session.viewport.start, 2);
+        if let InputPage::Effort(page) = &mut session.page {
+            page.default_effort = Some("2".into());
+        }
+        assert_eq!(preferred_rows(&session), 10);
+    }
 
     fn page_cases() -> Vec<(InputPageSession, &'static str, &'static str)> {
         vec![

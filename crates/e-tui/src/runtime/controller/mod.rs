@@ -1039,6 +1039,70 @@ mod tests {
     }
 
     #[test]
+    fn session_cost_is_scoped_validated_and_does_not_invalidate_transcript() {
+        let state = Arc::new(Mutex::new(RuntimeState::default()));
+        {
+            let mut app = state.lock().unwrap();
+            app.session.session_id = Some("current".into());
+            app.render.transcript_cache.valid = true;
+        }
+        let mut scroll = ScrollState::default();
+        let mut input = InputState::new(&Config::default());
+        let mut page = None;
+        let mut approval = None;
+        let mut question = None;
+        let mut queue = PendingPromptQueue::default();
+        let mut ui = runtime_ui(
+            &mut scroll,
+            &mut input,
+            &mut page,
+            &mut approval,
+            &mut question,
+            &mut queue,
+        );
+        for (session_id, usd, expected) in [
+            ("current", Some(1.25), Some(1.25)),
+            ("old", Some(9.0), Some(1.25)),
+            ("current", Some(-1.0), None),
+            ("current", Some(f64::NAN), None),
+            ("current", Some(f64::INFINITY), None),
+            ("current", Some(0.0), Some(0.0)),
+            ("current", None, None),
+            ("current", Some(2.5), Some(2.5)),
+        ] {
+            RuntimeController::apply_agent(
+                AgentEvent::Session(crate::agent::SessionEvent::Cost {
+                    session_id: session_id.into(),
+                    usd,
+                }),
+                &state,
+                &mut ui,
+            );
+            let app = state.lock().unwrap();
+            assert_eq!(app.session.cost_usd, expected);
+            assert!(app.render.transcript_cache.valid);
+        }
+        RuntimeController::apply_agent(
+            AgentEvent::Session(crate::agent::SessionEvent::Attached(
+                crate::agent::AttachedSession {
+                    protocol_version: None,
+                    max_frame_bytes: None,
+                    id: "new".into(),
+                    status: crate::agent::AgentStatus::Idle,
+                    provider: None,
+                    model: None,
+                    mode: None,
+                    title: None,
+                    workspace: None,
+                },
+            )),
+            &state,
+            &mut ui,
+        );
+        assert_eq!(state.lock().unwrap().session.cost_usd, None);
+    }
+
+    #[test]
     fn rejected_submission_clears_pending_work() {
         for (prompt, code) in [
             ("hello", "input-failed"),

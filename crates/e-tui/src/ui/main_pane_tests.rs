@@ -625,6 +625,7 @@ fn input_bar_word_wrap_keeps_cursor_anchored_after_consumed_space() {
 fn extracted_main_pane_preserves_status_spacing_and_hidden_cursor() {
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();
+    state.session.session_id = Some("session".into());
     state.session.session_title = Some("refactor bridge".into());
     let input = InputState::new(&state.config);
     let mut scroll = ScrollState::default();

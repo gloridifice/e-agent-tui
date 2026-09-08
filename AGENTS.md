@@ -32,6 +32,19 @@ Changes under `bridge/` also require the deployment lifecycle in [DSH integratio
 - Keep comments minimal; do not add comments that merely restate code.
 - Follow [development guidance](docs/development.md) for dependency ownership and repository commands.
 
+## OpenSpec
+
+For code changes, reuse the relevant active change or create one with `lite`.
+Read relevant main specs and agreed active deltas before changing their behavior;
+drafts do not override agreed requirements. Use `skip_specs: true` only when
+requirements stay unchanged, including fixes that restore specified behavior.
+Do not invent or weaken requirements to satisfy validation or accommodate a bug.
+Before reporting a behavior change as complete, run the relevant checks and merge
+its deltas into main specs. If that is intentionally deferred, report it explicitly.
+Keep planning proportional; use `spec-driven` when a separate design is needed.
+Discussion and investigation alone do not require a change.
+Workflow and CLI archive checks: [OpenSpec Lite](docs/openspec-lite.md) (read when needed).
+
 ## Validation
 
 Choose validation proportionally to the change and read [docs/testing.md](docs/testing.md) before broad checks.

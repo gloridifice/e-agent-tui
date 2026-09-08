@@ -1,11 +1,22 @@
-## Intent
+## Why
 
-<!-- Why is this change needed? Keep this brief. -->
+<!-- State the concrete need in one or two sentences. -->
 
-## Changes
+## What Changes
 
-<!-- What behavior, interface, or scope changes? -->
+<!-- List only the intended changes in scope. -->
+
+## Capabilities
+
+### New Capabilities
+
+<!-- Exact new capability paths, or None. -->
+
+### Modified Capabilities
+
+<!-- Exact existing capability paths whose requirements change, or None. -->
 
 ## Impact
 
-<!-- Only list meaningful affected areas. Omit if trivial. -->
+<!-- Relevant modules or risks. For skip_specs, name checked specs and explain
+     why their requirements are unchanged. Do not repeat the requirement text. -->

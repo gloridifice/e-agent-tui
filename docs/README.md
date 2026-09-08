@@ -22,6 +22,7 @@ Historical or archived material never becomes a current requirement by itself. T
 Repository-wide guides:
 
 - [Development](development.md) — checkout installation, build, dependency, and diagnostic entry points.
+- [OpenSpec Lite](openspec-lite.md) — minimal planning, specification-impact decisions, and CLI archive completion checks.
 - [Testing and validation](testing.md) — proportional validation policy, scoped tests, protocol checks, and compatibility gates.
 - [DSH integration](dsh-integration.md) — profile setup, bridge deployment, restart, and upgrade workflow.
 - [Troubleshooting](troubleshooting.md) — operational symptoms and diagnostic routes.

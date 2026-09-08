@@ -2,9 +2,7 @@
 
 ## Purpose
 Provide a shared, focus-driven input-area interface for browsing settings, credentials, models, and themes while preserving the ordinary composer draft.
-
 ## Requirements
-
 ### Requirement: Unified Input Page lifecycle
 The client SHALL represent `/settings`, `/login`, `/model`, and `/theme` as mutually exclusive Input Pages, with at most one Input Page active at a time. Opening one of these commands SHALL replace the ordinary input area without discarding its text or transcript state.
 
@@ -32,14 +30,14 @@ Every Input Page SHALL render in the bottom page area used in place of the input
 - **THEN** layout calculations remain bounded, visible content is clipped or scrolled, and rendering does not panic or overlap the status and title rows
 
 ### Requirement: Single actionable focus
-When an Input Page has at least one enabled actionable element, it SHALL expose exactly one visibly focused actionable element. When no enabled actionable element exists, it SHALL expose no focus target. Direction keys and `h/j/k/l` SHALL move focus through enabled actionable elements according to the page focus graph, and Enter SHALL execute only the focused element. Read-only, informational, unavailable, and disabled elements SHALL not receive actionable focus.
+When an Input Page has at least one enabled actionable element, it SHALL expose exactly one visibly focused actionable element. When no enabled actionable element exists, it SHALL expose no focus target. Configurable page directional actions, defaulting to arrows and h/j/k/l, SHALL move focus through enabled actionable elements according to the page focus graph, and confirm, defaulting to Enter, SHALL execute only the focused element. Read-only, informational, unavailable, and disabled elements SHALL not receive actionable focus.
 
 #### Scenario: Navigate with equivalent keys
-- **WHEN** the user presses an arrow key or its corresponding `h/j/k/l` key in browse mode
+- **WHEN** the user presses either configured binding for a browse direction
 - **THEN** focus moves to the same neighboring actionable element for both key forms
 
 #### Scenario: Activate focused element
-- **WHEN** the user presses Enter in browse mode
+- **WHEN** the user invokes confirm in browse mode
 - **THEN** only the currently focused actionable element is executed
 
 #### Scenario: Skip unavailable elements
@@ -58,14 +56,14 @@ Input Pages backed by asynchronous data SHALL identify focus targets by stable l
 - **THEN** focus is reconciled to a valid actionable fallback without using an out-of-range index
 
 ### Requirement: Browse and text-edit modes
-The Input Page system SHALL distinguish browse mode from text-edit mode. In browse mode `h/j/k/l` SHALL navigate; in text-edit mode printable characters including `h/j/k/l` SHALL be inserted into the editor. Enter SHALL confirm an edit and Esc SHALL cancel it without passing either key to the ordinary input or enclosing page navigation.
+The Input Page system SHALL distinguish browse, choice-edit, and text-edit contexts. In browse mode configured navigation SHALL move focus; in text-edit mode printable characters including h/j/k/l/q SHALL be inserted into the editor. Configurable edit confirm and cancel SHALL default to Enter and Esc and SHALL not pass to ordinary input or enclosing page navigation. Resume filtering and free-text questions SHALL not inherit browse letter navigation.
 
 #### Scenario: Type Vim navigation letters
-- **WHEN** a text or secret editor is active and the user types `hjkl`
-- **THEN** those four characters are added to the editor and page focus does not move
+- **WHEN** a text or secret editor is active and the user types hjklq
+- **THEN** those five characters are added to the editor and page focus does not move
 
 #### Scenario: Cancel an edit
-- **WHEN** the user presses Esc while an editor is active
+- **WHEN** the user invokes edit cancel while an editor is active
 - **THEN** the unconfirmed value is discarded and the page remains open at the edited element
 
 ### Requirement: Shared page status presentation
@@ -214,3 +212,63 @@ The `/model` and `/effort` Input Pages SHALL reserve one blank row between the b
 #### Scenario: Height-capped page
 - **WHEN** a model or effort list exceeds the available body height
 - **THEN** visible options scroll above the reserved blank row without occupying it or overwriting the footer
+
+### Requirement: Settings page text is locale-resolved with value-driven choices
+The settings Input Page category names, row labels, descriptions, and choice labels SHALL resolve from the active language at render time. Settings metadata and choice handling SHALL use stable translation keys and locale-independent values rather than rendered labels. Value-returning helpers SHALL return values such as `left`, `compact`, or `en`, and translation SHALL occur only for presentation.
+
+#### Scenario: Settings renders in English
+- **WHEN** the settings Input Page is rendered with `Config.language = "en"`
+- **THEN** its categories, labels, descriptions, and choice labels display English catalog text
+
+#### Scenario: Settings renders in Chinese
+- **WHEN** the settings Input Page is rendered with `Config.language = "zh-CN"`
+- **THEN** its categories, labels, descriptions, and choice labels display Simplified Chinese catalog text
+
+#### Scenario: Choice round-trip survives translation
+- **WHEN** the user edits a boolean, alignment, thinking-display, or language row in either language
+- **THEN** the confirmed locale-independent option maps to the same underlying config value
+
+### Requirement: Language row is available in the Behavior category
+The settings Input Page SHALL include a Language row in the Behavior category with exactly the supported `en` and `zh-CN` values. Confirming a value SHALL use the existing settings change effect, SHALL keep the page open, and SHALL preserve its active category and logical focused row while text is re-rendered.
+
+#### Scenario: Switch language and keep editing
+- **WHEN** the user confirms the other option on the Language row
+- **THEN** language is applied and persisted immediately, the Behavior category remains active, and focus remains on the Language row
+
+### Requirement: Every Input Page localizes frontend-owned chrome
+Settings, login, model, effort, theme, resume, and question Input Pages SHALL resolve their frontend-owned headers, loading/empty/unavailable states, owned option labels, markers, field labels, action labels, and key-hint footers from the active language. Their shared shell geometry, navigation, effects, and transport behavior SHALL remain unchanged. Provider/session/question content and adapter error bodies SHALL remain verbatim.
+
+#### Scenario: Localized loading and empty states
+- **WHEN** a model, effort, resume, login, or theme page displays a frontend-owned loading or empty state
+- **THEN** that state is rendered in the active language
+
+#### Scenario: Localized footer preserves controls
+- **WHEN** any Input Page renders its key-hint footer in either language
+- **THEN** the displayed text is localized while the documented keys perform the same actions
+
+#### Scenario: External page content remains unchanged
+- **WHEN** an Input Page combines localized chrome with provider, model, session, question, or error content
+- **THEN** only the frontend-owned chrome is translated
+
+### Requirement: Input Page focus identity is locale-independent
+Input Page focus reconciliation SHALL identify targets by stable logical identity such as setting keys, provider/model ids, session ids, question ids, and option indices, never by localized display text. A language change SHALL not alter focus nodes, edit state, selection state, or the page effect that confirmation produces.
+
+#### Scenario: Settings focus survives a language switch
+- **WHEN** language changes while the Language setting row is focused
+- **THEN** the same setting key remains focused after labels are re-rendered
+
+#### Scenario: Dynamic roster focus survives localization
+- **WHEN** a localized roster page refresh still contains the focused provider, model, session, question, or option identity
+- **THEN** the same logical target remains focused regardless of rendered language
+
+### Requirement: Protected global page shortcuts
+Global choose_model, choose_effort, open_settings and resume_session SHALL default to osmain-l, osmain-e, osmain-comma and osmain-n, reuse existing page actions without rewriting the composer, and SHALL NOT replace an already active page, Reading View or pending approval. Help and transcript paging SHALL remain available without discarding protected state.
+
+#### Scenario: Open a picker from a draft
+- **WHEN** the user invokes choose_model from ordinary input
+- **THEN** the model page opens while retaining the complete draft
+
+#### Scenario: Pending question
+- **WHEN** a question page is awaiting an answer and choose_effort is invoked
+- **THEN** the question page and its draft remain active and no page is replaced
+

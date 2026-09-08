@@ -15,30 +15,38 @@ TBD - created by archiving change remediate-architecture-audit. Update Purpose a
 - **THEN** 协议生成检查 MUST 失败并列出过期文件
 
 ### Requirement: 消息 shape 可由机器验证
-Contract MUST 为所有 client messages（包括原子新会话首条输入 `new-input`）和所有非 HostEvent server frames 描述 required/optional 字段、wire 字段名和基本容器/值类型；Rust 与 Node 测试 MUST 验证各自序列化、解析或 shaping 与这些描述一致。
+Contract MUST describe required/optional fields, wire names, and basic container/value types for every client message, including atomic new-session first input `new-input` and the ordered text/image content carried by `input`, `new-input`, and image-capable `command` messages; it MUST also describe every non-HostEvent server frame. Rust and Node tests MUST verify that their serialization, parsing, or shaping matches those descriptions.
 
 #### Scenario: Client message 字段一致
-- **WHEN** 对 `new-input`、`login-proxy-create`、`model-set`、`history` 或其他 client message 生成 conformance sample
-- **THEN** Rust 序列化字段与 contract 的 camelCase 名称、required 字段和类型一致，Node dispatcher 可接受该 sample
+- **WHEN** a conformance sample is generated for `input`, `new-input`, `command`, `login-proxy-create`, `model-set`, `history`, or another client message
+- **THEN** Rust serialization uses the contract's camelCase names, required fields, ordered prompt-part records, and value types, and the Node dispatcher accepts that sample
+
+#### Scenario: Mixed prompt content
+- **WHEN** a Rust client serializes text and encoded image prompt parts
+- **THEN** the wire preserves part order and carries each image's `mediaType`, canonical Base64 `data`, and optional bounded `name`
 
 #### Scenario: Server frame 字段一致
-- **WHEN** Node shape/send 逻辑产生 welcome、sessions、commands、login、model 或 error frame
-- **THEN** Rust 可按 contract 描述解析该 frame，optional 字段缺失时遵守向后兼容默认值
+- **WHEN** Node shape/send logic produces a welcome, sessions, commands, login, model, or error frame
+- **THEN** Rust parses it according to the contract and applies backward-compatible defaults for absent optional fields
 
 #### Scenario: Roster 与实现不一致
-- **WHEN** Rust enum 或 Node dispatcher 新增消息类型但未加入 contract，或 contract roster 中的类型没有实现
-- **THEN** 双方协议覆盖测试 MUST 失败
+- **WHEN** a Rust enum or Node dispatcher adds a message type not present in the contract, or a contract roster entry has no implementation
+- **THEN** protocol coverage tests MUST fail
 
 ### Requirement: 协议边界继续有界且 typed
-扩展 shape contract MUST 不允许任意 payload 越过边界；HostEvent 仍 SHALL 在 Rust wire boundary 解析为 typed `HostEventKind`，bridge frames 仍 MUST 遵守 canonical maximum bytes 和 trimming policy。
+The extended shape contract MUST NOT allow arbitrary payloads across the boundary. Prompt content SHALL be a closed union of typed text and encoded-image records, HostEvent SHALL still parse into typed `HostEventKind` at the Rust wire boundary, and bridge frames MUST continue to obey the canonical maximum bytes and trimming policy.
 
 #### Scenario: 超大 snapshot 或 history
-- **WHEN** 编码后的事件数组超过 `maxFrameBytes`
-- **THEN** bridge 只发送可容纳的最新后缀并设置 `truncated` 或 `hasMore`
+- **WHEN** an encoded event array exceeds `maxFrameBytes`
+- **THEN** the bridge sends only the newest fitting suffix and sets `truncated` or `hasMore`
 
 #### Scenario: 超大单体 frame
-- **WHEN** 一个不可分页的 server frame 超过上限
-- **THEN** bridge 发送有界 `frame-too-large` error，而不是超限原帧
+- **WHEN** a non-pageable server frame exceeds the limit
+- **THEN** the bridge sends a bounded `frame-too-large` error instead of the oversized frame
+
+#### Scenario: 超大 image input
+- **WHEN** an encoded image makes a client input frame exceed `maxFrameBytes`
+- **THEN** the client rejects the request before WebSocket transmission and retains a visible error rather than sending a partial prompt
 
 ### Requirement: 协议文档不重复维护消息语法
 生成的 `docs/protocol.md` MUST 从 contract 输出版本、限制、roster 和字段 shape；bridge 源码注释不得维护会与 contract 漂移的完整消息清单。

@@ -1,8 +1,5 @@
-# kernel-neutral-agent-tui Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change refactor-client-architecture-and-reading-view. Update Purpose after archive.
-## Requirements
 ### Requirement: Reusable package boundary
 The Rust workspace SHALL provide `e-dsh` and `e-pi` executable adapter packages and an `e-tui` frontend library package. Both adapters MUST depend directly on `e-tui`, and neither adapter package may depend on the other. `e-tui` SHALL expose provider-neutral state, rendering, interaction, and runtime APIs, including terminal coordination under `e_tui::runtime`; it MUST NOT import DSH or Pi wire messages, raw provider event names, DSH setup/profile behavior, Pi child-process behavior, provider-specific filesystem paths or persistence policy, clipboard implementations, or agent transport implementations.
 
@@ -44,41 +41,3 @@ The Rust workspace SHALL provide `e-dsh` and `e-pi` executable adapter packages 
 #### Scenario: Complete asynchronous work
 - **WHEN** an action executor finishes or fails asynchronous work
 - **THEN** the result returns to `e_tui::runtime` as a normalized completion fact rather than mutating frontend state from the background task
-
-### Requirement: Lifecycle-based state ownership
-`TuiApp` SHALL assign session, timeline, interaction, Reading View, Preview, catalog, and render state to explicit lifecycle owners. A migration facade MAY forward operations temporarily, but production state MUST NOT maintain mirrored transcript, session, or Preview domain stores.
-
-#### Scenario: Add semantic reading metadata
-- **WHEN** the timeline is projected for Reading View
-- **THEN** the reading model indexes the existing timeline and provenance identities without copying messages into a second transcript store
-
-#### Scenario: Extract one lifecycle
-- **WHEN** state fields move from the compatibility facade into a lifecycle model
-- **THEN** the lifecycle model becomes their sole owner before the phase is considered complete
-
-#### Scenario: Move rendering across the package boundary
-- **WHEN** the Ratatui renderer moves from `e-dsh` into `e-tui`
-- **THEN** every lifecycle state it consumes is already owned by `e-tui`, and the renderer does not depend on an `e-dsh` facade or a host-facing compatibility trait
-
-### Requirement: Layered rendering composition
-`e-tui` rendering SHALL compose as `Screen -> Pane -> Region -> Component`. Components MUST NOT depend on Regions, Panes, or the Screen; Regions MUST NOT perform I/O; and rendering MUST NOT mutate domain text.
-
-#### Scenario: Render the complete terminal screen
-- **WHEN** `TuiApp` renders a frame
-- **THEN** the Screen computes rectangles, Panes arrange Regions, and Regions render view models with downward-only Component dependencies
-
-#### Scenario: Reuse a card shell
-- **WHEN** both a main-pane Region and Preview Region need a themed shell
-- **THEN** they may depend on the same leaf Component without the Component importing either Region
-
-### Requirement: Main-pane visual continuity
-The extracted main pane SHALL preserve the current transcript surfaces, Markdown styling, card treatment, composer/Input Page presentation, status/title rows, spacing, theme semantics, hidden hardware cursor behavior, and copy provenance at equivalent effective widths. Introducing the Preview pane MUST NOT redesign these main-pane elements; width-driven rewrapping is the expected exception.
-
-#### Scenario: Complete behavior-preserving rendering extraction
-- **WHEN** the single-column renderer has been moved into the layered modules
-- **THEN** TestBackend characterization assertions for line counts, colors, spacing, content, and cursor behavior remain equivalent
-
-#### Scenario: Render the main pane beside Preview
-- **WHEN** a wide terminal uses the two-pane layout
-- **THEN** the main pane uses the established surface components and theme semantics at its narrower effective width rather than a sidebar-driven restyle
-

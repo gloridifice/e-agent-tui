@@ -36,7 +36,7 @@ Streaming updates and tool settlement SHALL refresh the same targeted Block when
 ### Requirement: Complete and themed Preview presentation
 Every eligible Block SHALL provide either a specialized Preview or a complete-source fallback. Preview SHALL support link, diff, file lines, search result, command, path, Markdown, plain text, loading, error, and empty presentation without exposing unbounded raw payloads.
 
-The Preview sidebar MAY reuse existing Components or introduce sidebar-specific Components. It MUST use the active theme coherently, MUST NOT alter main-pane style tokens as a side effect, and any new theme token MUST have a default in every bundled theme.
+The Preview sidebar MAY reuse existing Components or introduce sidebar-specific Components. It MUST use the active theme coherently, MUST NOT alter main-pane style tokens as a side effect, and any new theme token MUST have a default in every bundled theme. Markdown rendered inside Preview, including its fenced code blocks, SHALL use `semantics.markdown_weak`. Diff is a content-type exception: diff code tokens SHALL use `semantics.markdown` while diff row structure continues to use `semantics.diff`.
 
 #### Scenario: Block lacks a specialized Preview
 - **WHEN** an eligible Block has no specialized Preview mapping
@@ -50,19 +50,39 @@ The Preview sidebar MAY reuse existing Components or introduce sidebar-specific 
 - **WHEN** Preview requires a component not used by the main pane
 - **THEN** the component follows active-theme defaults and leaves existing main-pane rendering unchanged
 
+#### Scenario: Preview renders Markdown with code
+- **WHEN** a Preview target contains headings, links, emphasis, and a fenced code block
+- **THEN** all Markdown roles and syntax token mappings resolve through `semantics.markdown_weak` without changing the corresponding transcript Markdown styles
+
+#### Scenario: Preview renders a diff
+- **WHEN** a Preview target contains a syntax-highlighted event-authored diff
+- **THEN** code foregrounds and modifiers resolve through `semantics.markdown` and compose with the `semantics.diff` row background, gutter, and separator roles
+
 ### Requirement: Responsive pane layout
-At sufficient width, the Screen SHALL calculate `main_width = min(floor(0.6 * W), width_config)` from usable width `W` and assign remaining columns to Preview, with at least 32 columns for Preview. Below the tested combined minimum width, the default SHALL remain main-only and an explicit toggle SHALL show Preview full-screen rather than rendering two unusably narrow panes.
+At sufficient width, the Screen SHALL calculate message width from the validated committed message-pane percentage and assign the remaining columns to Preview. The message share MUST NOT be less than 25%, and Preview SHALL render beside it only when the resulting Preview rectangle is at least 19 columns wide, providing a separator column, a one-column gap, 16 usable content columns, and a one-column right margin. Otherwise normal presentation SHALL remain main-only with a separator grip in the right margin, and the existing explicit toggle SHALL show Preview full-screen rather than rendering an unusably narrow pane. A responsive collapse caused by terminal width MUST preserve the committed percentage. Main page content SHALL use one-column ordinary horizontal margins; Main-only mode SHALL additionally reserve the collapsed grip geometry.
 
 #### Scenario: Wide terminal renders both panes
-- **WHEN** the usable width can satisfy the configured main width and the 32-column Preview minimum
-- **THEN** the main pane and full-height Preview pane render in non-overlapping asserted rectangles
+- **WHEN** the committed percentage leaves at least 19 columns for the split Preview rectangle
+- **THEN** the message and full-height Preview panes render in non-overlapping asserted rectangles calculated from that percentage
 
 #### Scenario: Terminal is too narrow
 - **WHEN** usable width is below the tested combined minimum
 - **THEN** the Screen renders the main pane without a truncated sidebar and permits Preview to be shown as a full-screen view
 
+#### Scenario: Committed percentage reaches the message minimum
+- **WHEN** the committed or pending message share is 25%
+- **THEN** message width is calculated as 25% of usable width and no interaction can reduce it further
+
+#### Scenario: Preview would be too narrow
+- **WHEN** percentage calculation leaves fewer than 19 columns for the split Preview rectangle
+- **THEN** the Screen renders main-only with the right-margin separator grip and permits Preview to be shown as a full-screen view
+
+#### Scenario: Responsive collapse later regains width
+- **WHEN** terminal width first forces the split Preview rectangle below 19 columns and later grows enough to satisfy the threshold at the unchanged committed percentage
+- **THEN** the split Preview reappears automatically without a persisted config change
+
 #### Scenario: Effective transcript width changes
-- **WHEN** entering or leaving a two-pane layout changes main-pane content width
+- **WHEN** entering, leaving, or committing a resized two-pane layout changes message-pane content width
 - **THEN** transcript layout and copy provenance invalidate together before visible rows are materialized
 
 ### Requirement: Race-safe deferred Preview resolution
@@ -79,4 +99,38 @@ A deferred Preview SHALL be requested with a key, revision, and request ID throu
 #### Scenario: Resolver awaits I/O
 - **WHEN** `e-dsh` resolves a file, diff, or kernel-backed Preview
 - **THEN** no UI state guard is held while it awaits and completion requests a draw through the existing scheduler
+
+### Requirement: Pane separator preserves omitted-background transparency
+The pane separator SHALL render its semantic foreground without substituting the themed base-surface color when the active separator bar or drag-guide role omits a background. An omitted separator background SHALL use terminal transparency, while an explicitly configured separator background SHALL remain authoritative. Drag placeholder boxes SHALL continue to use their independent placeholder background role.
+
+#### Scenario: Separator bar omits its background
+- **WHEN** the active theme defines a separator bar foreground but no bar background
+- **THEN** the idle separator glyph uses the semantic foreground and a terminal-reset background
+
+#### Scenario: Separator drag guide omits its background
+- **WHEN** the active theme defines a separator line foreground but no line background and the user drags the separator
+- **THEN** the full-height guide and grip retain terminal-reset backgrounds
+
+#### Scenario: Separator background is explicit
+- **WHEN** the active separator role defines a background
+- **THEN** the corresponding separator glyphs use that configured background
+
+### Requirement: Normal-mode Preview eligibility and reconciliation
+Normal-mode automatic Preview following SHALL ignore plain transcript blocks, including frontend system and error messages, and SHALL ignore user cards and user attachments. It SHALL continue to consider specialized context, reasoning, tool, activity, and unknown-surface content eligible. Reading View SHALL retain explicit Preview access to its selected Block or Item regardless of normal-mode automatic eligibility.
+
+#### Scenario: Plain or user content is appended
+- **WHEN** a plain block, user card, or user attachment is appended after an eligible normal-mode Preview target
+- **THEN** the current target, revision, scroll, and reveal state remain unchanged
+
+#### Scenario: Only ignored content exists
+- **WHEN** the transcript contains only plain blocks, user cards, user attachments, or assistant Markdown
+- **THEN** normal-mode Preview renders its empty state
+
+#### Scenario: Ignored content is selected in Reading View
+- **WHEN** Reading View explicitly selects a plain or user-owned Block
+- **THEN** Preview renders that selected Block through the existing complete-source behavior
+
+#### Scenario: Direct command activity settles
+- **WHEN** a direct command-result updates the activity that owns the current normal-mode Preview target
+- **THEN** Preview refreshes the same target identity to the activity's settled content without waiting for another timeline event
 

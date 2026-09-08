@@ -1,8 +1,5 @@
-# application-mouse-selection Specification
+## MODIFIED Requirements
 
-## Purpose
-Define application-owned terminal mouse selection, its bounded render lifecycle and clipboard delivery, and normalized Windows raw-terminal input behavior.
-## Requirements
 ### Requirement: Captured mouse selection coexists with application scrolling
 The client SHALL retain terminal mouse capture and application-owned wheel scrolling while providing application-owned primary-button text selection. A primary-button gesture beginning on the pane separator resize hit area SHALL be captured by resizing before text selection. Other primary-button gestures SHALL select visible screen cells without changing composer focus, Reading navigation, Preview target, page focus, or editor contents.
 
@@ -177,29 +174,6 @@ The client SHALL normalize primary press, drag, release, wheel, and focus events
 - **WHEN** editing, paste, scrolling, or navigation input arrives during capture
 - **THEN** selection is cancelled before that input follows its ordinary active-context behavior
 
-### Requirement: Windows raw Backspace preserves word deletion
-The Windows raw-input reader SHALL attach its immediate physical modifier/Backspace snapshot to each byte chunk before asynchronous event routing. Raw `0x17` received with physical Backspace held SHALL emit Ctrl+Backspace, and otherwise SHALL emit Ctrl+W. Raw `0x08` or `0x7f` received with Ctrl and physical Backspace held SHALL emit Ctrl+Backspace. Raw `0x08` received with Ctrl held but physical Backspace not held SHALL emit Ctrl+H. Raw `0x7f` without a matching physical Backspace snapshot SHALL emit ordinary Backspace. The composer SHALL treat Ctrl+W as delete-previous-word so word deletion survives an inconclusive physical snapshot. Explicit Kitty CSI-u and xterm `modifyOtherKeys` Backspace sequences SHALL preserve their encoded modifiers on every terminal.
-
-#### Scenario: Windows Terminal sends Ctrl+Backspace as ETB
-- **WHEN** the blocking reader receives raw `0x17` and immediately observes Ctrl plus physical Backspace
-- **THEN** the attached snapshot survives the async handoff, the parser emits Ctrl+Backspace, and the composer deletes the preceding word
-
-#### Scenario: Ctrl+W remains delete-word without Backspace evidence
-- **WHEN** the parser receives raw `0x17` without a physical Backspace snapshot
-- **THEN** it emits Ctrl+W and the composer still deletes the preceding word
-
-#### Scenario: Terminal encodes Ctrl+Backspace as BS or DEL
-- **WHEN** the blocking reader receives raw `0x08` or `0x7f` and immediately observes Ctrl plus physical Backspace
-- **THEN** the parser emits Ctrl+Backspace
-
-#### Scenario: Raw Ctrl+H remains distinguishable
-- **WHEN** the reader receives raw `0x08` while Ctrl is held and physical Backspace is not held
-- **THEN** the parser emits Ctrl+H and the help overlay binding keeps working
-
-#### Scenario: Legacy raw-VT terminal sends BS
-- **WHEN** the parser receives raw `0x08` without Ctrl and without a physical Backspace snapshot
-- **THEN** it emits ordinary Backspace rather than inferring a modifier from a delayed asynchronous key-state sample
-
 ### Requirement: Selection work remains bounded and incremental
 Selection metadata and presentation snapshots SHALL be bounded by the visible viewport, not transcript history. Pointer updates, snapshot replay, and extraction SHALL NOT flatten the transcript, replay events, rebuild Reading documents, invalidate semantic Preview state, or structurally invalidate transcript caches. Shared policy SHALL serve both executable runners. The feature SHALL introduce no polling or animation ticker.
 
@@ -218,6 +192,8 @@ Selection metadata and presentation snapshots SHALL be bounded by the visible vi
 #### Scenario: Background content dirties live presentation during capture
 - **WHEN** live state becomes dirty while held-frame selection frames are submitted
 - **THEN** those selection frames do not discard the obligation to render live changes after capture ends
+
+## ADDED Requirements
 
 ### Requirement: Active text selection holds committed presentation
 An eligible primary press SHALL hold the last successfully submitted unselected screen snapshot until release or cancellation. During capture only selection presentation SHALL change on screen; transport, agent reduction, and non-presentation runtime work SHALL continue. Release SHALL extract from the held snapshot, end the hold, and request immediate live presentation. Cancellation SHALL end the hold without copying. Presentation-only deadlines SHALL neither overwrite the held screen nor produce a busy loop, and resumption SHALL preserve normal bounded reveal pacing.
@@ -241,4 +217,3 @@ An eligible primary press SHALL hold the last successfully submitted unselected 
 #### Scenario: Both adapters execute the same gesture
 - **WHEN** equivalent scripted screen, pointer, update, and clipboard outcomes are supplied to `dshe` and `pie`
 - **THEN** shared selection policy produces the same visible range, cancellation, payload, and commit behavior
-

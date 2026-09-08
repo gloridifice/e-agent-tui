@@ -88,3 +88,52 @@ The `/settings` Input Page SHALL expose editable rows for the fade background/re
 - **WHEN** the user confirms a value above 1024, a negative value, or a non-whole value
 - **THEN** the settings page retains the previous valid speed and does not persist the invalid value
 
+### Requirement: Pane split percentage is the canonical persisted width setting
+The embedded default TOML and directly deserializable `Config` schema SHALL define one validated `message_pane_percent` value as the sole persisted pane-width authority. Its default SHALL be 60%, its accepted range SHALL be 25% through 100%, and Settings plus separator release SHALL save and apply a valid value immediately. Pane columns MUST be derived from current usable terminal width and MUST NOT be persisted separately.
+
+#### Scenario: Existing config predates percentage sizing
+- **WHEN** a valid user config omits `message_pane_percent`
+- **THEN** loading succeeds and inherits the embedded 60% default
+
+#### Scenario: User file contains the obsolete absolute width
+- **WHEN** a user config contains `main_pane_width`
+- **THEN** the known-key overlay ignores it as obsolete and does not reinterpret it using an arbitrary terminal width
+
+#### Scenario: User supplies a valid percentage
+- **WHEN** a user config provides a value from 25% through 100%
+- **THEN** that value overrides the embedded default and round-trips through canonical Config persistence
+
+#### Scenario: User supplies an invalid percentage
+- **WHEN** a known percentage value is below 25%, above 100%, non-finite, or not numeric
+- **THEN** strict Config deserialization follows the existing safe diagnostic/fallback path rather than constructing an invalid layout value
+
+#### Scenario: Settings changes the pane percentage
+- **WHEN** the user confirms a valid message-pane percentage in Settings
+- **THEN** the new percentage takes effect immediately and is persisted without adding a parallel settings-owned schema
+
+### Requirement: Language is a persisted validated config field
+The persisted `Config` schema SHALL declare `language` exactly once with accepted serialized values `en` and `zh-CN`. The embedded default TOML SHALL remain the sole default source and SHALL define `language = "en"`. Existing user files that omit the key SHALL inherit it through the existing recursive known-key overlay.
+
+#### Scenario: Field is added to the canonical schema
+- **WHEN** `language` is present in `Config` and the embedded default TOML
+- **THEN** it loads, overlays, and persists without a second persisted structure or per-field copy list
+
+#### Scenario: Old user file inherits the default
+- **WHEN** a valid user config omits `language`
+- **THEN** loading succeeds with `language = "en"` and preserves its other valid overrides
+
+#### Scenario: Invalid locale takes the safe fallback
+- **WHEN** a user file sets `language` to a value other than `en` or `zh-CN`
+- **THEN** strict deserialization fails and the existing safe config fallback behavior applies
+
+### Requirement: Language is live-editable with immediate save and apply
+The `/settings` Input Page SHALL expose `language` as a live-editable setting. A confirmed value SHALL update the executable-owned config value and canonical `TuiApp.config`, synchronize locale-dependent derived interaction state, invalidate locale-dependent presentation caches, and produce the existing owned `UiAction::PersistConfig` effect. Rendering SHALL perform no config or catalog filesystem I/O.
+
+#### Scenario: Confirm a language change
+- **WHEN** the user confirms the other supported language in `/settings`
+- **THEN** the value is applied to live state, locale-dependent caches are invalidated, an owned config snapshot is persisted, and the next frame uses the new language
+
+#### Scenario: Reload re-reads language
+- **WHEN** the user runs `/reload` after editing `language` on disk
+- **THEN** the adapter-owned loader returns the updated canonical `Config` and the shared controller applies it without rendering-time disk reads
+

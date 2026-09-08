@@ -72,7 +72,7 @@ Command secondary output SHALL be parsed as terminal text without forwarding con
 - **THEN** Preview emits no corresponding terminal control and remains bounded and renderable
 
 ### Requirement: Event-authored mutation Preview
-Edit, replace, and insert calls SHALL use mutation content already supplied by their events. The client MUST NOT read the target file, compare before/after files, run an LCS/diff algorithm, or invent removed/context lines. Event-provided unified diff text SHALL be rendered verbatim; structured old/new fragments MAY be linearly rendered as removed and added rows.
+Edit, replace, and insert calls SHALL use mutation content already supplied by their events. The client MUST NOT read the target file, compare before/after files, run an LCS/diff algorithm, or invent removed/context lines. Event-provided unified diff text SHALL retain every event-authored row in order; the client MAY classify those rows to present event-authored file paths, hunk coordinates, old/new line numbers, diff structure, and syntax-colored code bodies. Structured old/new fragments MAY be linearly rendered as removed and added rows. Diff syntax tokens SHALL use `semantics.markdown`, while added/removed backgrounds, accents, gutters, and separators SHALL use `semantics.diff`. When a pending mutation Preview contains requested fragments and its successful result later supplies an authoritative unified patch, the settled Preview SHALL replace the requested fragments with that patch on the same target.
 
 #### Scenario: DSH edit provides applied contextual hunks
 - **WHEN** a completed edit result carries ordered `meta.diffs` hunks
@@ -81,6 +81,18 @@ Edit, replace, and insert calls SHALL use mutation content already supplied by t
 #### Scenario: str_replace_editor provides requested replacement
 - **WHEN** `str_replace_editor` emits `command: "str_replace"` with `old_str` and `new_str` but no result-time applied hunk
 - **THEN** Preview renders the event-provided requested replacement and retains it after settlement without claiming extra applied context
+
+#### Scenario: Pi edit provides requested replacements
+- **WHEN** Pi emits an `edit` call with a path and one or more `edits[]` entries containing `oldText` and `newText`
+- **THEN** Preview renders the event-provided replacements as ordered removed/added fragments instead of generic JSON
+
+#### Scenario: Pi edit result provides an authoritative patch
+- **WHEN** a successful Pi edit result carries a standard unified patch in `details.patch`
+- **THEN** the same `tool:<call-id>` Preview target renders that event-authored patch and replaces the pending requested fragments
+
+#### Scenario: Pi replay uses a legacy single replacement
+- **WHEN** a replayed Pi edit call carries top-level `oldText` and `newText` instead of `edits[]`
+- **THEN** Preview treats it as one event-provided requested replacement
 
 #### Scenario: Insert provides only inserted text
 - **WHEN** an insert call supplies `new_str` and `insert_line` without a before-image
@@ -94,29 +106,56 @@ Edit, replace, and insert calls SHALL use mutation content already supplied by t
 - **WHEN** a create call includes complete new-file content
 - **THEN** Preview renders `create` plus the path and does not switch to an all-added diff
 
+#### Scenario: Event-provided unified diff is malformed
+- **WHEN** a unified diff cannot be fully classified for line numbers or syntax selection
+- **THEN** Preview retains all event-authored rows with fallback semantic styling and does not invent, reorder, or drop mutation content
+
 ### Requirement: Muted Markdown for injected context
-Prompt-injection/context Preview SHALL use complete Markdown rendering with every foreground mapped to the theme's muted-text tone while preserving Markdown modifiers. Reasoning/thinking Preview behavior SHALL remain unchanged and SHALL retain its distinct semantic content kind.
+Prompt-injection/context Preview SHALL use complete Markdown rendering through `semantics.markdown_weak`, whose role set matches normal Markdown while its bundled mappings are limited to Bark, Umber, and Night equivalents. It SHALL preserve Markdown and syntax-token bold, italic, and underline modifiers. Reasoning/thinking Preview behavior SHALL remain distinct in semantic content kind while using the same weak Markdown presentation context.
 
 #### Scenario: Injected instructions contain Markdown
-- **WHEN** an injected context message contains headings, bold, italic, code, or links
-- **THEN** Preview renders the complete Markdown in the muted tone while preserving the corresponding modifiers
+- **WHEN** an injected context message contains headings, bold, italic, code, links, or a language-labelled fenced code block
+- **THEN** Preview renders the complete Markdown through weak semantic roles and preserves the corresponding modifiers and syntax distinctions
 
 #### Scenario: Reasoning follows an injected context
 - **WHEN** Preview later targets a reasoning/thinking block
-- **THEN** it uses the existing reasoning path rather than the injected-context content kind
+- **THEN** it retains the reasoning semantic content kind and uses weak Markdown presentation rather than the injected-context content kind
+
+#### Scenario: Normal transcript Markdown has the same source
+- **WHEN** source rendered weakly for injected-context Preview also appears as transcript Markdown
+- **THEN** the transcript rendering continues to use unchanged `semantics.markdown` roles
 
 ### Requirement: Stable tool Preview correlation and replay
-A tool call and its correlated result SHALL update one stable Preview target. Settlement SHALL preserve the primary content, add only the permitted secondary or applied mutation data, increment the Preview revision, and preserve scroll for unchanged target identity. Live, snapshot, backward-history, and cross-page result-before-call processing SHALL converge on equivalent settled Preview content.
+A tool call and its correlated result SHALL update one stable Preview target. Settlement SHALL preserve the primary content, add only the permitted secondary or applied mutation data, increment the Preview revision, and preserve scroll for unchanged target identity. Live, snapshot, backward-history, and cross-page result-before-call processing SHALL converge on equivalent settled Preview content, including event-authored unified mutation patches.
 
 #### Scenario: Command result settles current Preview
 - **WHEN** a command call is the current target and its result arrives
 - **THEN** the same `tool:<call-id>` target refreshes with final metrics and output instead of becoming an unrelated plain-text target
 
 #### Scenario: Result arrives before its call during history loading
-- **WHEN** a bounded tool result is loaded before the matching call
+- **WHEN** a bounded tool result with mutation hunks or a unified mutation patch is loaded before the matching call
 - **THEN** its preview facts are staged and the later call constructs the same settled Preview as ordinary live ordering
 
 #### Scenario: Same target revision changes
 - **WHEN** a call-time Preview revision is replaced by its result-time revision for the same call ID
 - **THEN** Preview scroll is preserved and stale deferred completions cannot overwrite the newer revision
+
+### Requirement: Long terminal output preserves tool information
+A structured tool Preview with terminal secondary output SHALL wrap its tool-name and primary-information section to the Preview content width, but SHALL render each terminal-output source row as one display row clipped at the right edge without an added ellipsis. While the complete presentation fits, the combined content SHALL retain ordinary vertical centering. Once output growth would scroll the information section beyond the top edge, the information section SHALL remain pinned at the top and the remaining viewport rows SHALL show the newest terminal-output tail.
+
+#### Scenario: Tool Preview fits in the pane
+- **WHEN** the wrapped tool information and terminal output fit within the Preview height
+- **THEN** the combined presentation remains vertically centered and no sticky positioning is applied
+
+#### Scenario: Long output reaches the top edge
+- **WHEN** terminal output grows until the bottom-anchored presentation would move the tool information above the Preview
+- **THEN** the complete wrapped information section remains visible at the top and output occupies only the rows below it
+
+#### Scenario: Output line exceeds the pane width
+- **WHEN** one terminal-output source row is wider than the Preview content width
+- **THEN** it occupies exactly one display row, is clipped at the right edge, and receives no synthetic ellipsis
+
+#### Scenario: Wrapped information consumes the available height
+- **WHEN** the tool information section alone is at least as tall as the Preview viewport
+- **THEN** the viewport prioritizes the top of the information section and renders no terminal-output row over it
 

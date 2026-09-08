@@ -15,11 +15,15 @@ The client MUST handle `/new [mode]` without sending a session-creation command,
 - **THEN** the existing draft is replaced locally and no server session is created
 
 ### Requirement: First prompt atomically materializes the draft
-The first ordinary prompt or explicit skill invocation submitted in a new-conversation draft MUST emit one typed materialization message carrying the draft mode and complete prompt. The submission MUST NOT enter the old session queue or be sent to the old agent. The client SHALL immediately display the pending user/skill card and activate its working indicator while retaining the complete submission for failure recovery.
+The first ordinary prompt or explicit skill invocation submitted in a new-conversation draft MUST emit one typed materialization message carrying the draft mode and complete ordered text/image content. A prompt containing at least one image MUST be materializable without text. The submission MUST NOT enter the old session queue or be sent to the old agent. The client SHALL immediately display the pending user/skill card and activate its working indicator while retaining the complete submission for failure recovery.
 
 #### Scenario: Submit the first prompt
 - **WHEN** the user sends `hello` from a standard-mode draft
 - **THEN** the client emits one `new-input{mode:"standard",text:"hello"}` and retains the prompt until creation succeeds
+
+#### Scenario: Submit the first image prompt
+- **WHEN** the user sends a mixed-content or image-only prompt from a draft
+- **THEN** the client emits one `new-input` carrying the draft mode and every text/image part in composer order
 
 #### Scenario: A skill opens the conversation
 - **WHEN** the user sends `/skill:review` from a draft with no prior message
@@ -30,9 +34,17 @@ The first ordinary prompt or explicit skill invocation submitted in a new-conver
 - **WHEN** the bridge accepts a valid `new-input`
 - **THEN** it creates and attaches the requested session before following up the new agent with the prompt
 
+#### Scenario: Bridge materializes an image-bearing prompt
+- **WHEN** the bridge accepts a valid image-bearing `new-input`
+- **THEN** it creates and attaches the requested session before admitting the complete prompt through the Host session prompt API
+
 #### Scenario: Creation fails
 - **WHEN** session creation rejects before a new welcome is sent
 - **THEN** the client remains in the draft, restores the complete prompt to the editor, and exposes the bounded bridge error
+
+#### Scenario: Creation or image admission fails
+- **WHEN** session creation or first-prompt image admission rejects before the draft is committed
+- **THEN** the client remains in the draft, restores the complete text and image prompt to the editor, and exposes the bounded bridge error
 
 ### Requirement: Real session state remains isolated behind a draft
 While a draft is visible, inbound frames for the still-attached real session MUST continue updating its retained state without becoming visible in the draft transcript. A successful welcome for a different session SHALL commit the normal session switch. During materialization, the pending draft card SHALL remain visible until the opening user/skill echo arrives or admission fails.

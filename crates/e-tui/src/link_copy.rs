@@ -236,20 +236,61 @@ fn scan_text(mut text: &str, add: &mut impl FnMut(&str, bool)) {
             continue;
         }
         let end = text.find(delimiter).unwrap_or(text.len());
-        add(trim_token(&text[..end]), false);
+        let token = trim_token(&text[..end]);
+        let rest = text[end..].trim_start();
+        let is_unquoted_command_placeholder = token.starts_with('/')
+            && rest.starts_with('<')
+            && rest.find('>').is_some_and(|close| {
+                rest[close + 1..]
+                    .chars()
+                    .next()
+                    .is_none_or(|next| delimiter(next))
+            });
+        if !is_unquoted_command_placeholder {
+            add(token, false);
+        }
         text = &text[end..];
     }
 }
 
 pub fn discover(source: &str) -> Vec<LinkCandidate> {
+    let words: Vec<_> = source.split_whitespace().collect();
+    let mut command_tokens: HashSet<String> = words
+        .windows(2)
+        .filter_map(|pair| {
+            (pair[0].starts_with('/') && pair[1].starts_with('<') && pair[1].ends_with('>'))
+                .then(|| trim_token(pair[0]).to_owned())
+        })
+        .collect();
     let mut seen = HashSet::new();
     let mut candidates = Vec::new();
+    let quoted = source
+        .match_indices('"')
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    for pair in quoted.chunks_exact(2) {
+        let target = &source[pair[0] + 1..pair[1]];
+        if target.starts_with('/') && target.contains('<') && target.contains('>') {
+            if let Some(candidate) = classify(target, true) {
+                command_tokens.insert(
+                    target
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or_default()
+                        .to_owned(),
+                );
+                seen.insert(candidate.target.clone());
+                candidates.push(candidate);
+            }
+        }
+    }
     let mut add = |text: &str, delimited: bool| {
         if candidates.len() >= MAX_CANDIDATES {
             return;
         }
         if let Some(candidate) = classify(text, delimited) {
-            if seen.insert(candidate.target.clone()) {
+            if !command_tokens.contains(&candidate.target) && seen.insert(candidate.target.clone())
+            {
                 candidates.push(candidate);
             }
         }
@@ -364,6 +405,24 @@ pub fn annotate(line: &mut Line<'static>, links: &[TaggedLink], style: Style) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quick_links_do_not_join_space_separated_command_syntax() {
+        assert_eq!(
+            discover("/opsx-apply <other>")
+                .iter()
+                .map(|candidate| candidate.target.as_str())
+                .collect::<Vec<_>>(),
+            Vec::<&str>::new()
+        );
+        assert_eq!(
+            discover(r#""/opsx-apply <other>""#)
+                .iter()
+                .map(|candidate| candidate.target.as_str())
+                .collect::<Vec<_>>(),
+            ["/opsx-apply <other>"]
+        );
+    }
 
     #[test]
     fn quick_links_discover_mixed_paths_without_probing_prose() {

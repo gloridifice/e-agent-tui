@@ -12,15 +12,17 @@ pub use e_tui::theme::Theme;
 
 /// Shared frontend configuration, using `~/.config/e` on macOS too.
 pub fn config_dir() -> PathBuf {
-    directories::BaseDirs::new()
-        .map(|dirs| {
-            if cfg!(target_os = "macos") {
-                dirs.home_dir().join(".config/e")
-            } else {
-                dirs.config_dir().join("e")
-            }
-        })
-        .unwrap_or_else(|| PathBuf::from(".e"))
+    user_config_dir().unwrap_or_else(|| PathBuf::from(".e"))
+}
+
+pub(crate) fn user_config_dir() -> Option<PathBuf> {
+    directories::BaseDirs::new().map(|dirs| {
+        if cfg!(target_os = "macos") {
+            dirs.home_dir().join(".config/e")
+        } else {
+            dirs.config_dir().join("e")
+        }
+    })
 }
 
 pub fn config_path() -> PathBuf {

@@ -1,4 +1,6 @@
-//! Project-local execution-history persistence owned by the DSH adapter.
+//! Central execution-history persistence owned by the DSH adapter.
+
+mod workspace;
 
 use std::{
     collections::HashMap,
@@ -9,10 +11,9 @@ use std::{
     thread,
 };
 
-use e_tui::execution_history::{ExecutionRecord, TraceIdentity, TraceLine, TRACE_VERSION};
+use e_tui::execution_history::{ExecutionRecord, TraceIdentity, TraceLine};
 
 const QUEUE_CAPACITY: usize = 1_024;
-const IGNORE_ENTRY: &str = "/e-dsh/execution-history/";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistorySnapshot {
@@ -46,7 +47,11 @@ pub struct HistoryStore {
 
 impl HistoryStore {
     pub fn open(identity: TraceIdentity) -> Result<Self, String> {
-        let path = trace_path(&identity);
+        Self::open_at(identity, &workspace::root()?)
+    }
+
+    fn open_at(identity: TraceIdentity, root: &Path) -> Result<Self, String> {
+        let path = trace_path(root, &identity)?;
         let (sender, receiver) = mpsc::sync_channel(QUEUE_CAPACITY);
         let (ready_tx, ready_rx) = mpsc::sync_channel(0);
         let health = Arc::new(Mutex::new(None));
@@ -182,13 +187,16 @@ impl Writer {
         let directory = path
             .parent()
             .ok_or_else(|| "execution-history path has no parent".to_owned())?;
+        let root = directory
+            .parent()
+            .ok_or("execution-history root is missing")?;
+        let registry_warnings = workspace::register(root, &identity)?;
         fs::create_dir_all(directory).map_err(|error| {
             format!(
                 "create execution-history directory {}: {error}",
                 directory.display()
             )
         })?;
-        update_ignore(Path::new(&identity.cwd))?;
         let lock_path = path.with_extension("jsonl.lock");
         let lock = OpenOptions::new()
             .write(true)
@@ -201,7 +209,7 @@ impl Writer {
                 )
             })?;
         let result = (|| {
-            let mut startup_warnings = Vec::new();
+            let mut startup_warnings = registry_warnings;
             validate_or_initialize(&path, &identity, &mut startup_warnings)?;
             let file = OpenOptions::new()
                 .append(true)
@@ -320,6 +328,7 @@ fn validate_or_initialize(
     identity: &TraceIdentity,
     warnings: &mut Vec<String>,
 ) -> Result<(), String> {
+    let header = workspace::header(identity)?;
     let mut file = OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -328,36 +337,19 @@ fn validate_or_initialize(
         .open(path)
         .map_err(|error| format!("open execution history {}: {error}", path.display()))?;
     if file.metadata().map_err(|error| error.to_string())?.len() == 0 {
-        write_line(
-            &mut file,
-            &TraceLine::Header {
-                version: TRACE_VERSION,
-                identity: identity.clone(),
-            },
-        )?;
+        serde_json::to_writer(&mut file, &header)
+            .map_err(|error| format!("write execution-history header: {error}"))?;
+        file.write_all(b"\n").map_err(|error| error.to_string())?;
         file.flush().map_err(|error| error.to_string())?;
         return Ok(());
     }
-    let mut first = String::new();
-    BufReader::new(&file)
-        .read_line(&mut first)
-        .map_err(|error| format!("read execution-history header: {error}"))?;
-    let header: TraceLine = serde_json::from_str(first.trim_end())
-        .map_err(|error| format!("malformed execution-history header: {error}"))?;
-    match header {
-        TraceLine::Header {
-            version,
-            identity: _,
-        } if version != TRACE_VERSION => {
-            return Err(format!("unsupported execution-history version {version}"));
-        }
-        TraceLine::Header {
-            identity: found, ..
-        } if found != *identity => {
-            return Err("execution-history identity does not match this session and cwd".into());
-        }
-        TraceLine::Header { .. } => {}
-        TraceLine::Event { .. } => return Err("execution-history header is missing".into()),
+    let found = workspace::validate_header(&workspace::read_header(path)?)?;
+    if found.frontend != identity.frontend
+        || found.session_id != identity.session_id
+        || workspace::WorkspaceIdentity::new(&found.cwd)?
+            != workspace::WorkspaceIdentity::new(&identity.cwd)?
+    {
+        return Err("execution-history identity does not match this session and cwd".into());
     }
     file.seek(SeekFrom::End(-1))
         .map_err(|error| format!("inspect execution-history tail: {error}"))?;
@@ -434,12 +426,10 @@ fn read_snapshot(
     })
 }
 
-pub fn trace_path(identity: &TraceIdentity) -> PathBuf {
-    Path::new(&identity.cwd)
-        .join(".e")
-        .join("e-dsh")
-        .join("execution-history")
-        .join(format!("{}.jsonl", session_key(&identity.session_id)))
+fn trace_path(root: &Path, identity: &TraceIdentity) -> Result<PathBuf, String> {
+    Ok(root
+        .join(workspace::WorkspaceIdentity::new(&identity.cwd)?.key())
+        .join(format!("{}.jsonl", session_key(&identity.session_id))))
 }
 
 fn session_key(session_id: &str) -> String {
@@ -462,32 +452,9 @@ fn session_key(session_id: &str) -> String {
     format!("{prefix}-{hash:016x}")
 }
 
-fn update_ignore(cwd: &Path) -> Result<(), String> {
-    let directory = cwd.join(".e");
-    fs::create_dir_all(&directory)
-        .map_err(|error| format!("create {}: {error}", directory.display()))?;
-    let path = directory.join(".gitignore");
-    let existing = match fs::read_to_string(&path) {
-        Ok(value) => value,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(error) => return Err(format!("read {}: {error}", path.display())),
-    };
-    if existing.lines().any(|line| line.trim() == IGNORE_ENTRY) {
-        return Ok(());
-    }
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .map_err(|error| format!("open {}: {error}", path.display()))?;
-    if !existing.is_empty() && !existing.ends_with('\n') {
-        file.write_all(b"\n").map_err(|error| error.to_string())?;
-    }
-    writeln!(file, "{IGNORE_ENTRY}").map_err(|error| format!("update {}: {error}", path.display()))
-}
-
 pub struct HistoryRecorder {
     frontend: &'static str,
+    root: Result<PathBuf, String>,
     active_identity: Option<TraceIdentity>,
     store: Option<HistoryStore>,
     capture: Option<e_tui::execution_capture::ExecutionCapture>,
@@ -500,6 +467,7 @@ impl HistoryRecorder {
     pub fn new(frontend: &'static str) -> Self {
         Self {
             frontend,
+            root: workspace::root(),
             active_identity: None,
             store: None,
             capture: None,
@@ -531,7 +499,8 @@ impl HistoryRecorder {
                 now.wall_unix_ms,
                 self.generation
             );
-            let store = HistoryStore::open(identity.clone())?;
+            let root = self.root.as_ref().map_err(Clone::clone)?;
+            let store = HistoryStore::open_at(identity.clone(), root)?;
             self.resume_metrics = load_trace_metrics(&store)?;
             let mut capture = e_tui::execution_capture::ExecutionCapture::new(run_id);
             store.record(capture.attached(now))?;
@@ -733,34 +702,54 @@ mod tests {
     }
 
     #[test]
-    fn nested_cwd_path_is_stable_safe_and_ignore_is_preserved() {
+    fn central_path_is_stable_safe_and_legacy_files_are_untouched() {
         let root = tempfile::tempdir().unwrap();
+        let cache = root.path().join("cache");
         let cwd = root.path().join("repo").join("nested");
         fs::create_dir_all(cwd.join(".e")).unwrap();
         fs::write(cwd.join(".e/.gitignore"), "keep-me\n").unwrap();
         let id = identity(&cwd, "../../session:unsafe/名");
-        let first = trace_path(&id);
-        assert!(first.starts_with(&cwd));
-        assert_eq!(first, trace_path(&id));
+        let legacy = cwd.join(".e/e-dsh/execution-history");
+        fs::create_dir_all(&legacy).unwrap();
+        let legacy_file = legacy.join(format!("{}.jsonl", session_key(&id.session_id)));
+        fs::write(&legacy_file, "must not be read or migrated").unwrap();
+        let first = trace_path(&cache, &id).unwrap();
+        assert!(first.starts_with(&cache));
+        assert!(!first.starts_with(&cwd));
+        assert_eq!(first, trace_path(&cache, &id).unwrap());
         assert!(!first.file_name().unwrap().to_string_lossy().contains('/'));
-        let store = HistoryStore::open(id).unwrap();
+        let store = HistoryStore::open_at(id, &cache).unwrap();
+        assert!(store.snapshot(10).unwrap().records.is_empty());
         store.record(record(1)).unwrap();
         store.flush().unwrap();
+        let registry = cache.join("workspaces.json");
+        let modified = fs::metadata(&registry).unwrap().modified().unwrap();
+        store.record(record(2)).unwrap();
+        store.flush().unwrap();
+        assert_eq!(
+            fs::metadata(registry).unwrap().modified().unwrap(),
+            modified
+        );
         drop(store);
+        assert_eq!(
+            fs::read_to_string(&legacy_file).unwrap(),
+            "must not be read or migrated"
+        );
+        assert_eq!(fs::read_dir(legacy).unwrap().count(), 1);
         let ignore = fs::read_to_string(cwd.join(".e/.gitignore")).unwrap();
-        assert!(ignore.starts_with("keep-me\n"));
-        assert_eq!(ignore.matches(IGNORE_ENTRY).count(), 1);
+        assert_eq!(ignore, "keep-me\n");
     }
 
     #[test]
     fn resume_appends_and_competing_writer_is_rejected() {
         let root = tempfile::tempdir().unwrap();
+        let cache = root.path().join("cache");
         let id = identity(root.path(), "session");
-        let store = HistoryStore::open(id.clone()).unwrap();
+        let store = HistoryStore::open_at(id.clone(), &cache).unwrap();
         store.record(record(1)).unwrap();
-        assert!(HistoryStore::open(id.clone()).is_err());
+        assert!(HistoryStore::open_at(id.clone(), &cache).is_err());
         drop(store);
-        let resumed = HistoryStore::open(id).unwrap();
+        let resumed = HistoryStore::open_at(id, &cache).unwrap();
         resumed.record(record(2)).unwrap();
         let snapshot = resumed.snapshot(10).unwrap();
         assert_eq!(
@@ -774,15 +763,36 @@ mod tests {
     }
 
     #[test]
+    fn normalized_cwd_resumes_without_merging_other_workspaces() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = root.path().join("cache");
+        let cwd = root.path().join("missing-project");
+        let id = identity(&cwd, "session");
+        let store = HistoryStore::open_at(id, &cache).unwrap();
+        let path = store.path().to_owned();
+        store.record(record(1)).unwrap();
+        drop(store);
+        let equivalent = identity(&cwd.join("sub/.."), "session");
+        let resumed = HistoryStore::open_at(equivalent, &cache).unwrap();
+        assert_eq!(resumed.path(), path);
+        assert_eq!(resumed.snapshot(10).unwrap().records.len(), 1);
+        let other = HistoryStore::open_at(identity(&cwd.join("other"), "session"), &cache).unwrap();
+        assert_ne!(other.path(), path);
+        assert!(other.snapshot(10).unwrap().records.is_empty());
+        assert!(!cwd.exists());
+    }
+
+    #[test]
     fn partial_tail_is_diagnosed_and_never_concatenated() {
         let root = tempfile::tempdir().unwrap();
+        let cache = root.path().join("cache");
         let id = identity(root.path(), "session");
-        let path = trace_path(&id);
-        drop(HistoryStore::open(id.clone()).unwrap());
+        let path = trace_path(&cache, &id).unwrap();
+        drop(HistoryStore::open_at(id.clone(), &cache).unwrap());
         let mut file = OpenOptions::new().append(true).open(&path).unwrap();
         file.write_all(b"{partial").unwrap();
         drop(file);
-        let store = HistoryStore::open(id).unwrap();
+        let store = HistoryStore::open_at(id, &cache).unwrap();
         store.record(record(3)).unwrap();
         let snapshot = store.snapshot(10).unwrap();
         assert_eq!(snapshot.records.len(), 1);
@@ -797,7 +807,9 @@ mod tests {
     #[test]
     fn recorder_waits_for_attachment_and_switches_exclusive_session_writers() {
         let root = tempfile::tempdir().unwrap();
+        let cache = root.path().join("cache");
         let mut recorder = HistoryRecorder::new("e-dsh");
+        recorder.root = Ok(cache.clone());
         let before = e_tui::AgentEvent::Timeline(e_tui::agent::TimelineEvent::Snapshot {
             records: Vec::new(),
             truncated: false,
@@ -826,8 +838,9 @@ mod tests {
     #[test]
     fn recorder_loads_existing_trace_metrics_for_native_snapshot_enrichment() {
         let root = tempfile::tempdir().unwrap();
+        let cache = root.path().join("cache");
         let id = identity(root.path(), "session");
-        let store = HistoryStore::open(id).unwrap();
+        let store = HistoryStore::open_at(id, &cache).unwrap();
         store
             .record(ExecutionRecord {
                 sequence: 1,
@@ -865,6 +878,7 @@ mod tests {
         drop(store);
 
         let mut recorder = HistoryRecorder::new("e-dsh");
+        recorder.root = Ok(cache.clone());
         recorder.observe(&attached(root.path(), "session")).unwrap();
         let mut event = e_tui::AgentEvent::Timeline(e_tui::agent::TimelineEvent::Snapshot {
             records: vec![e_tui::agent::timeline::TimelineRecord {
@@ -906,22 +920,23 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_cwd_and_malformed_records_are_explicit() {
+    fn unavailable_root_and_malformed_records_are_explicit() {
         let root = tempfile::tempdir().unwrap();
+        let cache = root.path().join("cache");
         let blocked = root.path().join("not-a-directory");
         fs::write(&blocked, "file").unwrap();
-        assert!(HistoryStore::open(identity(&blocked, "session")).is_err());
+        assert!(HistoryStore::open_at(identity(root.path(), "session"), &blocked).is_err());
 
         let id = identity(root.path(), "session");
-        let path = trace_path(&id);
-        drop(HistoryStore::open(id.clone()).unwrap());
+        let path = trace_path(&cache, &id).unwrap();
+        drop(HistoryStore::open_at(id.clone(), &cache).unwrap());
         OpenOptions::new()
             .append(true)
             .open(&path)
             .unwrap()
             .write_all(b"{malformed}\n")
             .unwrap();
-        let store = HistoryStore::open(id).unwrap();
+        let store = HistoryStore::open_at(id, &cache).unwrap();
         assert!(store
             .snapshot(10)
             .unwrap()
@@ -933,8 +948,9 @@ mod tests {
     #[test]
     fn identity_version_and_bounded_snapshot_are_checked() {
         let root = tempfile::tempdir().unwrap();
+        let cache = root.path().join("cache");
         let id = identity(root.path(), "session");
-        let store = HistoryStore::open(id.clone()).unwrap();
+        let store = HistoryStore::open_at(id.clone(), &cache).unwrap();
         for sequence in 0..4 {
             store.record(record(sequence)).unwrap();
         }
@@ -949,19 +965,19 @@ mod tests {
         assert!(!second_page.has_more);
         assert!(second_page.records.iter().all(|record| record.sequence < 4));
         drop(store);
-        let path = trace_path(&id);
+        let path = trace_path(&cache, &id).unwrap();
         let source = fs::read_to_string(&path).unwrap();
         fs::write(
             &path,
             source.replacen("\"session_id\":\"session\"", "\"session_id\":\"other\"", 1),
         )
         .unwrap();
-        assert!(HistoryStore::open(id.clone())
+        assert!(HistoryStore::open_at(id.clone(), &cache)
             .err()
             .unwrap()
             .contains("identity"));
         fs::write(&path, source.replacen("\"version\":1", "\"version\":99", 1)).unwrap();
-        assert!(HistoryStore::open(id)
+        assert!(HistoryStore::open_at(id, &cache)
             .err()
             .unwrap()
             .contains("unsupported"));

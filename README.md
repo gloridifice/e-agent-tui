@@ -86,11 +86,11 @@ You can run `/econfig` in `e` to open or show the config path of your device.
 
 ### Execution history
 
-While `dshe` or `pie` is attached to a session, it records output-free execution metadata under the session's actual working directory: `.e/e-dsh/execution-history/` or `.e/e-pi/execution-history/`. The trace contains commands, references, timings, outcomes, and observed line counts, but not tool output, file contents, patches, or model text. Commands themselves can contain sensitive values, so review a trace before sharing it.
+While `dshe` or `pie` is attached to a session, it records output-free execution metadata under `<e-config>/cache/e-dsh/history/` or `<e-config>/cache/e-pi/history/`, using the [shared configuration directory](#config). Each history root contains a `workspaces.json` mapping its workspace folders to working-directory paths. The trace contains commands, references, timings, outcomes, and observed line counts, but not tool output, file contents, patches, or model text. Commands themselves can contain sensitive values, so review a trace before sharing it.
 
 Use `/history` (or `/history show`) to open the session's 50 longest measured operations in the message pane, leaving split Preview visible. `/history path` inserts the absolute trace path, `/history copy` copies chronological history, and `/history copy-10` copies the ten longest measured operations. In the page, `j`/`k`, `d`/`u`, `f`/`b`, PageUp/PageDown, mouse wheel, and `q`/Esc navigate or exit. These keys are configurable in the `full_screen` scope.
 
-Recording covers activity observed while an `e` client is attached. It follows the session cwd exactly and does not move storage to a Git root.
+Recording covers activity observed while an `e` client is attached. Workspaces follow the confirmed session cwd without Git-root promotion. Legacy project-local histories are neither read nor migrated; project files and native backend sessions remain untouched. Traces are not automatically deleted despite living under `cache`.
 
 ### Key mapping
 

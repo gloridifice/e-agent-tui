@@ -1,22 +1,28 @@
 # session-execution-history Specification
 
 ## Purpose
-Provide discoverable project-local execution traces with reliable timing and activity metrics, plus terminal inspection and human-readable audit exports without retaining tool output.
+Provide discoverable workspace-scoped execution traces in centralized frontend storage with reliable timing and activity metrics, plus terminal inspection and human-readable audit exports without retaining tool output.
+
 ## Requirements
+
 ### Requirement: Session-local execution files
-For each materialized session observed through `pie` or `dshe`, the client SHALL record execution history in `<session.cwd>/.e/e-pi/execution-history/<session-key>.jsonl` or `<session.cwd>/.e/e-dsh/execution-history/<session-key>.jsonl` respectively. The directory SHALL follow the backend-confirmed session cwd without Git-root promotion. Session keys SHALL be stable and path-safe; file headers SHALL retain and validate provider/session identity and cwd. Resume in the same cwd SHALL append to the same file with a new run identity. Native backend session storage SHALL remain unchanged. Automatic ignore setup SHALL ignore only these execution-history directories and preserve existing `.e/.gitignore` entries. The client SHALL NOT automatically delete old traces or silently relocate writes to a user directory.
+For each materialized session observed through `pie` or `dshe`, the client SHALL record execution history exclusively in `<e-config>/cache/e-pi/history/<workspace-key>/<session-key>.jsonl` or `<e-config>/cache/e-dsh/history/<workspace-key>/<session-key>.jsonl` respectively. Workspace identity SHALL follow the backend-confirmed absolute session cwd using versioned lexical normalization without Git-root promotion, symlink resolution, or blanket case folding. Workspace and session keys SHALL be stable and path-safe. File headers SHALL retain and validate provider/session identity, original cwd, and normalized workspace identity; equivalent normalized cwd spellings SHALL resolve to the same trace. Resume SHALL append to the same file with a new run identity. Native backend session storage SHALL remain unchanged. The client SHALL NOT read, migrate, delete, or modify legacy project-local execution histories or ignore files. It SHALL NOT automatically delete old traces or fall back to project-local storage when the user configuration root is unavailable.
 
 #### Scenario: Launch from a repository subdirectory
 - **WHEN** the backend confirms that the session cwd is a repository subdirectory
-- **THEN** the trace is stored beneath that subdirectory's `.e`, not beneath the repository root
+- **THEN** the trace is stored in that subdirectory's distinct workspace bucket under the frontend's central history root, not in the project or a Git-root bucket
 
 #### Scenario: Resume and switch
 - **WHEN** a previously recorded session is resumed and later replaced with a different session
-- **THEN** its existing file is appended for the resumed run and subsequent operations use the replacement session's confirmed identity and cwd
+- **THEN** its existing central file is appended for the resumed run and subsequent operations use the replacement session's confirmed identity and cwd
 
 #### Scenario: Deferred new conversation
 - **WHEN** a client-only new-conversation draft has no materialized session
 - **THEN** no trace is created for it and history commands do not expose the retained previous session's trace
+
+#### Scenario: Legacy history exists
+- **WHEN** an attached session has project-local execution history but no central trace
+- **THEN** recording starts a new central trace without reading or importing the legacy file, recovering its metrics, or changing project files
 
 ### Requirement: Output-free versioned execution records
 The UTF-8 JSONL format SHALL declare its schema version and use ordered event identities, run identity, operation/call identity, and available turn/parent correlation. Records SHALL retain operation kind/name, command or path summary, start/end timestamps with explicit units, duration and timing source, outcome, and optional typed line metrics with truncation provenance. Starts and terminal events SHALL be independently recorded so incomplete operations remain detectable. Session attachment, detachment, and observed turn/model-operation boundaries SHALL provide execution context without storing conversational text. Capture SHALL NOT persist file bodies, replacement text, patches, tool stdout/stderr, reasoning, assistant answers, full prompts, or raw generic argument objects. Known tools SHALL use allowlisted summary fields; unknown tools SHALL retain identity without raw arguments. Known credential fields SHALL be redacted, with command text explicitly treated as potentially sensitive rather than guaranteed secret-free.
@@ -63,8 +69,12 @@ Recorded line metrics SHALL use the same normalized values and truncation semant
 Trace writes and queries SHALL run outside UI state locks, preserve event order, and remain bounded without silently dropping records. A start SHALL be queued for persistence when observed rather than held until completion; accepted writes SHALL be flushed on orderly shutdown and before a successful path/export snapshot response. Power-loss durability SHALL NOT be claimed. Readers SHALL distinguish a partial final record, malformed records, unsupported versions, and identity mismatches from valid complete history; readable valid records SHALL remain inspectable with a visible incompleteness diagnostic. Competing writers SHALL not interleave or corrupt a session file; an unavailable writer, queue overflow, or I/O failure SHALL visibly mark recording incomplete/unavailable while leaving normal agent interaction usable. Queries SHALL be scoped by session/request identity and a finite record watermark. No operation SHALL silently return partial clipboard content as a complete export.
 
 #### Scenario: Read-only cwd or competing writer
-- **WHEN** a trace cannot be safely opened for writing
-- **THEN** the client reports recording unavailable, continues the session, and does not fall back to a hidden alternate location
+- **WHEN** the session cwd is read-only but central storage is writable and no competing writer holds the session trace
+- **THEN** recording succeeds without writing into cwd; a competing session writer still causes an explicit recording-unavailable failure
+
+#### Scenario: Unavailable central root or competing writer
+- **WHEN** a trace cannot be safely opened in the central history root or the user configuration root cannot be resolved
+- **THEN** the client reports recording unavailable, continues the session, and does not fall back to another location
 
 #### Scenario: Truncated final JSONL record
 - **WHEN** a crash leaves valid complete records followed by an incomplete line
@@ -170,3 +180,17 @@ History separators and bottom key hints SHALL use the theme's Umber-equivalent t
 - **WHEN** equal measured durations and an operation with unknown duration occur in a session
 - **THEN** equal durations receive ranks in execution order and the unknown duration is excluded rather than displacing a measured operation
 
+### Requirement: Recoverable workspace registry
+Each frontend history root SHALL contain a versioned `workspaces.json` mapping workspace directory keys to normalized absolute workspace paths and readable original paths. Concurrent registration SHALL preserve unrelated mappings through bounded cross-process locking and atomic replacement. Event appends SHALL NOT rewrite this registry. Missing or malformed registries SHALL be recoverable from validated headers in the new history root only; malformed originals SHALL be preserved before replacement. Unsupported versions and identity conflicts SHALL be explicit failures rather than silently overwritten mappings. Moving a workspace SHALL create a distinct bucket rather than guessing an association with an old path.
+
+#### Scenario: Concurrent workspace registration
+- **WHEN** different clients register different workspaces in the same frontend history root
+- **THEN** both mappings survive and their session records remain in separate buckets
+
+#### Scenario: Missing or corrupt registry
+- **WHEN** the registry is missing or malformed and valid central trace headers exist
+- **THEN** their workspace mappings are recovered, any malformed registry is preserved, and existing session records remain intact
+
+#### Scenario: Conflicting or unsupported metadata
+- **WHEN** a registry or trace claims an incompatible version or a directory mapping inconsistent with its workspace identity
+- **THEN** recording reports the conflict without overwriting that metadata or appending to the mismatched trace

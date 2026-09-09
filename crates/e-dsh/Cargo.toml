@@ -45,6 +45,8 @@ base64 = "0.22"
 wasmi = "2"
 toml = "1.1"
 directories = "6"
+sha2 = "0.11"
+tempfile = "3"
 # Windows console input mode + native modifier sampling for the raw-input path.
 winapi = { version = "0.3", features = ["winbase", "wincon", "winuser", "processenv", "consoleapi", "handleapi"] }
 
@@ -53,5 +55,4 @@ serde_json = "1"
 sha2 = "0.11"
 
 [dev-dependencies]
-tempfile = "3"
 e-tui = { workspace = true, features = ["test-support"] }

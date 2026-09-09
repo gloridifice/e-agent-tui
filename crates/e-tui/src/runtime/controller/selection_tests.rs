@@ -187,6 +187,60 @@ fn locate(buffer: &Buffer, needle: &str) -> Option<(u16, u16)> {
     None
 }
 
+#[tokio::test]
+async fn inbound_link_validation_completion_renders_and_copies_the_tagged_url() {
+    use crate::agent::{TimelineEvent, TimelineFact, TimelineRecord};
+    let mut h = Harness::new();
+    h.state.lock().unwrap().config.message_chars_per_second =
+        crate::config::RevealRate::new(0).unwrap();
+    let mut interaction = std::mem::take(&mut h.state.lock().unwrap().interaction);
+    let actions = RuntimeController::apply_agent(
+        AgentEvent::Timeline(TimelineEvent::Append(TimelineRecord {
+            sequence: Some(1),
+            time_ms: None,
+            surface: None,
+            source_sequences: Vec::new(),
+            fact: TimelineFact::AssistantMessage {
+                text: "请检查 [Rust 文档](https://www.rust-lang.org/learn)。".into(),
+                reasoning: String::new(),
+                content: Vec::new(),
+                turn: Some(1),
+                step: Some(1),
+                usage: None,
+            },
+        })),
+        &h.state,
+        &mut RuntimeUiState {
+            scroll: &mut interaction.scroll,
+            input: &mut interaction.input,
+            input_page: &mut interaction.input_page,
+            approval: &mut interaction.approval,
+            question: &mut interaction.question,
+            queue: &mut interaction.queue,
+        },
+    );
+    h.state.lock().unwrap().interaction = interaction;
+    let mut agent = ScriptedAgentRequestPort::default();
+    let mut ports = ScriptedUiActionPorts::successful(h.now);
+    let execution = execute_ui_actions(actions, &mut agent, &mut h.scheduler, &mut ports).await;
+    assert!(execution
+        .completed
+        .iter()
+        .any(|result| matches!(result, EffectResult::LinksValidated { .. })));
+    for result in execution.completed {
+        RuntimeController::apply_effect_result(result, &h.state, h.now);
+    }
+    h.render();
+    h.locate("https://www.rust-lang.org/learn~1");
+    h.route(TerminalRoute::Global(crate::key_mapping::Action::CopyLink));
+    let copy = h.route(TerminalRoute::Ordinary(KeyEvent::new(
+        KeyCode::Char('1'),
+        KeyModifiers::NONE,
+    )));
+    execute_ui_actions(copy, &mut agent, &mut h.scheduler, &mut ports).await;
+    assert_eq!(ports.clipboard_writes, ["https://www.rust-lang.org/learn"]);
+}
+
 #[test]
 fn selection_copies_composer_accessories_status_path_and_rules() {
     let mut h = Harness::new();

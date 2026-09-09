@@ -465,6 +465,9 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
                 let execution =
                     execute_ui_actions(effects, &mut agent, &mut scheduler, &mut runtime_ports)
                         .await;
+                for result in execution.completed {
+                    RuntimeController::apply_effect_result(result, &state_r, Instant::now());
+                }
                 if let Some(reason) = execution.fatal {
                     fatal = Some(reason);
                     break 'outer;
@@ -603,6 +606,9 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
                 &mut runtime_ports,
             )
             .await;
+            for result in execution.completed {
+                RuntimeController::apply_effect_result(result, &state_r, Instant::now());
+            }
             if let Some(reason) = execution.fatal {
                 fatal = Some(reason);
                 break 'outer;

@@ -152,6 +152,29 @@ fn code_only_source(source: &str) -> String {
 }
 
 #[test]
+fn runners_deliver_completions_from_every_action_batch() {
+    for (name, source) in [
+        ("dshe", include_str!("../src/main.rs")),
+        ("pie", include_str!("../../e-pi/src/main.rs")),
+    ] {
+        let source = production_source(source);
+        let batches: Vec<_> = source.split("let execution =").skip(1).collect();
+        assert!(!batches.is_empty(), "{name} must execute action batches");
+        for (index, batch) in batches.iter().enumerate() {
+            assert!(batch.contains("execute_ui_actions("));
+            assert!(
+                batch.contains("for result in execution.completed"),
+                "{name} action batch {index} drops completion results"
+            );
+            assert!(
+                batch.contains("RuntimeController::apply_effect_result("),
+                "{name} action batch {index} does not reduce results"
+            );
+        }
+    }
+}
+
+#[test]
 fn runners_process_admitted_input_before_claiming_queued_prompts() {
     for (name, source) in [
         ("dshe", include_str!("../src/main.rs")),

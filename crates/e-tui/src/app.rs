@@ -122,6 +122,7 @@ pub struct SessionModel {
     pub token_usage: TokenUsage,
     pub cost_usd: Option<f64>,
     pub last_usage_sample: Option<(Option<u64>, Option<u64>, TokenUsage)>,
+    pub context_usage_unknown: bool,
     pub session_title: Option<String>,
     pub session_cwd: Option<String>,
     pub snapshot_truncated: bool,
@@ -147,6 +148,7 @@ impl Default for SessionModel {
             token_usage: TokenUsage::default(),
             cost_usd: None,
             last_usage_sample: None,
+            context_usage_unknown: false,
             session_title: None,
             session_cwd: None,
             snapshot_truncated: false,
@@ -229,6 +231,7 @@ impl SessionModel {
             .saturating_sub(previous.cache_write_tokens)
             .saturating_add(usage.cache_write_tokens);
         self.last_usage_sample = Some((turn, step, usage));
+        self.context_usage_unknown = false;
     }
 }
 

@@ -52,6 +52,7 @@ pub fn project(event: &TimelineRecord) -> Option<WorkflowProjection> {
             key: format!("{run_id}:{member_seq}"),
             mutation: ActivityMutation::Settle {
                 id: DisplayId::correlated("workflow-agent", &format!("{run_id}:{member_seq}")),
+                label: None,
                 state: outcome_state(*outcome),
                 summary: None,
             },
@@ -63,6 +64,7 @@ pub fn project(event: &TimelineRecord) -> Option<WorkflowProjection> {
             key: run_id.clone(),
             mutation: ActivityMutation::Settle {
                 id: DisplayId::correlated("workflow", run_id),
+                label: None,
                 state: outcome_state(*outcome),
                 summary: None,
             },
@@ -95,6 +97,7 @@ pub fn project(event: &TimelineRecord) -> Option<WorkflowProjection> {
             key: compaction_id.clone(),
             mutation: ActivityMutation::Settle {
                 id: DisplayId::correlated("compaction", compaction_id),
+                label: error.is_none().then(|| "Compacting complete".into()),
                 state: if error.is_none() {
                     ActivityState::Success
                 } else {

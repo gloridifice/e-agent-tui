@@ -122,7 +122,14 @@ pub(super) fn render_status(
         .then(|| state.catalogs.current_model_context_window())
         .flatten()
     {
-        let percent = state.session.context_usage_percent(context_window);
+        let percent = if state.session.context_usage_unknown {
+            "?".to_owned()
+        } else {
+            state
+                .session
+                .context_usage_percent(context_window)
+                .to_string()
+        };
         left_spans.push(Span::styled(" ", dim));
         left_spans.push(Span::styled(
             format!("{percent}%/{}", format_tokens(context_window)),
@@ -448,6 +455,22 @@ mod tests {
             effort_at > model_at && context_at > effort_at,
             "effort and context must follow the model entry: {line:?}"
         );
+        state.session.context_usage_unknown = true;
+        terminal
+            .draw(|frame| {
+                render_status(
+                    frame,
+                    frame.area(),
+                    &state,
+                    &ScrollState::default(),
+                    &Theme::ferra(),
+                )
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let line = (0..80).map(|x| buffer[(x, 0)].symbol()).collect::<String>();
+        assert!(line.contains("?%/276k"), "post-compaction context: {line}");
+        assert!(!line.contains("30%"));
     }
 
     #[test]

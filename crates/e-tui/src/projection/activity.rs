@@ -18,6 +18,7 @@ pub struct PendingToolResult {
 
 #[derive(Debug, Clone)]
 pub struct PendingActivityResult {
+    pub label: Option<String>,
     pub state: ActivityState,
     pub summary: Option<String>,
 }
@@ -27,6 +28,7 @@ pub enum ActivityMutation {
     Upsert(ActivityRow),
     Settle {
         id: DisplayId,
+        label: Option<String>,
         state: ActivityState,
         summary: Option<String>,
     },

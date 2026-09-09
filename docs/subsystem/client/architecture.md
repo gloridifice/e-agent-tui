@@ -297,7 +297,10 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   attachment, a localized loading label follows the frontend indicator. The model, CH, and effort
   entries are omitted when their source data is unavailable; context appears when the exact current model has a
   typed context window, uses zero before the first assistant usage, then uses the latest sample's
-  input/output/cache-read/cache-write total, and is hidden for a deferred-new draft. The effort entry is hidden
+  input/output/cache-read/cache-write total, and is hidden for a deferred-new draft. Successful compaction replaces
+  its activity label with `Compacting complete` and makes context usage `?%` until a new nonzero assistant usage
+  sample arrives; historical prepend preserves that known/unknown state without discarding cumulative totals.
+  The effort entry is hidden
   unless the exact current route exposes reasoning
   metadata, resolves `current.reasoningEffort` then `reasoning.defaultEffort` then `Default`, and never
   invalidates the transcript cache. The right side displays the effective help binding and localized Help label, reserved before left-side clipping and

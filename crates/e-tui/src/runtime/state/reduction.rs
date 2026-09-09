@@ -43,6 +43,9 @@ impl RuntimeState {
         let id = row.id.clone();
         if let Some(pending) = self.projector.take_activity_result(&id) {
             row.state = pending.state;
+            if let Some(label) = pending.label {
+                row.label = label;
+            }
             if let Some(summary) = pending.summary {
                 row.summary = summary;
             }
@@ -96,6 +99,7 @@ impl RuntimeState {
         &mut self,
         id: &DisplayId,
         state: ActivityState,
+        label: Option<&str>,
         summary: Option<&str>,
     ) -> bool {
         let mut settled = false;
@@ -105,6 +109,9 @@ impl RuntimeState {
             _ => None,
         }) {
             row.state = state;
+            if let Some(label) = label {
+                row.label = label.to_owned();
+            }
             if let Some(summary) = summary {
                 row.summary = summary.to_owned();
             }
@@ -113,6 +120,9 @@ impl RuntimeState {
         if let Some(node) = self.transcript.get_mut(id) {
             if let DisplayItem::Activity(row) = &mut node.item {
                 row.state = state;
+                if let Some(label) = label {
+                    row.label = label.to_owned();
+                }
                 if let Some(summary) = summary {
                     row.summary = summary.to_owned();
                 }
@@ -139,6 +149,7 @@ impl RuntimeState {
             } else {
                 ActivityState::Failure
             },
+            None,
             summary,
         )
     }
@@ -147,11 +158,18 @@ impl RuntimeState {
         &mut self,
         id: DisplayId,
         state: ActivityState,
+        label: Option<String>,
         summary: Option<String>,
     ) {
-        if !self.settle_activity_state(&id, state, summary.as_deref()) {
-            self.projector
-                .remember_activity_result(id, PendingActivityResult { state, summary });
+        if !self.settle_activity_state(&id, state, label.as_deref(), summary.as_deref()) {
+            self.projector.remember_activity_result(
+                id,
+                PendingActivityResult {
+                    state,
+                    label,
+                    summary,
+                },
+            );
         }
     }
 
@@ -213,7 +231,7 @@ impl RuntimeState {
             })
             .collect::<Vec<_>>();
         for id in ids {
-            self.settle_activity_state(&id, ActivityState::Success, None);
+            self.settle_activity_state(&id, ActivityState::Success, None, None);
         }
     }
 
@@ -1122,6 +1140,12 @@ impl RuntimeState {
                     self.apply_activity_mutation(mutation);
                 }
                 WorkflowProjection::Compaction { key, mutation } => {
+                    if matches!(
+                        event.fact,
+                        TimelineFact::CompactionFinished { error: None, .. }
+                    ) {
+                        self.session.context_usage_unknown = true;
+                    }
                     self.projector
                         .compactions
                         .insert(key, mutation_id(&mutation));
@@ -1151,8 +1175,13 @@ impl RuntimeState {
                 }
                 self.upsert_activity(row);
             }
-            ActivityMutation::Settle { id, state, summary } => {
-                self.settle_activity_state_or_remember(id, state, summary);
+            ActivityMutation::Settle {
+                id,
+                state,
+                label,
+                summary,
+            } => {
+                self.settle_activity_state_or_remember(id, state, label, summary);
             }
             ActivityMutation::Enrich {
                 id,
@@ -1262,6 +1291,7 @@ impl RuntimeState {
         // Token totals should absorb older pages, but replacement bookkeeping
         // must keep pointing at the newest loaded request.
         let newest_usage_sample = self.session.last_usage_sample;
+        let context_usage_unknown = self.session.context_usage_unknown;
         #[cfg(test)]
         let saved = std::mem::take(&mut self.msgs);
         let saved_transcript = std::mem::take(&mut self.transcript);
@@ -1279,6 +1309,7 @@ impl RuntimeState {
         if newest_usage_sample.is_some() {
             self.session.last_usage_sample = newest_usage_sample;
         }
+        self.session.context_usage_unknown = context_usage_unknown;
         #[cfg(test)]
         let legacy_added = {
             let mut added = self.msgs.len();

@@ -46,6 +46,7 @@ pub fn project(
                 key: command_id.clone(),
                 mutation: ActivityMutation::Settle {
                     id: DisplayId::correlated("command", command_id),
+                    label: None,
                     state: if *success {
                         ActivityState::Success
                     } else {
@@ -91,6 +92,7 @@ pub fn project(
                 key: sub_call_id.clone(),
                 mutation: ActivityMutation::Settle {
                     id: DisplayId::correlated("code-dispatch", sub_call_id),
+                    label: None,
                     state: if *failed {
                         ActivityState::Failure
                     } else {

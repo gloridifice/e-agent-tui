@@ -459,6 +459,7 @@ impl RuntimeState {
         self.session.token_usage = TokenUsage::default();
         self.session.cost_usd = None;
         self.session.last_usage_sample = None;
+        self.session.context_usage_unknown = false;
         self.session_state_events.clear();
         self.render.units.clear();
         self.render.expanded.clear();
@@ -608,6 +609,96 @@ mod tests {
             source_sequences: Vec::new(),
             fact,
         }
+    }
+
+    #[test]
+    fn compaction_feedback_waits_for_fresh_usage_and_survives_history() {
+        let mut state = RuntimeState::default();
+        let usage = TokenUsage {
+            input_tokens: 400,
+            ..Default::default()
+        };
+        state.session.record_usage(Some(2), Some(1), Some(usage));
+        let start = record(10, TimelineFact::CompactionStarted { id: "c".into() });
+        let finish = record(
+            11,
+            TimelineFact::CompactionFinished {
+                id: "c".into(),
+                error: None,
+            },
+        );
+        state.apply_host_event(&start);
+        state.apply_host_event(&finish);
+        let id = DisplayId::correlated("compaction", "c");
+        let DisplayItem::Activity(row) = &state.transcript.get(&id).unwrap().item else {
+            panic!("activity")
+        };
+        assert_eq!(row.label, "Compacting complete");
+        assert_eq!(row.state, ActivityState::Success);
+        assert!(state.session.context_usage_unknown);
+        assert_eq!(state.session.token_usage, usage);
+        state.session.record_usage(Some(3), Some(1), None);
+        state
+            .session
+            .record_usage(Some(3), Some(1), Some(TokenUsage::default()));
+        assert!(state.session.context_usage_unknown);
+        state.prepend_host_events(&[record(
+            1,
+            TimelineFact::AssistantMessage {
+                text: "old".into(),
+                reasoning: String::new(),
+                content: Vec::new(),
+                turn: Some(1),
+                step: Some(1),
+                usage: Some(usage),
+            },
+        )]);
+        assert!(state.session.context_usage_unknown);
+        state.session.record_usage(
+            Some(3),
+            Some(1),
+            Some(TokenUsage {
+                input_tokens: 60,
+                ..Default::default()
+            }),
+        );
+        assert!(!state.session.context_usage_unknown);
+        assert_eq!(state.session.context_usage_percent(1_000), 6);
+        state.apply_host_event(&record(
+            12,
+            TimelineFact::CompactionFinished {
+                id: "failed".into(),
+                error: Some("failed".into()),
+            },
+        ));
+        assert!(!state.session.context_usage_unknown);
+    }
+
+    #[test]
+    fn compaction_feedback_settlement_before_start_preserves_completed_label() {
+        let mut state = RuntimeState::default();
+        state.apply_host_event(&record(
+            2,
+            TimelineFact::CompactionFinished {
+                id: "c".into(),
+                error: None,
+            },
+        ));
+        state.prepend_host_events(&[record(
+            1,
+            TimelineFact::CompactionStarted { id: "c".into() },
+        )]);
+        let DisplayItem::Activity(row) = &state
+            .transcript
+            .get(&DisplayId::correlated("compaction", "c"))
+            .unwrap()
+            .item
+        else {
+            panic!("activity")
+        };
+        assert_eq!(row.label, "Compacting complete");
+        assert_eq!(row.state, ActivityState::Success);
+        assert!(state.session.context_usage_unknown);
     }
 
     fn edit_call() -> ToolActivity {

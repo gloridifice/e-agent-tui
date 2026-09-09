@@ -87,9 +87,18 @@ pub fn render(
                 } else {
                     LineRevealMode::Block
                 };
+                let source = match &preview.state {
+                    PreviewState::Ready(
+                        PreviewContent::Markdown(source)
+                        | PreviewContent::Reasoning(source)
+                        | PreviewContent::MutedMarkdown(source),
+                    ) => Some(source.as_str()),
+                    _ => None,
+                };
                 let track = preview.reveal.get_or_insert_with(LineRevealTrack::default);
-                track.reconcile_mode(
+                track.reconcile_source(
                     &layout.lines,
+                    source,
                     std::time::Instant::now(),
                     config.preview_lines_per_second.get(),
                     mode,

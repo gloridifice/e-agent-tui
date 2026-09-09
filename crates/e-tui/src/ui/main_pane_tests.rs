@@ -1727,6 +1727,48 @@ fn fresh_live_reasoning_preview_remains_row_paced() {
 }
 
 #[test]
+fn streaming_preview_code_keeps_visible_rows_when_fence_header_changes() {
+    let mut state = TuiApp::default();
+    force_preview_only(&mut state);
+    let target = |revision, source: &str| crate::preview::PreviewTarget {
+        id: "reasoning:code".into(),
+        reference: crate::preview::PreviewRef::Inline {
+            key: crate::preview::PreviewKey("reasoning:code".into()),
+            revision: crate::preview::PreviewRevision(revision),
+            content: PreviewContent::Reasoning(source.into()),
+        },
+    };
+    let mut source = "```rust\nlet first = 1;".to_owned();
+    state.preview.select(Some(target(1, &source)));
+    let input = InputState::new(&state.config);
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+    for revision in 2..=5 {
+        for _ in 0..32 {
+            let Some(due) = state.preview.reveal_deadline() else {
+                break;
+            };
+            state
+                .preview
+                .tick_reveal(due, state.config.preview_lines_per_second.get());
+        }
+        source.push_str("\nlet next = 2;");
+        state.preview.select(Some(target(revision, &source)));
+        terminal
+            .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+            .unwrap();
+        assert!(
+            find_text(terminal.backend().buffer(), "let first = 1;").is_some(),
+            "revision {revision} replayed visible code"
+        );
+    }
+}
+
+#[test]
 fn reading_reasoning_preview_fades_as_one_complete_page() {
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();

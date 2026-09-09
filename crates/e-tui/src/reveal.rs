@@ -445,6 +445,7 @@ pub enum LineRevealMode {
 #[derive(Debug, Clone, Default)]
 pub struct LineRevealTrack {
     signature: RevealSignature,
+    source: Option<String>,
     row_ends: Vec<usize>,
     initialized: bool,
     revealed: usize,
@@ -471,6 +472,23 @@ impl LineRevealTrack {
         lines_per_second: u16,
         mode: LineRevealMode,
     ) -> bool {
+        self.reconcile_source(wrapped_lines, None, now, lines_per_second, mode)
+    }
+
+    pub fn reconcile_source(
+        &mut self,
+        wrapped_lines: &[Line<'static>],
+        source: Option<&str>,
+        now: Instant,
+        lines_per_second: u16,
+        mode: LineRevealMode,
+    ) -> bool {
+        let preserve_frontier = source
+            .zip(self.source.as_deref())
+            .is_some_and(|(current, previous)| current.starts_with(previous));
+        if self.source.as_deref() != source {
+            self.source = source.map(str::to_owned);
+        }
         let signature = RevealSignature::from_lines(wrapped_lines);
         let target_len = signature.grapheme_count();
         let row_ends = row_ends(wrapped_lines);
@@ -482,10 +500,13 @@ impl LineRevealTrack {
             self.signature = signature;
         } else if self.signature != signature {
             let common = common_prefix_graphemes(&self.signature, &signature);
-            if common < self.revealed {
-                self.revealed = common;
-                changed = true;
-            }
+            let frontier = if preserve_frontier {
+                self.revealed.min(target_len)
+            } else {
+                self.revealed.min(common)
+            };
+            changed |= self.revealed != frontier;
+            self.revealed = frontier;
             self.fade.truncate(self.revealed);
             self.signature = signature;
         }
@@ -1026,6 +1047,43 @@ mod tests {
                 false
             )),
             "abc|def"
+        );
+    }
+
+    #[test]
+    fn preview_code_append_preserves_progress_but_replacement_reconciles() {
+        let now = Instant::now();
+        let mut track = LineRevealTrack::default();
+        track.reconcile_source(
+            &[Line::from("rust 1 line"), Line::from("first")],
+            Some("```rs\nfirst"),
+            now,
+            0,
+            LineRevealMode::Rows,
+        );
+        let old_frontier = track.revealed();
+        track.reconcile_source(
+            &[
+                Line::from("rust 2 lines"),
+                Line::from("first"),
+                Line::from("second"),
+            ],
+            Some("```rs\nfirst\nsecond"),
+            now,
+            30,
+            LineRevealMode::Rows,
+        );
+        assert!(track.revealed() >= old_frontier);
+        track.reconcile_source(
+            &[Line::from("replacement"), Line::from("new tail")],
+            Some("replacement\nnew tail"),
+            now,
+            30,
+            LineRevealMode::Rows,
+        );
+        assert!(
+            track.revealed() < old_frontier,
+            "replacement must not inherit an unrelated frontier"
         );
     }
 

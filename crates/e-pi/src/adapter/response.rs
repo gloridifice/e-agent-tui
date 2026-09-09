@@ -8,6 +8,10 @@ use serde_json::Value;
 use super::{model, session, AdapterOutput, NewSubmission, PiAdapter};
 
 pub(super) fn dispatch(adapter: &mut PiAdapter, record: RpcRecord) -> AdapterOutput {
+    if let Some(mut output) = super::compaction::response(adapter, &record) {
+        drain_deferred(adapter, &mut output);
+        return output;
+    }
     if let Some(mut output) = super::queue::response(adapter, &record) {
         drain_deferred(adapter, &mut output);
         return output;
@@ -16,8 +20,19 @@ pub(super) fn dispatch(adapter: &mut PiAdapter, record: RpcRecord) -> AdapterOut
         .configuration_request
         .clone()
         .filter(|id| record.string("id") == Some(id.as_str()));
+    let skill = adapter
+        .pending_skill_prompt
+        .as_ref()
+        .is_some_and(|pending| {
+            record.string("id") == Some(pending.id.as_str())
+                && record.string("command") == Some("prompt")
+        });
+    let successful = record.bool("success") == Some(true);
     let failed = record.bool("success") == Some(false);
     let mut output = dispatch_response(adapter, record);
+    if skill {
+        output.merge(finish_skill_prompt(adapter, successful));
+    }
     if completed.is_some() && adapter.configuration_request == completed {
         adapter.configuration_request = None;
         if failed && !adapter.deferred_requests.is_empty() {
@@ -52,13 +67,43 @@ pub(super) fn dispatch(adapter: &mut PiAdapter, record: RpcRecord) -> AdapterOut
                             .into(),
                 }));
         }
-        drain_deferred(adapter, &mut output);
     }
+    drain_deferred(adapter, &mut output);
+    output
+}
+
+fn finish_skill_prompt(adapter: &mut PiAdapter, successful: bool) -> AdapterOutput {
+    let Some(pending) = adapter.pending_skill_prompt.take() else {
+        return AdapterOutput::default();
+    };
+    if !successful || pending.session_id != adapter.session_id {
+        return AdapterOutput::default();
+    }
+    let Some(text) = pending.trailing_text else {
+        return AdapterOutput::default();
+    };
+    let id = adapter.request_id("prompt");
+    session::note_first_user_title(adapter, &text);
+    adapter.pending_skill_prompt = Some(super::PendingSkillPrompt {
+        id: id.clone(),
+        session_id: pending.session_id,
+        trailing_text: None,
+    });
+    let mut output = AdapterOutput::command(RpcCommand::Prompt {
+        id: Some(id),
+        message: text,
+        streaming_behavior: Some(crate::protocol::StreamingBehavior::Steer),
+    });
+    output.events.extend(session::title_events(adapter));
     output
 }
 
 fn drain_deferred(adapter: &mut PiAdapter, output: &mut AdapterOutput) {
-    while adapter.configuration_request.is_none() && adapter.pending_queue.operation.is_none() {
+    while adapter.configuration_request.is_none()
+        && adapter.pending_queue.operation.is_none()
+        && adapter.pending_skill_prompt.is_none()
+        && adapter.pending_compaction.is_none()
+    {
         let Some(request) = adapter.deferred_requests.pop_front() else {
             break;
         };
@@ -151,11 +196,13 @@ fn dispatch_response(adapter: &mut PiAdapter, record: RpcRecord) -> AdapterOutpu
                 .as_ref()
                 .and_then(|id| adapter.pending_new.remove(id))
             {
-                output.commands.push(RpcCommand::Prompt {
-                    id: Some(adapter.request_id("prompt")),
-                    message: submission.text,
-                    streaming_behavior: None,
-                });
+                let id = adapter.request_id("prompt");
+                output.merge(super::request::prompt_command(
+                    adapter,
+                    id,
+                    submission.text,
+                    None,
+                ));
             }
             output
         }

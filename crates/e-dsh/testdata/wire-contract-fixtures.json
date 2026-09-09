@@ -1,6 +1,32 @@
 {
   "generatedFrom": "bridge/protocol-contract.json",
   "protocolVersion": 10,
+  "hostEventExtensions": {
+    "compaction/start": {
+      "minimal": {
+        "type": "compaction/start",
+        "data": {}
+      },
+      "full": {
+        "type": "compaction/start",
+        "data": {
+          "modelName": "modelName-sample"
+        }
+      }
+    },
+    "compaction/end": {
+      "minimal": {
+        "type": "compaction/end",
+        "data": {}
+      },
+      "full": {
+        "type": "compaction/end",
+        "data": {
+          "modelName": "modelName-sample"
+        }
+      }
+    }
+  },
   "client": {
     "hello": {
       "minimal": {

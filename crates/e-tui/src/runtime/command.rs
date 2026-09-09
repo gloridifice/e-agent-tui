@@ -281,6 +281,55 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
                 );
             }
         }
+        CommandAction::Compact => {
+            if has_new_conversation(context.state) {
+                set_new_conversation_notice(
+                    context.state,
+                    tr(context.language, "command.new.must_send"),
+                );
+                return outcome;
+            }
+            let args = raw_input.trim();
+            let mut parts = args.split_whitespace();
+            match parts.next() {
+                Some("set-model") => {
+                    let reference = parts.next();
+                    if parts.next().is_some() {
+                        push_error(context.state, tr(context.language, "command.compact.usage"));
+                    } else if let Some(reference) = reference {
+                        if let Some((provider, model)) =
+                            resolve_model_reference(context.model_providers, reference)
+                        {
+                            forward(
+                                format!("/compact set-model {provider}/{model}"),
+                                &mut outcome,
+                                false,
+                            );
+                        } else {
+                            push_error(
+                                context.state,
+                                tr_args(
+                                    context.language,
+                                    "command.model.not_found",
+                                    &[("reference", reference.to_owned())],
+                                ),
+                            );
+                        }
+                    } else {
+                        *context.input_page = Some(InputPageSession::compaction_model());
+                        outcome.outbound.push(AgentRequest::ModelGet);
+                    }
+                }
+                Some("unset-model") => {
+                    if parts.next().is_some() {
+                        push_error(context.state, tr(context.language, "command.compact.usage"));
+                    } else {
+                        forward("/compact unset-model".into(), &mut outcome, false);
+                    }
+                }
+                _ => forward(line, &mut outcome, true),
+            }
+        }
         CommandAction::Effort => {
             let reference = raw_input.trim();
             if reference.is_empty() {
@@ -701,6 +750,64 @@ mod tests {
                 reasoning_effort: None,
             }] if provider == "anthropic" && model == "claude-sonnet"
         ));
+    }
+
+    #[test]
+    fn compaction_model_commands_reuse_catalog_without_selecting_chat_model() {
+        let providers = vec![
+            model_provider("p", &["small", "shared"]),
+            model_provider("q", &["shared"]),
+        ];
+        for line in [
+            "/compact set-model small",
+            "/compact set-model",
+            "/compact unset-model",
+            "/compact set-model shared",
+            "/compact unset-model extra",
+        ] {
+            let state = Arc::new(Mutex::new(RuntimeState::default()));
+            let mut input_page = None;
+            let mut config = Config::default();
+            let mut paste = config.paste_placeholder_chars;
+            let mut history = config.history_limit;
+            let mut theme = config.theme();
+            let outcome = handle_local_command(
+                line.into(),
+                LocalCommandContext {
+                    language: config.language,
+                    input_page: &mut input_page,
+                    integrated_commands: &[],
+                    config: &mut config,
+                    themes: &mut Vec::new(),
+                    new_modes: &[],
+                    model_providers: &providers,
+                    current_model: None,
+                    input_paste_placeholder_chars: &mut paste,
+                    input_history_limit: &mut history,
+                    theme: &mut theme,
+                    question_open: false,
+                    approval_open: false,
+                    state: &state,
+                },
+            );
+            assert!(!outcome.starts_interruptible_command);
+            match line {
+                "/compact set-model small" => assert!(
+                    matches!(&outcome.outbound[..], [AgentRequest::Command { line, .. }] if line == "/compact set-model p/small")
+                ),
+                "/compact unset-model" => assert!(
+                    matches!(&outcome.outbound[..], [AgentRequest::Command { line, .. }] if line == "/compact unset-model")
+                ),
+                "/compact set-model" => {
+                    assert_eq!(outcome.outbound, vec![AgentRequest::ModelGet]);
+                    let page = input_page.unwrap();
+                    assert!(
+                        matches!(page.page, crate::input_page::InputPage::Model(model) if model.for_compaction)
+                    );
+                }
+                _ => assert!(outcome.outbound.is_empty()),
+            }
+        }
     }
 
     #[test]

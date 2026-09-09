@@ -35,6 +35,10 @@
     "sandbox/mode",
     "schedule/change"
   ],
+  "hostEventDataExtensions": {
+    "compaction/start": { "required": {}, "optional": { "modelName": "string" } },
+    "compaction/end": { "required": {}, "optional": { "modelName": "string" } }
+  },
   "clientMessages": [
     "hello",
     "input",

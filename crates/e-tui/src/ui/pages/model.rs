@@ -15,7 +15,14 @@ pub(super) fn render_model_page(
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("❯ ", Style::default().fg(theme.input.hint.fg)),
-            Span::styled("/model", Style::default().fg(theme.fg)),
+            Span::styled(
+                if page.for_compaction {
+                    "/compact set-model"
+                } else {
+                    "/model"
+                },
+                Style::default().fg(theme.fg),
+            ),
             Span::styled(
                 format!("  {}", crate::i18n::tr(language, "input_page.model.title")),
                 Style::default().fg(theme.dim),

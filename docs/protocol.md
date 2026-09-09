@@ -476,6 +476,22 @@ Array types use the `[]` suffix. `host-event` is the bounded typed event envelop
 | required | `model` | `string` |
 | optional | `reasoningEffort` | `string` |
 
+## Host event data extensions
+
+The bridge may add these optional presentation fields to host event data. They do not alter the durable host event. Missing model metadata must not be inferred from current preferences.
+
+### `compaction/start`
+
+| Presence | Field | Type |
+|---|---|---|
+| optional | `modelName` | `string` |
+
+### `compaction/end`
+
+| Presence | Field | Type |
+|---|---|---|
+| optional | `modelName` | `string` |
+
 ## Snapshot surface events
 
 - `user/message`

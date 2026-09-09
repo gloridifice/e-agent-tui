@@ -59,6 +59,10 @@ export function validateContract(contract) {
   for (const [name, shape] of Object.entries(records)) {
     validateShape(shape, `records.${name}`, knownTypes)
   }
+  for (const [event, shape] of Object.entries(contract.hostEventDataExtensions ?? {})) {
+    if (!contract.surfaceEvents.includes(event)) throw new Error(`Unknown extended host event: ${event}`)
+    validateShape(shape, `hostEventDataExtensions.${event}`, knownTypes)
+  }
   const messageShapes = assertObject(contract.messageShapes, 'messageShapes')
   for (const [direction, rosterName] of [['client', 'clientMessages'], ['server', 'serverMessages']]) {
     const shapes = assertObject(messageShapes[direction], `messageShapes.${direction}`)
@@ -160,6 +164,10 @@ export function buildFixtures(contract) {
   return {
     generatedFrom: 'bridge/protocol-contract.json',
     protocolVersion: contract.protocolVersion,
+    hostEventExtensions: Object.fromEntries(Object.entries(contract.hostEventDataExtensions ?? {}).map(([type, shape]) => [type, {
+      minimal: { type, data: sampleShape(shape, contract, false) },
+      full: { type, data: sampleShape(shape, contract, true) },
+    }])),
     client: direction(contract.messageShapes.client),
     server: direction(contract.messageShapes.server),
   }
@@ -219,6 +227,12 @@ ${shapeSections(contract.messageShapes.server)}
 Array types use the \`[]\` suffix. \`host-event\` is the bounded typed event envelope described by the snapshot roster and client parser.
 
 ${records}
+
+## Host event data extensions
+
+The bridge may add these optional presentation fields to host event data. They do not alter the durable host event. Missing model metadata must not be inferred from current preferences.
+
+${shapeSections(contract.hostEventDataExtensions ?? {})}
 
 ## Snapshot surface events
 

@@ -56,16 +56,26 @@ test('skills/change refreshes every cwd/scope-sensitive connection', () => {
 })
 
 test('parseSkillCommand accepts colon and space forms, lowercased', () => {
-  assert.equal(parseSkillCommand('/skill:cordis-plugin-development'), 'cordis-plugin-development')
-  assert.equal(parseSkillCommand('/skill:DeepSeek-Dev'), 'deepseek-dev')
-  assert.equal(parseSkillCommand('/skill foo-bar'), 'foo-bar')
-  assert.equal(parseSkillCommand('/skill   foo  '), 'foo')
+  assert.deepEqual(parseSkillCommand('/skill:cordis-plugin-development'), { name: 'cordis-plugin-development', prompt: '' })
+  assert.deepEqual(parseSkillCommand('/skill:DeepSeek-Dev'), { name: 'deepseek-dev', prompt: '' })
+  assert.deepEqual(parseSkillCommand('/skill foo-bar'), { name: 'foo-bar', prompt: '' })
+  assert.deepEqual(parseSkillCommand('/skill   foo  '), { name: 'foo', prompt: '' })
   assert.equal(parseSkillCommand('/skill'), undefined)
   assert.equal(parseSkillCommand('/skill:'), undefined)
-  assert.equal(parseSkillCommand('/skill foo bar'), undefined)
+  assert.deepEqual(parseSkillCommand('/skill foo bar'), { name: 'foo', prompt: 'bar' })
   assert.equal(parseSkillCommand('/skills:foo'), undefined)
   assert.equal(parseSkillCommand('/new'), undefined)
   assert.equal(parseSkillCommand('hello /skill:x'), undefined)
+})
+
+test('skill parser retains the complete trailing prompt after separator whitespace', () => {
+  for (const prefix of ['/skill:review', '/skill review']) {
+    assert.deepEqual(parseSkillCommand(`${prefix} \t\n 检查  code\n  next line  `), {
+      name: 'review', prompt: '检查  code\n  next line  ',
+    })
+    assert.deepEqual(parseSkillCommand(`${prefix}\t\n `), { name: 'review', prompt: '' })
+  }
+  assert.equal(parseSkillCommand('/skill:review! text'), undefined)
 })
 
 test('renderSkillContent wraps instructions and escapes the name', () => {

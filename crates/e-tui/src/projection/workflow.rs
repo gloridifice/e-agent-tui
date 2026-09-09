@@ -69,10 +69,13 @@ pub fn project(event: &TimelineRecord) -> Option<WorkflowProjection> {
                 summary: None,
             },
         }),
-        TimelineFact::CompactionStarted { id: compaction_id } => {
+        TimelineFact::CompactionStarted {
+            id: compaction_id,
+            model_name,
+        } => {
             let mut row = ActivityRow::root(
                 DisplayId::correlated("compaction", compaction_id),
-                "compacting",
+                compaction_label("compacting", model_name.as_deref()),
             );
             row.start_ms = event.time_ms;
             Some(WorkflowProjection::Compaction {
@@ -92,12 +95,15 @@ pub fn project(event: &TimelineRecord) -> Option<WorkflowProjection> {
         }),
         TimelineFact::CompactionFinished {
             id: compaction_id,
+            model_name,
             error,
         } => Some(WorkflowProjection::Compaction {
             key: compaction_id.clone(),
             mutation: ActivityMutation::Settle {
                 id: DisplayId::correlated("compaction", compaction_id),
-                label: error.is_none().then(|| "Compacting complete".into()),
+                label: error
+                    .is_none()
+                    .then(|| compaction_label("compacting complete", model_name.as_deref())),
                 state: if error.is_none() {
                     ActivityState::Success
                 } else {
@@ -110,10 +116,30 @@ pub fn project(event: &TimelineRecord) -> Option<WorkflowProjection> {
     }
 }
 
+fn compaction_label(label: &str, model: Option<&str>) -> String {
+    model
+        .filter(|name| !name.is_empty())
+        .map_or_else(|| label.to_owned(), |name| format!("{label} with {name}"))
+}
+
 fn outcome_state(outcome: LifecycleOutcome) -> ActivityState {
     match outcome {
         LifecycleOutcome::Success => ActivityState::Success,
         LifecycleOutcome::Failure => ActivityState::Failure,
         LifecycleOutcome::Cancelled => ActivityState::Cancelled,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compaction_legacy_labels_remain_lowercase_without_inventing_a_model() {
+        assert_eq!(compaction_label("compacting", None), "compacting");
+        assert_eq!(
+            compaction_label("compacting complete", None),
+            "compacting complete"
+        );
     }
 }

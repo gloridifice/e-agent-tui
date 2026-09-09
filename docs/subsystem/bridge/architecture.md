@@ -14,7 +14,7 @@ Architecture conventions for the Node.js (ESM) DSH host-composition plugin.
   encoded prompt parts and owns lazy `apiProxy.sessions.prompt` admission, `command.js` projects the host command
   catalog/direct results, `question.js` owns API-proxy question relay lifecycle, `protocol.js` reads the shared
   wire contract; `pending-prompts.js` owns inbox observation and serialized ASAP admission/clear; `trim.js`, `compose.js`,
-  `login.js`, `skill.js`, `model.js`, `frame.js` keep their own pure logic. Every boundary must have
+  `login.js`, `skill.js`, `model.js`, `frame.js` keep their own pure logic. `skill-injection.js` owns guarded skill lookup and ordered instruction/user-message admission. Every boundary must have
   `node:test` under `bridge/test/`; new code must not pile back into `index.js`.
 - **Image prompt admission**: wire v7 `input`/`new-input` carry ordered text/image content. Pure text keeps the
   direct `createUserMessage` + agent inbox path; any image requires the lazy session-prompt adapter to call
@@ -34,6 +34,7 @@ Architecture conventions for the Node.js (ESM) DSH host-composition plugin.
   an `AbortController`; `interrupt` aborts all active command controllers as well as the agent turn, and the client
   keeps Esc interruptible while direct commands are unsettled even if agent status is idle. Execution spans awaits,
   so a current-conn check is required before returning the result to avoid cross-session leakage after attach.
+- **Compaction routing**: `compaction.js` owns runtime-only session overrides and snapshots each run's selection at its start. The public `llm/stream` waterfall changes only mutable, hand-built `purpose: compaction` call routes; ordinary agent envelopes remain untouched. The supported basic compactor records provenance from those same options, so the durable summary retains the actual route. Both manual and automatic compaction share this path. Presentation metadata is held separately from durable events and projected as optional model names; legacy history is not labeled using current preferences. Configuration commands are serialized with per-socket model updates and guarded across attachment changes.
 - **User-question relay**: `apiProxy` is optional when the bridge initially composes, so `question.js` must open
   its RPC-enveloped mux under `ctx.inject(['apiProxy'], ...)`, not from an eager `ctx.get('apiProxy')`. The child
   injection owns stream cleanup across service reloads; answer dispatch resolves the current service lazily.
@@ -157,3 +158,5 @@ Architecture conventions for the Node.js (ESM) DSH host-composition plugin.
   `renderSkillContent(skill)` (the `<skill_content>` block) into the session via `createUserMessage` +
   `source:{kind:"skill-invocation"}` `followup` (mirroring dsh-tool-skill's explicit user invocation injection);
   unknown names return `error{code:"skill-unknown"}`. Verify `conns.has(current)` after the await.
+  An optional trailing prompt is admitted as a separate ordinary user message immediately after the skill,
+  only after successful lookup on the current connection. The same sequence applies to an opening `new-input`.

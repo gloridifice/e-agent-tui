@@ -27,6 +27,7 @@ export function createClientDispatcher({
   sessionModel,
   sessionPrompt,
   pendingPrompts,
+  compactionModels,
   createUserMessage,
 }) {
   let conn = null
@@ -94,11 +95,14 @@ export function createClientDispatcher({
     }
     if (next === undefined || !(conn === current || !conns.has(current))) return
     conn = next
+    const skill = content.length === 1 && content[0].type === 'text'
+      ? parseSkillCommand(content[0].text)
+      : undefined
     try {
       if (content.some((part) => part.type === 'image')) {
         await sessionPrompt.prompt(next.agent.id, content)
-      } else if (content.length === 1 && parseSkillCommand(content[0].text) !== undefined) {
-        await injectSkill(ws, next, parseSkillCommand(content[0].text))
+      } else if (skill !== undefined) {
+        await injectSkill(ws, next, skill.name, skill.prompt)
       } else {
         next.agent.followup(createUserMessage({
           content,
@@ -163,6 +167,22 @@ export function createClientDispatcher({
       return
     }
     const trimmed = msg.line.trim()
+    if (/^\/compact\s+(set-model|unset-model)(?:\s|$)/.test(trimmed)) {
+      const current = conn
+      const isCurrent = () => conns.isCurrent(current, conn)
+      const update = Promise.resolve(modelUpdates).then(async () => {
+        if (!isCurrent()) return
+        if (images.length) throw new Error('/compact model configuration does not accept images')
+        if (!compactionModels) throw new Error('Compaction model routing unavailable')
+        const text = await compactionModels.configure(current.agent, trimmed.replace(/^\/compact\s+/, ''), isCurrent)
+        if (isCurrent()) send(ws, { type: 'command-result', commandId: 'compaction-model', kind: 'success', text })
+      }).catch(error => {
+        if (isCurrent()) send(ws, { type: 'error', code: 'compaction-model-failed', message: String(error?.message ?? error) })
+      })
+      modelUpdates = update
+      void update.finally(() => { if (modelUpdates === update) modelUpdates = null })
+      return
+    }
     if (trimmed === '/new' || trimmed.startsWith('/new ')) {
       if (images.length > 0) {
         send(ws, { type: 'error', code: 'command-failed', message: '/new does not accept images' })
@@ -181,8 +201,8 @@ export function createClientDispatcher({
         .catch((error) => send(ws, { type: 'error', code: 'new-failed', message: String(error?.message ?? error) }))
       return
     }
-    const skillName = parseSkillCommand(trimmed)
-    if (skillName !== undefined) {
+    const skill = parseSkillCommand(msg.line)
+    if (skill !== undefined) {
       if (images.length > 0) {
         send(ws, { type: 'error', code: 'command-failed', message: '/skill does not accept images' })
         return
@@ -190,10 +210,10 @@ export function createClientDispatcher({
       const current = conn
       if (modelUpdates) {
         void modelUpdates.then(() => {
-          if (conns.isCurrent(current, conn)) return injectSkill(ws, current, skillName)
+          if (conns.isCurrent(current, conn)) return injectSkill(ws, current, skill.name, skill.prompt)
         })
       } else {
-        void injectSkill(ws, current, skillName)
+        void injectSkill(ws, current, skill.name, skill.prompt)
       }
       return
     }
@@ -212,10 +232,11 @@ export function createClientDispatcher({
     current.commandAborts.add(commandAbort)
     const abortOnDetach = () => commandAbort.abort()
     current.abort.signal.addEventListener?.('abort', abortOnDetach, { once: true })
-    Promise.resolve()
+    Promise.resolve(modelUpdates)
       // DSH admits encoded command images through the command service while
       // preserving the direct-command abort signal in its final position.
-      .then(() => commands.execute(current.agent, msg.line, images, commandAbort.signal))
+      .then(() => conns.isCurrent(current, conn) && !commandAbort.signal.aborted
+        ? commands.execute(current.agent, msg.line, images, commandAbort.signal) : undefined)
       .then((execution) => {
         if (!conns.isCurrent(current, conn)) return
         if (commandAbort.signal.aborted) {

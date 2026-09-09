@@ -58,6 +58,13 @@ struct NewSubmission {
     thinking_level: Option<String>,
 }
 
+struct PendingSkillPrompt {
+    id: String,
+    session_id: String,
+    /// None keeps the ordering barrier until the trailing prompt is acknowledged.
+    trailing_text: Option<String>,
+}
+
 pub struct PiAdapter {
     cwd: PathBuf,
     session_root: PathBuf,
@@ -75,6 +82,11 @@ pub struct PiAdapter {
     /// Id of a prompt sent for a slash command; its response triggers the
     /// same-session state refresh that observes extension-side renames.
     pending_command_prompt: Option<String>,
+    pending_skill_prompt: Option<PendingSkillPrompt>,
+    compaction_model: Option<Value>,
+    pending_compaction: Option<compaction::Pending>,
+    active_compaction_model: Option<String>,
+    active_compaction_id: Option<String>,
     last_attached_session: Option<String>,
     current_model: Option<Value>,
     available_models: Vec<Value>,
@@ -107,6 +119,11 @@ impl PiAdapter {
             derived_title: None,
             emitted_title: None,
             pending_command_prompt: None,
+            pending_skill_prompt: None,
+            compaction_model: None,
+            pending_compaction: None,
+            active_compaction_model: None,
+            active_compaction_id: None,
             last_attached_session: None,
             current_model: None,
             available_models: Vec::new(),
@@ -129,7 +146,10 @@ impl PiAdapter {
     }
 
     pub fn request(&mut self, request: AgentRequest) -> AdapterOutput {
-        if (self.configuration_request.is_some() || self.pending_queue.operation.is_some())
+        if (self.configuration_request.is_some()
+            || self.pending_queue.operation.is_some()
+            || self.pending_skill_prompt.is_some()
+            || self.pending_compaction.is_some())
             && matches!(
                 request,
                 AgentRequest::Input { .. }
@@ -227,13 +247,32 @@ impl PiAdapter {
             }
             "tool_execution_start" => tool::tool_start(self, &record),
             "tool_execution_end" => tool::tool_end(self, &record),
-            "compaction_start" => self.timeline(TimelineFact::CompactionStarted {
-                id: "pi-compaction".into(),
-            }),
+            "compaction_start" => {
+                let id = self.request_id("compaction");
+                self.active_compaction_id = Some(id.clone());
+                self.active_compaction_model =
+                    compaction::active_model_name(self, record.string("reason"));
+                self.timeline(TimelineFact::CompactionStarted {
+                    id,
+                    model_name: self.active_compaction_model.clone(),
+                })
+            }
             "compaction_end" => {
-                let error = record.string("errorMessage").map(str::to_owned);
+                let error = record
+                    .string("errorMessage")
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        (record.bool("aborted") == Some(true))
+                            .then(|| "Compaction cancelled".into())
+                    });
+                let model_name = self.active_compaction_model.take();
+                let id = self
+                    .active_compaction_id
+                    .take()
+                    .unwrap_or_else(|| self.request_id("compaction"));
                 let mut output = self.timeline(TimelineFact::CompactionFinished {
-                    id: "pi-compaction".into(),
+                    id,
+                    model_name,
                     error,
                 });
                 output.merge(session::refresh_stats(self));
@@ -380,6 +419,9 @@ impl PiAdapter {
     }
 }
 
+mod compaction;
+#[cfg(test)]
+mod compaction_tests;
 mod content;
 #[cfg(test)]
 mod cost_tests;
@@ -628,6 +670,133 @@ mod tests {
         assert_eq!(adapter.current_model.as_ref().unwrap()["id"], "A");
         assert_eq!(adapter.thinking_level.as_deref(), Some("high"));
         assert!(adapter.configuration_request.is_none());
+    }
+
+    #[test]
+    fn skill_trailing_prompt_waits_for_admission_in_existing_and_new_sessions() {
+        for drafting in [false, true] {
+            for prefix in ["/skill:review", "/skill review"] {
+                let mut adapter = PiAdapter::new(".", "sessions");
+                adapter.is_streaming = prefix == "/skill review";
+                let text = "检查  code\n  next line  ";
+                let line = format!("{prefix} \t\n {text}");
+                let skill = if drafting {
+                    let create = adapter.request(AgentRequest::NewInput {
+                        mode: "pi".into(),
+                        prompt: PromptInput::text(line),
+                    });
+                    let refresh = reply_first(
+                        &mut adapter,
+                        &create,
+                        serde_json::json!({"cancelled":false}),
+                    );
+                    reply_first(
+                        &mut adapter,
+                        &refresh,
+                        serde_json::json!({"sessionId":"new"}),
+                    )
+                } else {
+                    adapter.request(AgentRequest::Command {
+                        line,
+                        images: vec![],
+                    })
+                };
+                let prompts: Vec<_> = skill
+                    .commands
+                    .iter()
+                    .filter_map(|command| match command {
+                        RpcCommand::Prompt { message, .. } => Some(message.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(prompts, ["/skill:review"]);
+                assert!(adapter
+                    .request(AgentRequest::Attach {
+                        session_id: "later".into()
+                    })
+                    .commands
+                    .is_empty());
+                let body = reply_first(&mut adapter, &skill, Value::Null);
+                let prompts: Vec<_> = body
+                    .commands
+                    .iter()
+                    .filter_map(|command| match command {
+                        RpcCommand::Prompt {
+                            message,
+                            streaming_behavior,
+                            ..
+                        } => Some((message.as_str(), *streaming_behavior)),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(prompts, [(text, Some(StreamingBehavior::Steer))]);
+                assert!(!body
+                    .commands
+                    .iter()
+                    .any(|command| { matches!(command, RpcCommand::SwitchSession { .. }) }));
+                let tail = body
+                    .commands
+                    .iter()
+                    .find(|command| matches!(command, RpcCommand::Prompt { .. }))
+                    .unwrap()
+                    .clone();
+                let later = reply_first(&mut adapter, &AdapterOutput::command(tail), Value::Null);
+                assert!(matches!(later.commands.as_slice(),
+                    [RpcCommand::SwitchSession { session_path, .. }] if session_path == "later"
+                ));
+                assert!(adapter.pending_skill_prompt.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn skill_trailing_prompt_is_discarded_on_failure_interrupt_or_session_change() {
+        for reason in ["failure", "interrupt", "session-change"] {
+            let mut adapter = PiAdapter::new(".", "sessions");
+            let skill = adapter.request(AgentRequest::Command {
+                line: "/skill:review must not send".into(),
+                images: vec![],
+            });
+            let [RpcCommand::Prompt { id: Some(id), .. }] = skill.commands.as_slice() else {
+                panic!("expected skill prompt");
+            };
+            if reason == "interrupt" {
+                adapter.request(AgentRequest::Interrupt);
+            } else if reason == "session-change" {
+                adapter.record(record(serde_json::json!({
+                    "type":"response", "command":"get_state", "success":true,
+                    "data":{"sessionId":"another"}
+                })));
+            }
+            let result = adapter.record(record(serde_json::json!({
+                "type":"response", "id":id, "command":"prompt",
+                "success": reason != "failure", "error":"failed"
+            })));
+            assert!(!result
+                .commands
+                .iter()
+                .any(|command| matches!(command, RpcCommand::Prompt { .. })));
+            assert!(adapter.pending_skill_prompt.is_none());
+        }
+    }
+
+    #[test]
+    fn skill_without_body_never_sends_an_empty_followup() {
+        for line in ["/skill:review", "/skill review \t\n "] {
+            let mut adapter = PiAdapter::new(".", "sessions");
+            let skill = adapter.request(AgentRequest::Command {
+                line: line.into(),
+                images: vec![],
+            });
+            assert!(matches!(skill.commands.as_slice(),
+                [RpcCommand::Prompt { message, .. }] if message == "/skill:review"
+            ));
+            let result = reply_first(&mut adapter, &skill, Value::Null);
+            assert!(!result
+                .commands
+                .iter()
+                .any(|command| matches!(command, RpcCommand::Prompt { .. })));
+        }
     }
 
     #[test]

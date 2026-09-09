@@ -33,11 +33,10 @@ import { shapeModelFrame } from './model.js'
 import { createSessionModelAdapter } from './session-model.js'
 import { createSessionPromptAdapter } from './session-prompt.js'
 import {
-  renderSkillContent,
   shapeSkillsFrame,
-  skillInvocationSource,
   watchSkillChanges,
 } from './skill.js'
+import { createSkillInjector } from './skill-injection.js'
 import { ConnectionRegistry } from './connection.js'
 import { createHostPort } from './host.js'
 import { createHistoryStore } from './history.js'
@@ -47,6 +46,7 @@ import { createModelSelectionAdapter } from './model-selection.js'
 import { createSessionLister, titleFromObservation } from './session-list.js'
 import { createClientDispatcher } from './dispatcher.js'
 import { createPendingPrompts } from './pending-prompts.js'
+import { createCompactionModels } from './compaction.js'
 import { shapeCommandsFrame, watchCommandChanges } from './command.js'
 import { encodeBoundedFrame, shapeWelcomeFrame } from './frame.js'
 import {
@@ -91,6 +91,7 @@ function apply(ctx, config = {}) {
   const modelSelection = createModelSelectionAdapter()
   const sessionModel = createSessionModelAdapter(() => host.apiProxy())
   const sessionPrompt = createSessionPromptAdapter(() => host.apiProxy())
+  const compactionModels = createCompactionModels({ ctx, host, sessionModel })
 
   // ---- user questions (ask_user_question) ----
   // The host's web UI owns the single userQuestions provider slot, so the
@@ -179,7 +180,7 @@ function apply(ctx, config = {}) {
   // Event roster and capacities come from protocol-contract.json, shared
   // with the Rust build; this module only owns filtering/caching behavior.
   const trimEvent = (event, toolNames) =>
-    trimToolResultEvent(event, toolNames, SNAPSHOT_SURFACE)
+    trimToolResultEvent(compactionModels.project(event), toolNames, SNAPSHOT_SURFACE)
 
   const historyStore = createHistoryStore({
     host,
@@ -190,43 +191,7 @@ function apply(ctx, config = {}) {
   })
   const { historyEvents, sendSnapshot } = historyStore
 
-  /**
-   * `/skill:<name>` (and `/skill <name>`): look the skill up through the
-   * host's `skills` registry (which already discovers `~/.agents/skills/`
-   * and `<workspace>/.agents/skills/` with project over user priority) and
-   * inject the rendered instructions as a user-explicit skill invocation,
-   * mirroring dsh-tool-skill's `<skill_content>` injection. A missing skill
-   * is an error, not a connection failure.
-   */
-  async function injectSkill(ws, conn, name) {
-    const current = conn
-    if (!current) return
-    const skills = host.skills()
-    if (!skills) {
-      send(ws, { type: 'error', code: 'skill-unavailable', message: 'skills service unavailable' })
-      return
-    }
-    try {
-      const skill = await skills.get(name, {
-        cwd: current.agent.session?.header?.cwd,
-        signal: current.abort.signal,
-        scope: current.agent,
-      })
-      // The socket may have been re-attached while the lookup ran.
-      if (!conns.isCurrent(current, conn)) return
-      if (!skill) {
-        send(ws, { type: 'error', code: 'skill-unknown', message: `skill "${name}" is unknown or no longer available` })
-        return
-      }
-      current.agent.followup(createUserMessage({
-        content: [{ type: 'text', text: renderSkillContent(skill) }],
-        source: skillInvocationSource(name),
-      }))
-    } catch (error) {
-      if (!conns.isCurrent(current, conn)) return
-      send(ws, { type: 'error', code: 'skill-failed', message: String(error?.message ?? error) })
-    }
-  }
+  const injectSkill = createSkillInjector({ host, conns, send, createUserMessage })
 
   /** Bind one authenticated socket to a live agent session. */
   function attach(ws, agent, clientCwd) {
@@ -373,6 +338,7 @@ function apply(ctx, config = {}) {
       sessionModel,
       sessionPrompt,
       pendingPrompts,
+      compactionModels,
       createUserMessage,
     })
     ws.on('message', dispatcher.handle)

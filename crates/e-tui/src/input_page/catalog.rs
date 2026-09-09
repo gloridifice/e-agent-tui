@@ -103,6 +103,7 @@ impl ResumePage {
 }
 
 pub struct ModelPage {
+    pub for_compaction: bool,
     pub providers: Vec<ModelProvider>,
     pub active_provider: Option<String>,
     pub current: Option<(String, String)>,
@@ -112,6 +113,7 @@ pub struct ModelPage {
 impl ModelPage {
     pub fn loading() -> Self {
         Self {
+            for_compaction: false,
             providers: Vec::new(),
             active_provider: None,
             current: None,
@@ -128,7 +130,7 @@ impl ModelPage {
         let had_focus = focus.current.is_some();
         let previous_provider = self.active_provider.clone();
         self.providers = providers;
-        self.current = current;
+        self.current = if self.for_compaction { None } else { current };
         self.loading = false;
         self.active_provider = previous_provider
             .filter(|id| self.providers.iter().any(|provider| provider.id == *id))
@@ -249,10 +251,19 @@ impl ModelPage {
         {
             return PageOutcome::default();
         }
-        Self::select(&mark.provider, &mark.model)
+        self.select(&mark.provider, &mark.model)
     }
 
-    fn select(provider: &str, model: &str) -> PageOutcome {
+    fn select(&self, provider: &str, model: &str) -> PageOutcome {
+        if self.for_compaction {
+            return PageOutcome::send(
+                AgentRequest::Command {
+                    line: format!("/compact set-model {provider}/{model}"),
+                    images: Vec::new(),
+                },
+                true,
+            );
+        }
         PageOutcome::send(
             AgentRequest::ModelSet {
                 provider: provider.to_owned(),
@@ -293,7 +304,7 @@ impl ModelPage {
             return PageOutcome::default();
         }
         self.focused_model(focus)
-            .map(|(provider, model)| Self::select(provider, model))
+            .map(|(provider, model)| self.select(provider, model))
             .unwrap_or_default()
     }
 }

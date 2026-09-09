@@ -994,6 +994,13 @@ impl InputState {
         // runs before command-name matching so exact `/skill` immediately
         // transitions from the command catalog to the skill roster.
         if let Some((command, query)) = completion_context(&self.buf) {
+            let compact_model =
+                command.completion == CompletionKind::Compact && query.starts_with("set-model ");
+            let query = if compact_model {
+                query.strip_prefix("set-model ").unwrap_or(query)
+            } else {
+                query
+            };
             if !query.contains([' ', '\n']) {
                 match command.completion {
                     CompletionKind::FixedSubcommands => {
@@ -1044,7 +1051,23 @@ impl InputState {
                         });
                         return;
                     }
-                    CompletionKind::Model => {
+                    CompletionKind::Compact if !compact_model => {
+                        let matches: Vec<String> = ["set-model", "unset-model"]
+                            .into_iter()
+                            .filter(|name| name.starts_with(query))
+                            .map(|name| format!("/compact {name}"))
+                            .collect();
+                        self.suggest = (!matches.is_empty()).then(|| Suggestion {
+                            query: self.buf.clone(),
+                            sel: 0,
+                            sources: vec![CommandSource::Builtin; matches.len()],
+                            descriptions: vec![String::new(); matches.len()],
+                            matches,
+                            kind: SuggestionKind::Commands,
+                        });
+                        return;
+                    }
+                    CompletionKind::Model | CompletionKind::Compact => {
                         let ranked = match_models(query, &catalogs.model_providers);
                         if ranked.is_empty() {
                             self.suggest = None;
@@ -1052,7 +1075,18 @@ impl InputState {
                         }
                         let matches: Vec<String> = ranked
                             .iter()
-                            .map(|(provider, model)| format!("/model {}/{}", provider.id, model.id))
+                            .map(|(provider, model)| {
+                                format!(
+                                    "{} {}/{}",
+                                    if compact_model {
+                                        "/compact set-model"
+                                    } else {
+                                        "/model"
+                                    },
+                                    provider.id,
+                                    model.id
+                                )
+                            })
                             .collect();
                         let descriptions: Vec<String> = ranked
                             .iter()
@@ -2181,6 +2215,24 @@ mod tests {
     }
 
     #[test]
+    fn skill_with_trailing_prompt_is_not_replaced_by_completion_on_enter() {
+        for pasted in [false, true] {
+            let mut s = state();
+            s.skills = sample_skills();
+            let line = "/skill:code-review 检查这段代码 AAAAAAAA";
+            if pasted {
+                s.paste(line);
+            } else {
+                for c in line.chars() {
+                    s.handle_key(&key(KeyCode::Char(c)), true);
+                }
+            }
+            let action = s.handle_key(&key(KeyCode::Enter), true);
+            assert!(matches!(action, InputAction::Command { line: sent, .. } if sent == line));
+        }
+    }
+
+    #[test]
     fn skill_directory_change_refreshes_an_open_popup() {
         let mut s = state();
         for c in "/skill".chars() {
@@ -2219,6 +2271,19 @@ mod tests {
             ],
             ..CatalogModel::default()
         }
+    }
+
+    #[test]
+    fn compaction_model_completion_preserves_the_subcommand() {
+        let mut input = state();
+        let catalogs = sample_model_catalog();
+        for character in "/compact set-model openr".chars() {
+            input.handle_key_with_catalog(&key(KeyCode::Char(character)), true, &catalogs);
+        }
+        assert_eq!(
+            input.suggest.as_ref().unwrap().matches,
+            vec!["/compact set-model openrouter/anthropic/claude-sonnet"]
+        );
     }
 
     #[test]

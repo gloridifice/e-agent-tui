@@ -92,6 +92,12 @@ Use `/history` (or `/history show`) to open the session's 50 longest measured op
 
 Recording covers activity observed while an `e` client is attached. Workspaces follow the confirmed session cwd without Git-root promotion. Legacy project-local histories are neither read nor migrated; project files and native backend sessions remain untouched. Traces are not automatically deleted despite living under `cache`.
 
+### Compaction model
+
+Use `/compact set-model` to open the model menu, or `/compact set-model <provider/model>` (a unique bare model id also works). `/compact unset-model` clears the override. DSH applies it to manual and automatic compaction; Pi applies it only to manual `/compact` and restores the previous model and reasoning effort afterward. Pi automatic compaction remains native.
+
+The override is runtime-only: per DSH session, or until `pie` exits. Activity labels show `compacting with <model_name>` and `compacting complete with <model_name>` when the model is known. A smaller model still needs enough context capacity for the history being summarized.
+
 ### Key mapping
 
 Bindings are configurable in `<config_path>/key_mapping.toml`; see [key mappings](docs/key-mapping.md) and the complete [defaults](crates/e-tui/assets/default_key_mapping.toml). Below, **Main** means Command on macOS and Ctrl on Windows/Linux (the terminal must forward the shortcut).

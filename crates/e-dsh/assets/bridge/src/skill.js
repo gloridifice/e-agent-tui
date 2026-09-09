@@ -34,18 +34,13 @@ export function watchSkillChanges(ctx, connections, refresh) {
 }
 
 /**
- * Extract the skill name from a `/skill:<name>` or `/skill <name>` command
- * line, or undefined when the line is not such a command. The colon form is
- * the documented syntax; the space form is accepted as a convenience.
+ * Parse a skill invocation and its optional trailing user prompt.
  */
 export function parseSkillCommand(line) {
   if (typeof line !== 'string') return undefined
-  const trimmed = line.trim()
-  const colon = trimmed.match(/^\/skill:([a-z0-9]+(?:-[a-z0-9]+)*)\s*$/i)
-  if (colon) return colon[1].toLowerCase()
-  const space = trimmed.match(/^\/skill\s+([a-z0-9]+(?:-[a-z0-9]+)*)\s*$/i)
-  if (space) return space[1].toLowerCase()
-  return undefined
+  const match = line.trimStart().match(/^\/skill(?::|\s+)([a-z0-9]+(?:-[a-z0-9]+)*)(?:\s+([\s\S]*))?$/i)
+  if (!match) return undefined
+  return { name: match[1].toLowerCase(), prompt: match[2] ?? '' }
 }
 
 function escapeAttr(value) {

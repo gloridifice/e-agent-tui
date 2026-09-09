@@ -15,20 +15,49 @@ use super::{extension, session, AdapterOutput, NewSubmission, PendingExtensionUi
 fn command_line(adapter: &mut PiAdapter, line: String) -> AdapterOutput {
     let line = normalize_skill_line(line);
     let skill = line.starts_with("/skill:");
-    if let Some(rest) = line.strip_prefix("/compact") {
-        return AdapterOutput::command(RpcCommand::Compact {
-            id: Some(adapter.request_id("compact")),
-            custom_instructions: (!rest.trim().is_empty()).then(|| rest.trim().to_owned()),
-        });
+    if let Some(rest) = line
+        .strip_prefix("/compact")
+        .filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+    {
+        return super::compaction::command(adapter, rest);
     }
     let id = adapter.request_id("command");
     // Its response triggers a same-session state refresh that reports
     // extension-side session renames.
     adapter.pending_command_prompt = Some(id.clone());
+    prompt_command(
+        adapter,
+        id,
+        line,
+        (skill && adapter.is_streaming).then_some(StreamingBehavior::Steer),
+    )
+}
+
+pub(super) fn prompt_command(
+    adapter: &mut PiAdapter,
+    id: String,
+    line: String,
+    streaming_behavior: Option<StreamingBehavior>,
+) -> AdapterOutput {
+    let mut message = normalize_skill_line(line);
+    if let Some(skill) = message.strip_prefix("/skill:") {
+        if let Some(split) = skill.find(char::is_whitespace).filter(|split| *split > 0) {
+            let split = "/skill:".len() + split;
+            let text = message[split..].trim_start();
+            if !text.is_empty() {
+                adapter.pending_skill_prompt = Some(super::PendingSkillPrompt {
+                    id: id.clone(),
+                    session_id: adapter.session_id.clone(),
+                    trailing_text: Some(text.to_owned()),
+                });
+            }
+            message.truncate(split);
+        }
+    }
     AdapterOutput::command(RpcCommand::Prompt {
         id: Some(id),
-        message: line,
-        streaming_behavior: (skill && adapter.is_streaming).then_some(StreamingBehavior::Steer),
+        message,
+        streaming_behavior,
     })
 }
 
@@ -94,9 +123,13 @@ pub(super) fn route(adapter: &mut PiAdapter, request: AgentRequest) -> AdapterOu
                 adapter.unsupported("Pi command images must be pasted as temporary file paths")
             }
         }
-        AgentRequest::Interrupt => AdapterOutput::command(RpcCommand::Abort {
-            id: Some(adapter.request_id("abort")),
-        }),
+        AgentRequest::Interrupt => {
+            super::compaction::interrupt(adapter);
+            adapter.pending_skill_prompt = None;
+            AdapterOutput::command(RpcCommand::Abort {
+                id: Some(adapter.request_id("abort")),
+            })
+        }
         AgentRequest::Attach { session_id } => {
             // Force the post-switch refresh to re-emit `Attached` even when the
             // resolved session key equals the last reported one (explicit re-attach).

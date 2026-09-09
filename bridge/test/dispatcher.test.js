@@ -52,32 +52,76 @@ function harness(options = {}) {
       }),
     },
     sessionPrompt: options.sessionPrompt,
+    compactionModels: options.compactionModels,
     createUserMessage: (message) => message,
   })
   return { dispatcher, frames, closes, followups, steerings, cancellations, conn, conns, modelSelections }
 }
 
 test('first new-input skill is invoked on the materialized session, not sent literally', async () => {
-  const skills = []
-  const h = harness({
-    injectSkill: async (_ws, conn, name) => skills.push([conn.agent.id, name]),
-    sessionService: {
-      createNewSession: async (_ws, current) => {
-        if (!current) return h.conn
-        const next = { ...current, agent: { ...current.agent, id: 'new' } }
-        h.conns.delete(current)
-        h.conns.add(next)
-        return next
+  for (const prompt of ['', '检查  code\n  next line  ']) {
+    const skills = []
+    const h = harness({
+      injectSkill: async (_ws, conn, name, prompt) => skills.push([conn.agent.id, name, prompt]),
+      sessionService: {
+        createNewSession: async (_ws, current) => {
+          if (!current) return h.conn
+          const next = { ...current, agent: { ...current.agent, id: 'new' } }
+          h.conns.delete(current)
+          h.conns.add(next)
+          return next
+        },
       },
-    },
+    })
+    const send = (message) => h.dispatcher.handle(Buffer.from(JSON.stringify(message)))
+    send({ type: 'hello', token: 'secret' })
+    await new Promise((resolve) => setImmediate(resolve))
+    send({ type: 'new-input', mode: 'standard', content: [{ type: 'text', text: `/skill:review ${prompt}` }] })
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.deepEqual(skills, [['new', 'review', prompt]])
+    assert.equal(h.followups.length, 0)
+  }
+})
+
+test('compaction configuration is acknowledged before a dependent compact command', async () => {
+  const calls = []
+  let finish
+  const h = harness({
+    compactionModels: { configure: async (_agent, args, isCurrent) => {
+      calls.push(args)
+      await new Promise(resolve => { finish = resolve })
+      assert.equal(isCurrent(), true)
+      return 'configured'
+    } },
+    commands: { execute: async () => { calls.push('compact'); return undefined } },
   })
-  const send = (message) => h.dispatcher.handle(Buffer.from(JSON.stringify(message)))
+  const send = message => h.dispatcher.handle(Buffer.from(JSON.stringify(message)))
   send({ type: 'hello', token: 'secret' })
-  await new Promise((resolve) => setImmediate(resolve))
-  send({ type: 'new-input', mode: 'standard', content: [{ type: 'text', text: '/skill:review' }] })
-  await new Promise((resolve) => setImmediate(resolve))
-  assert.deepEqual(skills, [['new', 'review']])
-  assert.equal(h.followups.length, 0)
+  await new Promise(resolve => setImmediate(resolve))
+  send({ type: 'command', line: '/compact set-model p/small' })
+  send({ type: 'command', line: '/compact' })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(calls, ['set-model p/small'])
+  finish()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(calls, ['set-model p/small', 'compact'])
+  assert(h.frames.some(frame => frame.type === 'command-result' && frame.text === 'configured'))
+})
+
+test('attached skill command forwards its trailing prompt without generic execution', async () => {
+  for (const prefix of ['/skill:review', '/skill review']) {
+    const skills = []
+    const h = harness({
+      injectSkill: async (_ws, conn, name, prompt) => skills.push([conn.agent.id, name, prompt]),
+      commands: { execute: () => assert.fail('skill must not use generic commands') },
+    })
+    const send = (message) => h.dispatcher.handle(Buffer.from(JSON.stringify(message)))
+    send({ type: 'hello', token: 'secret' })
+    await new Promise((resolve) => setImmediate(resolve))
+    send({ type: 'command', line: `${prefix}\t检查  code\n  next line  ` })
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.deepEqual(skills, [['a1', 'review', '检查  code\n  next line  ']])
+  }
 })
 
 test('model and effort changes settle in order before the first prompt or skill', async () => {

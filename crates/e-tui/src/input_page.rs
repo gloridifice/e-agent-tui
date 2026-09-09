@@ -94,6 +94,12 @@ impl InputPageSession {
         Self::new(InputPage::Model(ModelPage::loading()))
     }
 
+    pub fn compaction_model() -> Self {
+        let mut model = ModelPage::loading();
+        model.for_compaction = true;
+        Self::new(InputPage::Model(model))
+    }
+
     pub fn effort() -> Self {
         Self::new(InputPage::Effort(EffortPage::loading()))
     }
@@ -1083,6 +1089,31 @@ mod tests {
                 reasoning_effort: None,
             })] if provider == "p" && model == "m"
         ));
+    }
+
+    #[test]
+    fn compaction_model_activation_does_not_select_conversation_model() {
+        let mut session = InputPageSession::compaction_model();
+        session.apply_model(
+            vec![ModelProvider {
+                id: "p".into(),
+                name: "Provider".into(),
+                models: vec![crate::agent::ModelDescriptor {
+                    id: "m".into(),
+                    name: "Small".into(),
+                    description: None,
+                    context_window: None,
+                    reasoning: None,
+                }],
+            }],
+            None,
+        );
+        session.focus.set(ModelPage::model_focus("p", "m"));
+        let outcome = session.handle_key(&key(KeyCode::Enter), &mut Config::default());
+        assert!(outcome.close);
+        assert!(
+            matches!(outcome.effects.as_slice(), [PageEffect::Send(AgentRequest::Command { line, images })] if line == "/compact set-model p/m" && images.is_empty())
+        );
     }
 
     #[test]

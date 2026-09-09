@@ -620,21 +620,32 @@ mod tests {
             ..Default::default()
         };
         state.session.record_usage(Some(2), Some(1), Some(usage));
-        let start = record(10, TimelineFact::CompactionStarted { id: "c".into() });
+        let start = record(
+            10,
+            TimelineFact::CompactionStarted {
+                id: "c".into(),
+                model_name: Some("Small".into()),
+            },
+        );
         let finish = record(
             11,
             TimelineFact::CompactionFinished {
                 id: "c".into(),
+                model_name: Some("Small".into()),
                 error: None,
             },
         );
         state.apply_host_event(&start);
-        state.apply_host_event(&finish);
         let id = DisplayId::correlated("compaction", "c");
+        let DisplayItem::Activity(running) = &state.transcript.get(&id).unwrap().item else {
+            panic!("activity")
+        };
+        assert_eq!(running.label, "compacting with Small");
+        state.apply_host_event(&finish);
         let DisplayItem::Activity(row) = &state.transcript.get(&id).unwrap().item else {
             panic!("activity")
         };
-        assert_eq!(row.label, "Compacting complete");
+        assert_eq!(row.label, "compacting complete with Small");
         assert_eq!(row.state, ActivityState::Success);
         assert!(state.session.context_usage_unknown);
         assert_eq!(state.session.token_usage, usage);
@@ -669,6 +680,7 @@ mod tests {
             12,
             TimelineFact::CompactionFinished {
                 id: "failed".into(),
+                model_name: None,
                 error: Some("failed".into()),
             },
         ));
@@ -682,12 +694,16 @@ mod tests {
             2,
             TimelineFact::CompactionFinished {
                 id: "c".into(),
+                model_name: Some("Small".into()),
                 error: None,
             },
         ));
         state.prepend_host_events(&[record(
             1,
-            TimelineFact::CompactionStarted { id: "c".into() },
+            TimelineFact::CompactionStarted {
+                id: "c".into(),
+                model_name: Some("Small".into()),
+            },
         )]);
         let DisplayItem::Activity(row) = &state
             .transcript
@@ -697,7 +713,7 @@ mod tests {
         else {
             panic!("activity")
         };
-        assert_eq!(row.label, "Compacting complete");
+        assert_eq!(row.label, "compacting complete with Small");
         assert_eq!(row.state, ActivityState::Success);
         assert!(state.session.context_usage_unknown);
     }

@@ -303,7 +303,7 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   entries are omitted when their source data is unavailable; context appears when the exact current model has a
   typed context window, uses zero before the first assistant usage, then uses the latest sample's
   input/output/cache-read/cache-write total, and is hidden for a deferred-new draft. Successful compaction replaces
-  its activity label with `Compacting complete` and makes context usage `?%` until a new nonzero assistant usage
+  its activity label with lowercase `compacting complete` (suffixed with ` with <model_name>` when the actual model is known) and makes context usage `?%` until a new nonzero assistant usage
   sample arrives; historical prepend preserves that known/unknown state without discarding cumulative totals.
   The effort entry is hidden
   unless the exact current route exposes reasoning
@@ -333,11 +333,16 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   fuzzy-matches the current model catalog by model/provider id and display name, filling the unambiguous
   `/model <provider>/<model-id>` form; `/effort ` fuzzy-matches the exact current route's declared effort ids and
   display names, filling `/effort <effort-id>`; `/skill` shows the current user-invocable roster and fills candidates
-  as `/skill:<name>`. A direct `/model` argument accepts that canonical form or a bare model id when it is unique
+  as `/skill:<name>`. Both adapters accept `/skill:<name> <text>` (also `/skill <name> <text>`)
+  as a skill followed by a separate user prompt, including the first submission after `/new`. The adapters
+  own ordered admission on the target session; Pi retains native skill expansion and waits for prompt
+  acknowledgments before releasing the trailing prompt and subsequent dependent requests.
+  A direct `/model` argument accepts that canonical form or a bare model id when it is unique
   across providers, while a direct `/effort` argument accepts a declared id for the exact current route. On
   receiving a new `commands`/`skills`/model-catalog frame, refresh any open prompt
   immediately; on session switch, clear the old agent-scoped catalog first. Generic execution must not pre-`start_thinking`; the result
   is projected directly to System/Error by `command-result`.
+- **Compaction model selection**: the shared command catalog and model Input Page distinguish compaction selection from conversation selection. Overrides remain adapter-owned runtime state, not shared frontend configuration. Pi uses a correlated manual-only RPC transaction: abort to idle, capture authoritative model/effort, select, compact, restore both, and verify before releasing dependent requests. Interrupt remains available during the transaction; restoration failure retains the barrier and reports recovery guidance. Native automatic compaction remains unchanged. Adapters supply actual-model metadata on normalized compaction start/end facts; historical events without it never borrow today's preference.
 - **Temporary model prompts**: the shared frontend owns leading `//<mark>` resolution and the session-scoped selection/restoration barrier, using ordinary adapter model-selection requests. Queued prompts retain their exact marked route; only the stripped body is admitted. Model catalog confirmation gates dependent dispatch. Restoration follows authoritative agent idleness, not individual tool/model-step settlement, so steering remains inside the temporary turn and after-turn dispatch waits for the original provider/model/effort. Composer model-name hints are presentation-only, and temporary status is italic.
 - **Quick link copy**: `link_copy` owns pure bounded candidate extraction, confidence, request generations, and latest-answer tag selection. `display::TaggedLink` is the presentation value consumed by Markdown layout; tags are inserted before inline/list/table wrapping and remain outside semantic source and complete-source copy. Assistant settlement triggers adapter-owned workspace containment checks through `UiActionPorts`, outside state guards; stale generations, workspace changes, new user turns, and session/draft replacement cannot revive retired tags. Both adapters validate canonical ancestors to reject symlink escapes, including missing children. The configurable global entry action starts a one-key selection mode only in ordinary conversation input and reuses clipboard effects. Rendering performs no filesystem work.
 - **Project path completion** (`path_completion.rs` + `input.rs`): a whitespace-delimited `@` token (optionally quoted for spaces) requests directory-hierarchy completion relative to the current session cwd. The frontend owns token ranges, cursor-safe replacement, and the shared suggestion popup; executable adapters perform bounded directory reads through `UiActionPorts` outside state guards. Owned results are admitted only for the matching draft, cursor, and cwd. Path navigation does not edit the draft; accepting a candidate fills only its token without sending, and directories continue browsing. Paste/image blocks suppress completion, preserving their atomic ranges.

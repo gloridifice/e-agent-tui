@@ -84,6 +84,10 @@ pub(super) fn parse(event_type: &str, data: &Value) -> super::HostEventKind {
                 .map(|text| text.chars().take(200).collect()),
         },
         "compaction/start" => HostEventKind::CompactionStart {
+            model_name: data
+                .get("modelName")
+                .and_then(Value::as_str)
+                .map(|name| name.chars().take(200).collect()),
             compaction_id: data
                 .get("compactionId")
                 .and_then(Value::as_str)
@@ -102,6 +106,10 @@ pub(super) fn parse(event_type: &str, data: &Value) -> super::HostEventKind {
             }
         }
         "compaction/end" => HostEventKind::CompactionEnd {
+            model_name: data
+                .get("modelName")
+                .and_then(Value::as_str)
+                .map(|name| name.chars().take(200).collect()),
             compaction_id: data
                 .get("compactionId")
                 .and_then(Value::as_str)

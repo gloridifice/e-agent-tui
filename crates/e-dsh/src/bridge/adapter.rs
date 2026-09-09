@@ -496,9 +496,13 @@ fn normalize_host_fact(kind: HostEventKind) -> TimelineFact {
             id: run_id,
             outcome: normalize_outcome(outcome),
         },
-        HostEventKind::CompactionStart { compaction_id } => {
-            TimelineFact::CompactionStarted { id: compaction_id }
-        }
+        HostEventKind::CompactionStart {
+            compaction_id,
+            model_name,
+        } => TimelineFact::CompactionStarted {
+            id: compaction_id,
+            model_name,
+        },
         HostEventKind::CompactionSummary {
             compaction_id,
             summary,
@@ -508,9 +512,11 @@ fn normalize_host_fact(kind: HostEventKind) -> TimelineFact {
         },
         HostEventKind::CompactionEnd {
             compaction_id,
+            model_name,
             error,
         } => TimelineFact::CompactionFinished {
             id: compaction_id,
+            model_name,
             error,
         },
         HostEventKind::GoalChange { summary } => TimelineFact::GoalChanged { summary },
@@ -1049,6 +1055,26 @@ fn question_answer_to_wire(answer: UiQuestionAnswer) -> QuestionAnswer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compaction_model_metadata_matches_the_wire_contract() {
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("../../testdata/wire-contract-fixtures.json"))
+                .unwrap();
+        for event_type in ["compaction/start", "compaction/end"] {
+            for variant in ["minimal", "full"] {
+                let value = fixtures["hostEventExtensions"][event_type][variant].clone();
+                let expected = value["data"]["modelName"].as_str().map(str::to_owned);
+                let fact = normalize_host_event(HostEvent::from_value(value)).fact;
+                let actual = match fact {
+                    TimelineFact::CompactionStarted { model_name, .. }
+                    | TimelineFact::CompactionFinished { model_name, .. } => model_name,
+                    _ => panic!("compaction fact expected"),
+                };
+                assert_eq!(actual, expected);
+            }
+        }
+    }
 
     #[test]
     fn image_prompt_is_base64_encoded_and_ordered_at_the_wire_boundary() {

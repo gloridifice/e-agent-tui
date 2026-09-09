@@ -23,6 +23,7 @@ pub enum CompletionKind {
     None,
     NewMode,
     Model,
+    Compact,
     Effort,
     Skill,
     FixedSubcommands,
@@ -35,6 +36,7 @@ pub enum CommandAction {
     New,
     Resume,
     Model,
+    Compact,
     Effort,
     Theme,
     Reload,
@@ -169,9 +171,9 @@ pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
     command!(
         "compact",
         "command.compact.description",
-        None,
-        None,
-        Forward
+        Some("command.compact.hint"),
+        Compact,
+        Compact
     ),
     command!(
         "goal",

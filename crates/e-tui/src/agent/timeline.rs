@@ -164,6 +164,7 @@ pub enum TimelineFact {
     },
     CompactionStarted {
         id: String,
+        model_name: Option<String>,
     },
     CompactionSummary {
         id: String,
@@ -171,6 +172,7 @@ pub enum TimelineFact {
     },
     CompactionFinished {
         id: String,
+        model_name: Option<String>,
         error: Option<String>,
     },
     GoalChanged {

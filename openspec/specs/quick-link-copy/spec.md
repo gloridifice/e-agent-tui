@@ -6,7 +6,7 @@ Copy URI and filesystem targets from the latest completed assistant answer using
 ## Requirements
 
 ### Requirement: Latest completed Markdown targets
-The frontend SHALL discover links dynamically from the most recent completed assistant Markdown message in the current conversation turn, including ordinary prose, inline/fenced code, and Markdown link destinations. URI schemes and Windows/POSIX absolute paths SHALL be recognized without requiring local existence. Workspace-relative candidates SHALL support both slash forms, extensionless path components, dotfiles, and recognizable extensionless filenames such as README and Makefile. A new user turn or session/draft replacement SHALL retire old tags. Streaming messages SHALL not receive tags before settlement. Duplicate target strings SHALL share one tag.
+The frontend SHALL discover links dynamically from the most recent completed assistant Markdown message in the current conversation turn, including ordinary prose, inline/fenced code, and Markdown link destinations. URI schemes and Windows/POSIX absolute paths SHALL be recognized without requiring local existence, except that the exact target `/` SHALL NOT be recognized in any supported Markdown context. Workspace-relative candidates SHALL support both slash forms, extensionless path components, dotfiles, and recognizable extensionless filenames such as README and Makefile. A new user turn or session/draft replacement SHALL retire old tags. Streaming messages SHALL not receive tags before settlement. Duplicate target strings SHALL share one tag.
 
 #### Scenario: Mixed targets
 - **WHEN** a completed answer contains `https://example.com/docs`, `C:\Users\test\README.md`, `/tmp/session.jsonl`, and an existing `src/main`
@@ -15,6 +15,11 @@ The frontend SHALL discover links dynamically from the most recent completed ass
 #### Scenario: Only the latest output is active
 - **WHEN** a newer assistant Markdown message settles or a new user turn begins
 - **THEN** the previous message's tags are removed and cannot be copied through the shortcut
+
+#### Scenario: Standalone slash
+- **WHEN** an answer contains `/` alone, as punctuation-separated prose, in quoted or code text, or as a Markdown link destination
+- **THEN** `/` is not a candidate and receives no copy tag
+- **AND** non-bare absolute paths and URI targets remain eligible
 
 ### Requirement: Confidence-ranked bounded workspace validation
 Candidate extraction SHALL be pure and SHALL not perform filesystem I/O. Explicit relative syntax, file extensions, dotfiles, and directory suffixes SHALL be high confidence; separator-bearing extensionless paths, code-delimited names, and recognizable extensionless filenames SHALL be medium confidence. Ordinary prose words SHALL be low confidence and SHALL not trigger filesystem validation. Only high/medium relative candidates SHALL be validated against the current workspace by adapters outside state guards. Existing contained candidates SHALL be accepted; syntactically strong high-confidence missing paths MAY remain eligible. Lexical parent escape and symlink escape SHALL be rejected, including missing children of escaping symlinks. Validation SHALL have a finite candidate bound and stale completions SHALL not modify a newer message, workspace, session, or draft.

@@ -137,7 +137,7 @@ fn relative_path(text: &str) -> Option<String> {
 }
 
 fn classify(text: &str, delimited: bool) -> Option<LinkCandidate> {
-    if text.is_empty() || text.chars().any(char::is_control) {
+    if text.is_empty() || text == "/" || text.chars().any(char::is_control) {
         return None;
     }
     let absolute = text.starts_with('/')
@@ -405,6 +405,29 @@ pub fn annotate(line: &mut Line<'static>, links: &[TaggedLink], style: Style) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quick_links_reject_bare_slash() {
+        for source in [
+            "/",
+            "left / right",
+            "(/), /.",
+            "`/`",
+            "\"/\" '/'",
+            "```text\n/\n```",
+            "[root](/)",
+            "![root](/)",
+        ] {
+            assert!(discover(source).is_empty(), "source: {source:?}");
+        }
+        assert_eq!(
+            discover("/ /tmp /tmp/ https://example.com/ src/main")
+                .iter()
+                .map(|candidate| candidate.target.as_str())
+                .collect::<Vec<_>>(),
+            ["/tmp", "/tmp/", "https://example.com/", "src/main"]
+        );
+    }
 
     #[test]
     fn quick_links_do_not_join_space_separated_command_syntax() {

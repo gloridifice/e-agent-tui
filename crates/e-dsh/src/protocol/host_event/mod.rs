@@ -175,6 +175,7 @@ pub enum HostEventKind {
     },
     CompactionStart {
         compaction_id: String,
+        model_name: Option<String>,
     },
     CompactionSummary {
         compaction_id: String,
@@ -182,6 +183,7 @@ pub enum HostEventKind {
     },
     CompactionEnd {
         compaction_id: String,
+        model_name: Option<String>,
         error: Option<String>,
     },
     GoalChange {

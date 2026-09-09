@@ -194,7 +194,9 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   A primary-button press on the pane separator is captured by resize before selectable-content hit testing;
   captured separator drags update only transient geometry, clear any existing selection, and remain resize-owned
   when they cross Transcript or Preview cells. Other primary-button drags select the final composited screen in
-  row-major order across panes, composer, pages, accessories, and overlays; blank cells can anchor a range.
+  row-major order within the starting Main or Preview pane, including its composer, pages, accessories, and
+  overlays; blank cells can anchor a range. Committed pane boundaries clamp horizontal endpoints and bound
+  intermediate rows, excluding the separator and neighboring pane. Single-pane layouts use viewport bounds.
   Visual copy preserves whole graphemes and displayed masks/placeholders/ellipses, never hidden or complete source,
   and trims trailing ordinary spaces on each selected screen row. Reading copy remains the complete-source operation.
   The pure reducer reads only the runner-owned committed screen map. From press until release/cancellation, the

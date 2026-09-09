@@ -184,7 +184,16 @@ pub fn render_with_cursor_and_selection(
     if let Some(toast) = toast {
         overlay::render_toast(frame, toast, theme);
     }
-    let presentation = Presentation::capture(frame.buffer_mut(), cursor, context, !resizing);
+    let pane_separator = match screen::layout(
+        frame.area(),
+        state.config.message_pane_percent,
+        state.preview.fullscreen && state.history_page.is_none(),
+    ) {
+        screen::ScreenLayout::Split { main, .. } => Some(main.right()),
+        _ => None,
+    };
+    let presentation = Presentation::capture(frame.buffer_mut(), cursor, context, !resizing)
+        .with_pane_separator(pane_separator);
     if !resizing
         && presentation
             .selection_frame()

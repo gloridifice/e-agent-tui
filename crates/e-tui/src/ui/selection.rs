@@ -71,6 +71,11 @@ impl Presentation {
         }
     }
 
+    pub(crate) fn with_pane_separator(mut self, column: Option<u16>) -> Self {
+        self.selection_frame.set_pane_separator(column);
+        self
+    }
+
     pub(crate) fn replay(
         &self,
         buffer: &mut Buffer,

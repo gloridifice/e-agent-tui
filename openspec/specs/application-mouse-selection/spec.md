@@ -2,7 +2,9 @@
 
 ## Purpose
 Define application-owned terminal mouse selection, its bounded render lifecycle and clipboard delivery, and normalized Windows raw-terminal input behavior.
+
 ## Requirements
+
 ### Requirement: Captured mouse selection coexists with application scrolling
 The client SHALL retain terminal mouse capture and application-owned wheel scrolling while providing application-owned primary-button text selection. A primary-button gesture beginning on the pane separator resize hit area SHALL be captured by resizing before text selection. Other primary-button gestures SHALL select visible screen cells without changing composer focus, Reading navigation, Preview target, page focus, or editor contents.
 
@@ -20,7 +22,7 @@ The client SHALL retain terminal mouse capture and application-owned wheel scrol
 
 #### Scenario: Text drag crosses the separator
 - **WHEN** a text gesture begins outside the resize hit area and crosses a visible separator glyph
-- **THEN** it remains text-selection-owned and includes that glyph when it falls within the range
+- **THEN** it remains text-selection-owned, clamps to the starting pane, and excludes the separator and neighboring pane
 
 #### Scenario: Wheel input remains application-owned
 - **WHEN** the user turns the wheel before, during, or after selection
@@ -31,7 +33,7 @@ The client SHALL retain terminal mouse capture and application-owned wheel scrol
 - **THEN** it does not start selection, write the clipboard, or insert raw mouse bytes into the composer
 
 ### Requirement: Selection targets the last committed visible surfaces
-The client SHALL derive selectable characters from the final composited cell grid of the last successfully committed frame, after ordinary overlays and notices but before mouse highlighting. The selectable domain SHALL be the entire TUI viewport, including blank cells, and SHALL NOT require individual widgets to register text. A range SHALL use screen row-major order across UI and pane boundaries. Captured text gestures SHALL continue targeting their held committed snapshot until release or cancellation.
+The client SHALL derive selectable characters from the final composited cell grid of the last successfully committed frame, after ordinary overlays and notices but before mouse highlighting. The selectable domain SHALL be the entire TUI viewport, including blank cells, and SHALL NOT require individual widgets to register text. A range SHALL use row-major order within the pane containing its primary press. In a split layout, Main and Preview SHALL have independent horizontal selection bounds excluding the separator; pointer motion outside the starting pane SHALL clamp to its nearest edge. Single-pane layouts SHALL use the viewport bounds. Pane geometry SHALL be part of committed selection identity. Captured text gestures SHALL continue targeting their held committed snapshot until release or cancellation.
 
 #### Scenario: Transcript frame is selected
 - **WHEN** a press arrives over a displayed transcript row
@@ -43,7 +45,7 @@ The client SHALL derive selectable characters from the final composited cell gri
 
 #### Scenario: Drag crosses a pane boundary
 - **WHEN** a text drag crosses between Main and Preview
-- **THEN** the range continues in screen row-major order without clamping to the starting pane
+- **THEN** the range clamps to the starting pane and intermediate rows include only that pane, without copying or highlighting the neighboring pane
 
 #### Scenario: Press begins in a non-selectable region
 - **WHEN** the user drags over composer text, an Input Page, an accessory, status labels, the title, or the working-directory path
@@ -70,7 +72,7 @@ The client SHALL derive selectable characters from the final composited cell gri
 - **THEN** they are not published and subsequent selection, if execution continues, still targets the last successful snapshot
 
 ### Requirement: Visual extraction respects Unicode display cells
-The client SHALL normalize forward/backward endpoints in screen row-major order, include complete graphemes intersected by the inclusive range, and emit each glyph once regardless of occupied cell count. A multiline range SHALL slice the first and last screen rows at the endpoints, include complete intermediate screen rows, and join rows with newline characters. Extraction SHALL preserve leading/internal spacing and intermediate blank rows but trim trailing U+0020 space cells from each extracted row. It SHALL NOT reconstruct source whitespace or logical source lines.
+The client SHALL normalize forward/backward endpoints in pane-local row-major order, include complete graphemes intersected by the inclusive range, and emit each glyph once regardless of occupied cell count. A multiline range SHALL slice the first and last screen rows at the endpoints, include complete intermediate rows within the starting pane, and join rows with newline characters. Extraction SHALL preserve leading/internal spacing and intermediate blank rows but trim trailing U+0020 space cells from each extracted row. It SHALL NOT reconstruct source whitespace or logical source lines.
 
 #### Scenario: Wide and combining graphemes are selected
 - **WHEN** an endpoint intersects CJK, emoji, combining text, or a ZWJ sequence
@@ -82,7 +84,7 @@ The client SHALL normalize forward/backward endpoints in screen row-major order,
 
 #### Scenario: Selection spans multiple wrapped rows
 - **WHEN** a range crosses visual screen rows
-- **THEN** first/last rows are sliced by their endpoints, complete intermediate rows are included, and visual row breaks remain newlines even across panes
+- **THEN** first/last rows are sliced by their endpoints, complete intermediate pane rows are included, and visual row breaks remain newlines without including adjacent-pane text
 
 #### Scenario: Selected row has presentation fill
 - **WHEN** a styled row contains trailing ordinary space cells
@@ -241,4 +243,3 @@ An eligible primary press SHALL hold the last successfully submitted unselected 
 #### Scenario: Both adapters execute the same gesture
 - **WHEN** equivalent scripted screen, pointer, update, and clipboard outcomes are supplied to `dshe` and `pie`
 - **THEN** shared selection policy produces the same visible range, cancellation, payload, and commit behavior
-

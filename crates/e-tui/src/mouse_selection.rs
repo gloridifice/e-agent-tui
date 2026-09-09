@@ -23,6 +23,7 @@ pub struct SelectionFrame {
     epoch: u64,
     context: u64,
     viewport: (u16, u16),
+    pane_separator: Option<u16>,
     cells: Arc<[Cell]>,
 }
 
@@ -72,9 +73,23 @@ impl SelectionFrame {
         self.context = context;
     }
 
+    pub(crate) fn set_pane_separator(&mut self, column: Option<u16>) {
+        self.pane_separator =
+            column.filter(|column| *column > 0 && column.saturating_add(1) < self.viewport.0);
+    }
+
+    fn pane_bounds(&self, anchor: Point) -> (u16, u16) {
+        match self.pane_separator {
+            Some(separator) if anchor.column < separator => (0, separator - 1),
+            Some(separator) => (separator + 1, self.viewport.0 - 1),
+            None => (0, self.viewport.0.saturating_sub(1)),
+        }
+    }
+
     pub fn same_geometry(&self, other: &Self) -> bool {
         self.context == other.context
             && self.viewport == other.viewport
+            && self.pane_separator == other.pane_separator
             && self.cells == other.cells
     }
 
@@ -125,14 +140,12 @@ impl SelectionFrame {
         let Some((start, end)) = selection.bounds_for(self) else {
             return Vec::new();
         };
+        let (left, right) =
+            self.pane_bounds(selection.anchor.expect("bounded selection has an anchor"));
         (start.row..=end.row)
             .map(|row| {
-                let first = if row == start.row { start.column } else { 0 };
-                let last = if row == end.row {
-                    end.column
-                } else {
-                    self.viewport.0 - 1
-                };
+                let first = if row == start.row { start.column } else { left };
+                let last = if row == end.row { end.column } else { right };
                 let x = self.cell(first, row).owner;
                 let last_owner = self.cell(last, row).owner;
                 let right = last_owner + self.cell(last_owner, row).width;
@@ -197,7 +210,10 @@ impl MouseSelection {
             PointerEvent::PrimaryPress { column, row } => {
                 self.clear();
                 if frame.epoch() != 0 {
-                    if let Some(point) = frame.point_at(column, row) {
+                    if let Some(point) = frame
+                        .point_at(column, row)
+                        .filter(|point| Some(point.column) != frame.pane_separator)
+                    {
                         self.epoch = Some(frame.epoch());
                         self.anchor = Some(point);
                         self.focus = Some(point);
@@ -208,8 +224,9 @@ impl MouseSelection {
             PointerEvent::PrimaryDrag { column, row }
             | PointerEvent::PrimaryRelease { column, row } => {
                 if self.dragging {
-                    self.focus = frame.clamp_point(column, row);
-                    self.moved |= self.focus != self.anchor;
+                    let (left, right) = frame.pane_bounds(self.anchor.expect("drag has an anchor"));
+                    self.focus = frame.clamp_point(column.clamp(left, right), row);
+                    self.moved |= self.anchor != Some(Point { column, row });
                     if matches!(event, PointerEvent::PrimaryRelease { .. }) {
                         self.dragging = false;
                         copy = frame.extract(self);
@@ -283,6 +300,36 @@ mod tests {
         let forward = drag(&frame, (1, 0), (2, 1)).1;
         assert_eq!(forward.as_deref(), Some("eft  │ right\nbot"));
         assert_eq!(drag(&frame, (2, 1), (1, 0)).1, forward);
+    }
+
+    #[test]
+    fn split_pane_rows_exclude_neighboring_text_and_clamp_crossing_drags() {
+        let mut frame = frame(&["left  | right", "bottom| next"]);
+        frame.set_pane_separator(Some(6));
+        assert_eq!(drag(&frame, (1, 0), (2, 1)).1.as_deref(), Some("eft\nbot"));
+        assert_eq!(drag(&frame, (2, 1), (1, 0)).1.as_deref(), Some("eft\nbot"));
+        assert_eq!(
+            drag(&frame, (1, 0), (18, 1)).1.as_deref(),
+            Some("eft\nbottom")
+        );
+        assert_eq!(
+            drag(&frame, (8, 0), (10, 1)).1.as_deref(),
+            Some("right\n nex")
+        );
+        assert_eq!(
+            drag(&frame, (10, 1), (8, 0)).1.as_deref(),
+            Some("right\n nex")
+        );
+        let (selection, copied) = drag(&frame, (8, 0), (0, 1));
+        assert_eq!(copied.as_deref(), Some("right\n"));
+        assert!(frame
+            .selected_cell_ranges(&selection)
+            .iter()
+            .all(|range| range.x > 6));
+        assert!(drag(&frame, (6, 0), (10, 1)).1.is_none());
+        let mut other = frame.clone();
+        other.set_pane_separator(Some(7));
+        assert!(!frame.same_geometry(&other));
     }
 
     #[test]

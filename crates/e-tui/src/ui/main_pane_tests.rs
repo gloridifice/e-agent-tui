@@ -2709,7 +2709,7 @@ fn mouse_selection_highlights_transcript_wide_cells_over_reading_style() {
 }
 
 #[test]
-fn mouse_selection_crosses_preview_and_transcript_in_screen_order() {
+fn mouse_selection_stays_in_starting_pane_when_crossing_the_separator() {
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();
     state.transcript.append(
@@ -2813,9 +2813,10 @@ fn mouse_selection_crosses_preview_and_transcript_in_screen_order() {
         },
         committed.selection_frame(),
     );
-    let copied = copied.copy.expect("cross-pane range copies");
+    let copied = copied.copy.expect("crossing drag copies the starting pane");
     assert!(copied.starts_with("main text"));
-    assert!(copied.ends_with('p'));
+    assert!(!copied.contains("preview"));
+    assert!(!copied.ends_with('p'));
     assert!(copied.contains('\n'));
     terminal
         .draw(|frame| {
@@ -2835,7 +2836,7 @@ fn mouse_selection_crosses_preview_and_transcript_in_screen_order() {
     assert!(buffer[(main_x, main_y)]
         .modifier
         .contains(Modifier::REVERSED));
-    assert!(buffer[(preview_x, preview_y)]
+    assert!(!buffer[(preview_x, preview_y)]
         .modifier
         .contains(Modifier::REVERSED));
     let transcript_work = state.render.transcript_cache.take_work_stats();

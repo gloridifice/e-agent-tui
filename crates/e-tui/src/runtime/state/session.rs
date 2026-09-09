@@ -44,6 +44,7 @@ impl RuntimeState {
         card.unit = Some(self.allocate_copy_unit(&card.copy_source));
         self.pending_submissions.push(card.id.clone());
         self.insert_transcript_item(DisplayItem::Card(card), None, None);
+        self.refresh_link_copy();
         self.projector.tool_family.close_group();
         self.render.transcript_cache.invalidate();
         if start_work {
@@ -65,6 +66,7 @@ impl RuntimeState {
         // The `/new` page starts empty: the previous session's preview must
         // not carry over into the draft page.
         self.preview.clear();
+        self.refresh_link_copy();
     }
 
     /// Retain the first prompt and return the atomic materialization payload.

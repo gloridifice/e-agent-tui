@@ -29,6 +29,7 @@ pub mod input;
 pub mod input_page;
 pub mod interaction;
 pub mod key_mapping;
+pub mod link_copy;
 pub mod login;
 pub mod mermaid;
 pub mod model_marks;

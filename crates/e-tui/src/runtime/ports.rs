@@ -22,6 +22,15 @@ pub trait AgentRequestPort {
 }
 
 pub trait UiActionPorts {
+    fn validate_links(
+        &mut self,
+        request: &crate::link_copy::LinkValidationRequest,
+    ) -> impl Future<Output = Vec<crate::link_copy::PathValidation>> + Send {
+        std::future::ready(vec![
+            crate::link_copy::PathValidation::Rejected;
+            request.candidates.len()
+        ])
+    }
     fn complete_paths(
         &mut self,
         request: &crate::path_completion::PathCompletionRequest,

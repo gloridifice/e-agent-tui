@@ -139,6 +139,52 @@ mod tests {
     use super::*;
 
     #[test]
+    fn quick_links_entry_respects_protected_focus_and_exact_modifiers() {
+        let entry = Event::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL));
+        assert_eq!(
+            route_terminal_event(entry.clone(), TerminalFocus::default()),
+            TerminalRoute::Global(Action::CopyLink)
+        );
+        for focus in [
+            TerminalFocus {
+                input_page_open: true,
+                ..Default::default()
+            },
+            TerminalFocus {
+                approval_open: true,
+                ..Default::default()
+            },
+            TerminalFocus {
+                reading_view_open: true,
+                ..Default::default()
+            },
+            TerminalFocus {
+                history_view_open: true,
+                ..Default::default()
+            },
+            TerminalFocus {
+                help_visible: true,
+                ..Default::default()
+            },
+        ] {
+            assert_ne!(
+                route_terminal_event(entry.clone(), focus),
+                TerminalRoute::Global(Action::CopyLink)
+            );
+        }
+        assert_ne!(
+            route_terminal_event(
+                Event::Key(KeyEvent::new(
+                    KeyCode::Char('y'),
+                    KeyModifiers::CONTROL | KeyModifiers::SHIFT
+                )),
+                TerminalFocus::default()
+            ),
+            TerminalRoute::Global(Action::CopyLink)
+        );
+    }
+
+    #[test]
     fn reading_view_suppresses_both_paste_paths() {
         let focus = TerminalFocus {
             reading_view_open: true,

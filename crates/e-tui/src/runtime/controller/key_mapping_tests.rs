@@ -87,6 +87,30 @@ impl Harness {
         RuntimeController::apply_reloaded_config(config, Vec::new(), &state, &mut self.ui());
     }
 
+    fn agent_fact(&mut self, sequence: u64, fact: crate::agent::TimelineFact) -> Vec<UiAction> {
+        let i = &mut self.interaction;
+        RuntimeController::apply_agent(
+            AgentEvent::Timeline(crate::agent::TimelineEvent::Append(
+                crate::agent::TimelineRecord {
+                    sequence: Some(sequence),
+                    time_ms: None,
+                    surface: None,
+                    source_sequences: Vec::new(),
+                    fact,
+                },
+            )),
+            &self.state,
+            &mut RuntimeUiState {
+                scroll: &mut i.scroll,
+                input: &mut i.input,
+                input_page: &mut i.input_page,
+                approval: &mut i.approval,
+                question: &mut i.question,
+                queue: &mut i.queue,
+            },
+        )
+    }
+
     fn render(&mut self) {
         use ratatui::{backend::TestBackend, Terminal};
         let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
@@ -112,6 +136,206 @@ impl Harness {
             })
             .unwrap();
     }
+}
+
+#[test]
+fn quick_links_key_mapping_copies_without_editing_and_respects_contexts() {
+    for mapping in [
+        "",
+        "[global]\ncopy_link = 'f2'",
+        "[global]\ncopy_link = 'nop'",
+    ] {
+        let mut h = Harness::new(mapping);
+        h.interaction.input.restore_text("draft".into());
+        h.state.lock().unwrap().link_copy.links = vec![crate::link_copy::TaggedLink {
+            target: "https://example.com".into(),
+            tag: '1',
+        }];
+        h.press(KeyCode::Char('y'), KeyModifiers::CONTROL);
+        let actions = h.press(KeyCode::Char('1'), KeyModifiers::NONE);
+        if mapping.is_empty() {
+            assert!(
+                matches!(actions.as_slice(), [UiAction::WriteClipboard(text)] if text == "https://example.com")
+            );
+            assert_eq!(h.interaction.input.buf, "draft");
+            h.press(KeyCode::Char('y'), KeyModifiers::CONTROL);
+            assert!(h.press(KeyCode::Esc, KeyModifiers::NONE).is_empty());
+            assert_eq!(h.interaction.input.buf, "draft");
+        } else {
+            assert!(!actions
+                .iter()
+                .any(|action| matches!(action, UiAction::WriteClipboard(_))));
+            assert_eq!(h.interaction.input.buf, "draft1");
+        }
+        if mapping.contains("f2") {
+            h.press(KeyCode::F(2), KeyModifiers::NONE);
+            assert!(matches!(
+                h.press(KeyCode::Char('1'), KeyModifiers::NONE).as_slice(),
+                [UiAction::WriteClipboard(_)]
+            ));
+        }
+        h.interaction.input_page = Some(InputPageSession::model());
+        h.press(KeyCode::Char('y'), KeyModifiers::CONTROL);
+        assert!(!h.state.lock().unwrap().link_copy.armed);
+    }
+}
+
+#[test]
+fn quick_links_agent_settlement_arms_targets_only_until_the_next_user_turn() {
+    use crate::agent::TimelineFact;
+    let mut h = Harness::new("");
+    let actions = h.agent_fact(
+        1,
+        TimelineFact::AssistantChunk {
+            text: "https://example.com".into(),
+            reasoning: String::new(),
+            turn: Some(1),
+            step: Some(1),
+            usage: None,
+        },
+    );
+    assert!(!actions
+        .iter()
+        .any(|action| matches!(action, UiAction::ValidateLinks(_))));
+    let actions = h.agent_fact(
+        2,
+        TimelineFact::AssistantMessage {
+            text: "https://example.com".into(),
+            reasoning: String::new(),
+            content: Vec::new(),
+            turn: Some(1),
+            step: Some(1),
+            usage: None,
+        },
+    );
+    let request = actions
+        .into_iter()
+        .find_map(|action| match action {
+            UiAction::ValidateLinks(request) => Some(request),
+            _ => None,
+        })
+        .expect("settlement validates links");
+    assert!(RuntimeController::apply_effect_result(
+        EffectResult::LinksValidated {
+            request: request.clone(),
+            validations: Vec::new()
+        },
+        &h.state,
+        Instant::now()
+    ));
+    assert_eq!(
+        h.state.lock().unwrap().link_copy.target('1').as_deref(),
+        Some("https://example.com")
+    );
+    h.agent_fact(
+        3,
+        TimelineFact::UserMessage {
+            text: "next".into(),
+            source_kind: Some("user".into()),
+            content: Vec::new(),
+            source: Default::default(),
+        },
+    );
+    assert!(h.state.lock().unwrap().link_copy.links.is_empty());
+    assert!(!RuntimeController::apply_effect_result(
+        EffectResult::LinksValidated {
+            request,
+            validations: Vec::new()
+        },
+        &h.state,
+        Instant::now()
+    ));
+}
+
+#[test]
+fn quick_links_latest_message_validation_and_source_layout_are_stale_safe() {
+    use crate::display::{DisplayId, DisplayItem, DisplayTone, TranscriptBlock, TranscriptFormat};
+    let h = Harness::new("");
+    let add = |app: &mut RuntimeState, seq, text: &str| {
+        app.transcript.append(
+            DisplayItem::Block(TranscriptBlock {
+                id: DisplayId::correlated("assistant-answer", &format!("{seq}:1")),
+                unit: None,
+                content: text.into(),
+                format: TranscriptFormat::Markdown,
+                tone: DisplayTone::Normal,
+                copy_source: text.into(),
+                streaming: false,
+            }),
+            None,
+        );
+        app.refresh_link_copy();
+        let actions = app.take_actions();
+        let [UiAction::ValidateLinks(request)] = actions.as_slice() else {
+            panic!("validation requested")
+        };
+        request.clone()
+    };
+    let old = add(&mut h.state.lock().unwrap(), 1, "https://old.example");
+    let current = add(
+        &mut h.state.lock().unwrap(),
+        2,
+        "[new](https://new.example)",
+    );
+    assert!(!RuntimeController::apply_effect_result(
+        EffectResult::LinksValidated {
+            request: old,
+            validations: Vec::new()
+        },
+        &h.state,
+        Instant::now()
+    ));
+    assert!(RuntimeController::apply_effect_result(
+        EffectResult::LinksValidated {
+            request: current.clone(),
+            validations: Vec::new()
+        },
+        &h.state,
+        Instant::now()
+    ));
+    {
+        let mut app = h.state.lock().unwrap();
+        crate::presentation::materialize_transcript(&mut app);
+        let rows = app
+            .render
+            .markdown_layout
+            .lines(&DisplayId::correlated("assistant-answer", "2:1"))
+            .unwrap();
+        assert!(rows
+            .iter()
+            .flat_map(|row| row.line.spans.iter())
+            .any(|span| span.content == "~1"));
+        assert!(app
+            .render
+            .units
+            .values()
+            .any(|source| source == "[new](https://new.example)"));
+        assert!(!app
+            .render
+            .markdown_layout
+            .lines(&DisplayId::correlated("assistant-answer", "1:1"))
+            .unwrap()
+            .iter()
+            .flat_map(|row| &row.line.spans)
+            .any(|span| span.content.contains("~1")));
+        app.push_local_markdown("local https://help.example");
+        app.refresh_link_copy();
+        assert_eq!(
+            app.link_copy.target('1').as_deref(),
+            Some("https://new.example")
+        );
+        assert!(app.take_actions().is_empty());
+        app.begin_new_conversation("default");
+        assert!(app.link_copy.links.is_empty());
+    }
+    assert!(!RuntimeController::apply_effect_result(
+        EffectResult::LinksValidated {
+            request: current,
+            validations: Vec::new()
+        },
+        &h.state,
+        Instant::now()
+    ));
 }
 
 #[test]

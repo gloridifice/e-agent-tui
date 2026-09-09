@@ -18,6 +18,7 @@ use crate::{
 struct MarkdownLayoutEntry {
     source: String,
     content_width: Option<usize>,
+    link_tags: Vec<crate::display::TaggedLink>,
     unit_start: u64,
     lines: Vec<RenderLine>,
 }
@@ -41,7 +42,9 @@ impl MarkdownLayoutRegistry {
         units: &mut HashMap<u64, String>,
     ) -> &[RenderLine] {
         let unchanged = self.entries.get(id).is_some_and(|entry| {
-            entry.source == source && entry.content_width == options.content_width
+            entry.source == source
+                && entry.content_width == options.content_width
+                && entry.link_tags == options.link_tags
         });
         if !unchanged {
             let unit_start = self
@@ -56,6 +59,7 @@ impl MarkdownLayoutRegistry {
                 MarkdownLayoutEntry {
                     source: source.to_owned(),
                     content_width: options.content_width,
+                    link_tags: options.link_tags.clone(),
                     unit_start,
                     lines,
                 },

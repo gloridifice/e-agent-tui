@@ -54,6 +54,14 @@ Marks appear as Bark-equivalent ` [a]` suffixes and persist in shared `config.to
 model_marks = [{ letter = "a", provider = "openai", model = "model-id" }]
 ```
 
+## Quick link copy
+
+`global.copy_link` defaults to literal Ctrl+Y on every platform. Press it, then the lowercase letter or digit shown after `~` to copy that target through the ordinary clipboard feedback path. Esc or an invalid ordinary key cancels without editing the draft. Pages, approvals, Reading and History keep their input ownership. This is a single mapped entry action followed by tag selection, not a configurable multi-key macro. Remap or disable the entry action in `[global]` and reload normally.
+
+Only the latest completed assistant Markdown answer in the current turn is tagged. Tags reset for the next user turn, newer answer, or session/draft replacement. Targets share tags when their strings repeat; the first 36 distinct accepted targets use `1234567890abcdefghijklmnopqrstuvwxyz`. Labels are presentation-only and never enter complete-source copy or history.
+
+URI and Windows/POSIX absolute-path syntax does not require local existence. Workspace-relative candidates use both slash forms. Explicit relative paths, file extensions, dotfiles and directory suffixes are high-confidence candidates; extensionless paths, recognizable filenames such as README/Makefile, and code-delimited names are medium-confidence candidates. Ordinary prose is ignored. Adapters confirm existence and containment outside UI locks; syntactically strong missing paths may remain eligible, but lexical or symlink escapes are rejected. Put paths containing spaces in quotes, inline code, or Markdown link destinations.
+
 ## Terminal limitations
 
 Applications cannot receive shortcuts intercepted by the terminal or OS. In particular, macOS Command+H and Command+, often belong to the terminal application. Configure terminal forwarding or choose another binding. Legacy terminal encodings may not distinguish Shift+Enter or Ctrl+Enter; modern Kitty CSI-u / modifyOtherKeys support preserves modifiers when delivered.

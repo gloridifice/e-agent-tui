@@ -81,7 +81,7 @@ pub(super) fn render_table(
         let mut row_layouts = Vec::with_capacity(cols);
         for c in 0..cols {
             let cell = row.get(c).map(String::as_str).unwrap_or("");
-            let layout = TableCellLayout::new(theme, cell, base);
+            let layout = TableCellLayout::new(theme, cell, base, &options.link_tags);
             widths[c] = widths[c].max(layout.width);
             min_widths[c] = min_widths[c].max(layout.min_width);
             row_layouts.push(layout);
@@ -108,7 +108,16 @@ pub(super) fn render_table(
         if options.content_width.is_some() {
             push_table_cell_rows(out, unit, dim_style, &widths, &layouts[row_idx]);
         } else {
-            push_table_cells(out, unit, dim_style, &widths, &rows[row_idx], header, theme);
+            push_table_cells(
+                out,
+                unit,
+                dim_style,
+                &widths,
+                &rows[row_idx],
+                header,
+                theme,
+                &options.link_tags,
+            );
         }
     };
 
@@ -162,6 +171,7 @@ fn push_plain(out: &mut Vec<RenderLine>, unit: u64, s: String, style: Style) {
 /// ┼│─ separator set and bolds the header). Cell content goes through the
 /// inline renderer, so `**bold**` / `code` / links inside cells render
 /// styled instead of leaking their markdown markers.
+#[allow(clippy::too_many_arguments)]
 fn push_table_cells(
     out: &mut Vec<RenderLine>,
     unit: u64,
@@ -170,6 +180,7 @@ fn push_table_cells(
     cells: &[String],
     header: bool,
     theme: &Theme,
+    link_tags: &[crate::link_copy::TaggedLink],
 ) {
     let cell_base = if header {
         theme.markdown.table_header.style()
@@ -180,7 +191,7 @@ fn push_table_cells(
     for (i, w) in widths.iter().enumerate() {
         let cell = cells.get(i).map(String::as_str).unwrap_or("");
         spans.push(Span::styled(" ", dim_style));
-        spans.extend(cell_spans(theme, cell, cell_base, *w));
+        spans.extend(cell_spans(theme, cell, cell_base, *w, link_tags));
         spans.push(Span::styled(" │", dim_style));
     }
     out.push(RenderLine {
@@ -194,8 +205,14 @@ fn push_table_cells(
 
 /// One table cell rendered with inline markdown (bold/code/links/…),
 /// truncated and padded to exactly `width` display columns.
-fn cell_spans(theme: &Theme, text: &str, base: Style, width: usize) -> Vec<Span<'static>> {
-    let mut lines = collect_inlines(theme, text, base);
+fn cell_spans(
+    theme: &Theme,
+    text: &str,
+    base: Style,
+    width: usize,
+    link_tags: &[crate::link_copy::TaggedLink],
+) -> Vec<Span<'static>> {
+    let mut lines = collect_inlines(theme, text, base, link_tags);
     let line = if lines.is_empty() {
         Line::default()
     } else {
@@ -256,8 +273,13 @@ struct TableCellLayout {
 }
 
 impl TableCellLayout {
-    fn new(theme: &Theme, text: &str, base: Style) -> Self {
-        let lines = collect_inlines(theme, text, base);
+    fn new(
+        theme: &Theme,
+        text: &str,
+        base: Style,
+        link_tags: &[crate::link_copy::TaggedLink],
+    ) -> Self {
+        let lines = collect_inlines(theme, text, base, link_tags);
         let rendered_width = lines.iter().map(|line| line.width()).max().unwrap_or(0);
         let width = rendered_width.max(1);
         let min_width = max_grapheme_width(text).max(1).min(width);

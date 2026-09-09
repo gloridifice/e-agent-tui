@@ -252,6 +252,7 @@ pub struct TuiApp {
     pub frontend: FrontendKind,
     pub config: Config,
     pub session: SessionModel,
+    pub link_copy: crate::link_copy::LinkCopyState,
     pub timeline: TimelineModel,
     pub catalogs: CatalogModel,
     pub interaction: InteractionModel,
@@ -458,6 +459,62 @@ impl TuiApp {
             return true;
         }
         false
+    }
+
+    pub fn refresh_link_copy(&mut self) {
+        let latest = if self.session.new_conversation.is_some() {
+            None
+        } else {
+            self.transcript
+                .nodes()
+                .iter()
+                .rev()
+                .find_map(|node| match &node.item {
+                    DisplayItem::Block(block)
+                        if block.format == crate::display::TranscriptFormat::Markdown
+                            && block.id.0.starts_with("assistant-answer:") =>
+                    {
+                        Some(
+                            (!block.streaming).then_some((block.id.clone(), block.content.clone())),
+                        )
+                    }
+                    DisplayItem::Card(card)
+                        if matches!(
+                            card.role,
+                            crate::display::CardRole::User
+                                | crate::display::CardRole::Skill
+                                | crate::display::CardRole::Attachment
+                        ) =>
+                    {
+                        Some(None)
+                    }
+                    _ => None,
+                })
+                .flatten()
+        };
+        let old_owner = self.link_copy.owner.clone();
+        let request = if let Some((id, source)) = latest {
+            self.link_copy.select(
+                id,
+                &source,
+                self.session.session_cwd.as_deref().unwrap_or(""),
+            )
+        } else {
+            self.link_copy.clear();
+            None
+        };
+        if request.is_some() || self.link_copy.owner != old_owner {
+            if let Some(id) = old_owner {
+                self.render.markdown_layout.invalidate(&id);
+            }
+            if let Some(id) = &self.link_copy.owner {
+                self.render.markdown_layout.invalidate(id);
+            }
+            self.render.transcript_cache.invalidate();
+        }
+        if let Some(request) = request {
+            self.pending_actions.push(UiAction::ValidateLinks(request));
+        }
     }
 
     pub fn take_actions(&mut self) -> Vec<UiAction> {

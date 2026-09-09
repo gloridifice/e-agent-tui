@@ -19,6 +19,7 @@ pub(super) fn apply_agent(
             let _zone = crate::tracy_zone!("snapshot apply");
             let mut app = state.lock().unwrap();
             app.apply_snapshot(&records, truncated);
+            app.refresh_link_copy();
             app.take_actions()
         }
         AgentEvent::Timeline(TimelineEvent::Append(record)) => {
@@ -40,6 +41,20 @@ pub(super) fn apply_agent(
                 app.session.new_conversation = None;
             }
             app.apply_host_event(&record);
+            use crate::agent::timeline::TimelineFact;
+            if matches!(
+                record.fact,
+                TimelineFact::AssistantMessage { .. }
+                    | TimelineFact::UserMessage { .. }
+                    | TimelineFact::TurnEnd { .. }
+            ) || matches!(
+                record.surface,
+                Some(crate::agent::timeline::SurfaceOperation::Replace { .. })
+            ) || (app.link_copy.owner.is_some()
+                && matches!(record.fact, TimelineFact::AssistantChunk { .. }))
+            {
+                app.refresh_link_copy();
+            }
             app.take_actions()
         }
         AgentEvent::Timeline(TimelineEvent::History { records, has_more }) => {
@@ -177,7 +192,11 @@ pub(super) fn apply_session(
                 };
                 ui.input.catalog_changed(&catalogs);
             }
-            vec![UiAction::PersistSessionId(attached.id)]
+            let mut app = state.lock().unwrap();
+            app.refresh_link_copy();
+            let mut actions = app.take_actions();
+            actions.push(UiAction::PersistSessionId(attached.id));
+            actions
         }
         SessionEvent::Status(status) => {
             let mut app = state.lock().unwrap();

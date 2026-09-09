@@ -29,6 +29,7 @@ pub(super) enum SoftBreak {
 /// leading `3.`/`#` in the text is eaten as a block marker.
 pub(super) struct InlineBuilder<'a> {
     theme: &'a Theme,
+    link_tags: &'a [crate::link_copy::TaggedLink],
     base: Style,
     soft_break: SoftBreak,
     lines: Vec<Line<'static>>,
@@ -39,9 +40,15 @@ pub(super) struct InlineBuilder<'a> {
 }
 
 impl<'a> InlineBuilder<'a> {
-    pub(super) fn new(theme: &'a Theme, base: Style, soft_break: SoftBreak) -> Self {
+    pub(super) fn new(
+        theme: &'a Theme,
+        base: Style,
+        soft_break: SoftBreak,
+        link_tags: &'a [crate::link_copy::TaggedLink],
+    ) -> Self {
         Self {
             theme,
+            link_tags,
             base,
             soft_break,
             lines: vec![Line::default()],
@@ -185,6 +192,11 @@ impl<'a> InlineBuilder<'a> {
     pub(super) fn finish(mut self) -> Vec<Line<'static>> {
         for line in self.lines.iter_mut() {
             trim_line_end(line);
+            crate::link_copy::annotate(
+                line,
+                self.link_tags,
+                Style::default().fg(self.theme.activity.label.fg),
+            );
         }
         // Drop trailing empty line artifacts.
         while self.lines.last().is_some_and(|line| line.width() == 0) {
@@ -200,9 +212,14 @@ impl<'a> InlineBuilder<'a> {
 /// Collect inline content of a paragraph/heading/quote/table cell from its own
 /// source. Soft and hard breaks split rows, matching the raw source's own line
 /// breaks.
-pub(super) fn collect_inlines(theme: &Theme, raw: &str, base: Style) -> Vec<Line<'static>> {
+pub(super) fn collect_inlines(
+    theme: &Theme,
+    raw: &str,
+    base: Style,
+    link_tags: &[crate::link_copy::TaggedLink],
+) -> Vec<Line<'static>> {
     let options = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH;
-    let mut builder = InlineBuilder::new(theme, base, SoftBreak::NewLine);
+    let mut builder = InlineBuilder::new(theme, base, SoftBreak::NewLine, link_tags);
     for event in Parser::new_ext(raw, options) {
         builder.push_event(&event);
     }

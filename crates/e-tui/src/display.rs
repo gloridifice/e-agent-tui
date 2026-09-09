@@ -18,6 +18,12 @@ impl DisplayId {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaggedLink {
+    pub target: String,
+    pub tag: char,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActivityState {
     Waiting,

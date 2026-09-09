@@ -84,6 +84,15 @@ struct PiRuntimePorts {
 }
 
 impl UiActionPorts for PiRuntimePorts {
+    async fn validate_links(
+        &mut self,
+        request: &e_tui::link_copy::LinkValidationRequest,
+    ) -> Vec<e_tui::link_copy::PathValidation> {
+        let request = request.clone();
+        tokio::task::spawn_blocking(move || e_pi::path_completion::validate_links(&request))
+            .await
+            .unwrap_or_default()
+    }
     async fn complete_paths(
         &mut self,
         request: &e_tui::path_completion::PathCompletionRequest,

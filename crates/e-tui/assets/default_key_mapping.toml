@@ -8,6 +8,7 @@ choose_effort = "osmain-e"
 open_settings = "osmain-,"
 resume_session = "osmain-n"
 toggle_preview = "osmain-p"
+copy_link = "ctrl-y"
 page_up = "pageup"
 page_down = "pagedown"
 

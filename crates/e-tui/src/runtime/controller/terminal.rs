@@ -17,6 +17,28 @@ pub(super) fn apply_terminal_route(
     selection_frame: &SelectionFrame,
     ui: &mut TerminalUiState<'_>,
 ) -> Vec<UiAction> {
+    {
+        let mut app = state.lock().unwrap();
+        let armed = app.link_copy.armed;
+        if !matches!(route, TerminalRoute::Ignore) {
+            app.link_copy.armed = false;
+        }
+        if armed && app.session.new_conversation.is_none() {
+            if let TerminalRoute::Ordinary(key) = &route {
+                if key.modifiers.is_empty() {
+                    if let crossterm::event::KeyCode::Char(tag) = key.code {
+                        return app
+                            .link_copy
+                            .target(tag)
+                            .map(UiAction::WriteClipboard)
+                            .into_iter()
+                            .collect();
+                    }
+                }
+                return Vec::new();
+            }
+        }
+    }
     if state.lock().unwrap().history_page.is_some() {
         if let TerminalRoute::Pointer(pointer) = &route {
             if !matches!(pointer, PointerEvent::Wheel { .. }) {
@@ -261,6 +283,11 @@ pub(super) fn apply_terminal_route(
         TerminalRoute::Global(action) => {
             ui.mouse_selection.clear();
             match action {
+                Action::CopyLink => {
+                    let mut app = state.lock().unwrap();
+                    app.link_copy.armed =
+                        app.session.new_conversation.is_none() && !app.link_copy.links.is_empty();
+                }
                 Action::EnterReadMode => effects.extend(enter_reading(size, now, state, ui)),
                 Action::TogglePreview => {
                     let mut app = state.lock().unwrap();

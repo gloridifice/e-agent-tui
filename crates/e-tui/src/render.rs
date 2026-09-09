@@ -89,6 +89,7 @@ pub struct RenderOptions {
     /// continuation rows stay in the text column. `None` renders unbounded
     /// logical rows and leaves wrapping to the paint-time wrapper.
     pub content_width: Option<usize>,
+    pub link_tags: Vec<crate::link_copy::TaggedLink>,
 }
 
 impl Default for RenderOptions {
@@ -100,6 +101,7 @@ impl Default for RenderOptions {
             mermaid_enabled: true,
             markdown_strength: MarkdownStrength::Normal,
             content_width: None,
+            link_tags: Vec::new(),
         }
     }
 }
@@ -116,6 +118,7 @@ pub(crate) fn transcript_options(
         mermaid_enabled: config.mermaid_enabled,
         markdown_strength: MarkdownStrength::Normal,
         content_width: Some(content_width),
+        link_tags: Vec::new(),
     }
 }
 
@@ -373,7 +376,8 @@ fn render_block(
 ) {
     match kind {
         BlockKind::Paragraph => {
-            let inlines = collect_inlines(theme, raw, theme.markdown.text.style());
+            let inlines =
+                collect_inlines(theme, raw, theme.markdown.text.style(), &options.link_tags);
             for (i, line) in inlines.into_iter().enumerate() {
                 out.push(RenderLine {
                     line,
@@ -396,9 +400,9 @@ fn render_block(
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-            let inlines = collect_inlines(theme, &stripped, base);
+            let inlines = collect_inlines(theme, &stripped, base, &[]);
             for (i, line) in inlines.into_iter().enumerate() {
-                let rendered = if level == 1 {
+                let mut rendered = if level == 1 {
                     // h1 keeps horizontal padding; the semantic style decides
                     // whether that becomes a background bar.
                     let mut spans = vec![Span::styled(" ", base)];
@@ -416,6 +420,11 @@ fn render_block(
                     }
                     Line::from(spans)
                 };
+                crate::link_copy::annotate(
+                    &mut rendered,
+                    &options.link_tags,
+                    Style::default().fg(theme.activity.label.fg),
+                );
                 out.push(RenderLine {
                     line: rendered,
                     unit,
@@ -433,6 +442,13 @@ fn render_block(
                 render_mermaid_block(raw, unit, theme, options, out);
             } else {
                 render_code_block(raw, lang.as_deref(), *fenced, unit, theme, options, out);
+            }
+            for line in out.iter_mut() {
+                crate::link_copy::annotate(
+                    &mut line.line,
+                    &options.link_tags,
+                    Style::default().fg(theme.activity.label.fg),
+                );
             }
         }
         BlockKind::Table => {
@@ -489,7 +505,12 @@ fn render_quote(
             .content_width
             .map(|width| width.saturating_sub(gutter))
             .filter(|width| *width > 0);
-        let inlines = collect_inlines(theme, content, theme.markdown.text.style());
+        let inlines = collect_inlines(
+            theme,
+            content,
+            theme.markdown.text.style(),
+            &options.link_tags,
+        );
         for line in inlines {
             let rows = match body_width {
                 Some(width) => wrap_styled_line(line, width),
@@ -624,6 +645,7 @@ fn render_list(
                         theme,
                         theme.markdown.text.style(),
                         SoftBreak::Space,
+                        &options.link_tags,
                     ),
                     task: None,
                     number,
@@ -761,6 +783,41 @@ impl ListRenderer<'_> {
 mod tests {
     use super::*;
     use ratatui::style::Modifier;
+
+    #[test]
+    fn quick_links_render_before_wrap_and_preserve_complete_source() {
+        let theme = Theme::ferra();
+        let mut options = RenderOptions {
+            content_width: Some(24),
+            ..Default::default()
+        };
+        options.link_tags = vec![crate::link_copy::TaggedLink {
+            target: "src/project/main.rs".into(),
+            tag: '1',
+        }];
+        for source in [
+            "see `src/project/main.rs`",
+            "# src/project/main.rs",
+            "- see src/project/main.rs",
+            "> see src/project/main.rs",
+            "```rust\nsrc/project/main.rs\n```",
+            "| path |\n| --- |\n| src/project/main.rs |",
+            "[source](src/project/main.rs)",
+        ] {
+            let mut units = HashMap::new();
+            let rows = render_markdown(source, &theme, &mut 0, &options, &mut units);
+            let text: String = rows
+                .iter()
+                .flat_map(|row| row.line.spans.iter())
+                .map(|span| span.content.as_ref())
+                .collect();
+            assert!(text.contains("~1"), "missing tag: {source}: {text}");
+            assert!(
+                units.values().any(|value| value.trim() == source),
+                "source changed: {source}"
+            );
+        }
+    }
 
     fn render(text: &str) -> Vec<RenderLine> {
         render_full(text).0

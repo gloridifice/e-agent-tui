@@ -41,7 +41,7 @@ pub(super) fn help_overlay(config: &crate::Config, theme: &Theme) -> Vec<Line<'s
     let groups: &[(crate::key_mapping::Scope, &[crate::key_mapping::Action])] = &[
         (Global, &[PrintHelp, EnterReadMode]),
         (Global, &[ChooseModel, ChooseEffort, OpenSettings]),
-        (Global, &[ResumeSession, TogglePreview]),
+        (Global, &[ResumeSession, TogglePreview, CopyLink]),
         (MessageIdle, &[Send]),
         (MessageWorking, &[SendAsap, SendAfterTurn]),
         (Message, &[NewLine, Paste]),
@@ -67,6 +67,7 @@ pub(super) fn help_overlay(config: &crate::Config, theme: &Theme) -> Vec<Line<'s
             style,
         ));
     }
+    rows.push(Line::styled(tr(config.language, "help.link_copy"), style));
     rows.push(Line::styled(tr(config.language, "help.model_marks"), style));
     rows.push(Line::styled(
         tr(config.language, "help.model_prefix"),

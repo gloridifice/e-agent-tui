@@ -27,8 +27,13 @@ pub fn materialize_transcript(state: &mut TuiApp) {
         })
         .collect::<Vec<_>>();
     let theme = state.config.theme();
-    let render_options = options(state);
+    let mut render_options = options(state);
     for (id, source, current_unit) in blocks {
+        render_options.link_tags = if state.link_copy.owner.as_ref() == Some(&id) {
+            state.link_copy.links.clone()
+        } else {
+            Vec::new()
+        };
         let primary = {
             let render = &mut state.render;
             render

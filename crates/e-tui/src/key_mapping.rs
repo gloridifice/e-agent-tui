@@ -20,6 +20,7 @@ pub enum Action {
     OpenSettings,
     ResumeSession,
     TogglePreview,
+    CopyLink,
     PageUp,
     PageDown,
     NewLine,

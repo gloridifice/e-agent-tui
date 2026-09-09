@@ -31,6 +31,13 @@ pub async fn execute_ui_actions(
     let mut execution = EffectExecution::default();
     for action in actions {
         match action {
+            UiAction::ValidateLinks(request) => {
+                let validations = ports.validate_links(&request).await;
+                execution.completed.push(EffectResult::LinksValidated {
+                    request,
+                    validations,
+                });
+            }
             UiAction::CompletePaths(request) => {
                 let candidates = ports.complete_paths(&request).await;
                 execution.completed.push(EffectResult::PathsCompleted {

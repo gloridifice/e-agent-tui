@@ -460,6 +460,7 @@ impl RuntimeState {
         self.session.cost_usd = None;
         self.session.last_usage_sample = None;
         self.session.context_usage_unknown = false;
+        self.link_copy.clear();
         self.session_state_events.clear();
         self.render.units.clear();
         self.render.expanded.clear();

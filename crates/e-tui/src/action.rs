@@ -195,6 +195,10 @@ pub fn clipboard_preview(text: &str, limit: usize) -> (String, bool) {
 
 #[derive(Debug, Clone)]
 pub enum EffectResult {
+    LinksValidated {
+        request: crate::link_copy::LinkValidationRequest,
+        validations: Vec<crate::link_copy::PathValidation>,
+    },
     PathsCompleted {
         request: crate::path_completion::PathCompletionRequest,
         candidates: Vec<crate::path_completion::PathCandidate>,
@@ -233,6 +237,7 @@ pub enum DrawPriority {
 
 #[derive(Debug, Clone)]
 pub enum UiAction {
+    ValidateLinks(crate::link_copy::LinkValidationRequest),
     CompletePaths(crate::path_completion::PathCompletionRequest),
     Agent(AgentRequest),
     ResolvePreview(PreviewRequest),

@@ -84,6 +84,10 @@ pub(crate) fn markdown(config: &crate::Config, integrated: &[CommandDescriptor])
         "\n\n{}\n",
         crate::i18n::tr(language, "help.model_prefix")
     ));
+    output.push_str(&format!(
+        "\n{}\n",
+        crate::i18n::tr(language, "help.link_copy")
+    ));
     for scope in crate::key_mapping::Scope::ALL {
         output.push_str(&format!("\n### {}\n\n", scope.name()));
         if scope == crate::key_mapping::Scope::Page {

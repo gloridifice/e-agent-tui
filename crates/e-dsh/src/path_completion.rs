@@ -55,3 +55,101 @@ pub fn complete(request: &PathCompletionRequest) -> Vec<PathCandidate> {
     candidates.truncate(100);
     candidates
 }
+
+pub fn validate_links(
+    request: &e_tui::link_copy::LinkValidationRequest,
+) -> Vec<e_tui::link_copy::PathValidation> {
+    use e_tui::link_copy::PathValidation::{Exists, Missing, Rejected};
+    let root = request
+        .candidates
+        .iter()
+        .any(|candidate| candidate.relative.is_some())
+        .then(|| Path::new(&request.cwd).canonicalize().ok())
+        .flatten();
+    request
+        .candidates
+        .iter()
+        .map(|candidate| {
+            let Some(relative) = &candidate.relative else {
+                return Exists;
+            };
+            let Some(root) = &root else {
+                return Rejected;
+            };
+            let relative = Path::new(relative);
+            if relative
+                .components()
+                .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
+            {
+                return Rejected;
+            }
+            let mut path = root.join(relative);
+            let mut missing = false;
+            loop {
+                match path.canonicalize() {
+                    Ok(resolved) => {
+                        return if !resolved.starts_with(root) {
+                            Rejected
+                        } else if missing {
+                            Missing
+                        } else {
+                            Exists
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        if path
+                            .symlink_metadata()
+                            .is_ok_and(|metadata| metadata.file_type().is_symlink())
+                        {
+                            return Rejected;
+                        }
+                        missing = true;
+                        if !path.pop() {
+                            return Rejected;
+                        }
+                    }
+                    Err(_) => return Rejected,
+                }
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn quick_links_validate_workspace_and_reject_symlink_escape() {
+        use e_tui::link_copy::{
+            discover, LinkValidationRequest,
+            PathValidation::{Exists, Missing, Rejected},
+        };
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("src")).unwrap();
+        std::fs::write(root.path().join("src/main"), "").unwrap();
+        std::fs::write(root.path().join("README"), "").unwrap();
+        let link = root.path().join("escape");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+        #[cfg(windows)]
+        assert!(std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(outside.path())
+            .output()
+            .unwrap()
+            .status
+            .success());
+        let request = LinkValidationRequest {
+            generation: 1,
+            cwd: root.path().to_str().unwrap().into(),
+            candidates: discover(
+                "src/main README ./missing.rs escape/ escape/missing.rs https://example.com",
+            ),
+        };
+        assert_eq!(
+            super::validate_links(&request),
+            [Exists, Exists, Missing, Rejected, Rejected, Exists]
+        );
+    }
+}

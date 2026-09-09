@@ -10,6 +10,7 @@ The historical [Ctrl+Y investigation](../../history/rust-client-refactor/termina
 ```powershell
 cargo test -p e-tui --lib key_mapping
 cargo test -p e-tui --lib model_marks
+cargo test -p e-tui --lib quick_links
 cargo test -p e-tui --lib runtime::input
 cargo test -p e-tui --lib input
 cargo test -p e-tui --lib runtime::controller
@@ -33,5 +34,7 @@ Before claiming physical compatibility for a terminal family, test Windows Termi
 8. In `/model`, use Shift+A to mark the focused model and repeat it to remove the mark. Mark again, reopen the page, browse another provider, and press `a` to select and close. Confirm default `h/j/k/l/q` cannot be marked, a newly conflicting page/global binding suppresses a saved mark after reload, and the Bark suffix remains visible when the model name is truncated.
 
 9. Open `/history` and verify it directly shows the session-wide Top 50 ranking in the message pane, keeping split Preview visible. Tab must not switch views or edit the retained draft. Verify row/half-page/full-page movement and Esc/q exit, including remapped or disabled `full_screen` bindings.
+
+10. After an answer containing URLs and workspace paths settles, verify the Umber `~1`…`~z` tags. Press Ctrl+Y then a tag, paste elsewhere, and verify the exact target without its suffix. Verify Esc cancellation, preserved draft, no takeover of pages/approvals/Reading/History, retired tags on a new turn, and remapped/disabled `global.copy_link` without Ctrl+Y fallback.
 
 Physical runs for the new defaults must be recorded separately; automated success alone does not mark this matrix complete.

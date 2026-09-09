@@ -54,6 +54,25 @@ pub(super) fn apply_effect_result(
     now: Instant,
 ) -> bool {
     match result {
+        EffectResult::LinksValidated {
+            request,
+            validations,
+        } => {
+            let mut app = state.lock().unwrap();
+            if app.session.new_conversation.is_some()
+                || app.session.session_cwd.as_deref().unwrap_or("") != request.cwd
+            {
+                return false;
+            }
+            if !app.link_copy.complete(&request, &validations) {
+                return false;
+            }
+            if let Some(id) = app.link_copy.owner.clone() {
+                app.render.markdown_layout.invalidate(&id);
+            }
+            app.render.transcript_cache.invalidate();
+            true
+        }
         EffectResult::PathsCompleted {
             request,
             candidates,

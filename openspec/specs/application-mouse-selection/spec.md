@@ -26,7 +26,7 @@ The client SHALL retain terminal mouse capture and application-owned wheel scrol
 
 #### Scenario: Wheel input remains application-owned
 - **WHEN** the user turns the wheel before, during, or after selection
-- **THEN** any active text capture is cancelled before the existing transcript scrolling and history-paging behavior processes the event
+- **THEN** any active text capture is cancelled before the pane under the wheel coordinates processes the event; Main retains transcript scrolling/history paging or active History-page scrolling, while Preview scrolls independently without changing Main
 
 #### Scenario: Unsupported button is used
 - **WHEN** a middle-button, secondary-button, or unpressed motion report has no assigned behavior

@@ -16,6 +16,83 @@ use ratatui::{
 };
 use std::time::Duration;
 
+#[test]
+fn wheel_routes_only_to_pointed_pane() {
+    for (percent, fullscreen, history, column, row, expected) in [
+        (60, false, false, 10, 5, "main"),
+        (60, false, false, 80, 5, "preview"),
+        (60, false, true, 80, 5, "preview"),
+        (60, false, true, 10, 5, "history"),
+        (100, false, false, 80, 5, "main"),
+        (100, true, false, 80, 5, "preview"),
+        (100, true, true, 80, 5, "history"),
+        (60, false, false, 72, 5, "none"),
+        (60, false, false, 120, 5, "none"),
+        (60, false, false, 80, 40, "none"),
+    ] {
+        let mut h = Harness::new();
+        {
+            let mut app = h.state.lock().unwrap();
+            app.config.message_pane_percent =
+                crate::config::PaneWidthPercent::from_basis_points(percent * 100).unwrap();
+            app.preview.fullscreen = fullscreen;
+            app.preview.update_scroll_bounds(100, 40);
+            app.interaction.scroll.offset = 20;
+            app.interaction.scroll.follow = false;
+            if history {
+                let mut page =
+                    crate::history_page::HistoryPage::loading(1, "s".into(), "cwd".into());
+                page.set_offset(20);
+                app.history_page = Some(page);
+            }
+        }
+        let effects = h.pointer(PointerEvent::Wheel {
+            up: true,
+            column,
+            row,
+        });
+        let app = h.state.lock().unwrap();
+        assert_eq!(
+            app.preview.scroll,
+            if expected == "preview" { 57 } else { 0 },
+            "{expected}"
+        );
+        assert_eq!(
+            app.interaction.scroll.offset,
+            if expected == "main" { 17 } else { 20 },
+            "{expected}"
+        );
+        if let Some(page) = &app.history_page {
+            assert_eq!(page.offset(), if expected == "history" { 17 } else { 20 });
+        }
+        assert!(!effects
+            .iter()
+            .any(|effect| matches!(effect, UiAction::Agent(_))));
+    }
+}
+
+#[test]
+fn wheel_does_not_scroll_during_separator_capture() {
+    let mut h = Harness::new();
+    {
+        let mut app = h.state.lock().unwrap();
+        let percent = app.config.message_pane_percent;
+        app.interaction.pane_resize.begin(72, percent, false);
+        app.interaction.scroll.offset = 20;
+        app.preview.update_scroll_bounds(100, 40);
+    }
+    for column in [10, 80] {
+        h.pointer(PointerEvent::Wheel {
+            up: true,
+            column,
+            row: 5,
+        });
+    }
+    let app = h.state.lock().unwrap();
+    assert_eq!(app.interaction.scroll.offset, 20);
+    assert!(app.preview.follows_tail());
+}
+
 struct Harness {
     state: Arc<Mutex<RuntimeState>>,
     terminal: Terminal<TestBackend>,
@@ -444,7 +521,11 @@ fn selection_cancels_on_input_context_changes_and_separator_capture_stays_exclus
     let at = h.locate("draft text");
     for route in [
         TerminalRoute::Pointer(PointerEvent::FocusLost),
-        TerminalRoute::Pointer(PointerEvent::Wheel { up: true }),
+        TerminalRoute::Pointer(PointerEvent::Wheel {
+            up: true,
+            column: 0,
+            row: 0,
+        }),
         TerminalRoute::Paste {
             text: "paste".into(),
         },

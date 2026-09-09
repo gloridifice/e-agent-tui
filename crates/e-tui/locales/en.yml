@@ -184,7 +184,7 @@ help.runtime_commands: "Current runtime commands"
 key.navigate: "Move"
 key.help.more: "— Unbound · /help: complete binding list · /reload: reload key_mapping.toml"
 help.mouse_copy: "Drag to copy rows within the starting pane; display pauses while held."
-help.mouse_resize: "Wheel scrolls; a separator press resizes instead of selecting."
+help.mouse_resize: "Wheel scrolls the pane under the pointer; press the separator to resize."
 key.action.print_help: "Help"
 key.action.enter_read_mode: "Reading View"
 key.action.choose_model: "Model"
@@ -251,7 +251,7 @@ help.body: |
   - `/history` opens the session-wide Top 50 elapsed ranking in the message pane. The footer shows the active scrolling and exit bindings.
   - Drag any visible screen text to copy on release, including input, status, pages, and popups. Multiline ranges include adjacent panes in screen row order.
   - The display stays fixed while selecting; background work continues and live display resumes on release. Only displayed masks, placeholders, and ellipses are copied; trailing ordinary spaces are omitted.
-  - Mouse wheel scrolls messages and cancels selection. A separator press resizes; a text drag starting elsewhere can include its visible glyph.
+  - Mouse wheel scrolls the pane under the pointer and cancels selection. Press the separator to resize; text selection stays within its starting pane.
   - Type `/` to complete built-in and runtime commands.
   - Type `@` to browse project-relative paths. Completion accepts a path without sending; directories continue browsing. Paths containing spaces are quoted.
 

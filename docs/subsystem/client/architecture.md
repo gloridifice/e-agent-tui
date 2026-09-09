@@ -190,7 +190,10 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   (a fill would destroy the block).
   `↑/↓` move between input lines by character column first, and only switch to the previous/next history prompt
   at the first/last line boundary; outside Reading, `PageUp`/`PageDown` page by the currently visible transcript height. While Reading owns input, its configurable fast-movement actions instead repeat ordinary cursor up/down 15 times, checking Block/Item mode on each step and retaining cursor-following visibility; disabling them cannot fall back to global paging. The
-  mouse wheel moves 3 lines per notch (always operating on the transcript even when an Input Page is open).
+  mouse wheel moves 3 display rows per notch in the pane under its terminal coordinates. Main retains transcript
+  scrolling even with an Input Page open, or scrolls History when it owns Main; Preview scrolls independently,
+  including Preview-only presentation. Preview manual review distinguishes row zero from automatic tail following
+  and resumes following at the bottom. Separator cells do not scroll either pane.
   A primary-button press on the pane separator is captured by resize before selectable-content hit testing;
   captured separator drags update only transient geometry, clear any existing selection, and remain resize-owned
   when they cross Transcript or Preview cells. Other primary-button drags select the final composited screen in

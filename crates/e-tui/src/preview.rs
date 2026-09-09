@@ -284,6 +284,8 @@ pub struct PreviewPaneState {
     pub target: Option<PreviewTarget>,
     pub state: PreviewState,
     pub scroll: usize,
+    manual_scroll: bool,
+    viewport_max_scroll: usize,
     pub fullscreen: bool,
     pub cache: PreviewCache,
     /// Presentation-only wrapped-row cursor for the selected Ready target.
@@ -296,6 +298,30 @@ pub struct PreviewPaneState {
 }
 
 impl PreviewPaneState {
+    pub(crate) fn follows_tail(&self) -> bool {
+        !self.manual_scroll && self.scroll == 0
+    }
+
+    pub(crate) fn update_scroll_bounds(&mut self, total: usize, visible: usize) {
+        self.viewport_max_scroll = total.saturating_sub(visible);
+        self.scroll = self.scroll.min(self.viewport_max_scroll);
+    }
+
+    pub(crate) fn scroll_lines(&mut self, up: bool, lines: usize) {
+        let current = if self.follows_tail() {
+            self.viewport_max_scroll
+        } else {
+            self.scroll.min(self.viewport_max_scroll)
+        };
+        let next = if up {
+            current.saturating_sub(lines)
+        } else {
+            current.saturating_add(lines).min(self.viewport_max_scroll)
+        };
+        self.manual_scroll = next < self.viewport_max_scroll;
+        self.scroll = if self.manual_scroll { next } else { 0 };
+    }
+
     /// Reconcile one semantic target. Identity changes reset Preview scroll;
     /// revision-only refreshes preserve it. Returns deferred work when cache
     /// reuse or inline presentation cannot satisfy the target.
@@ -332,6 +358,8 @@ impl PreviewPaneState {
         let reveal_mode_changed = self.reveal_intent != reveal_intent;
         if identity_changed {
             self.scroll = 0;
+            self.manual_scroll = false;
+            self.viewport_max_scroll = 0;
             self.work.rebuilds = self.work.rebuilds.saturating_add(1);
         } else if target_changed {
             self.work.patches = self.work.patches.saturating_add(1);
@@ -511,6 +539,22 @@ mod tests {
         pane.scroll = 6;
         pane.select(Some(deferred("a", "a", 2)));
         assert_eq!(pane.scroll, 6);
+    }
+
+    #[test]
+    fn wheel_manual_top_survives_revision_but_not_target_replacement() {
+        let mut pane = PreviewPaneState::default();
+        pane.select(Some(deferred("a", "a", 1)));
+        pane.update_scroll_bounds(20, 5);
+        pane.scroll_lines(true, 30);
+        assert_eq!(pane.scroll, 0);
+        assert!(!pane.follows_tail());
+        pane.select(Some(deferred("a", "a", 2)));
+        pane.update_scroll_bounds(30, 5);
+        assert_eq!(pane.scroll, 0);
+        assert!(!pane.follows_tail());
+        pane.select(Some(deferred("b", "b", 1)));
+        assert!(pane.follows_tail());
     }
 
     #[test]

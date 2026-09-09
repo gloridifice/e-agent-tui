@@ -5,7 +5,7 @@ use crossterm::event::KeyEvent;
 /// Frontend pointer gestures after terminal-specific decoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PointerEvent {
-    Wheel { up: bool },
+    Wheel { up: bool, column: u16, row: u16 },
     PrimaryPress { column: u16, row: u16 },
     PrimaryDrag { column: u16, row: u16 },
     PrimaryRelease { column: u16, row: u16 },

@@ -121,8 +121,9 @@ pub fn render(
     // state labels are already bounded single rows.
     let total = lines.len();
     let visible = usize::from(area.height);
+    preview.update_scroll_bounds(total, visible);
     let mut visible_lines: Vec<(usize, Line<'static>)> = Vec::new();
-    if preview.scroll == 0 && total > visible && pinned_rows > 0 {
+    if preview.follows_tail() && total > visible && pinned_rows > 0 {
         let pinned = pinned_rows.min(visible).min(total);
         visible_lines.extend(lines.iter().take(pinned).cloned().enumerate());
         let output_rows = visible.saturating_sub(pinned);
@@ -135,13 +136,10 @@ pub fn render(
                 .take(output_rows),
         );
     } else {
-        // scroll == 0 is the "follow the latest" anchor: when content
-        // overflows, bottom-anchor it. A positive scroll switches to manual
-        // review and keeps the historical start.
-        let start = if preview.scroll == 0 && total > visible {
-            total - visible
+        let start = if preview.follows_tail() {
+            total.saturating_sub(visible)
         } else {
-            preview.scroll.min(total.saturating_sub(1))
+            preview.scroll
         };
         visible_lines.extend(lines.into_iter().enumerate().skip(start).take(visible));
     }
@@ -525,6 +523,42 @@ fn hunk_lines(
 mod tests {
     use super::*;
     use crate::preview::MutationHunk;
+
+    #[test]
+    fn wheel_preview_reaches_top_and_restores_tail_without_relayout() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let config = Config::default();
+        let theme = config.theme();
+        let mut preview = PreviewPaneState::default();
+        preview.state = PreviewState::Ready(PreviewContent::PlainText(
+            (0..20)
+                .map(|i| format!("row-{i:02}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ));
+        let mut terminal = Terminal::new(TestBackend::new(30, 5)).unwrap();
+        let draw = |terminal: &mut Terminal<TestBackend>, preview: &mut PreviewPaneState| {
+            terminal
+                .draw(|frame| render(frame, frame.area(), preview, &config, &theme, 0, 0))
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            (0..6).map(|x| buffer[(x, 0)].symbol()).collect::<String>()
+        };
+        assert_eq!(draw(&mut terminal, &mut preview), "row-15");
+        assert_eq!(preview.take_work_stats().layout_rebuilds, 1);
+        preview.scroll_lines(true, 3);
+        assert_eq!(draw(&mut terminal, &mut preview), "row-12");
+        preview.scroll_lines(true, 100);
+        assert_eq!(draw(&mut terminal, &mut preview), "row-00");
+        preview.scroll_lines(true, 3);
+        assert_eq!(draw(&mut terminal, &mut preview), "row-00");
+        preview.scroll_lines(false, 3);
+        assert_eq!(draw(&mut terminal, &mut preview), "row-03");
+        preview.scroll_lines(false, 100);
+        assert_eq!(draw(&mut terminal, &mut preview), "row-15");
+        assert!(preview.follows_tail());
+        assert_eq!(preview.take_work_stats().layout_rebuilds, 0);
+    }
 
     fn line_text(line: &Line<'static>) -> String {
         line.spans

@@ -39,6 +39,32 @@ pub(super) fn apply_terminal_route(
             }
         }
     }
+    if let TerminalRoute::Pointer(PointerEvent::Wheel { up, column, row }) = &route {
+        ui.mouse_selection.clear();
+        if ui.pane_resize.is_active() || *column >= size.width || *row >= size.height {
+            return Vec::new();
+        }
+        let mut app = state.lock().unwrap();
+        let layout = crate::ui::screen::layout(
+            Rect::new(0, 0, size.width, size.height),
+            ui.config.message_pane_percent,
+            app.preview.fullscreen && app.history_page.is_none(),
+        );
+        let over_preview = match layout {
+            crate::ui::screen::ScreenLayout::Split { preview, .. } => {
+                if *column == preview.x {
+                    return Vec::new();
+                }
+                *column > preview.x
+            }
+            crate::ui::screen::ScreenLayout::PreviewOnly(_) => true,
+            crate::ui::screen::ScreenLayout::MainOnly(_) => false,
+        };
+        if over_preview {
+            app.preview.scroll_lines(*up, 3);
+            return vec![UiAction::RequestDraw(crate::DrawPriority::Interactive)];
+        }
+    }
     if state.lock().unwrap().history_page.is_some() {
         if let TerminalRoute::Pointer(pointer) = &route {
             if !matches!(pointer, PointerEvent::Wheel { .. }) {
@@ -109,7 +135,7 @@ pub(super) fn apply_terminal_route(
                     _ => {}
                 }
             }
-            TerminalRoute::Pointer(PointerEvent::Wheel { up }) => {
+            TerminalRoute::Pointer(PointerEvent::Wheel { up, .. }) => {
                 let current = page.offset();
                 page.set_offset(if up {
                     current.saturating_sub(3)
@@ -130,7 +156,7 @@ pub(super) fn apply_terminal_route(
     }
     let mut effects = Vec::new();
     match route {
-        route @ (TerminalRoute::Pointer(PointerEvent::Wheel { up })
+        route @ (TerminalRoute::Pointer(PointerEvent::Wheel { up, .. })
         | TerminalRoute::TranscriptPage { up }) => {
             ui.mouse_selection.clear();
             let page = matches!(route, TerminalRoute::TranscriptPage { .. });

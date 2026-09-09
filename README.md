@@ -102,7 +102,7 @@ Prefix a prompt with `//<mark>` (for example `//i commit`) to use that model for
 
 Press **Ctrl+Y**, then a link's tag (`1`–`9`, `0`, `a`–`z`) to copy it. The latest completed answer labels up to 36 distinct URLs and paths with Umber `~<tag>` suffixes; Esc cancels. See [link copy](docs/key-mapping.md#quick-link-copy) for path validation and remapping.
 
-Mouse: drag any visible TUI text to copy on release, including input, status, paths, history, and popups. Multiline selection follows rows within the pane where the drag starts; the display pauses during selection while background work continues. A press on the separator resizes instead. Reading View copy still copies the complete source block.
+Mouse: the wheel scrolls the pane under the pointer (messages or Preview). Drag any visible TUI text to copy on release, including input, status, paths, history, and popups. Multiline selection follows rows within the pane where the drag starts; the display pauses during selection while background work continues. A press on the separator resizes instead. Reading View copy still copies the complete source block.
 
 ### Themes
 

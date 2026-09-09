@@ -373,7 +373,14 @@ mod tests {
     fn click_unmatched_reports_and_cancel_do_not_copy() {
         let frame = frame(&["text"]);
         assert!(drag(&frame, (0, 0), (0, 0)).1.is_none());
-        for cancel in [PointerEvent::FocusLost, PointerEvent::Wheel { up: true }] {
+        for cancel in [
+            PointerEvent::FocusLost,
+            PointerEvent::Wheel {
+                up: true,
+                column: 0,
+                row: 0,
+            },
+        ] {
             let mut selection = MouseSelection::default();
             selection.handle(PointerEvent::PrimaryPress { column: 0, row: 0 }, &frame);
             selection.handle(cancel, &frame);

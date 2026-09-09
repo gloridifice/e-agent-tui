@@ -59,8 +59,13 @@ pub fn route_terminal_event_with_mapping(
     };
     match event {
         Event::Mouse(mouse) => match mouse.kind {
-            MouseEventKind::ScrollUp => TerminalRoute::Pointer(PointerEvent::Wheel { up: true }),
-            MouseEventKind::ScrollDown => TerminalRoute::Pointer(PointerEvent::Wheel { up: false }),
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                TerminalRoute::Pointer(PointerEvent::Wheel {
+                    up: mouse.kind == MouseEventKind::ScrollUp,
+                    column: mouse.column,
+                    row: mouse.row,
+                })
+            }
             MouseEventKind::Down(MouseButton::Left) => {
                 TerminalRoute::Pointer(PointerEvent::PrimaryPress {
                     column: mouse.column,
@@ -137,6 +142,44 @@ pub fn route_terminal_event_with_mapping(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wheel_preserves_coordinates_in_every_focus() {
+        for kind in [MouseEventKind::ScrollUp, MouseEventKind::ScrollDown] {
+            for focus in [
+                TerminalFocus::default(),
+                TerminalFocus {
+                    input_page_open: true,
+                    ..Default::default()
+                },
+                TerminalFocus {
+                    history_view_open: true,
+                    ..Default::default()
+                },
+                TerminalFocus {
+                    reading_view_open: true,
+                    ..Default::default()
+                },
+            ] {
+                assert_eq!(
+                    route_terminal_event(
+                        Event::Mouse(crossterm::event::MouseEvent {
+                            kind,
+                            column: 91,
+                            row: 17,
+                            modifiers: KeyModifiers::NONE,
+                        }),
+                        focus
+                    ),
+                    TerminalRoute::Pointer(PointerEvent::Wheel {
+                        up: kind == MouseEventKind::ScrollUp,
+                        column: 91,
+                        row: 17,
+                    }),
+                );
+            }
+        }
+    }
 
     #[test]
     fn quick_links_entry_respects_protected_focus_and_exact_modifiers() {

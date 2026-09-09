@@ -1830,6 +1830,23 @@ fn long_tool_output_pins_information_and_shows_the_latest_tail() {
     assert_eq!(find_text(buffer, "$ echo output").map(|(_, y)| y), Some(1));
     assert!(find_text(buffer, "output-20").is_some());
     assert!(find_text(buffer, "output-01").is_none());
+
+    state.preview.scroll_lines(true, 100);
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    assert!(find_text(buffer, "output-01").is_some());
+    assert!(find_text(buffer, "output-20").is_none());
+
+    state.preview.scroll_lines(false, 100);
+    terminal
+        .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    assert_eq!(find_text(buffer, "bash").map(|(_, y)| y), Some(0));
+    assert!(find_text(buffer, "output-20").is_some());
+    assert!(find_text(buffer, "output-01").is_none());
 }
 
 #[test]

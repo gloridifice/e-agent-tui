@@ -33,6 +33,7 @@ pub fn workspace_relative_path(path: &str, workspace: Option<&str>) -> String {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ToolCapability {
     Read,
+    SkillRead,
     View,
     Edit,
     Insert,

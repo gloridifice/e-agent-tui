@@ -137,7 +137,10 @@ fn relative_path(text: &str) -> Option<String> {
 }
 
 fn classify(text: &str, delimited: bool) -> Option<LinkCandidate> {
-    if text.is_empty() || text == "/" || text.chars().any(char::is_control) {
+    if text.is_empty()
+        || text.chars().all(|c| matches!(c, '/' | '\\'))
+        || text.chars().any(char::is_control)
+    {
         return None;
     }
     let absolute = text.starts_with('/')
@@ -147,6 +150,7 @@ fn classify(text: &str, delimited: bool) -> Option<LinkCandidate> {
             && matches!(text.as_bytes().get(2), Some(b'/' | b'\\')));
     let uri = text.split_once(':').is_some_and(|(scheme, rest)| {
         !rest.is_empty()
+            && !rest.starts_with(':')
             && scheme
                 .as_bytes()
                 .first()
@@ -427,6 +431,69 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["/tmp", "/tmp/", "https://example.com/", "src/main"]
         );
+    }
+
+    #[test]
+    fn quick_links_reject_separator_only_targets_in_all_contexts() {
+        for target in ["/", "//", "///", r"\", r"\\", r"/\/"] {
+            for source in [
+                target.to_owned(),
+                format!("left ({target}), right"),
+                format!("`{target}`"),
+                format!("\"{target}\""),
+                format!("```text\n{target}\n```"),
+                format!("[root]({target})"),
+                format!("![root]({target})"),
+            ] {
+                assert!(discover(&source).is_empty(), "source: {source:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn quick_links_reject_cpp_scopes_but_keep_real_targets() {
+        let code = "std::array<WorldEmitterArchetype, PARTICLE_SYSTEM_MAX_EMITTERS> slots = {};\n\
+                    std::array<uint32_t, PARTICLE_SYSTEM_MAX_EMITTERS> entrypoints = {};\n\
+                    const uint32_t entrypoint = drh1::work_graph_entrypoint_index(\n\
+                    lookup.program->entrypoints, L\"prepare_by_behavior\", group.behavior_index);\n\
+                    // comment";
+        for source in [code.to_owned(), format!("```cpp\n{code}\n```")] {
+            assert!(
+                discover(&source)
+                    .iter()
+                    .all(|candidate| candidate.relative.is_some()),
+                "false URI/absolute path: {:?}",
+                discover(&source)
+            );
+        }
+        for target in ["std::array", "drh1::work_graph_entrypoint_index()"] {
+            for source in [target.to_owned(), format!("`{target}`")] {
+                assert!(discover(&source).is_empty(), "source: {source:?}");
+            }
+        }
+        let targets = [
+            "https://example.com",
+            "mailto:a@example.com",
+            "custom:resource",
+            "https://[::1]/",
+            "https://example.com/std::array",
+            "/tmp/file",
+            "//server/share",
+            r"\\server\share",
+            r"C:\src\main.cpp",
+        ];
+        for source in [
+            targets.map(|target| format!("`{target}`")).join(" "),
+            format!("```text\n{}\n```", targets.join(" ")),
+        ] {
+            assert_eq!(
+                discover(&source)
+                    .iter()
+                    .map(|candidate| candidate.target.as_str())
+                    .collect::<Vec<_>>(),
+                targets
+            );
+        }
     }
 
     #[test]

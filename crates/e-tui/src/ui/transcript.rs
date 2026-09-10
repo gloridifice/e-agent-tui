@@ -24,7 +24,7 @@ fn activity_row_parts(
     let color = working::activity_color(&theme, row, color_override);
     let (label_style, detail_style) = match row.kind {
         ActivityKind::General => (theme.activity.label.style(), theme.activity.detail.style()),
-        ActivityKind::Tool => (
+        ActivityKind::Tool | ActivityKind::Skill => (
             theme.activity.label.style().fg(theme.activity.detail.fg),
             theme.activity.detail.style().fg(theme.activity.label.fg),
         ),
@@ -40,7 +40,11 @@ fn activity_row_parts(
     ];
     if !row.summary.is_empty() {
         spans.push(Span::styled(" ", detail_style));
-        spans.push(Span::styled(row.summary.clone(), detail_style));
+        if row.kind == ActivityKind::Skill {
+            spans.extend(skill_identity_spans("[skill]", &row.summary, state));
+        } else {
+            spans.push(Span::styled(row.summary.clone(), detail_style));
+        }
     }
     for continuation in &row.continuations {
         spans.push(Span::styled(continuation.separator.clone(), detail_style));
@@ -49,6 +53,9 @@ fn activity_row_parts(
             spans.push(Span::styled(" ", detail_style));
             spans.push(Span::styled(continuation.summary.clone(), detail_style));
         }
+    }
+    if row.kind == ActivityKind::Skill {
+        return (Line::from(spans), None);
     }
     if row.count > 1 {
         spans.push(Span::styled(
@@ -304,14 +311,22 @@ fn content_card_lines(card: &ContentCard, state: &TuiApp, area_width: usize) -> 
 }
 
 fn skill_invocation_lines(card: &ContentCard, state: &TuiApp) -> Vec<Line<'static>> {
+    vec![Line::from(skill_identity_spans(
+        "[Skill]",
+        &card.content,
+        state,
+    ))]
+}
+
+fn skill_identity_spans(label: &str, name: &str, state: &TuiApp) -> Vec<Span<'static>> {
     let theme = state.theme();
-    vec![Line::from(vec![
-        Span::styled("[Skill] ", Style::default().fg(theme.input.placeholder.fg)),
+    vec![
         Span::styled(
-            card.content.clone(),
-            Style::default().fg(theme.input.text.fg),
+            format!("{label} "),
+            Style::default().fg(theme.input.placeholder.fg),
         ),
-    ])]
+        Span::styled(name.to_owned(), Style::default().fg(theme.input.text.fg)),
+    ]
 }
 
 /// Generic prompt-injection events render as plain text instead of a card
@@ -801,7 +816,44 @@ pub fn scroll_page(scroll: &mut ScrollState, area_height: usize, lines_total: us
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::display::DisplayId;
+    use crate::display::{ActivityState, DisplayId};
+
+    #[test]
+    fn skill_read_row_is_compact_and_retains_failure_feedback() {
+        let state = TuiApp::default();
+        let mut row = ActivityRow::tool(DisplayId::correlated("tool", "skill"), "read");
+        row.kind = ActivityKind::Skill;
+        row.summary = "review".into();
+        row.duration_ms = Some(123);
+        row.output_lines = Some(42);
+        row.continuations
+            .push(crate::display::ActivityContinuation {
+                separator: " ".into(),
+                label: "at".into(),
+                summary: "skills/review/SKILL.md".into(),
+            });
+        for outcome in [
+            ActivityState::Running,
+            ActivityState::Success,
+            ActivityState::Failure,
+            ActivityState::Cancelled,
+        ] {
+            row.state = outcome;
+            let (line, metrics) = activity_row_parts(&row, &state, None);
+            assert_eq!(
+                line.to_string(),
+                format!(
+                    "  {} read [skill] review at skills/review/SKILL.md",
+                    working::activity_indicator(&state, &row),
+                )
+            );
+            assert!(metrics.is_none());
+        }
+        row.summary = "a".repeat(100);
+        let line = fitted_activity_row_line(&row, &state, None, 20);
+        assert!(line.width() <= 19);
+        assert!(line.to_string().contains('…'));
+    }
 
     fn activity(index: usize) -> DisplayItem {
         DisplayItem::Activity(ActivityRow::root(

@@ -847,7 +847,9 @@ fn capability_label<'a>(capability: &ToolCapability, fallback: &'a str) -> &'a s
         ToolCapability::Search => "search",
         ToolCapability::Command => shell_display_name(fallback),
         ToolCapability::Create => "create",
-        ToolCapability::Generic | ToolCapability::Custom { .. } => fallback,
+        ToolCapability::SkillRead | ToolCapability::Generic | ToolCapability::Custom { .. } => {
+            fallback
+        }
     }
 }
 

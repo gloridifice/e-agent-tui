@@ -7,7 +7,7 @@ use crate::{
         timeline::{TimelineFact, TimelineRecord, ToolExecutionMetrics},
         tool::{ActivityState as AgentActivityState, ToolCapability, ToolReference},
     },
-    display::{ActivityContinuation, ActivityRow, ActivityState, DisplayId},
+    display::{ActivityContinuation, ActivityKind, ActivityRow, ActivityState, DisplayId},
     execution_history::ObservedOutputLines,
 };
 
@@ -59,7 +59,8 @@ struct FileItem {
 struct ToolCallState {
     row_id: DisplayId,
     start_ms: u64,
-    create: bool,
+    hide_metrics: bool,
+    kind: ActivityKind,
 }
 
 #[derive(Debug, Clone)]
@@ -148,14 +149,15 @@ impl ToolProjectionState {
                 ToolCallState {
                     row_id: group_id,
                     start_ms: now_ms,
-                    create: false,
+                    hide_metrics: false,
+                    kind: ActivityKind::Tool,
                 },
             );
             return Some(ToolMutation::Upsert(file_group_row(group, now_ms)));
         }
 
         self.close_group();
-        let (label, summary, create) = file
+        let (mut label, mut summary, create) = file
             .map(|(action, path)| {
                 (
                     action.label().to_owned(),
@@ -164,19 +166,48 @@ impl ToolProjectionState {
                 )
             })
             .unwrap_or_else(|| (activity.label.clone(), activity.summary.clone(), false));
+        let skill = activity.capability == ToolCapability::SkillRead;
+        if skill {
+            label = "read".into();
+            if summary.is_empty() {
+                summary = session_cwd
+                    .and_then(|cwd| cwd.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next())
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or("SKILL.md")
+                    .to_owned();
+            }
+        }
+        let kind = if skill {
+            ActivityKind::Skill
+        } else {
+            ActivityKind::Tool
+        };
         let id = DisplayId::correlated("tool-call", call_id);
         self.calls.insert(
             call_id.clone(),
             ToolCallState {
                 row_id: id.clone(),
                 start_ms: now_ms,
-                create,
+                hide_metrics: create || skill,
+                kind,
             },
         );
         let mut row = ActivityRow::tool(id, label);
+        row.kind = kind;
         row.summary = summary;
+        if skill {
+            if let Some(ToolReference::Path { path } | ToolReference::Lines { path, .. }) =
+                activity.reference.as_ref()
+            {
+                row.continuations.push(ActivityContinuation {
+                    separator: " ".into(),
+                    label: "at".into(),
+                    summary: crate::agent::tool::workspace_relative_path(path, session_cwd),
+                });
+            }
+        }
         row.start_ms = Some(now_ms);
-        if !create {
+        if !create && !skill {
             row.output_lines = Some(0);
             row.live_duration_since = Some(std::time::Instant::now());
         }
@@ -221,8 +252,9 @@ impl ToolProjectionState {
         } else {
             ActivityState::Failure
         };
+        row.kind = call.kind;
         row.start_ms = Some(call.start_ms);
-        if !call.create {
+        if !call.hide_metrics {
             if let Some(metrics) = execution_metrics {
                 row.duration_ms = metrics.duration_ms;
                 row.output_lines = metrics.output_lines;
@@ -393,6 +425,72 @@ mod tests {
             surface: None,
             source_sequences: Vec::new(),
             fact,
+        }
+    }
+
+    #[test]
+    fn skill_reads_do_not_fold_and_keep_identity_on_settlement() {
+        let mut projection = ToolProjectionState::default();
+        for (id, name, cwd, expected) in [
+            ("named", "review", None, "review"),
+            ("bare", "", Some(r"C:\skills\audit"), "audit"),
+            ("unknown", "", None, "SKILL.md"),
+        ] {
+            let mut activity = edit_with_hunks(&[Some("SKILL.md")]);
+            activity.id = id.into();
+            activity.capability = ToolCapability::SkillRead;
+            activity.summary = name.into();
+            activity.reference = Some(ToolReference::Path {
+                path: "SKILL.md".into(),
+            });
+            let ToolMutation::Upsert(row) = projection
+                .project_call(&record(TimelineFact::ToolCall(activity)), cwd, true, 10)
+                .unwrap()
+            else {
+                panic!()
+            };
+            assert_eq!(row.kind, ActivityKind::Skill);
+            assert_eq!(row.label, "read");
+            assert_eq!(row.summary, expected);
+            assert_eq!(
+                row.continuations,
+                vec![ActivityContinuation {
+                    separator: " ".into(),
+                    label: "at".into(),
+                    summary: "SKILL.md".into(),
+                }]
+            );
+            assert!(row.output_lines.is_none());
+            assert!(row.live_duration_since.is_none());
+            assert!(projection.group_items(&row.id).is_none());
+            for state in [ActivityState::Success, ActivityState::Failure] {
+                let ToolMutation::Upsert(settled) = projection
+                    .project_result(
+                        &record(TimelineFact::ToolResult {
+                            activity_id: id.into(),
+                            output: "contents".into(),
+                            state,
+                            output_truncated: false,
+                            execution_metrics: None,
+                            starts_thinking: false,
+                            mutation_diff: None,
+                            mutation_hunks: Vec::new(),
+                        }),
+                        20,
+                    )
+                    .unwrap()
+                else {
+                    panic!()
+                };
+                assert_eq!(settled.id, row.id);
+                assert_eq!(settled.kind, ActivityKind::Skill);
+                assert_eq!(
+                    settled.state == super::ActivityState::Failure,
+                    state == ActivityState::Failure
+                );
+                assert!(settled.duration_ms.is_none());
+                assert!(settled.output_lines.is_none());
+            }
         }
     }
 

@@ -318,8 +318,8 @@ impl PreviewPaneState {
         } else {
             current.saturating_add(lines).min(self.viewport_max_scroll)
         };
-        self.manual_scroll = next < self.viewport_max_scroll;
-        self.scroll = if self.manual_scroll { next } else { 0 };
+        self.manual_scroll = true;
+        self.scroll = next;
     }
 
     /// Reconcile one semantic target. Identity changes reset Preview scroll;
@@ -552,6 +552,24 @@ mod tests {
         pane.select(Some(deferred("a", "a", 2)));
         pane.update_scroll_bounds(30, 5);
         assert_eq!(pane.scroll, 0);
+        assert!(!pane.follows_tail());
+        pane.select(Some(deferred("b", "b", 1)));
+        assert!(pane.follows_tail());
+    }
+
+    #[test]
+    fn wheel_manual_bottom_survives_growth_but_not_target_replacement() {
+        let mut pane = PreviewPaneState::default();
+        pane.select(Some(deferred("a", "a", 1)));
+        pane.update_scroll_bounds(20, 5);
+        pane.scroll_lines(false, 3);
+        assert_eq!(pane.scroll, 15);
+        assert!(!pane.follows_tail());
+        pane.scroll_lines(false, 3);
+        assert_eq!(pane.scroll, 15);
+        pane.select(Some(deferred("a", "a", 2)));
+        pane.update_scroll_bounds(30, 5);
+        assert_eq!(pane.scroll, 15);
         assert!(!pane.follows_tail());
         pane.select(Some(deferred("b", "b", 1)));
         assert!(pane.follows_tail());

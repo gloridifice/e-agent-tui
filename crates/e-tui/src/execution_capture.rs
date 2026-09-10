@@ -21,7 +21,9 @@ impl OperationStart {
         parent_id: Option<String>,
     ) -> Self {
         let kind = match activity.capability {
-            ToolCapability::Read | ToolCapability::View => OperationKind::Read,
+            ToolCapability::Read | ToolCapability::SkillRead | ToolCapability::View => {
+                OperationKind::Read
+            }
             ToolCapability::Edit
             | ToolCapability::Insert
             | ToolCapability::Replace

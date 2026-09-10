@@ -43,6 +43,7 @@ impl ActivityState {
 pub enum ActivityKind {
     General,
     Tool,
+    Skill,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

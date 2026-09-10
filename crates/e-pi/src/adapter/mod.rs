@@ -466,6 +466,59 @@ mod tests {
     }
 
     #[test]
+    fn skill_reads_match_live_and_snapshot_without_changing_preview_or_history() {
+        for (path, expected_name) in [
+            (r"C:\Users\user\.agents\skills\review\SKILL.md", "review"),
+            ("/home/user/.pi/skills/audit/SKILL.md", "audit"),
+            (".pi/skills/local/SKILL.md", "local"),
+            ("SKILL.md", ""),
+        ] {
+            let mut adapter = PiAdapter::new("/repo", "sessions");
+            let live = adapter.record(record(serde_json::json!({
+                "type": "tool_execution_start", "toolCallId": "skill-read",
+                "toolName": "read", "args": {"path": path}
+            })));
+            let replay = super::session::snapshot_message(
+                &mut adapter,
+                &serde_json::json!({
+                    "role": "assistant", "content": [{"type": "toolCall", "id": "skill-read",
+                    "name": "read", "arguments": {"path": path}}]
+                }),
+                Some(1),
+            );
+            let AgentEvent::Timeline(TimelineEvent::Append(live_record)) = &live.events[0] else {
+                panic!()
+            };
+            let TimelineFact::ToolCall(activity) = &live_record.fact else {
+                panic!()
+            };
+            assert_eq!(replay.last().unwrap().fact, live_record.fact);
+            assert_eq!(activity.capability, ToolCapability::SkillRead);
+            assert_eq!(activity.summary, expected_name);
+            assert!(matches!(&activity.preview, Some(ToolPreview {
+                primary: ToolPreviewPrimary::Location { path: location, .. }, ..
+            }) if location == path));
+            let operation =
+                e_tui::execution_history::OperationStart::from_tool(activity, None, None);
+            assert_eq!(
+                operation.kind,
+                e_tui::execution_history::OperationKind::Read
+            );
+        }
+        for (name, path) in [
+            ("read", "README.md"),
+            ("read", "skill.md"),
+            ("read", "SKILL.md.bak"),
+            ("edit", "review/SKILL.md"),
+        ] {
+            assert_ne!(
+                tool_activity("ordinary", name, serde_json::json!({"path": path})).capability,
+                ToolCapability::SkillRead
+            );
+        }
+    }
+
+    #[test]
     fn startup_queries_authoritative_surfaces() {
         let mut adapter = PiAdapter::new(".", "sessions");
         let commands = adapter.startup_commands();

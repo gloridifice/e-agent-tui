@@ -795,6 +795,71 @@ mod tests {
     }
 
     #[test]
+    fn skill_read_path_survives_settlement_and_reordered_results() {
+        for (path, cwd, expected) in [
+            (
+                r"G:\repo\skills\review\SKILL.md",
+                r"G:\repo",
+                "skills/review/SKILL.md",
+            ),
+            (
+                r"C:\skills\review\SKILL.md",
+                r"G:\repo",
+                "C:/skills/review/SKILL.md",
+            ),
+            ("SKILL.md", "/skills/review", "SKILL.md"),
+        ] {
+            for result_first in [false, true] {
+                let mut state = RuntimeState::default();
+                state.session.session_cwd = Some(cwd.into());
+                let mut activity = edit_call();
+                activity.capability = crate::agent::tool::ToolCapability::SkillRead;
+                activity.summary = "review".into();
+                activity.reference =
+                    Some(crate::agent::tool::ToolReference::Path { path: path.into() });
+                let call = record(1, TimelineFact::ToolCall(activity));
+                let result = record(
+                    2,
+                    TimelineFact::ToolResult {
+                        activity_id: "edit-1".into(),
+                        output: "unavailable".into(),
+                        state: AgentActivityState::Failure,
+                        output_truncated: false,
+                        execution_metrics: None,
+                        starts_thinking: false,
+                        mutation_diff: None,
+                        mutation_hunks: Vec::new(),
+                    },
+                );
+                for event in if result_first {
+                    [&result, &call]
+                } else {
+                    [&call, &result]
+                } {
+                    state.apply_host_event(event);
+                }
+                let node = state
+                    .transcript
+                    .get(&crate::display::DisplayId::correlated(
+                        "tool-call",
+                        "edit-1",
+                    ))
+                    .unwrap();
+                let crate::display::DisplayItem::Activity(row) = &node.item else {
+                    panic!()
+                };
+                assert_eq!(row.kind, crate::display::ActivityKind::Skill);
+                assert_eq!(row.state, crate::display::ActivityState::Failure);
+                assert_eq!(row.label, "read");
+                assert_eq!(row.summary, "review");
+                assert_eq!(row.continuations.len(), 1);
+                assert_eq!(row.continuations[0].label, "at");
+                assert_eq!(row.continuations[0].summary, expected);
+            }
+        }
+    }
+
+    #[test]
     fn result_before_call_settles_to_the_same_unified_mutation_diff() {
         let patch = "--- src/lib.rs\n+++ src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n";
         let mut state = RuntimeState::default();

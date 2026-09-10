@@ -917,10 +917,12 @@ impl RuntimeState {
             if let DisplayItem::Activity(existing_row) = &mut existing.item {
                 let keep_label = existing_row.label.clone();
                 let keep_summary = existing_row.summary.clone();
+                let keep_continuations = std::mem::take(&mut existing_row.continuations);
                 *existing_row = row.clone();
                 if existing_row.label == "tool" {
                     existing_row.label = keep_label;
                     existing_row.summary = keep_summary;
+                    existing_row.continuations = keep_continuations;
                 }
             }
             if let Some(seq) = surface_seq {

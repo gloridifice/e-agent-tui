@@ -525,7 +525,7 @@ mod tests {
     use crate::preview::MutationHunk;
 
     #[test]
-    fn wheel_preview_reaches_top_and_restores_tail_without_relayout() {
+    fn wheel_preview_reaches_boundaries_without_following_or_relayout() {
         use ratatui::{backend::TestBackend, Terminal};
         let config = Config::default();
         let theme = config.theme();
@@ -556,7 +556,57 @@ mod tests {
         assert_eq!(draw(&mut terminal, &mut preview), "row-03");
         preview.scroll_lines(false, 100);
         assert_eq!(draw(&mut terminal, &mut preview), "row-15");
-        assert!(preview.follows_tail());
+        assert!(!preview.follows_tail());
+        preview.scroll_lines(false, 3);
+        assert_eq!(draw(&mut terminal, &mut preview), "row-15");
+        assert_eq!(preview.take_work_stats().layout_rebuilds, 0);
+    }
+
+    #[test]
+    fn wheel_bottom_does_not_restore_oversized_command_header() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let config = Config::default();
+        let theme = config.theme();
+        let mut preview = PreviewPaneState::default();
+        preview.state = PreviewState::Ready(PreviewContent::Tool(ToolPreview {
+            name: "bash".into(),
+            primary: ToolPreviewPrimary::Command {
+                command: "echo header\n".repeat(10),
+                metrics: ToolMetrics {
+                    output_lines: 20,
+                    truncated: false,
+                    duration_ms: None,
+                },
+            },
+            secondary: Some(ToolPreviewSecondary::Terminal {
+                output: (0..20)
+                    .map(|i| format!("row-{i:02}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                truncated: false,
+            }),
+        }));
+        let mut terminal = Terminal::new(TestBackend::new(30, 5)).unwrap();
+        let draw = |terminal: &mut Terminal<TestBackend>, preview: &mut PreviewPaneState| {
+            terminal
+                .draw(|frame| render(frame, frame.area(), preview, &config, &theme, 0, 0))
+                .unwrap();
+        };
+        draw(&mut terminal, &mut preview);
+        assert_eq!(terminal.backend().buffer()[(0, 0)].symbol(), "b");
+        preview.take_work_stats();
+        preview.scroll_lines(true, 3);
+        draw(&mut terminal, &mut preview);
+        for _ in 0..2 {
+            preview.scroll_lines(false, 3);
+            draw(&mut terminal, &mut preview);
+            let buffer = terminal.backend().buffer();
+            let first = (0..6).map(|x| buffer[(x, 0)].symbol()).collect::<String>();
+            let last = (0..6).map(|x| buffer[(x, 4)].symbol()).collect::<String>();
+            assert_eq!(first, "row-15");
+            assert_eq!(last, "row-19");
+            assert!(!preview.follows_tail());
+        }
         assert_eq!(preview.take_work_stats().layout_rebuilds, 0);
     }
 

@@ -69,7 +69,7 @@ pub(super) fn pi_edit_mutation_diff(
         })
 }
 pub(super) fn tool_activity(id: &str, name: &str, arguments: Value) -> ToolActivity {
-    let capability = match name.to_ascii_lowercase().as_str() {
+    let mut capability = match name.to_ascii_lowercase().as_str() {
         "read" => ToolCapability::Read,
         "edit" => ToolCapability::Edit,
         "write" => ToolCapability::Create,
@@ -91,13 +91,29 @@ pub(super) fn tool_activity(id: &str, name: &str, arguments: Value) -> ToolActiv
     let path = string(&["path", "file_path", "filePath"]);
     let command = string(&["command", "cmd"]);
     let query = string(&["pattern", "query"]);
-    let summary = command
-        .clone()
+    let skill_name = path
+        .as_deref()
+        .filter(|path| {
+            capability == ToolCapability::Read
+                && path.rsplit(['/', '\\']).next() == Some("SKILL.md")
+        })
+        .map(|path| {
+            path.rsplit(['/', '\\'])
+                .nth(1)
+                .filter(|part| !part.is_empty() && *part != "." && *part != "..")
+                .unwrap_or_default()
+                .to_owned()
+        });
+    if skill_name.is_some() {
+        capability = ToolCapability::SkillRead;
+    }
+    let summary = skill_name
+        .or_else(|| command.clone())
         .or_else(|| path.clone())
         .or_else(|| query.clone())
         .unwrap_or_else(|| bounded_json(&arguments).0);
     let reference = match capability {
-        ToolCapability::Read | ToolCapability::Create => {
+        ToolCapability::Read | ToolCapability::SkillRead | ToolCapability::Create => {
             path.clone().map(|path| ToolReference::Path { path })
         }
         ToolCapability::Edit => edit_mutation_hunks(&arguments, path.as_deref())
@@ -113,23 +129,24 @@ pub(super) fn tool_activity(id: &str, name: &str, arguments: Value) -> ToolActiv
         _ => None,
     };
     let preview = match capability {
-        ToolCapability::Read | ToolCapability::Create => path.map(|path| ToolPreview {
-            name: name.into(),
-            primary: ToolPreviewPrimary::Location {
-                path,
-                lines: arguments
-                    .get("offset")
-                    .and_then(Value::as_u64)
-                    .map(|start| LineSelection {
-                        start: start as usize,
-                        end: arguments
-                            .get("limit")
-                            .and_then(Value::as_u64)
-                            .map(|limit| start.saturating_add(limit).saturating_sub(1) as usize),
-                    }),
-            },
-            secondary: None,
-        }),
+        ToolCapability::Read | ToolCapability::SkillRead | ToolCapability::Create => {
+            path.map(|path| ToolPreview {
+                name: name.into(),
+                primary: ToolPreviewPrimary::Location {
+                    path,
+                    lines: arguments
+                        .get("offset")
+                        .and_then(Value::as_u64)
+                        .map(|start| LineSelection {
+                            start: start as usize,
+                            end: arguments.get("limit").and_then(Value::as_u64).map(|limit| {
+                                start.saturating_add(limit).saturating_sub(1) as usize
+                            }),
+                        }),
+                },
+                secondary: None,
+            })
+        }
         ToolCapability::Command => command.map(|command| ToolPreview {
             name: name.into(),
             primary: ToolPreviewPrimary::Command {

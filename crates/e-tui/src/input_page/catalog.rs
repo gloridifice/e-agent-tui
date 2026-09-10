@@ -13,6 +13,7 @@ pub struct ResumePage {
     pub loading: bool,
     pub titles_pending: bool,
     pub paging: crate::resume::ResumePaging,
+    pub(crate) age_refresh: Option<std::time::Instant>,
 }
 
 impl ResumePage {
@@ -24,6 +25,7 @@ impl ResumePage {
             loading: true,
             titles_pending: false,
             paging: crate::resume::ResumePaging::default(),
+            age_refresh: None,
         }
     }
 
@@ -32,6 +34,7 @@ impl ResumePage {
             self.sessions.clear();
             self.sel = 0;
             self.loading = true;
+            self.age_refresh = None;
         }
         self.paging
             .request(self.sel, self.sessions.len(), !self.query.is_empty())

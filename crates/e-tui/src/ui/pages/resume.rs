@@ -1,4 +1,5 @@
 use super::*;
+use std::time::{Instant, SystemTime};
 
 pub(super) fn render_resume_page(
     frame: &mut Frame,
@@ -33,6 +34,9 @@ pub(super) fn render_resume_page(
     viewport.ensure_visible(page.sel, regions.body.height as usize, filtered.len());
     let width = regions.body.width as usize;
     let mut rows = Vec::new();
+    let now = SystemTime::now();
+    let frame_time = Instant::now();
+    page.age_refresh = None;
     for (filtered_index, session_index) in filtered
         .iter()
         .enumerate()
@@ -48,13 +52,15 @@ pub(super) fn render_resume_page(
         } else {
             session.title.clone()
         };
-        rows.push(resume_row(
-            &title,
-            session.modified_label.as_deref(),
-            focused,
-            width,
-            theme,
-        ));
+        let age = session.modified_at.map(|modified| {
+            let (label, refresh_in) = crate::resume::relative_age(modified, now);
+            page.age_refresh = crate::reveal::earliest_deadline(
+                page.age_refresh,
+                frame_time.checked_add(refresh_in),
+            );
+            label
+        });
+        rows.push(resume_row(&title, age.as_deref(), focused, width, theme));
     }
     if filtered.is_empty() {
         let key = if page.search_pending() {
@@ -83,23 +89,23 @@ pub(super) fn render_resume_page(
 
 fn resume_row(
     title: &str,
-    date: Option<&str>,
+    age: Option<&str>,
     focused: bool,
     width: usize,
     theme: &Theme,
 ) -> Line<'static> {
     let marker = trim_to_width(if focused { "› " } else { "  " }, width.min(2));
     let available = width.saturating_sub(UnicodeWidthStr::width(marker.as_str()));
-    let date = trim_to_width(date.unwrap_or(""), available);
-    let date_width = UnicodeWidthStr::width(date.as_str());
-    let title_width = available.saturating_sub(date_width + usize::from(date_width > 0));
+    let age = trim_to_width(age.unwrap_or(""), available);
+    let age_width = UnicodeWidthStr::width(age.as_str());
+    let title_width = available.saturating_sub(age_width + usize::from(age_width > 0));
     let title = trim_to_width(title, title_width);
-    let gap = available.saturating_sub(UnicodeWidthStr::width(title.as_str()) + date_width);
+    let gap = available.saturating_sub(UnicodeWidthStr::width(title.as_str()) + age_width);
     Line::from(vec![
         Span::styled(marker, input_page_item_style(theme, focused, false)),
         Span::styled(title, Style::default().fg(theme.fg)),
         Span::raw(" ".repeat(gap)),
-        Span::styled(date, Style::default().fg(theme.dim)),
+        Span::styled(age, Style::default().fg(theme.dim)),
     ])
 }
 
@@ -145,17 +151,45 @@ mod tests {
                 };
             render(&mut terminal, &mut page, &mut viewport);
             let request = page.take_request("/project").unwrap();
-            assert_eq!(request.limit, 14);
+            assert_eq!(request.limit, 3);
             page.apply_batch(
                 ResumeBatch {
                     next_offset: request.limit,
                     request,
+                    sessions: ["Visible title", "Second title", "Third title"]
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, title)| SessionSummary {
+                            id: format!("/private/session-{i}.jsonl"),
+                            title: title.into(),
+                            live: false,
+                            created_at: 0,
+                            modified_at: Some(now_modified()),
+                        })
+                        .collect(),
+                    has_more: true,
+                    diagnostic: None,
+                },
+                "/project",
+            );
+            let rows = render(&mut terminal, &mut page, &mut viewport);
+            assert!(rows[3].starts_with("› Visible title"));
+            assert!(rows[3].ends_with("3d2h"));
+            assert!(rows[4].contains("Second title"));
+            assert!(rows[5].contains("Third title"));
+            assert!(page.age_refresh.is_some());
+            let request = page.take_request("/project").unwrap();
+            assert_eq!((request.offset, request.limit), (3, 3));
+            page.apply_batch(
+                ResumeBatch {
+                    next_offset: request.offset + 1,
+                    request,
                     sessions: vec![SessionSummary {
-                        id: "/private/session.jsonl".into(),
-                        title: "Visible title".into(),
-                        live: true,
+                        id: "/private/older.jsonl".into(),
+                        title: "Older title".into(),
+                        live: false,
                         created_at: 0,
-                        modified_label: Some("2026-09-10 15:30".into()),
+                        modified_at: None,
                     }],
                     has_more: true,
                     diagnostic: None,
@@ -164,10 +198,11 @@ mod tests {
             );
             let rows = render(&mut terminal, &mut page, &mut viewport);
             assert!(rows[3].starts_with("› Visible title"));
-            assert!(rows[3].ends_with("2026-09-10 15:30"));
-            assert!(!rows.join("\n").contains("/private/session.jsonl"));
+            assert!(rows[6].trim_end().ends_with("Older title"));
+            assert!(!rows.join("\n").contains("/private/"));
             page.query = "missing".into();
             let rows = render(&mut terminal, &mut page, &mut viewport);
+            assert!(page.age_refresh.is_none());
             assert!(
                 rows[3].contains(&crate::i18n::tr(language, "input_page.resume.loading")),
                 "{:?}",
@@ -193,21 +228,25 @@ mod tests {
         }
     }
 
+    fn now_modified() -> SystemTime {
+        SystemTime::now() - std::time::Duration::from_secs(266_401)
+    }
+
     #[test]
-    fn resume_rows_reserve_date_space_and_never_wrap() {
+    fn resume_rows_reserve_age_space_and_never_wrap() {
         let theme = crate::Config::default().theme();
         for width in 0..80 {
             let line = resume_row(
                 "Long 中文 session title to truncate",
-                Some("2026-09-10 15:30"),
+                Some("3d2h"),
                 true,
                 width,
                 &theme,
             );
             assert!(line.width() <= width);
-            if width >= 18 {
+            if width >= 6 {
                 assert_eq!(line.width(), width);
-                assert_eq!(line.spans.last().unwrap().content, "2026-09-10 15:30");
+                assert_eq!(line.spans.last().unwrap().content, "3d2h");
             }
         }
         let line = resume_row("A session", None, false, 40, &theme);

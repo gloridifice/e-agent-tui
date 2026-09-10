@@ -17,6 +17,7 @@ use crate::{
     display::{CardRole, DisplayItem, TranscriptFormat},
     event::InputEvent,
     input::InputState,
+    input_page::InputPage,
     interaction::{InteractionModel, ScrollState},
     preview::{
         PreviewContent, PreviewKey, PreviewPaneState, PreviewPolicy, PreviewRef,
@@ -301,6 +302,13 @@ impl TuiApp {
             self.transcript_reveal_deadline(),
             self.preview.reveal_deadline(),
             self.render.status_flashes.next_due(),
+            self.interaction.input_page.as_ref().and_then(|session| {
+                if let InputPage::Resume(page) = &session.page {
+                    page.age_refresh
+                } else {
+                    None
+                }
+            }),
         ]
         .into_iter()
         .flatten()
@@ -350,7 +358,16 @@ impl TuiApp {
             .preview
             .tick_reveal(now, self.config.preview_lines_per_second.get());
         let status = self.render.status_flashes.tick(now);
-        transcript || preview || status
+        let resume = self.interaction.input_page.as_mut().is_some_and(|session| {
+            if let InputPage::Resume(page) = &mut session.page {
+                if page.age_refresh.is_some_and(|deadline| deadline <= now) {
+                    page.age_refresh = None;
+                    return true;
+                }
+            }
+            false
+        });
+        transcript || preview || status || resume
     }
 
     pub fn breath_phase(&self) -> f64 {

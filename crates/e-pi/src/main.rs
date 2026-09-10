@@ -378,9 +378,9 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
                     first_inbound = pending_inbound.pop_front();
                 }
                 batch = session_loader.next_batch() => {
-                    if RuntimeController::apply_resume_batch(batch, &state_r) {
-                        scheduler.request(DirtyReason::Content, Instant::now());
-                    }
+                    RuntimeController::apply_resume_batch(batch, &state_r);
+                    // A rejected completion also frees the worker for a replacement page.
+                    scheduler.request(DirtyReason::Content, Instant::now());
                 }
                 event = events.next_event() => {
                     match event {
@@ -720,12 +720,12 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
                 first_draw_done = true;
                 phases.mark("first frame");
             }
-        }
-        if session_loader.is_idle() {
-            if let Some(request) = RuntimeController::take_resume_request(&state_r) {
-                let root = adapter.session_index_root(&request.workspace);
-                session_loader.start(root, request);
-                scheduler.request(DirtyReason::Content, Instant::now());
+            if session_loader.is_idle() {
+                if let Some(request) = RuntimeController::take_resume_request(&state_r) {
+                    let root = adapter.session_index_root(&request.workspace);
+                    session_loader.start(root, request);
+                    scheduler.request(DirtyReason::Content, Instant::now());
+                }
             }
         }
     }

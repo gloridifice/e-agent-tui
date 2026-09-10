@@ -967,7 +967,7 @@ fn normalize_session(session: SessionInfo) -> SessionSummary {
         title: session.title,
         live: session.live,
         created_at: session.created_at,
-        modified_label: None,
+        modified_at: None,
     }
 }
 

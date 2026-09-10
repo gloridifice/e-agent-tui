@@ -589,15 +589,13 @@ mod tests {
                     title: "Session title from host".into(),
                     live: false,
                     created_at: 1,
-                    modified_label: Some("2026-09-10 15:30".into()),
+                    modified_at: Some(
+                        std::time::SystemTime::now() - std::time::Duration::from_secs(266_401),
+                    ),
                 }],
                 false,
             );
-            assert_page_keeps_values(
-                resume,
-                language,
-                &["Session title from host", "2026-09-10 15:30"],
-            );
+            assert_page_keeps_values(resume, language, &["Session title from host", "3d2h"]);
 
             let question = InputPageSession::question(crate::question::QuestionBatch::new(
                 "rpc".into(),

@@ -8,10 +8,10 @@ use std::{
     time::SystemTime,
 };
 
-use chrono::{DateTime, Local};
+use chrono::DateTime;
 use e_tui::{
     agent::SessionSummary,
-    resume::{ResumeBatch, ResumeRequest},
+    resume::{ResumeBatch, ResumeRequest, MAX_RESUME_BATCH_SIZE},
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -120,7 +120,7 @@ impl SessionIndex {
     pub fn load(&mut self, request: ResumeRequest) -> ResumeBatch {
         let end = request
             .offset
-            .saturating_add(request.limit)
+            .saturating_add(request.limit.min(MAX_RESUME_BATCH_SIZE))
             .min(self.candidates.len());
         let mut sessions = Vec::new();
         for i in request.offset..end {
@@ -191,16 +191,12 @@ fn read_summary(candidate: &Candidate, cwd: &Path) -> Result<Option<SessionSumma
         .and_then(|time| DateTime::parse_from_rfc3339(time).ok())
         .and_then(|time| u64::try_from(time.timestamp_millis()).ok())
         .unwrap_or(0);
-    let modified_label = candidate.modified.map(|time| {
-        let local: DateTime<Local> = time.into();
-        local.format("%Y-%m-%d %H:%M").to_string()
-    });
     Ok(Some(SessionSummary {
         id: candidate.path.to_string_lossy().into_owned(),
         title,
         live: false,
         created_at,
-        modified_label,
+        modified_at: candidate.modified,
     }))
 }
 
@@ -415,16 +411,21 @@ mod tests {
                 .unwrap();
         }
         let mut index = SessionIndex::enumerate(temp.path());
-        let first = index.load(request(temp.path(), 0, 4));
-        assert_eq!(first.sessions.len(), 4);
+        let first = index.load(request(temp.path(), 0, 100));
+        assert_eq!(first.sessions.len(), 3);
+        assert_eq!(first.next_offset, 3);
         assert!(first.sessions[0].id.ends_with("0502.jsonl"));
-        assert!(first.sessions[0].modified_label.is_some());
+        assert_eq!(
+            first.sessions[0].modified_at,
+            Some(UNIX_EPOCH + std::time::Duration::from_secs(502))
+        );
         assert!(first.has_more);
         let mut offset = first.next_offset;
         let mut total = first.sessions.len();
         loop {
-            let batch = index.load(request(temp.path(), offset, 4));
-            assert!(batch.sessions.len() <= 4);
+            let batch = index.load(request(temp.path(), offset, 100));
+            assert!(batch.sessions.len() <= 3);
+            assert_eq!(batch.next_offset - offset, batch.sessions.len());
             total += batch.sessions.len();
             offset = batch.next_offset;
             if !batch.has_more {
@@ -437,6 +438,8 @@ mod tests {
         }
         let batch = SessionIndex::enumerate(temp.path()).load(request(temp.path(), 0, 10));
         assert!(batch.sessions.is_empty());
+        assert_eq!(batch.next_offset, 3);
+        assert!(batch.has_more);
         assert_eq!(batch.diagnostic.unwrap().matches("; ").count(), 2);
     }
 
@@ -485,12 +488,23 @@ mod tests {
         assert!(!second.has_more);
         assert_ne!(first.sessions[0].id, second.sessions[0].id);
         session(&temp.path().join("three.jsonl"), temp.path(), "");
-        let mut reopened = request(temp.path(), 0, 4);
+        session(&temp.path().join("four.jsonl"), temp.path(), "");
+        let mut reopened = request(temp.path(), 0, 100);
         reopened.generation += 1;
-        loader.start(temp.path().into(), reopened);
+        loader.start(temp.path().into(), reopened.clone());
         let third = loader.next_batch().await;
         assert_eq!(third.sessions.len(), 3);
-        assert!(!third.has_more);
+        assert_eq!(third.next_offset, 3);
+        assert!(third.has_more);
+        reopened.offset = third.next_offset;
+        loader.start(temp.path().into(), reopened);
+        let fourth = loader.next_batch().await;
+        assert_eq!(fourth.sessions.len(), 1);
+        assert!(!fourth.has_more);
+        assert!(third
+            .sessions
+            .iter()
+            .all(|row| row.id != fourth.sessions[0].id));
     }
 
     #[test]

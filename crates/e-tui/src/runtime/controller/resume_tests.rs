@@ -21,6 +21,8 @@ fn page(state: &Arc<Mutex<RuntimeState>>, f: impl FnOnce(&mut crate::input_page:
 }
 
 fn batch(request: ResumeRequest, titles: &[&str], has_more: bool) -> ResumeBatch {
+    assert!(titles.len() <= request.limit);
+    assert!(request.limit <= 3);
     let sessions = titles
         .iter()
         .enumerate()
@@ -29,7 +31,7 @@ fn batch(request: ResumeRequest, titles: &[&str], has_more: bool) -> ResumeBatch
             title: (*title).into(),
             live: false,
             created_at: 0,
-            modified_label: None,
+            modified_at: None,
         })
         .collect();
     ResumeBatch {
@@ -47,19 +49,29 @@ fn resume_demand_waits_for_geometry_then_prefetches_at_boundary() {
     assert!(RuntimeController::take_resume_request(&state).is_none());
     page(&state, |page| page.paging.visible_rows = 2);
     let first = RuntimeController::take_resume_request(&state).unwrap();
-    assert_eq!(first.limit, 4);
+    assert_eq!(first.limit, 3);
     assert!(RuntimeController::take_resume_request(&state).is_none());
     assert!(RuntimeController::apply_resume_batch(
-        batch(first, &["a", "b", "c", "d"], true),
+        batch(first, &["a", "b", "c"], true),
+        &state
+    ));
+    page(&state, |page| {
+        assert_eq!(page.sessions.len(), 3);
+        assert!(!page.loading);
+    });
+    let remainder = RuntimeController::take_resume_request(&state).unwrap();
+    assert_eq!((remainder.offset, remainder.limit), (3, 1));
+    assert!(RuntimeController::apply_resume_batch(
+        batch(remainder, &["d"], true),
         &state
     ));
     assert!(RuntimeController::take_resume_request(&state).is_none());
     page(&state, |page| page.sel = 2);
     let next = RuntimeController::take_resume_request(&state).unwrap();
     assert_eq!(next.offset, 4);
-    assert_eq!(next.limit, 4);
+    assert_eq!(next.limit, 3);
     assert!(RuntimeController::apply_resume_batch(
-        batch(next, &["e", "f", "g", "h"], true),
+        batch(next, &["e", "f", "g"], true),
         &state
     ));
     page(&state, |page| {
@@ -68,7 +80,7 @@ fn resume_demand_waits_for_geometry_then_prefetches_at_boundary() {
         page.paging.visible_rows = 5;
     });
     let resized = RuntimeController::take_resume_request(&state).unwrap();
-    assert_eq!(resized.limit, 2);
+    assert_eq!(resized.limit, 3);
 }
 
 #[test]
@@ -79,7 +91,8 @@ fn resume_search_scans_unloaded_rows_and_stops_when_cleared_or_exhausted() {
     RuntimeController::apply_resume_batch(batch(first, &["new", "recent"], true), &state);
     page(&state, |page| page.query = "old".into());
     let scan = RuntimeController::take_resume_request(&state).unwrap();
-    RuntimeController::apply_resume_batch(batch(scan, &["older", "oldest"], true), &state);
+    assert_eq!(scan.limit, 3);
+    RuntimeController::apply_resume_batch(batch(scan, &["older", "oldest", "other"], true), &state);
     page(&state, |page| {
         assert_eq!(page.filtered_indices(), vec![2, 3]);
         assert!(page.search_pending());
@@ -123,6 +136,33 @@ fn resume_rejects_closed_reopened_and_workspace_stale_results() {
     assert_eq!(other.workspace, "/other");
     assert_eq!(other.offset, 0);
     page(&state, |page| assert!(page.sessions.is_empty()));
+}
+
+#[test]
+fn resume_age_refresh_is_page_scoped_and_consumes_each_deadline_once() {
+    use std::time::Duration;
+
+    let state = app();
+    let due = Instant::now() + Duration::from_secs(1);
+    page(&state, |page| page.age_refresh = Some(due));
+    {
+        let mut app = state.lock().unwrap();
+        app.render.transcript_cache.valid = true;
+        assert_eq!(app.reveal_deadline(), Some(due));
+        assert!(!app.tick_reveals(due - Duration::from_millis(1)));
+        assert!(app.tick_reveals(due));
+        assert!(app.reveal_deadline().is_none());
+        assert!(!app.tick_reveals(due));
+        assert!(app.render.transcript_cache.valid);
+    }
+    page(&state, |page| {
+        assert_eq!(page.sel, 0);
+        page.age_refresh = Some(due);
+    });
+    let mut app = state.lock().unwrap();
+    app.interaction.input_page = None;
+    assert!(app.reveal_deadline().is_none());
+    assert!(!app.tick_reveals(due));
 }
 
 #[test]

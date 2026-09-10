@@ -7,7 +7,7 @@
  *
  * Protocol: JSON, one message per frame; both directions carry `type`.
  * The complete roster and payload shapes live only in
- * `bridge/protocol-contract.json` and generated `docs/protocol.md`; dispatcher
+ * `bridge/protocol-contract.json` and generated `doco/protocol.md`; dispatcher
  * and frame conformance tests consume generated samples from that contract.
  *
  * Module layout (index.js keeps only the socket/session lifecycle):

@@ -61,4 +61,4 @@ Start the Tracy GUI before launching the profiling build, then inspect startup, 
 
 ## Recording results
 
-Concrete benchmark numbers are immutable evidence snapshots. Add a dated file under [`docs/history/`](../../history/README.md) when a measurement is worth preserving; do not update architecture or this methodology merely because implementation performance changed. Update this document only when the workload, metric definition, comparison discipline, or profiling procedure changes.
+Concrete benchmark numbers are immutable evidence snapshots. Add a dated file under [`doco/history/`](../../history/README.md) when a measurement is worth preserving; do not update architecture or this methodology merely because implementation performance changed. Update this document only when the workload, metric definition, comparison discipline, or profiling procedure changes.

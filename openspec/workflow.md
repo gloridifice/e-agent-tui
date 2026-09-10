@@ -1,7 +1,7 @@
 # OpenSpec Lite
 
-> Status: Current
-> Authority: Repository planning and specification-delivery workflow. Artifact instructions and templates live in [`openspec/schemas/lite/`](../openspec/schemas/lite/).
+> Status: Historical — deprecated
+> Authority: None. This frozen guide records the former OpenSpec workflow; do not use its commands for new work. Use the [Doco skill](../.agents/skills/doco/SKILL.md) instead. Former artifact instructions and templates remain in [`schemas/lite/`](schemas/lite/).
 
 The default workflow is `proposal → specs → tasks → implementation/checks → CLI archive`. When requirements stay unchanged, explicitly skip specs: `proposal → tasks`. Lite has no design artifact. Use `spec-driven` for changes needing separate architecture, migration, or security design.
 
@@ -35,7 +35,7 @@ openspec status --change my-change --json
 openspec validate my-change --type change --strict
 ```
 
-Status reflects artifact availability, not implementation correctness. Run the focused completion checks in tasks according to [testing policy](testing.md).
+Status reflects artifact availability, not implementation correctness. Run the focused completion checks in tasks according to [testing policy](../doco/testing.md).
 
 ## Deliver and archive once
 

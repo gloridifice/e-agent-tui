@@ -34,7 +34,7 @@ test('canonical contract owns protocol capacities and message roster', () => {
     PROTOCOL_VERSION,
     'package compatibility metadata follows the canonical wire contract',
   )
-  const docs = readFileSync(new URL('../../docs/protocol.md', import.meta.url), 'utf8')
+  const docs = readFileSync(new URL('../../doco/protocol.md', import.meta.url), 'utf8')
   assert.match(docs, /Protocol version \| 10/)
   assert.match(docs, /`commands`/)
   assert.match(docs, /`skills`/)

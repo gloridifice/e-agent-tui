@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const contractPath = join(root, 'bridge', 'protocol-contract.json')
 const packagePath = join(root, 'bridge', 'package.json')
-const docsPath = join(root, 'docs', 'protocol.md')
+const docsPath = join(root, 'doco', 'protocol.md')
 const rustFixturesPath = join(root, 'crates', 'e-dsh', 'testdata', 'wire-contract-fixtures.json')
 const nodeFixturesPath = join(root, 'bridge', 'test', 'fixtures', 'wire-contract-fixtures.json')
 

@@ -102,4 +102,4 @@ node tools/hello-test.mjs         # send hello and print startup frames
 cargo run --example smoke_snapshot -- tools/cache/snapshot-sample.json
 ```
 
-Startup probes, snapshot capture, frame workloads, syntax workloads, Tracy, and timing environment variables are maintained in the [performance measurement methodology](subsystem/performance/methodology.md). Do not copy benchmark results into this guide; dated results belong under `docs/history/`.
+Startup probes, snapshot capture, frame workloads, syntax workloads, Tracy, and timing environment variables are maintained in the [performance measurement methodology](subsystem/performance/methodology.md). Do not copy benchmark results into this guide; dated results belong under `doco/history/`.

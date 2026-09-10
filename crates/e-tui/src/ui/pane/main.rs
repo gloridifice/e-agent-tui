@@ -261,6 +261,14 @@ fn render_main_pane_with_cursor(
         y = y.saturating_add(plan.bottom_rows);
     }
     if y < end_y {
+        if state.link_copy.armed {
+            region::composer::render_link_copy_hint(
+                frame,
+                Rect::new(page.x, y, page.width, 1),
+                theme,
+                state.config.language,
+            );
+        }
         y = y.saturating_add(1);
     }
     if y < end_y {

@@ -151,6 +151,36 @@ fn pending_submissions_render_before_any_agent_echo() {
 }
 
 #[test]
+fn link_copy_hint_occupies_composer_gap_only_while_armed() {
+    let mut state = TuiApp::default();
+    force_message_only(&mut state);
+    state.config.language = crate::i18n::Language::English;
+    let mut input = InputState::new(&state.config);
+    input.restore_text("preserved draft".into());
+    let mut scroll = ScrollState::default();
+    let theme = Theme::ferra();
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    let mut draft_position = None;
+    for armed in [false, true, false] {
+        state.link_copy.armed = armed;
+        terminal
+            .draw(|frame| {
+                render_with_cursor(frame, &mut state, &input, &mut scroll, &theme, overlays());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let position = find_text(buffer, "preserved draft").unwrap();
+        assert_eq!(*draft_position.get_or_insert(position), position);
+        let hint = find_text(buffer, "Press the character after ~");
+        if armed {
+            assert_eq!(hint.unwrap().1, position.1 + 2);
+        } else {
+            assert!(hint.is_none());
+        }
+    }
+}
+
+#[test]
 fn help_overlay_advertises_application_paste_shortcut() {
     let mut state = TuiApp::default();
     state.config.resolved_theme = Theme::ferra();

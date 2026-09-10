@@ -225,7 +225,7 @@ fn trim_token(mut text: &str) -> &str {
 
 fn scan_text(mut text: &str, add: &mut impl FnMut(&str, bool)) {
     let delimiter = |c: char| {
-        c.is_whitespace() || matches!(c, '"' | '\'' | '`' | '<' | '>' | '，' | '。' | '；')
+        c.is_whitespace() || matches!(c, '"' | '\'' | '`' | '<' | '>' | '，' | '。' | '；' | '：')
     };
     while let Some(first) = text.chars().next() {
         if matches!(first, '"' | '\'') {
@@ -410,6 +410,50 @@ pub fn annotate(line: &mut Line<'static>, links: &[TaggedLink], style: Style) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quick_links_after_chinese_colon_are_discovered_and_tagged() {
+        let examples = [
+            ("项目主页", "https://github.com/earendil-works/pi"),
+            (
+                "文档站",
+                "https://doc.rust-lang.org/std/string/struct.String.html",
+            ),
+            ("邮箱式", "mailto:dev@example.com"),
+        ];
+        let source = examples
+            .iter()
+            .map(|(label, target)| format!("- {label}：{target}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let candidates = discover(&source);
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.target.as_str())
+                .collect::<Vec<_>>(),
+            examples.map(|(_, target)| target)
+        );
+        assert!(candidates
+            .iter()
+            .all(|candidate| candidate.relative.is_none()));
+        let links: Vec<_> = candidates
+            .into_iter()
+            .zip(TAGS.chars())
+            .map(|(candidate, tag)| TaggedLink {
+                target: candidate.target,
+                tag,
+            })
+            .collect();
+        for ((label, target), link) in examples.iter().zip(&links) {
+            let mut line = Line::raw(format!("◦ {label}：{target}"));
+            annotate(&mut line, &links, Style::default());
+            assert_eq!(
+                line.to_string(),
+                format!("◦ {label}：{target}~{}", link.tag)
+            );
+        }
+    }
 
     #[test]
     fn quick_links_reject_bare_slash() {

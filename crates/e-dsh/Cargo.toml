@@ -21,7 +21,7 @@ path = "src/main.rs"
 
 [features]
 default = []
-# Tracy profiler instrumentation (real-time profiler; see ../../doco/subsystem/performance/methodology.md).
+# Tracy profiler instrumentation (real-time profiler; see ../../readme/performance.md).
 # Build the profiling binary with: cargo build --offline --release --features tracy
 tracy = ["e-tui/tracy"]
 

@@ -1,8 +1,8 @@
 # AGENTS.md
 
-Project guidance for coding agents. Human-facing documentation starts at [README.md](README.md); the documentation map and authority rules live in [doco/README.md](doco/README.md).
+Project guidance for coding agents. Human-facing documentation starts at [README.md](README.md); current architecture and contract ownership live in [doco/README.md](doco/README.md); operational guides live in [readme/](readme/README.md).
 
-> All project documentation is maintained in English. Do not add non-English prose to this file or `doco/`.
+> All project documentation is maintained in English. Do not add non-English prose to this file, `doco/`, or `readme/`.
 
 ## Project map
 
@@ -11,16 +11,19 @@ Project guidance for coding agents. Human-facing documentation starts at [README
 - `crates/e-pi/` — Pi RPC adapter and `pie` executable.
 - `crates/e-tui/` — runtime-neutral TUI frontend.
 
-DSH uses JSON WebSocket; Pi uses JSONL over child-process stdio. The canonical DSH wire contract is [`bridge/protocol-contract.json`](bridge/protocol-contract.json); [`doco/protocol.md`](doco/protocol.md) is generated.
+DSH uses JSON WebSocket; Pi uses JSONL over child-process stdio. The canonical DSH wire contract is [`bridge/protocol-contract.json`](bridge/protocol-contract.json); [`doco/specs/wire-protocol.md`](doco/specs/wire-protocol.md) is generated.
 
 ## Architecture routing
 
-Start from [current architecture](doco/architecture.md). Before changing a subsystem, read its current architecture document:
+Start from [current architecture](doco/architecture.md). Before changing a subsystem, read its current contract:
 
-- Rust adapters, frontend, rendering, interaction, cache, and runtime invariants: [client architecture](doco/subsystem/client/architecture.md).
-- Bridge composition, connection/session lifecycle, trimming, and DSH host integration: [bridge architecture](doco/subsystem/bridge/architecture.md).
+- Runtime, adapter, and lock discipline: [runtime and adapters](doco/specs/runtime-and-adapters.md).
+- Frontend surfaces, layout, reveal, Preview, and copy: [presentation](doco/specs/presentation.md).
+- Input, pages, queues, commands, and sessions: [interaction and sessions](doco/specs/interaction-and-sessions.md).
+- Config, themes, key mapping, and execution history: [configuration and storage](doco/specs/configuration-and-storage.md).
+- Bridge composition, lifecycle, framing, and trimming: [DSH bridge](doco/specs/dsh-bridge.md).
 
-Changes under `bridge/` also require the deployment lifecycle in [DSH integration](doco/dsh-integration.md). Exact fields, defaults, registries, and capacities come from source, tests, schema, generated output, or `--help`, not prose summaries.
+Changes under `bridge/` also require the deployment lifecycle in [DSH integration](readme/dsh-integration.md). Exact fields, defaults, registries, and capacities come from source, tests, schema, generated output, or `--help`, not prose summaries.
 
 ## Working policy
 
@@ -30,7 +33,7 @@ Changes under `bridge/` also require the deployment lifecycle in [DSH integratio
 - Keep `README.md` concise and user-facing; do not add implementation detail there.
 - When changing user-visible interaction keys, update the `e-tui` help overlay and the README quick reference when applicable.
 - Keep comments minimal; do not add comments that merely restate code.
-- Follow [development guidance](doco/development.md) for dependency ownership and repository commands.
+- Follow [development guidance](readme/development.md) for dependency ownership and repository commands.
 
 ## Change policy
 
@@ -53,7 +56,7 @@ needed; it is not a current specification source.
 
 ## Validation
 
-Choose validation proportionally to the change and read [doco/testing.md](doco/testing.md) before broad checks.
+Choose validation proportionally to the change and read [readme/testing.md](readme/testing.md) before broad checks.
 
 - Add tests only for real risk or regression prevention, not formal coverage.
 - Prefer scoped Rust tests. Do not run `cargo test --lib` or `cargo test` by default; trivial changes may need no tests.
@@ -62,10 +65,10 @@ Choose validation proportionally to the change and read [doco/testing.md](doco/t
 
 ## Task guides
 
-- Build, install, dependency, debug, and performance entry points: [doco/development.md](doco/development.md)
-- Test and validation policy: [doco/testing.md](doco/testing.md)
-- DSH profiles, setup, bridge deployment, and upgrades: [doco/dsh-integration.md](doco/dsh-integration.md)
-- Operational diagnosis: [doco/troubleshooting.md](doco/troubleshooting.md)
+- Build, install, dependency, debug, and performance entry points: [readme/development.md](readme/development.md)
+- Test and validation policy: [readme/testing.md](readme/testing.md)
+- DSH profiles, setup, bridge deployment, and upgrades: [readme/dsh-integration.md](readme/dsh-integration.md)
+- Operational diagnosis: [readme/troubleshooting.md](readme/troubleshooting.md)
 
 <!-- DOCO:START -->
 ## Doco

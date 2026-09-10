@@ -100,13 +100,13 @@ The override is runtime-only: per DSH session, or until `pie` exits. Activity la
 
 ### Key mapping
 
-Bindings are configurable in `<config_path>/key_mapping.toml`; see [key mappings](doco/key-mapping.md) and the complete [defaults](crates/e-tui/assets/default_key_mapping.toml). Below, **Main** means Command on macOS and Ctrl on Windows/Linux (the terminal must forward the shortcut).
+Bindings are configurable in `<config_path>/key_mapping.toml`; see [key mappings](readme/key-mapping.md) and the complete [defaults](crates/e-tui/assets/default_key_mapping.toml). Below, **Main** means Command on macOS and Ctrl on Windows/Linux (the terminal must forward the shortcut).
 
 In `/model`, **Shift+letter** marks/unmarks the focused model; the plain **letter** switches to it and closes the menu. Marks are saved and shown as Bark-colored ` [a]` suffixes. Letters already mapped in the menu are reserved (by default `h/j/k/l/q`).
 
 Prefix a prompt with `//<mark>` (for example `//i commit`) to use that model for one turn. The Umber model-name preview is not sent. The status-bar model becomes italic; ASAP steering keeps the temporary model, while after-turn messages wait for the original model and reasoning effort to be restored.
 
-Press **Ctrl+Y**, then a link's tag (`1`–`9`, `0`, `a`–`z`) to copy it. The latest completed answer labels up to 36 distinct URLs and paths with Umber `~<tag>` suffixes; Esc cancels. See [link copy](doco/key-mapping.md#quick-link-copy) for path validation and remapping.
+Press **Ctrl+Y**, then a link's tag (`1`–`9`, `0`, `a`–`z`) to copy it. The latest completed answer labels up to 36 distinct URLs and paths with Umber `~<tag>` suffixes; Esc cancels. See [link copy](readme/key-mapping.md#quick-link-copy) for path validation and remapping.
 
 Mouse: the wheel scrolls the pane under the pointer (messages or Preview). Drag any visible TUI text to copy on release, including input, status, paths, history, and popups. Multiline selection follows rows within the pane where the drag starts; the display pauses during selection while background work continues. A press on the separator resizes instead. Reading View copy still copies the complete source block.
 
@@ -142,4 +142,4 @@ cargo build --release
 dshe setup
 ```
 
-See the [`doco/` index](doco/README.md) for current client and bridge architecture, the generated WebSocket reference, performance methodology, and clearly separated historical material. The canonical wire source is [`bridge/protocol-contract.json`](bridge/protocol-contract.json).
+See the [doco index](doco/README.md) for current architecture and contracts, the [readme index](readme/README.md) for operational guides, and the [generated wire reference](doco/specs/wire-protocol.md) for WebSocket framing. The canonical wire source is [`bridge/protocol-contract.json`](bridge/protocol-contract.json).

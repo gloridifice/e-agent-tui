@@ -43,4 +43,4 @@ $env:DSH_TUI_TIMING='1'
 dshe
 ```
 
-Use `node tools/probe-startup.mjs` to isolate bridge attach and snapshot production. For snapshot capture, frame timing, Tracy, and interpretation guidance, follow the [performance measurement methodology](subsystem/performance/methodology.md). Historical measurements are evidence only and must not be treated as current targets.
+Use `node tools/probe-startup.mjs` to isolate bridge attach and snapshot production. For snapshot capture, frame timing, Tracy, and interpretation guidance, follow the [performance measurement methodology](performance.md). Historical measurements are evidence only and must not be treated as current targets.

@@ -1,7 +1,7 @@
 # Bridge architecture (Node.js)
 
-> Status: Current
-> Authority: Stable bridge boundaries and host-integration invariants. Source, tests, and the generated wire contract govern exact behavior.
+> Status: Historical
+> Authority: None. Pre-normalization documentation snapshot retained for lookup only. Current architecture and contracts live under Doco; the imperatives below are historical text, not current instructions.
 
 Architecture conventions for the Node.js (ESM) DSH host-composition plugin.
 

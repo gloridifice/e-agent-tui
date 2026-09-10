@@ -3,7 +3,7 @@
 > Status: Historical
 > Authority: Non-normative. These files retain staged rationale and gate evidence; they do not define the current implementation.
 
-This directory records the completed Rust client migration and its baselines. For current behavior, use the [Rust client architecture](../../subsystem/client/architecture.md), source, tests, and generated contracts. The [archived design draft](../../archive/dsh-tui-design-v0.5.md) is context only.
+This directory records the completed Rust client migration and its baselines. For current behavior, use the [Rust client architecture](../../../doco/architecture.md#rust-workspace), source, tests, and generated contracts. The [archived design draft](../../archive/dsh-tui-design-v0.5.md) is context only.
 
 ## Plan documents
 

@@ -751,7 +751,7 @@ font size (terminal side), clipboard backend (platform-decided), key rebinding (
 
 The only machine-readable source for message names, surface events, capacities, `shapeTypes`, payload `records`,
 and crates/e-dsh/server `messageShapes` is [`bridge/protocol-contract.json`](../../bridge/protocol-contract.json).
-`node tools/sync-protocol-contract.mjs` validates that JSON and sync-generates [`docs/protocol.md`](../protocol.md),
+`node tools/sync-protocol-contract.mjs` validates that JSON and sync-generates [`doco/specs/wire-protocol.md`](../../doco/specs/wire-protocol.md),
 Rust `build.rs` constants/shape JSON, Rust/Node conformance fixtures, and
 `bridge/package.json.dshCompatibility.wireProtocol`; `--check` fails on any unsynced derivative.
 `tools/generate-protocol-doc.mjs` is just the sync tool's compatibility entry point. Both the Node bridge runtime

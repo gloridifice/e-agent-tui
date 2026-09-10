@@ -56,7 +56,7 @@ The verifier packages all three crates and checks the extracted adapters against
 
 ## Protocol changes
 
-The machine-readable authority is `bridge/protocol-contract.json`. After changing the protocol, generate the derived files as described in the [bridge architecture](subsystem/bridge/architecture.md), then verify from the repository root:
+The machine-readable authority is `bridge/protocol-contract.json`. After changing the protocol, run `node tools/sync-protocol-contract.mjs` to regenerate the [wire reference](../doco/specs/wire-protocol.md), fixtures, and package metadata, then verify from the repository root:
 
 ```powershell
 node tools/sync-protocol-contract.mjs --check

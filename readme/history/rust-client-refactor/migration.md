@@ -439,7 +439,7 @@ npm test
 node tools/sync-protocol-contract.mjs --check
 ```
 
-After DSH compatibility changes, run the deployed-copy upgrade gate documented in [the current bridge architecture](../../subsystem/bridge/architecture.md).
+After DSH compatibility changes, run the deployed-copy upgrade gate documented in [the current bridge architecture](../../../doco/architecture.md#bridge).
 
 The normalized `AgentEvent` contract is internal to the Rust workspace and does not automatically require a wire protocol bump. A bump is required only when the bridge messages change.
 
@@ -451,9 +451,9 @@ When the crate split lands, update:
 
 - root workspace commands in `AGENTS.md`;
 - [the root README](../../../README.md) only if user-facing install commands change;
-- [the current Rust client architecture](../../subsystem/client/architecture.md) for the new crate and runtime boundaries;
+- [the current Rust client architecture](../../../doco/architecture.md#rust-workspace) for the new crate and runtime boundaries;
 - [the archived design draft](../../archive/dsh-tui-design-v0.5.md) for the two-pane layout decision;
-- [the documentation index](../../README.md).
+- [the documentation index](../../../doco/README.md).
 
 When Preview and Reading View land, update:
 

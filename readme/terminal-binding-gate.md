@@ -3,7 +3,7 @@
 > Status: Current
 > Authority: Keyboard compatibility validation procedure. Defaults live in the root mapping TOML, not in this checklist.
 
-The historical [Ctrl+Y investigation](../../history/rust-client-refactor/terminal-binding-gate.md) remains frozen. Current defaults use osmain-R for Reading and osmain-V for application paste; no new physical-terminal measurements are inferred from the historical report.
+The Ctrl+Y investigation in [historical migration records](history/rust-client-refactor/) remains frozen. Current defaults use osmain-R for Reading and osmain-V for application paste; no new physical-terminal measurements are inferred from the historical report.
 
 ## Automated gate
 

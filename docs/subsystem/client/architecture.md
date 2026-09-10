@@ -102,6 +102,13 @@ Architecture conventions for the Rust workspace. `crates/e-dsh` owns the `dshe.e
   never starts transcript reveal, copy and Reading use complete source, plain-color mode keeps pacing but omits
   interpolation, and Preview identity changes restart only Preview while same-target revisions retain the common
   semantic prefix.
+- **Status selection feedback**: confirmed catalog changes start independent model and effective-effort
+  foreground flashes in `RenderState`; attachment resets their observation baseline. These presentation-only
+  deadlines join the shared reveal/fade deadline path, including the final normal-color frame, without touching
+  transcript or Preview caches. Rendering preserves existing labels and modifiers. The resolved theme derives
+  flash accents from named palette colors, with semantic fallbacks for custom palettes; no new theme-file fields
+  are required. The observable behavior is specified in
+  [status selection feedback](../../../openspec/specs/status-selection-feedback/spec.md).
 - **Performance red lines** (all have regression tests): terminal input wakes the main loop directly through
   `EventStream` — do not restore fixed ticker polling; interaction/content/animation deadlines are separated,
   spinner, transcript reveal, and Preview reveal keep independent due times whose minimum wakes the loop; each

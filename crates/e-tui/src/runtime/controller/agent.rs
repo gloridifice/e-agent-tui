@@ -146,6 +146,7 @@ pub(super) fn apply_session(
                     app.history_page = None;
                     app.interaction.question = None;
                 }
+                app.render.status_flashes = Default::default();
                 app.session.session_id = Some(attached.id.clone());
                 let materialization_pending = app
                     .session
@@ -302,6 +303,7 @@ pub(super) fn apply_catalog(
             app.catalogs.model_providers = providers.clone();
             app.catalogs.current_model = current.clone();
             let catalogs = app.catalogs.clone();
+            app.render.status_flashes.observe(&catalogs, Instant::now());
             if let Some(current) = current {
                 super::model::confirm(&mut app, &current);
                 app.session.provider = Some(current.provider);

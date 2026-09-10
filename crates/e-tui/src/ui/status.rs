@@ -96,15 +96,16 @@ pub(super) fn render_status(
         } else {
             dim
         };
+        let style = style.fg(state
+            .render
+            .status_flashes
+            .model_color(theme, theme.input.status_hint.fg));
         left_spans.push(Span::styled(model.to_owned(), style));
     }
     if let Some(rate) = (!drafting).then(|| state.cache_hit_rate()).flatten() {
         left_spans.push(Span::styled(" ", dim));
         left_spans.push(Span::styled(format!("CH{rate}%"), dim));
     }
-    // Reasoning effort rides after the cache-hit rate, styled identically to
-    // the model and CH entries, and is omitted entirely when the current route
-    // exposes no reasoning metadata.
     if let Some(status) = state.catalogs.effort_status() {
         let label = status
             .label
@@ -115,7 +116,10 @@ pub(super) fn render_status(
                 "{}:{label}",
                 crate::i18n::tr(state.config.language, "status.effort_prefix")
             ),
-            dim,
+            dim.fg(state
+                .render
+                .status_flashes
+                .effort_color(theme, theme.input.status_hint.fg)),
         ));
     }
     if let Some(context_window) = (!drafting)

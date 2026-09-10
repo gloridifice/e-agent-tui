@@ -410,6 +410,14 @@ struct ThemeDocument {
     semantics: SemanticsRef,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct StatusFlashTheme {
+    pub model: Color,
+    pub effort_max: Color,
+    pub effort_xhigh: Color,
+    pub effort_high: Color,
+}
+
 /// Fully resolved, render-time theme. The nested fields are the public semantic
 /// API. The flat color aliases remain temporarily for existing render helpers;
 /// each is derived from a semantic role rather than directly from a palette.
@@ -429,6 +437,7 @@ pub struct Theme {
     pub diff: DiffTheme,
     pub separator: SeparatorTheme,
     pub history: HistoryTheme,
+    pub status_flash: StatusFlashTheme,
 
     // Compatibility aliases for render paths that combine semantic roles.
     pub bg: Color,
@@ -558,6 +567,21 @@ fn resolve_document(document: ThemeDocument) -> Result<ThemeFile, String> {
         err: log.error.fg,
         running: working_status.running.fg,
         coral: colors.get("coral").copied().unwrap_or(card.detail.fg),
+        status_flash: StatusFlashTheme {
+            model: colors
+                .get("mist")
+                .copied()
+                .unwrap_or(surface.primary_text.fg),
+            effort_max: colors
+                .get("ember")
+                .copied()
+                .unwrap_or(working_status.failure.fg),
+            effort_xhigh: colors
+                .get("honey")
+                .copied()
+                .unwrap_or(working_status.running.fg),
+            effort_high: colors.get("blush").copied().unwrap_or(code.r#type.fg),
+        },
         surface,
         markdown,
         markdown_weak,

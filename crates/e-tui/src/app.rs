@@ -297,13 +297,14 @@ impl TuiApp {
     }
 
     pub fn reveal_deadline(&self) -> Option<Instant> {
-        match (
+        [
             self.transcript_reveal_deadline(),
             self.preview.reveal_deadline(),
-        ) {
-            (Some(transcript), Some(preview)) => Some(transcript.min(preview)),
-            (transcript, preview) => transcript.or(preview),
-        }
+            self.render.status_flashes.next_due(),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     /// Advance each due transcript lane by at most one grapheme/fade step.
@@ -348,7 +349,8 @@ impl TuiApp {
         let preview = self
             .preview
             .tick_reveal(now, self.config.preview_lines_per_second.get());
-        transcript || preview
+        let status = self.render.status_flashes.tick(now);
+        transcript || preview || status
     }
 
     pub fn breath_phase(&self) -> f64 {

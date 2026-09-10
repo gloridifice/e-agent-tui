@@ -455,3 +455,85 @@ fn temporary_model_cancelled_selection_restores_without_sending() {
         .iter()
         .all(|p| p.delivery != PromptDelivery::Asap));
 }
+
+#[test]
+fn status_flash_catalog_changes_in_drafts_leave_content_caches_alone() {
+    let h = Harness::new();
+    {
+        let mut app = h.0.lock().unwrap();
+        assert_eq!(app.reveal_deadline(), None);
+        app.begin_new_conversation("standard");
+        app.render.transcript_cache.valid = true;
+        app.preview.take_work_stats();
+    }
+    let mut selected = Harness::original();
+    selected.model = "other".into();
+    h.confirm(selected.clone());
+    let first_due = h.0.lock().unwrap().reveal_deadline().unwrap();
+    h.confirm(selected);
+    {
+        let mut app = h.0.lock().unwrap();
+        assert_eq!(app.reveal_deadline(), Some(first_due));
+        assert!(!crate::runtime::animation_active(&app, first_due));
+        assert!(app.tick_reveals(first_due));
+        assert!(app.tick_reveals(first_due + std::time::Duration::from_millis(600)));
+        assert_eq!(app.reveal_deadline(), None);
+        assert!(!app.tick_reveals(first_due + std::time::Duration::from_secs(1)));
+        let cache = &app.render.transcript_cache;
+        assert!(cache.valid);
+        assert!(!cache.tail_dirty);
+        assert!(cache.dirty_messages.is_empty());
+        assert_eq!(cache.reveal_dirty_from, None);
+        assert_eq!(
+            app.preview.take_work_stats(),
+            crate::PreviewWorkStats::default()
+        );
+        assert!(app
+            .session
+            .new_conversation
+            .as_ref()
+            .unwrap()
+            .pending_input
+            .is_none());
+    }
+}
+
+#[test]
+fn status_flash_attachment_resets_feedback_and_effort_only_changes_schedule() {
+    let h = Harness::new();
+    let mut selected = Harness::original();
+    selected.provider = "p".into();
+    selected.model = "luna".into();
+    h.confirm(selected.clone());
+    assert!(h.0.lock().unwrap().reveal_deadline().is_some());
+    for session_id in ["session", "replacement"] {
+        h.event(AgentEvent::Session(SessionEvent::Attached(
+            AttachedSession {
+                protocol_version: None,
+                max_frame_bytes: None,
+                id: session_id.into(),
+                status: AgentStatus::Idle,
+                provider: Some("p".into()),
+                model: Some("luna".into()),
+                mode: None,
+                title: None,
+                workspace: None,
+            },
+        )));
+        {
+            let mut app = h.0.lock().unwrap();
+            assert_eq!(app.reveal_deadline(), None);
+            app.catalogs.model_providers[0].models[0].reasoning =
+                Some(crate::agent::ModelReasoning {
+                    efforts: vec![],
+                    default_effort: None,
+                });
+        }
+        h.confirm(selected.clone());
+        assert_eq!(h.0.lock().unwrap().reveal_deadline(), None);
+        selected.reasoning_effort = Some("max".into());
+        h.confirm(selected.clone());
+        assert!(h.0.lock().unwrap().reveal_deadline().is_some());
+        selected.reasoning_effort = Some("high".into());
+    }
+}

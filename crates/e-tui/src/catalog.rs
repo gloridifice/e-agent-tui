@@ -10,6 +10,7 @@ use crate::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EffortStatus {
+    pub id: Option<String>,
     /// Provider-declared label or raw effort id. `None` means provider default.
     pub label: Option<String>,
 }
@@ -92,7 +93,10 @@ impl CatalogModel {
                 .map(|effort| effort.name.clone())
                 .unwrap_or_else(|| id.to_owned())
         });
-        Some(EffortStatus { label })
+        Some(EffortStatus {
+            id: id.map(str::to_owned),
+            label,
+        })
     }
 }
 
@@ -149,6 +153,7 @@ mod tests {
         assert_eq!(
             explicit.effort_status(),
             Some(EffortStatus {
+                id: Some("high".into()),
                 label: Some("High".into())
             })
         );
@@ -164,6 +169,7 @@ mod tests {
         assert_eq!(
             defaulted.effort_status(),
             Some(EffortStatus {
+                id: Some("low".into()),
                 label: Some("Low".into())
             })
         );
@@ -181,7 +187,10 @@ mod tests {
         );
         assert_eq!(
             provider_default.effort_status(),
-            Some(EffortStatus { label: None })
+            Some(EffortStatus {
+                id: None,
+                label: None
+            })
         );
     }
 

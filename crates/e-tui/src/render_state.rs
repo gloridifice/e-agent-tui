@@ -12,6 +12,8 @@ use crate::{
     transcript_layout::MarkdownLayoutRegistry,
 };
 
+mod status_flash;
+
 #[derive(Debug, Clone)]
 pub struct ActivityTransition {
     pub done_since: Instant,
@@ -31,6 +33,7 @@ pub struct RenderState {
     /// transcript; replay/history never create these sidecars.
     pub transcript_reveals: HashMap<DisplayId, RevealTrack>,
     pub activity_frame: usize,
+    pub(crate) status_flashes: status_flash::StatusFlashes,
 }
 
 impl Default for RenderState {
@@ -47,6 +50,7 @@ impl Default for RenderState {
             },
             transcript_reveals: HashMap::new(),
             activity_frame: 0,
+            status_flashes: status_flash::StatusFlashes::default(),
         }
     }
 }

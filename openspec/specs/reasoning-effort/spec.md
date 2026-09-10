@@ -1,14 +1,16 @@
 # reasoning-effort Specification
 
 ## Purpose
-TBD - created by archiving change add-reasoning-effort. Update Purpose after archive.
+Display and select the effective reasoning effort using the exact current model route's adapter-provided metadata.
+
 ## Requirements
+
 ### Requirement: Status bar shows the effective reasoning effort
-The client SHALL render the current session's reasoning effort in status line 1, immediately after the cache-hit-rate entry, using the same dim style as the model and `CH` entries. The entry SHALL use the label form `Effort:<Label>` with no space after the colon.
+The client SHALL render the current session's reasoning effort in status line 1, immediately after the cache-hit-rate entry, using the same normal dim style as the model and `CH` entries, with the transient foreground defined by `status-selection-feedback` after confirmed effort changes. The entry SHALL use the label form `Effort:<Label>` with no space after the colon.
 
 #### Scenario: Explicit effort is displayed
 - **WHEN** the current selection carries a `reasoningEffort` and the exact current model exposes that effort in its `reasoning.efforts`
-- **THEN** the status bar shows `Effort:<name>` where `<name>` is the adapter-declared display name, styled identically to the model and `CH` entries
+- **THEN** the status bar shows `Effort:<name>` where `<name>` is the adapter-declared display name, using the normal dim status style outside selection feedback
 
 #### Scenario: Adapter default is displayed
 - **WHEN** the current selection has no explicit `reasoningEffort` and the exact current model exposes a `reasoning.defaultEffort`
@@ -73,4 +75,3 @@ The client SHALL derive the displayed and selectable effort solely from the `mod
 #### Scenario: Effort change refreshes the bar
 - **WHEN** a `/effort` selection is accepted and the bridge re-sends the model frame
 - **THEN** the status bar shows the newly selected effort
-

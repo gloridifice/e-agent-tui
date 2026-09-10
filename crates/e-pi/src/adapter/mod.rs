@@ -106,6 +106,14 @@ pub struct PiAdapter {
 }
 
 impl PiAdapter {
+    pub fn session_index_root(&self, workspace: &str) -> PathBuf {
+        if std::path::Path::new(workspace) == self.cwd {
+            self.session_root.clone()
+        } else {
+            crate::session_index::project_session_root(std::path::Path::new(workspace))
+        }
+    }
+
     pub fn new(cwd: impl Into<PathBuf>, session_root: impl Into<PathBuf>) -> Self {
         Self {
             cwd: cwd.into(),

@@ -2,13 +2,10 @@
 
 use e_tui::{
     action::AgentRequest,
-    agent::{AgentEvent, InteractionEvent, SessionEvent, TimelineEvent},
+    agent::{AgentEvent, TimelineEvent},
 };
 
-use crate::{
-    protocol::{ExtensionUiResponse, RpcCommand, StreamingBehavior},
-    session_index,
-};
+use crate::protocol::{ExtensionUiResponse, RpcCommand, StreamingBehavior};
 
 use super::{extension, session, AdapterOutput, NewSubmission, PendingExtensionUi, PiAdapter};
 
@@ -139,32 +136,8 @@ pub(super) fn route(adapter: &mut PiAdapter, request: AgentRequest) -> AdapterOu
                 session_path: session_id,
             })
         }
-        AgentRequest::ListSessions => {
-            let index = session_index::list_current_project(&adapter.session_root, &adapter.cwd);
-            let mut output = AdapterOutput::event(AgentEvent::Session(SessionEvent::List {
-                sessions: index.sessions,
-                titles_pending: false,
-            }));
-            if !index.diagnostics.is_empty() {
-                let total = index.diagnostics.len();
-                let mut message = index
-                    .diagnostics
-                    .into_iter()
-                    .take(3)
-                    .collect::<Vec<_>>()
-                    .join("; ");
-                if total > 3 {
-                    message.push_str(&format!("; and {} more", total - 3));
-                }
-                output.events.push(AgentEvent::Interaction(
-                    InteractionEvent::Error {
-                        code: "pi-session-index".into(),
-                        message,
-                    },
-                ));
-            }
-            output
-        }
+        // The runner services viewport-driven native discovery on a blocking worker.
+        AgentRequest::ListSessions => AdapterOutput::default(),
         AgentRequest::ApprovalAnswer { id, allow } => {
             if adapter.extension_ui.remove(&id) == Some(PendingExtensionUi::Confirm) {
                 AdapterOutput::command(RpcCommand::ExtensionUiResponse {

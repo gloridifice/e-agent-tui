@@ -2,7 +2,9 @@
 
 ## Purpose
 Provide a shared, focus-driven input-area interface for browsing settings, credentials, models, and themes while preserving the ordinary composer draft.
+
 ## Requirements
+
 ### Requirement: Unified Input Page lifecycle
 The client SHALL represent `/settings`, `/login`, `/model`, and `/theme` as mutually exclusive Input Pages, with at most one Input Page active at a time. Opening one of these commands SHALL replace the ordinary input area without discarding its text or transcript state.
 
@@ -23,7 +25,7 @@ Every Input Page SHALL render in the bottom page area used in place of the input
 
 #### Scenario: Render page interaction states
 - **WHEN** an actionable item is focused or a value is selected
-- **THEN** focused text uses the Sage semantic tone, selected text uses the Coral semantic tone, and neither state adds a background fill
+- **THEN** focused text uses the Sage semantic tone, selected text uses the Coral semantic tone, and neither state adds a background fill, except Resume title/date columns retain their fixed tones with focus conveyed by a separate marker
 
 #### Scenario: Render on a small terminal
 - **WHEN** an Input Page is rendered in a terminal too small for all body rows
@@ -272,3 +274,17 @@ Global choose_model, choose_effort, open_settings and resume_session SHALL defau
 - **WHEN** a question page is awaiting an answer and choose_effort is invoked
 - **THEN** the question page and its draft remain active and no page is replaced
 
+### Requirement: Resume title and modification date rows
+Resume rows SHALL omit session paths and display a left-aligned title in the theme's Mist-equivalent tone and an available last-modified date right-aligned in its Bark-equivalent tone. A focus marker SHALL identify the selected row without overriding either text tone. Title truncation SHALL reserve room for the date and separate the columns when space permits. A backend that does not provide last-modified metadata SHALL leave the date absent rather than mislabel creation time as modification time. Paths SHALL remain usable for identity filtering and attachment despite being omitted from row presentation.
+
+#### Scenario: Focused dated row
+- **WHEN** a Resume row with modification metadata is focused
+- **THEN** its title remains Mist-equivalent, its date remains Bark-equivalent at the right edge, and a separate marker identifies focus without showing the session path
+
+#### Scenario: Narrow row
+- **WHEN** a title and date cannot fit in the available row width
+- **THEN** the title is truncated before the date and neither column wraps or overlaps neighboring rows
+
+#### Scenario: Missing modification date
+- **WHEN** a backend provides a session without last-modified metadata
+- **THEN** the title remains visible with no fabricated modification date

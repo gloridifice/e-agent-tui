@@ -819,12 +819,14 @@ mod tests {
                     title: format!("Title {first}"),
                     live: false,
                     created_at: 2,
+                    modified_label: None,
                 },
                 SessionSummary {
                     id: second.into(),
                     title: format!("Title {second}"),
                     live: false,
                     created_at: 1,
+                    modified_label: None,
                 },
             ]
         };
@@ -897,12 +899,14 @@ mod tests {
                     title: "Rust 修复".into(),
                     live: true,
                     created_at: 2,
+                    modified_label: None,
                 },
                 SessionSummary {
                     id: "s2".into(),
                     title: "文档整理".into(),
                     live: false,
                     created_at: 1,
+                    modified_label: None,
                 },
             ]
         };
@@ -936,12 +940,14 @@ mod tests {
                     title: String::new(),
                     live: false,
                     created_at: 2,
+                    modified_label: None,
                 },
                 SessionSummary {
                     id: "hjkl-two".into(),
                     title: String::new(),
                     live: false,
                     created_at: 1,
+                    modified_label: None,
                 },
             ],
             false,

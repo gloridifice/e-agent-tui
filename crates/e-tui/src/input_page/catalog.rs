@@ -12,6 +12,7 @@ pub struct ResumePage {
     pub sel: usize,
     pub loading: bool,
     pub titles_pending: bool,
+    pub paging: crate::resume::ResumePaging,
 }
 
 impl ResumePage {
@@ -22,7 +23,31 @@ impl ResumePage {
             sel: 0,
             loading: true,
             titles_pending: false,
+            paging: crate::resume::ResumePaging::default(),
         }
+    }
+
+    pub fn take_request(&mut self, workspace: &str) -> Option<crate::resume::ResumeRequest> {
+        if self.paging.bind_workspace(workspace) {
+            self.sessions.clear();
+            self.sel = 0;
+            self.loading = true;
+        }
+        self.paging
+            .request(self.sel, self.sessions.len(), !self.query.is_empty())
+    }
+
+    pub fn apply_batch(&mut self, batch: crate::resume::ResumeBatch, workspace: &str) -> bool {
+        if !self.paging.admit(&batch, workspace) {
+            return false;
+        }
+        self.sessions.extend(batch.sessions);
+        self.loading = self.sessions.is_empty() && self.paging.has_more;
+        true
+    }
+
+    pub fn search_pending(&self) -> bool {
+        self.loading || self.paging.loading() || (!self.query.is_empty() && self.paging.has_more)
     }
 
     pub fn filtered_indices(&self) -> Vec<usize> {
@@ -52,6 +77,7 @@ impl ResumePage {
         self.sessions = sessions;
         self.loading = false;
         self.titles_pending = titles_pending;
+        self.paging.has_more = false;
         let filtered = self.filtered_indices();
         self.sel = selected_id
             .as_ref()

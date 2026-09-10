@@ -309,6 +309,7 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
     let mut pending_update_elapsed = Duration::ZERO;
     let mut fatal: Option<String> = None;
     let mut first_draw_done = false;
+    let mut session_loader = e_pi::session_index::SessionLoader::default();
 
     'outer: loop {
         let _main_loop_zone = e_tui::tracy_zone!("main loop");
@@ -375,6 +376,11 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
                         break 'outer;
                     }
                     first_inbound = pending_inbound.pop_front();
+                }
+                batch = session_loader.next_batch() => {
+                    if RuntimeController::apply_resume_batch(batch, &state_r) {
+                        scheduler.request(DirtyReason::Content, Instant::now());
+                    }
                 }
                 event = events.next_event() => {
                     match event {
@@ -713,6 +719,13 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
                 drop(_first_zone);
                 first_draw_done = true;
                 phases.mark("first frame");
+            }
+        }
+        if session_loader.is_idle() {
+            if let Some(request) = RuntimeController::take_resume_request(&state_r) {
+                let root = adapter.session_index_root(&request.workspace);
+                session_loader.start(root, request);
+                scheduler.request(DirtyReason::Content, Instant::now());
             }
         }
     }

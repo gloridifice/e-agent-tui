@@ -45,6 +45,7 @@ pub mod question;
 pub mod reading;
 pub mod render;
 pub mod render_state;
+pub mod resume;
 pub mod reveal;
 pub mod runtime;
 pub mod settings;

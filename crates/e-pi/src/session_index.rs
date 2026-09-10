@@ -1,26 +1,26 @@
-//! Bounded, read-only indexing of documented native Pi session metadata.
+//! Read-only, bounded native session metadata discovery.
 
 use std::{
     collections::VecDeque,
     fs::File,
-    io::{BufRead, BufReader},
+    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
-    time::UNIX_EPOCH,
+    time::SystemTime,
 };
 
-use e_tui::agent::SessionSummary;
+use chrono::{DateTime, Local};
+use e_tui::{
+    agent::SessionSummary,
+    resume::{ResumeBatch, ResumeRequest},
+};
+use serde::Deserialize;
 use serde_json::Value;
 
-const MAX_SESSION_FILES: usize = 500;
-const MAX_SESSION_BYTES: u64 = 8 * 1024 * 1024;
-const MAX_SESSION_LINES: usize = 10_000;
+const HEAD_BYTES: usize = 256 * 1024;
+const TAIL_BYTES: usize = 1024 * 1024;
+const BLOCK_BYTES: usize = 64 * 1024;
 const TITLE_CHARS: usize = 100;
-
-#[derive(Debug, Clone)]
-pub struct SessionIndex {
-    pub sessions: Vec<SessionSummary>,
-    pub diagnostics: Vec<String>,
-}
+const MAX_DIAGNOSTICS: usize = 3;
 
 pub fn agent_dir() -> PathBuf {
     std::env::var_os("PI_CODING_AGENT_DIR")
@@ -37,8 +37,7 @@ pub fn session_root() -> PathBuf {
         .unwrap_or_else(|| agent_dir().join("sessions"))
 }
 
-/// Return Pi's native directory for this project. A custom session directory
-/// is already an exact directory; the default layout adds encoded cwd.
+/// A custom session directory is exact; the default layout adds encoded cwd.
 pub fn project_session_root(cwd: &Path) -> PathBuf {
     if let Some(custom) =
         std::env::var_os("PI_CODING_AGENT_SESSION_DIR").filter(|value| !value.is_empty())
@@ -46,126 +45,198 @@ pub fn project_session_root(cwd: &Path) -> PathBuf {
         return PathBuf::from(custom);
     }
     let resolved = cwd.to_string_lossy();
-    let trimmed = resolved.trim_start_matches(['/', '\\']);
-    let safe = trimmed.replace(['/', '\\', ':'], "-");
+    let safe = resolved
+        .trim_start_matches(['/', '\\'])
+        .replace(['/', '\\', ':'], "-");
     session_root().join(format!("--{safe}--"))
 }
 
-pub fn list_current_project(root: &Path, cwd: &Path) -> SessionIndex {
-    let mut diagnostics = Vec::new();
-    let mut sessions = Vec::new();
-    let mut pending = VecDeque::from([root.to_path_buf()]);
-    let mut seen = 0usize;
-    while let Some(directory) = pending.pop_front() {
-        let entries = match std::fs::read_dir(&directory) {
-            Ok(entries) => entries,
-            Err(error) => {
-                if directory == root && error.kind() == std::io::ErrorKind::NotFound {
-                    break;
-                }
-                diagnostics.push(format!("cannot read {}: {error}", directory.display()));
-                continue;
-            }
+struct Candidate {
+    path: PathBuf,
+    modified: Option<SystemTime>,
+}
+
+pub struct SessionIndex {
+    candidates: Vec<Candidate>,
+    diagnostics: Vec<String>,
+}
+
+impl SessionIndex {
+    pub fn enumerate(root: &Path) -> Self {
+        let mut index = Self {
+            candidates: Vec::new(),
+            diagnostics: Vec::new(),
         };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                pending.push_back(path);
-                continue;
-            }
-            if path
-                .extension()
-                .is_none_or(|extension| extension != "jsonl")
-            {
-                continue;
-            }
-            if seen == MAX_SESSION_FILES {
-                diagnostics.push(format!(
-                    "Pi session index capped at {MAX_SESSION_FILES} files"
-                ));
-                pending.clear();
-                break;
-            }
-            seen += 1;
-            match read_summary(&path, cwd) {
-                Ok(Some(summary)) => sessions.push(summary),
-                Ok(None) => {}
-                Err(error) => diagnostics.push(format!("{}: {error}", path.display())),
+        let mut pending = VecDeque::from([root.to_path_buf()]);
+        while let Some(directory) = pending.pop_front() {
+            let entries = match std::fs::read_dir(&directory) {
+                Ok(entries) => entries,
+                Err(error) if directory == root && error.kind() == std::io::ErrorKind::NotFound => {
+                    break
+                }
+                Err(error) => {
+                    index.diagnostic(format!("cannot read {}: {error}", directory.display()));
+                    continue;
+                }
+            };
+            for entry in entries {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        index.diagnostic(error.to_string());
+                        continue;
+                    }
+                };
+                let path = entry.path();
+                let kind = match entry.file_type() {
+                    Ok(kind) => kind,
+                    Err(error) => {
+                        index.diagnostic(error.to_string());
+                        continue;
+                    }
+                };
+                if kind.is_dir() {
+                    pending.push_back(path);
+                } else if kind.is_file() && path.extension().is_some_and(|ext| ext == "jsonl") {
+                    let modified = entry.metadata().ok().and_then(|meta| meta.modified().ok());
+                    index.candidates.push(Candidate { path, modified });
+                }
             }
         }
+        index.candidates.sort_by(|a, b| {
+            b.modified
+                .cmp(&a.modified)
+                .then_with(|| a.path.cmp(&b.path))
+        });
+        index
     }
-    sessions.sort_by_key(|session| std::cmp::Reverse(session.created_at));
-    SessionIndex {
-        sessions,
-        diagnostics,
+
+    fn diagnostic(&mut self, message: String) {
+        if self.diagnostics.len() < MAX_DIAGNOSTICS {
+            self.diagnostics.push(message);
+        }
+    }
+
+    pub fn load(&mut self, request: ResumeRequest) -> ResumeBatch {
+        let end = request
+            .offset
+            .saturating_add(request.limit)
+            .min(self.candidates.len());
+        let mut sessions = Vec::new();
+        for i in request.offset..end {
+            let candidate = &self.candidates[i];
+            match read_summary(candidate, Path::new(&request.workspace)) {
+                Ok(Some(summary)) => sessions.push(summary),
+                Ok(None) => {}
+                Err(error) => self.diagnostic(format!("{}: {error}", candidate.path.display())),
+            }
+        }
+        ResumeBatch {
+            request,
+            sessions,
+            next_offset: end,
+            has_more: end < self.candidates.len(),
+            diagnostic: (!self.diagnostics.is_empty())
+                .then(|| std::mem::take(&mut self.diagnostics).join("; ")),
+        }
     }
 }
 
-fn read_summary(path: &Path, cwd: &Path) -> Result<Option<SessionSummary>, String> {
-    let metadata = std::fs::metadata(path).map_err(|error| error.to_string())?;
-    if metadata.len() > MAX_SESSION_BYTES {
-        return Err(format!("session exceeds {MAX_SESSION_BYTES} bytes"));
+fn read_summary(candidate: &Candidate, cwd: &Path) -> Result<Option<SessionSummary>, String> {
+    let mut file = File::open(&candidate.path).map_err(|error| error.to_string())?;
+    let len = file.metadata().map_err(|error| error.to_string())?.len();
+    let mut head = Vec::new();
+    file.by_ref()
+        .take(HEAD_BYTES as u64)
+        .read_to_end(&mut head)
+        .map_err(|error| error.to_string())?;
+    let header_end = head
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .unwrap_or(head.len());
+    if header_end == HEAD_BYTES && len > HEAD_BYTES as u64 {
+        return Err("session header exceeds metadata budget".into());
     }
-    let file = File::open(path).map_err(|error| error.to_string())?;
-    let mut lines = BufReader::new(file).lines();
-    let header = lines
-        .next()
-        .transpose()
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "empty session file".to_owned())?;
-    let header: Value = serde_json::from_str(&header).map_err(|error| error.to_string())?;
-    if header.get("type").and_then(Value::as_str) != Some("session") {
+    let header: Value =
+        serde_json::from_slice(&head[..header_end]).map_err(|error| error.to_string())?;
+    if header["type"].as_str() != Some("session") {
         return Err("first record is not a Pi session header".into());
     }
-    let header_cwd = header
-        .get("cwd")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "session header has no cwd".to_owned())?;
+    let header_cwd = header["cwd"].as_str().ok_or("session header has no cwd")?;
     if !same_path(Path::new(header_cwd), cwd) {
         return Ok(None);
     }
-
-    let mut native_name = None;
-    let mut first_user = None;
-    for (index, line) in lines.enumerate() {
-        if index >= MAX_SESSION_LINES {
-            return Err(format!(
-                "session metadata exceeds {MAX_SESSION_LINES} lines"
-            ));
-        }
-        let line = line.map_err(|error| error.to_string())?;
-        let value: Value = serde_json::from_str(&line).map_err(|error| error.to_string())?;
-        match value.get("type").and_then(Value::as_str) {
-            Some("session_info") => {
-                native_name = value.get("name").and_then(Value::as_str).map(clean_title);
-            }
-            Some("message") if first_user.is_none() => {
-                let message = &value["message"];
-                if message.get("role").and_then(Value::as_str) == Some("user") {
-                    first_user = message
-                        .get("content")
-                        .and_then(content_text)
-                        .map(clean_title);
-                }
-            }
-            _ => {}
-        }
-    }
-    let title = native_name
-        .filter(|name| !name.is_empty())
-        .or(first_user.filter(|name| !name.is_empty()))
-        .unwrap_or_else(|| "New session".into());
-    let created_at = metadata
-        .modified()
+    let name = latest_name(&mut file, len)
         .ok()
-        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .map_or(0, |duration| duration.as_millis() as u64);
+        .flatten()
+        .filter(|name| !name.is_empty());
+    let title = name
+        .or_else(|| {
+            head[header_end..]
+                .split(|byte| *byte == b'\n')
+                .find_map(|line| {
+                    let value: Value = serde_json::from_slice(line).ok()?;
+                    if value["type"].as_str() != Some("message")
+                        || value["message"]["role"].as_str() != Some("user")
+                    {
+                        return None;
+                    }
+                    content_text(&value["message"]["content"]).map(clean_title)
+                })
+                .filter(|title| !title.is_empty())
+        })
+        .unwrap_or_else(|| "New session".into());
+    let created_at = header["timestamp"]
+        .as_str()
+        .and_then(|time| DateTime::parse_from_rfc3339(time).ok())
+        .and_then(|time| u64::try_from(time.timestamp_millis()).ok())
+        .unwrap_or(0);
+    let modified_label = candidate.modified.map(|time| {
+        let local: DateTime<Local> = time.into();
+        local.format("%Y-%m-%d %H:%M").to_string()
+    });
     Ok(Some(SessionSummary {
-        id: path.to_string_lossy().into_owned(),
+        id: candidate.path.to_string_lossy().into_owned(),
         title,
         live: false,
         created_at,
+        modified_label,
     }))
+}
+
+fn latest_name(file: &mut File, len: u64) -> std::io::Result<Option<String>> {
+    #[derive(Deserialize)]
+    struct Info {
+        #[serde(rename = "type")]
+        kind: String,
+        name: Option<String>,
+    }
+    let mut position = len;
+    let mut budget = TAIL_BYTES;
+    let mut suffix = Vec::new();
+    while position > 0 && budget > 0 {
+        let count = position.min(BLOCK_BYTES.min(budget) as u64) as usize;
+        position -= count as u64;
+        budget -= count;
+        file.seek(SeekFrom::Start(position))?;
+        let mut bytes = vec![0; count];
+        file.read_exact(&mut bytes)?;
+        bytes.extend_from_slice(&suffix);
+        let first_end = bytes
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .unwrap_or(bytes.len());
+        let complete_start = if position == 0 { 0 } else { first_end };
+        for line in bytes[complete_start..].rsplit(|byte| *byte == b'\n') {
+            if let Ok(info) = serde_json::from_slice::<Info>(line) {
+                if info.kind == "session_info" {
+                    return Ok(Some(clean_title(info.name.as_deref().unwrap_or(""))));
+                }
+            }
+        }
+        suffix = bytes[..first_end].to_vec();
+    }
+    Ok(None)
 }
 
 fn content_text(content: &Value) -> Option<&str> {
@@ -173,8 +244,8 @@ fn content_text(content: &Value) -> Option<&str> {
         return Some(text);
     }
     content.as_array()?.iter().find_map(|part| {
-        (part.get("type").and_then(Value::as_str) == Some("text"))
-            .then(|| part.get("text").and_then(Value::as_str))
+        (part["type"].as_str() == Some("text"))
+            .then(|| part["text"].as_str())
             .flatten()
     })
 }
@@ -200,62 +271,233 @@ fn same_path(left: &Path, right: &Path) -> bool {
     }
 }
 
+/// One blocking job at a time; the runner remains free to service RPC, input, and frames.
+#[derive(Default)]
+pub struct SessionLoader {
+    cached: Option<(u64, String, SessionIndex)>,
+    task: Option<tokio::task::JoinHandle<(SessionIndex, ResumeBatch)>>,
+    request: Option<ResumeRequest>,
+}
+
+impl SessionLoader {
+    pub fn is_idle(&self) -> bool {
+        self.task.is_none()
+    }
+
+    pub fn start(&mut self, root: PathBuf, request: ResumeRequest) {
+        assert!(self.is_idle());
+        let cached = self.cached.take().filter(|(generation, workspace, _)| {
+            *generation == request.generation && *workspace == request.workspace
+        });
+        self.request = Some(request.clone());
+        self.task = Some(tokio::task::spawn_blocking(move || {
+            let mut index = cached
+                .map(|(_, _, index)| index)
+                .unwrap_or_else(|| SessionIndex::enumerate(&root));
+            let batch = index.load(request);
+            (index, batch)
+        }));
+    }
+
+    pub async fn next_batch(&mut self) -> ResumeBatch {
+        let Some(task) = self.task.as_mut() else {
+            return std::future::pending().await;
+        };
+        let result = task.await;
+        self.task = None;
+        let request = self.request.take().expect("active session load request");
+        match result {
+            Ok((index, batch)) => {
+                self.cached = Some((request.generation, request.workspace, index));
+                batch
+            }
+            Err(error) => ResumeBatch {
+                next_offset: request.offset,
+                request,
+                sessions: Vec::new(),
+                has_more: false,
+                diagnostic: Some(format!("session index worker failed: {error}")),
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use std::{io::Write, time::UNIX_EPOCH};
+
+    fn session(path: &Path, cwd: &Path, body: &str) {
+        std::fs::write(
+            path,
+            format!(
+                "{}\n{body}",
+                serde_json::json!({"type":"session","cwd":cwd})
+            ),
+        )
+        .unwrap();
+    }
+    fn request(cwd: &Path, offset: usize, limit: usize) -> ResumeRequest {
+        ResumeRequest {
+            generation: 1,
+            workspace: cwd.to_string_lossy().into_owned(),
+            offset,
+            limit,
+        }
+    }
+    fn summary(path: &Path, cwd: &Path) -> Option<SessionSummary> {
+        read_summary(
+            &Candidate {
+                path: path.into(),
+                modified: Some(UNIX_EPOCH),
+            },
+            cwd,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn reverse_name_crosses_blocks_and_latest_empty_name_clears() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("one.jsonl");
+        let prefix =
+            "{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"fallback\"}}\n";
+        let name = format!(
+            "{{\"type\":\"session_info\",\"name\":\"Named 中文\",\"extra\":\"{}\"}}\n",
+            "x".repeat(BLOCK_BYTES)
+        );
+        session(&path, temp.path(), &format!("{prefix}{name}"));
+        assert_eq!(summary(&path, temp.path()).unwrap().title, "Named 中文");
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        writeln!(file, "{{\"type\":\"session_info\",\"name\":\"\"}}").unwrap();
+        assert_eq!(summary(&path, temp.path()).unwrap().title, "fallback");
+    }
+
+    #[test]
+    fn huge_and_damaged_records_do_not_hide_valid_sessions() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("large.jsonl");
+        session(
+            &path,
+            temp.path(),
+            "{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"first\"}}\n",
+        );
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(&vec![b'x'; 9 * 1024 * 1024]).unwrap();
+        writeln!(
+            file,
+            "\n{{\"type\":\"session_info\",\"name\":\"latest\"}}\n{{partial"
+        )
+        .unwrap();
+        assert_eq!(summary(&path, temp.path()).unwrap().title, "latest");
+        file.write_all(&vec![b'x'; TAIL_BYTES + 1]).unwrap();
+        assert_eq!(summary(&path, temp.path()).unwrap().title, "first");
+        assert!(summary(&path, Path::new("other-project")).is_none());
+    }
+
+    #[test]
+    fn paginates_all_candidates_in_modification_order_with_bounded_errors() {
+        let temp = tempfile::tempdir().unwrap();
+        for i in 0..503 {
+            let path = temp.path().join(format!("{i:04}.jsonl"));
+            session(&path, temp.path(), "");
+            File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(UNIX_EPOCH + std::time::Duration::from_secs(i))
+                .unwrap();
+        }
+        let mut index = SessionIndex::enumerate(temp.path());
+        let first = index.load(request(temp.path(), 0, 4));
+        assert_eq!(first.sessions.len(), 4);
+        assert!(first.sessions[0].id.ends_with("0502.jsonl"));
+        assert!(first.sessions[0].modified_label.is_some());
+        assert!(first.has_more);
+        let mut offset = first.next_offset;
+        let mut total = first.sessions.len();
+        loop {
+            let batch = index.load(request(temp.path(), offset, 4));
+            assert!(batch.sessions.len() <= 4);
+            total += batch.sessions.len();
+            offset = batch.next_offset;
+            if !batch.has_more {
+                break;
+            }
+        }
+        assert_eq!(total, 503);
+        for i in 0..10 {
+            std::fs::write(temp.path().join(format!("bad{i}.jsonl")), "not json").unwrap();
+        }
+        let batch = SessionIndex::enumerate(temp.path()).load(request(temp.path(), 0, 10));
+        assert!(batch.sessions.is_empty());
+        assert_eq!(batch.diagnostic.unwrap().matches("; ").count(), 2);
+    }
+
+    #[test]
+    fn record_count_and_tail_budget_only_affect_title_discovery() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("many.jsonl");
+        session(
+            &path,
+            temp.path(),
+            &"{\"type\":\"custom\"}\n".repeat(10_001),
+        );
+        assert_eq!(summary(&path, temp.path()).unwrap().title, "New session");
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        writeln!(file, "{{\"type\":\"session_info\",\"name\":\"last name\"}}").unwrap();
+        let before = std::fs::read(&path).unwrap();
+        assert_eq!(summary(&path, temp.path()).unwrap().title, "last name");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn worker_returns_batches_and_reenumerates_for_a_new_page() {
+        let temp = tempfile::tempdir().unwrap();
+        session(&temp.path().join("one.jsonl"), temp.path(), "");
+        session(&temp.path().join("two.jsonl"), temp.path(), "");
+        let mut loader = SessionLoader::default();
+        loader.start(temp.path().into(), request(temp.path(), 0, 1));
+        assert!(!loader.is_idle());
+        tokio::select! {
+            biased;
+            _ = std::future::ready(()) => {},
+            _ = loader.next_batch() => panic!("ready branch has priority"),
+        }
+        let first = loader.next_batch().await;
+        assert!(loader.is_idle());
+        assert_eq!(first.sessions.len(), 1);
+        assert!(first.has_more);
+        loader.start(
+            temp.path().into(),
+            request(temp.path(), first.next_offset, 1),
+        );
+        let second = loader.next_batch().await;
+        assert!(!second.has_more);
+        assert_ne!(first.sessions[0].id, second.sessions[0].id);
+        session(&temp.path().join("three.jsonl"), temp.path(), "");
+        let mut reopened = request(temp.path(), 0, 4);
+        reopened.generation += 1;
+        loader.start(temp.path().into(), reopened);
+        let third = loader.next_batch().await;
+        assert_eq!(third.sessions.len(), 3);
+        assert!(!third.has_more);
+    }
 
     #[test]
     fn default_project_directory_uses_pi_native_cwd_encoding() {
         if std::env::var_os("PI_CODING_AGENT_SESSION_DIR").is_none() {
-            let path = project_session_root(Path::new(r"G:\work/project"));
-            assert!(path.ends_with("--G--work-project--"));
+            assert!(project_session_root(Path::new(r"G:\work/project"))
+                .ends_with("--G--work-project--"));
         }
-    }
-
-    #[test]
-    fn indexes_matching_sessions_with_native_name_precedence() {
-        let temp = tempfile::tempdir().unwrap();
-        let cwd = temp.path().join("project");
-        std::fs::create_dir_all(&cwd).unwrap();
-        let sessions = temp.path().join("sessions/project");
-        std::fs::create_dir_all(&sessions).unwrap();
-        let path = sessions.join("one.jsonl");
-        let mut file = File::create(&path).unwrap();
-        writeln!(
-            file,
-            "{}",
-            serde_json::json!({"type":"session","version":3,"id":"s1","cwd":cwd})
-        )
-        .unwrap();
-        writeln!(file, "{}", serde_json::json!({"type":"message","id":"1","parentId":null,"message":{"role":"user","content":"first prompt"}})).unwrap();
-        writeln!(
-            file,
-            "{}",
-            serde_json::json!({"type":"session_info","id":"2","parentId":"1","name":"Named work"})
-        )
-        .unwrap();
-
-        let index = list_current_project(&temp.path().join("sessions"), &cwd);
-        assert!(index.diagnostics.is_empty(), "{:?}", index.diagnostics);
-        assert_eq!(index.sessions.len(), 1);
-        assert_eq!(index.sessions[0].title, "Named work");
-        assert_eq!(PathBuf::from(&index.sessions[0].id), path);
-    }
-
-    #[test]
-    fn skips_other_projects_and_reports_bad_files() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("sessions");
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(
-            root.join("other.jsonl"),
-            "{\"type\":\"session\",\"cwd\":\"elsewhere\"}\n",
-        )
-        .unwrap();
-        std::fs::write(root.join("bad.jsonl"), "not json\n").unwrap();
-        let index = list_current_project(&root, temp.path());
-        assert!(index.sessions.is_empty());
-        assert_eq!(index.diagnostics.len(), 1);
     }
 }

@@ -34,6 +34,8 @@ pub struct SessionSummary {
     pub title: String,
     pub live: bool,
     pub created_at: u64,
+    /// Adapter-formatted local modification time; absent when not supplied.
+    pub modified_label: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

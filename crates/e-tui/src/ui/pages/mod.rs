@@ -589,10 +589,15 @@ mod tests {
                     title: "Session title from host".into(),
                     live: false,
                     created_at: 1,
+                    modified_label: Some("2026-09-10 15:30".into()),
                 }],
                 false,
             );
-            assert_page_keeps_values(resume, language, &["Session title from host", "session-id"]);
+            assert_page_keeps_values(
+                resume,
+                language,
+                &["Session title from host", "2026-09-10 15:30"],
+            );
 
             let question = InputPageSession::question(crate::question::QuestionBatch::new(
                 "rpc".into(),

@@ -150,6 +150,7 @@ fn classify(text: &str, delimited: bool) -> Option<LinkCandidate> {
             && matches!(text.as_bytes().get(2), Some(b'/' | b'\\')));
     let uri = text.split_once(':').is_some_and(|(scheme, rest)| {
         !rest.is_empty()
+            && !rest.chars().any(char::is_whitespace)
             && !rest.starts_with(':')
             && scheme
                 .as_bytes()
@@ -494,6 +495,53 @@ mod tests {
                 targets
             );
         }
+    }
+
+    #[test]
+    fn quick_links_reject_uri_whitespace_but_keep_paths_and_encoded_uris() {
+        for text in [
+            "feat: refine skill reads, preview and link targets",
+            "note:some ordinary prose",
+            "note:\u{a0}prose",
+            "note:\u{3000}prose",
+        ] {
+            for source in [
+                text.to_owned(),
+                format!("`{text}`"),
+                format!("\"{text}\""),
+                format!("```text\n{text}\n```"),
+            ] {
+                assert!(
+                    discover(&source)
+                        .iter()
+                        .all(|candidate| candidate.target != text),
+                    "false URI: {source:?}"
+                );
+            }
+            assert!(classify(text, true).is_none(), "target: {text:?}");
+        }
+        let targets = [
+            "custom:resource",
+            "custom+app.v1:resource%20name",
+            "https://example.com/a%20b",
+            "mailto:a@example.com",
+            r"C:\Program Files\app.exe",
+            "/tmp/my file.txt",
+            "src/my file.rs",
+        ];
+        for source in [
+            targets.map(|target| format!("`{target}`")).join(" "),
+            targets.map(|target| format!("\"{target}\"")).join(" "),
+        ] {
+            assert_eq!(
+                discover(&source)
+                    .iter()
+                    .map(|candidate| candidate.target.as_str())
+                    .collect::<Vec<_>>(),
+                targets
+            );
+        }
+        assert!(discover("`feat: refine skill reads, preview and link targets`").is_empty());
     }
 
     #[test]

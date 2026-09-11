@@ -754,9 +754,8 @@ pub(super) fn render_transcript(
     state: &mut TuiApp,
     scroll: &mut ScrollState,
     theme: &Theme,
-    help_visible: bool,
 ) {
-    let _ = render_transcript_impl(frame, area, state, scroll, theme, help_visible, 0);
+    let _ = render_transcript_impl(frame, area, state, scroll, theme, 0);
 }
 
 /// Render transcript with the bottom stack (accessories + input + status +
@@ -771,10 +770,9 @@ pub(super) fn render_transcript_combined(
     state: &mut TuiApp,
     scroll: &mut ScrollState,
     theme: &Theme,
-    help_visible: bool,
     bottom_rows: usize,
 ) -> usize {
-    render_transcript_impl(frame, area, state, scroll, theme, help_visible, bottom_rows)
+    render_transcript_impl(frame, area, state, scroll, theme, bottom_rows)
 }
 
 #[path = "transcript/viewport.rs"]

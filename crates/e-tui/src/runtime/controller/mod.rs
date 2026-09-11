@@ -124,6 +124,7 @@ pub struct TerminalUiState<'a> {
     pub input: &'a mut InputState,
     pub input_page: &'a mut Option<InputPageSession>,
     pub help_visible: &'a mut bool,
+    pub help_scroll: &'a mut crate::interaction::HelpScrollState,
     pub notice: &'a mut NoticeState,
     pub mouse_selection: &'a mut MouseSelection,
     pub pane_resize: &'a mut PaneResizeState,
@@ -294,6 +295,7 @@ mod tests {
                 input: &mut interaction.input,
                 input_page: &mut interaction.input_page,
                 help_visible: &mut interaction.help_visible,
+                help_scroll: &mut interaction.help_scroll,
                 notice: &mut interaction.notice,
                 mouse_selection: &mut interaction.mouse_selection,
                 pane_resize: &mut interaction.pane_resize,
@@ -388,6 +390,7 @@ mod tests {
         input: &'a mut InputState,
         input_page: &'a mut Option<InputPageSession>,
         help_visible: &'a mut bool,
+        help_scroll: &'a mut crate::interaction::HelpScrollState,
         notice: &'a mut NoticeState,
         mouse_selection: &'a mut MouseSelection,
         pane_resize: &'a mut PaneResizeState,
@@ -403,6 +406,7 @@ mod tests {
             input,
             input_page,
             help_visible,
+            help_scroll,
             notice,
             mouse_selection,
             pane_resize,
@@ -575,6 +579,7 @@ mod tests {
         new_config.language = Language::SimplifiedChinese;
         let mut page = None;
         let mut help_visible = false;
+        let mut help_scroll = crate::interaction::HelpScrollState::default();
         let mut notice = NoticeState::default();
         let mut mouse_selection = MouseSelection::default();
         let mut pane_resize = PaneResizeState::default();
@@ -592,6 +597,7 @@ mod tests {
                 &mut input,
                 &mut page,
                 &mut help_visible,
+                &mut help_scroll,
                 &mut notice,
                 &mut mouse_selection,
                 &mut pane_resize,
@@ -932,6 +938,7 @@ mod tests {
         let mut scroll = ScrollState::default();
         let mut page = None;
         let mut help_visible = false;
+        let mut help_scroll = crate::interaction::HelpScrollState::default();
         let mut notice = NoticeState::default();
         let mut mouse_selection = MouseSelection::default();
         let mut pane_resize = PaneResizeState::default();
@@ -957,6 +964,7 @@ mod tests {
                 &mut input,
                 &mut page,
                 &mut help_visible,
+                &mut help_scroll,
                 &mut notice,
                 &mut mouse_selection,
                 &mut pane_resize,

@@ -39,6 +39,13 @@ pub(super) fn apply_terminal_route(
             }
         }
     }
+    if *ui.help_visible {
+        if let TerminalRoute::Pointer(PointerEvent::Wheel { up, .. }) = &route {
+            ui.mouse_selection.clear();
+            ui.help_scroll.scroll_lines(*up, 3);
+            return vec![UiAction::RequestDraw(crate::DrawPriority::Interactive)];
+        }
+    }
     if let TerminalRoute::Pointer(PointerEvent::Wheel { up, column, row }) = &route {
         ui.mouse_selection.clear();
         if ui.pane_resize.is_active() || *column >= size.width || *row >= size.height {
@@ -296,14 +303,47 @@ pub(super) fn apply_terminal_route(
             ui.mouse_selection.clear();
             effects.push(UiAction::ReadClipboard);
         }
-        TerminalRoute::Help { dismiss } => {
-            if dismiss {
-                ui.mouse_selection.clear();
-                *ui.help_visible = false;
+        TerminalRoute::Help { action } => {
+            ui.mouse_selection.clear();
+            let viewport = ui.help_scroll.viewport_rows().max(1);
+            let changed = match action {
+                Some(Action::Close | Action::Exit) => {
+                    *ui.help_visible = false;
+                    true
+                }
+                Some(Action::MoveUp) => {
+                    ui.help_scroll.scroll_lines(true, 1);
+                    true
+                }
+                Some(Action::MoveDown) => {
+                    ui.help_scroll.scroll_lines(false, 1);
+                    true
+                }
+                Some(Action::MoveUpHalf) => {
+                    ui.help_scroll.scroll_lines(true, viewport.div_ceil(2));
+                    true
+                }
+                Some(Action::MoveDownHalf) => {
+                    ui.help_scroll.scroll_lines(false, viewport.div_ceil(2));
+                    true
+                }
+                Some(Action::MoveUpFast) => {
+                    ui.help_scroll.scroll_lines(true, viewport);
+                    true
+                }
+                Some(Action::MoveDownFast) => {
+                    ui.help_scroll.scroll_lines(false, viewport);
+                    true
+                }
+                _ => false,
+            };
+            if changed {
+                effects.push(UiAction::RequestDraw(crate::DrawPriority::Interactive));
             }
         }
         TerminalRoute::OpenHelp => {
             ui.mouse_selection.clear();
+            ui.help_scroll.reset();
             *ui.help_visible = true;
         }
         TerminalRoute::Global(action) => {
@@ -600,6 +640,11 @@ pub(super) fn apply_ordinary_key(
         );
         if command.starts_interruptible_command {
             state.lock().unwrap().begin_command_execution();
+        }
+        if command.open_help {
+            ui.mouse_selection.clear();
+            ui.help_scroll.reset();
+            *ui.help_visible = true;
         }
         if is_skill_injection && !command.outbound.is_empty() {
             *ui.scroll = ScrollState::default();

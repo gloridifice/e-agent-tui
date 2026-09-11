@@ -23,7 +23,7 @@ use crate::{
 };
 
 use super::layout::{main_page_rect, MAIN_PAGE_MARGIN};
-use super::pane;
+use super::{overlay, pane};
 
 /// Minimum usable Preview content width at the split threshold.
 pub const MIN_PREVIEW_CONTENT_COLUMNS: u16 = MIN_PREVIEW_COLUMNS;
@@ -224,6 +224,7 @@ fn render_resize_placeholder(
 /// into a downward-only pane view rather than letting Panes import the Screen.
 pub struct RenderOverlays<'a> {
     pub help_visible: bool,
+    pub help_scroll: Option<&'a mut crate::interaction::HelpScrollState>,
     pub toast: Option<&'a str>,
     pub input_page: Option<&'a mut InputPageSession>,
     pub settings: Option<&'a mut SettingsState>,
@@ -258,6 +259,7 @@ pub(super) fn render_with_cursor(
     }
     let RenderOverlays {
         help_visible,
+        help_scroll,
         toast: _,
         input_page,
         settings,
@@ -267,7 +269,6 @@ pub(super) fn render_with_cursor(
         pane_resize: _,
     } = overlays;
     let pane_overlays = pane::main::MainPaneOverlays {
-        help_visible,
         input_page,
         settings,
         login,
@@ -335,7 +336,12 @@ pub(super) fn render_with_cursor(
             paint_separator(frame, frame.area(), column, theme, false);
         }
     }
-    cursor
+    if help_visible {
+        overlay::render_help_modal(frame, &state.config, theme, help_scroll);
+        None
+    } else {
+        cursor
+    }
 }
 
 fn render_reading_rail(

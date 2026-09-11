@@ -180,13 +180,38 @@ controller.runtime_error: "Runtime error %{code}: %{message}"
 controller.new_failed: "New conversation failed: %{message}"
 terminal.no_readable_content: "There is no readable content"
 terminal.command_no_images: "This command does not accept images"
-help.path_completion: "@: browse project paths; accept fills without sending"
-help.builtin_commands: "Built-in commands"
-help.runtime_commands: "Current runtime commands"
+help.table.key: "Key"
+help.table.action: "Action"
+help.section.global: "Global"
+help.section.message: "Message input"
+help.section.completion: "Completion and search"
+help.section.reading: "Reading and full-screen views"
+help.section.pages: "Pages and approvals"
+help.section.help: "Help modal"
+help.section.tips: "Usage tips"
+help.context.common: "Common"
+help.context.idle: "Idle"
+help.context.working: "Working"
+help.context.editing: "Editing"
+help.context.suggestions: "Suggestions"
+help.context.search: "History search"
+help.context.blocks: "Blocks"
+help.context.items: "Items"
+help.context.full_screen: "Full-screen pages"
+help.context.page: "General pages"
+help.context.page_edit: "Text editing"
+help.context.page_choice: "Choice selection"
+help.context.resume: "Session resume"
+help.context.question: "Question selection"
+help.context.question_edit: "Free-text answers"
+help.context.approval: "Approval"
+help.command_completion: "Type `/` to browse available commands; help does not expand the command catalog."
+help.path_completion: "Type `@` to browse project-relative paths; accepting a candidate completes without sending."
+help.mouse_copy: "Drag visible text and release to copy it; the display pauses while background work continues."
+help.mouse_resize: "The mouse wheel scrolls the current content; press the separator to resize panes."
+help.config: "Override bindings in `key_mapping.toml`, then use `/reload` to reload changes."
+help.footer: "%{lines} scroll · %{pages} page · %{close} close"
 key.navigate: "Move"
-key.help.more: "— Unbound · /help: complete binding list · /reload: reload key_mapping.toml"
-help.mouse_copy: "Drag to copy rows within the starting pane; display pauses while held."
-help.mouse_resize: "Wheel scrolls the pane under the pointer; press the separator to resize."
 key.action.print_help: "Help"
 key.action.enter_read_mode: "Reading View"
 key.action.choose_model: "Model"
@@ -239,25 +264,9 @@ key.action.toggle_option: "Select / toggle"
 key.action.allow: "Allow"
 key.action.deny: "Deny"
 help.body: |
-  # e help
-
-  Key bindings below reflect the active configuration. `—` means unbound.
-  Override actions in `key_mapping.toml` beside `config.toml`; `/reload` applies valid changes atomically.
-  `osmain` means Command on macOS and Ctrl on Windows/Linux. Terminal-intercepted shortcuts require terminal configuration or remapping.
-
-  - Input navigation moves between lines, then history at the boundaries. Paste/image blocks remain atomic.
-  - Cancel removes all ASAP prompts first, otherwise the newest after-turn prompt; it interrupts only when no candidates remain. Repeated Cancel waits for backend acknowledgment. Clear quits only when idle with empty input.
-  - Pi cancels its entire backend queue, including extension steering/follow-up messages; local after-turn prompts are preserved.
-  - Page text editors accept ordinary letters; global picker shortcuts do not replace an active page or approval.
-  - Reading copies the complete owning block, even with an item selected. Exit leaves Reading; back-to-blocks only leaves Items.
-  - `/history` opens the session-wide Top 50 elapsed ranking in the message pane. The footer shows the active scrolling and exit bindings.
-  - Drag any visible screen text to copy on release, including input, status, pages, and popups. Multiline ranges include adjacent panes in screen row order.
-  - The display stays fixed while selecting; background work continues and live display resumes on release. Only displayed masks, placeholders, and ellipses are copied; trailing ordinary spaces are omitted.
-  - Mouse wheel scrolls the pane under the pointer and cancels selection. Press the separator to resize; text selection stays within its starting pane.
-  - Type `/` to complete built-in and runtime commands.
-  - Type `@` to browse project-relative paths. Completion accepts a path without sending; directories continue browsing. Paths containing spaces are quoted.
-
-  ## Active key mappings
+  The bindings below come from the active configuration. `—` means unbound.
+  `osmain` means Command on macOS and Ctrl on Windows/Linux.
+  Shortcuts intercepted by the terminal require terminal configuration or remapping.
 overlay.help.title: "Help — e"
 input_page.login.title: "Login"
 input_page.login.providers_title: "API key · Choose provider"

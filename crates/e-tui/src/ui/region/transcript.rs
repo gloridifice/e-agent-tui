@@ -8,9 +8,8 @@ pub(crate) fn render(
     state: &mut TuiApp,
     scroll: &mut ScrollState,
     theme: &Theme,
-    help_visible: bool,
 ) {
-    super::super::transcript::render_transcript(frame, area, state, scroll, theme, help_visible);
+    super::super::transcript::render_transcript(frame, area, state, scroll, theme);
 }
 
 #[allow(clippy::too_many_arguments)] // Region forwards shared layout inputs unchanged.
@@ -20,7 +19,6 @@ pub(crate) fn render_combined(
     state: &mut TuiApp,
     scroll: &mut ScrollState,
     theme: &Theme,
-    help_visible: bool,
     bottom_stack: usize,
 ) -> usize {
     super::super::transcript::render_transcript_combined(
@@ -29,7 +27,6 @@ pub(crate) fn render_combined(
         state,
         scroll,
         theme,
-        help_visible,
         bottom_stack,
     )
 }

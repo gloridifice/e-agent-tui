@@ -35,6 +35,7 @@ pub struct CommandOutcome {
     pub new_conversation: bool,
     pub activate_reading: bool,
     pub history: Option<FixedSubcommandAction>,
+    pub open_help: bool,
     pub quit: bool,
 }
 
@@ -376,8 +377,7 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
         }
         CommandAction::Help => {
             if !reject_arguments(&context, name, raw_input) {
-                let markdown = crate::help::markdown(context.config, context.integrated_commands);
-                context.state.lock().unwrap().push_local_markdown(markdown);
+                outcome.open_help = true;
             }
         }
         CommandAction::Reading => {
@@ -464,7 +464,7 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::display::{DisplayItem, TranscriptFormat};
+    use crate::display::DisplayItem;
 
     #[test]
     fn skill_can_be_the_first_submission_with_immediate_feedback() {
@@ -530,20 +530,8 @@ mod tests {
     }
 
     #[test]
-    fn help_appends_local_markdown_without_an_agent_request() {
+    fn help_requests_the_shared_modal_without_mutating_the_transcript() {
         let state = Arc::new(Mutex::new(RuntimeState::default()));
-        let integrated = vec![
-            CommandDescriptor {
-                name: "feedback".into(),
-                description: "record feedback".into(),
-                input_hint: Some("<text>".into()),
-            },
-            CommandDescriptor {
-                name: "plan".into(),
-                description: "shadowed host plan".into(),
-                input_hint: None,
-            },
-        ];
         let mut input_page = None;
         let mut config = Config::default();
         let mut themes = Vec::new();
@@ -556,7 +544,11 @@ mod tests {
             LocalCommandContext {
                 language: config.language,
                 input_page: &mut input_page,
-                integrated_commands: &integrated,
+                integrated_commands: &[CommandDescriptor {
+                    name: "feedback".into(),
+                    description: "record feedback".into(),
+                    input_hint: Some("<text>".into()),
+                }],
                 config: &mut config,
                 themes: &mut themes,
                 new_modes: &[],
@@ -571,20 +563,9 @@ mod tests {
             },
         );
 
+        assert!(outcome.open_help);
         assert!(outcome.outbound.is_empty());
-        let state = state.lock().unwrap();
-        assert!(!state.interaction.help_visible);
-        let DisplayItem::Block(block) = &state.transcript.nodes().last().unwrap().item else {
-            panic!("help must append a transcript block");
-        };
-        assert_eq!(block.format, TranscriptFormat::Markdown);
-        assert!(!block.streaming);
-        assert!(block.unit.is_none(), "Markdown owns provenance allocation");
-        assert!(block.content.contains("# e help"));
-        assert!(block
-            .content
-            .contains("`/feedback`: record feedback <text>"));
-        assert_eq!(block.content.matches("`/plan`").count(), 1);
+        assert!(state.lock().unwrap().transcript.nodes().is_empty());
     }
 
     #[test]

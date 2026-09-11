@@ -22,6 +22,7 @@ fn p95(samples: &mut [f64]) -> f64 {
 fn overlays() -> RenderOverlays<'static> {
     RenderOverlays {
         help_visible: false,
+        help_scroll: None,
         toast: None,
         input_page: None,
         settings: None,

@@ -143,6 +143,7 @@ impl Harness {
                         &theme,
                         RenderOverlays {
                             help_visible: i.help_visible,
+                            help_scroll: Some(&mut i.help_scroll),
                             toast,
                             input_page: i.input_page.as_mut(),
                             settings: None,
@@ -185,6 +186,7 @@ impl Harness {
                 input: &mut i.input,
                 input_page: &mut i.input_page,
                 help_visible: &mut i.help_visible,
+                help_scroll: &mut i.help_scroll,
                 notice: &mut i.notice,
                 mouse_selection: &mut i.mouse_selection,
                 pane_resize: &mut i.pane_resize,

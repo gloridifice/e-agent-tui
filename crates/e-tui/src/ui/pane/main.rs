@@ -17,7 +17,6 @@ use crate::{
 use super::super::{accessories, layout, pages, region};
 
 pub(crate) struct MainPaneOverlays<'a> {
-    pub help_visible: bool,
     pub input_page: Option<&'a mut InputPageSession>,
     pub settings: Option<&'a mut SettingsState>,
     pub login: Option<&'a mut LoginState>,
@@ -60,7 +59,6 @@ fn render_main_pane_with_cursor(
     reserve_collapsed_separator: bool,
 ) -> Option<Position> {
     let MainPaneOverlays {
-        help_visible,
         mut input_page,
         mut settings,
         mut login,
@@ -104,7 +102,7 @@ fn render_main_pane_with_cursor(
             Constraint::Length(1),
         ])
         .split(page);
-        region::transcript::render(frame, chunks[0], state, scroll, theme, help_visible);
+        region::transcript::render(frame, chunks[0], state, scroll, theme);
         if approval_rows > 0 {
             if let Some(card) = approval {
                 accessories::render_approval(frame, chunks[1], card, theme, &state.config);
@@ -172,15 +170,8 @@ fn render_main_pane_with_cursor(
     }
 
     let bottom_stack = plan.bottom_stack;
-    let transcript_bottom = region::transcript::render_combined(
-        frame,
-        page,
-        state,
-        scroll,
-        theme,
-        help_visible,
-        bottom_stack,
-    );
+    let transcript_bottom =
+        region::transcript::render_combined(frame, page, state, scroll, theme, bottom_stack);
     let mut cursor_anchor = None;
     let mut input_rect = None;
     let mut y = page.y + transcript_bottom as u16;

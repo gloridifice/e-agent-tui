@@ -165,11 +165,12 @@ pub fn render_with_cursor_and_selection(
     committed: &Presentation,
 ) -> RenderOutput {
     let resizing = overlays.pane_resize.is_active();
+    let help_visible = overlays.help_visible;
     let context = selection_context(
         state,
         overlays.input_page.as_deref(),
         overlays.approval,
-        overlays.help_visible,
+        help_visible,
     );
     if !resizing {
         if let Some(cursor) = committed.replay(frame.buffer_mut(), selection, context) {
@@ -179,18 +180,24 @@ pub fn render_with_cursor_and_selection(
             };
         }
     }
-    let toast = (!resizing).then_some(overlays.toast).flatten();
+    let toast = (!resizing && !help_visible)
+        .then_some(overlays.toast)
+        .flatten();
     let cursor = screen::render_with_cursor(frame, state, input, scroll, theme, overlays);
     if let Some(toast) = toast {
         overlay::render_toast(frame, toast, theme);
     }
-    let pane_separator = match screen::layout(
-        frame.area(),
-        state.config.message_pane_percent,
-        state.preview.fullscreen && state.history_page.is_none(),
-    ) {
-        screen::ScreenLayout::Split { main, .. } => Some(main.right()),
-        _ => None,
+    let pane_separator = if help_visible {
+        None
+    } else {
+        match screen::layout(
+            frame.area(),
+            state.config.message_pane_percent,
+            state.preview.fullscreen && state.history_page.is_none(),
+        ) {
+            screen::ScreenLayout::Split { main, .. } => Some(main.right()),
+            _ => None,
+        }
     };
     let presentation = Presentation::capture(frame.buffer_mut(), cursor, context, !resizing)
         .with_pane_separator(pane_separator);

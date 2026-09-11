@@ -24,6 +24,7 @@ use super::*;
 fn overlays() -> RenderOverlays<'static> {
     RenderOverlays {
         help_visible: false,
+        help_scroll: None,
         toast: None,
         input_page: None,
         settings: None,
@@ -181,11 +182,13 @@ fn link_copy_hint_occupies_composer_gap_only_while_armed() {
 }
 
 #[test]
-fn help_overlay_advertises_application_paste_shortcut() {
+fn help_modal_is_centered_and_renders_markdown() {
     let mut state = TuiApp::default();
+    state.config.language = crate::Language::English;
     state.config.resolved_theme = Theme::ferra();
     let input = InputState::new(&state.config);
     let mut scroll = ScrollState::default();
+    let mut help_scroll = crate::HelpScrollState::default();
     let theme = Theme::ferra();
     let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
     terminal
@@ -198,46 +201,39 @@ fn help_overlay_advertises_application_paste_shortcut() {
                 &theme,
                 RenderOverlays {
                     help_visible: true,
+                    help_scroll: Some(&mut help_scroll),
                     ..overlays()
                 },
             );
         })
         .unwrap();
-    assert!(find_text(terminal.backend().buffer(), "Ctrl+V").is_some());
+
+    let popup = super::overlay::help_popup_rect(ratatui::layout::Rect::new(0, 0, 120, 30));
+    assert!(popup.x > 0 && popup.y > 0);
+    let buffer = terminal.backend().buffer();
+    assert_eq!(buffer[(popup.x, popup.y)].symbol(), "┌");
+    assert_eq!(
+        buffer[(popup.right() - 1, popup.bottom() - 1)].symbol(),
+        "┘"
+    );
+    let heading = find_text(buffer, "Global").expect("Markdown heading is visible");
+    assert_eq!(buffer[heading].fg, theme.markdown.heading2.fg);
+    assert!(buffer[heading].modifier.contains(Modifier::BOLD));
+    assert!(help_scroll.viewport_rows() > 0);
 }
 
 #[test]
-fn local_help_markdown_renders_as_styled_transcript_content() {
-    let mut runtime = crate::runtime::RuntimeState::default();
-    runtime.config.resolved_theme = Theme::ferra();
-    runtime.push_local_markdown(crate::help::markdown(
-        &runtime.config,
-        &[crate::agent::CommandDescriptor {
-            name: "feedback".into(),
-            description: "record feedback".into(),
-            input_hint: Some("<text>".into()),
-        }],
-    ));
-    let mut state = runtime.tui;
-    force_message_only(&mut state);
-    let input = InputState::new(&state.config);
-    let mut scroll = ScrollState::default();
-    let theme = Theme::ferra();
-    let mut terminal = Terminal::new(TestBackend::new(120, 260)).unwrap();
+fn help_markdown_shows_bindings_without_command_catalogs() {
+    let config = crate::Config::default();
+    let markdown = crate::help::markdown(&config);
 
-    terminal
-        .draw(|frame| {
-            render_with_cursor(frame, &mut state, &input, &mut scroll, &theme, overlays());
-        })
-        .unwrap();
-
-    let buffer = terminal.backend().buffer();
-    let heading = find_text(buffer, "e").expect("Markdown heading is visible");
-    assert_eq!(buffer[heading].fg, theme.markdown.heading1.fg);
-    assert!(buffer[heading].modifier.contains(Modifier::BOLD));
-    let command = find_text(buffer, "/settings").expect("built-in command is visible");
-    assert_eq!(buffer[command].fg, theme.markdown.inline_code.fg);
-    assert!(find_text(buffer, "/feedback").is_some());
+    assert!(markdown.contains("## Global"));
+    assert!(markdown.contains("`Ctrl+H`"));
+    assert!(markdown.contains("| Key | Action |"));
+    assert!(!markdown.contains("Built-in commands"));
+    assert!(!markdown.contains("Current runtime commands"));
+    assert!(!markdown.contains("/settings"));
+    assert!(!markdown.contains("key.action."));
 }
 
 #[test]
@@ -2544,6 +2540,7 @@ fn overlays_paint_queue_and_approval_accessories() {
                 &theme,
                 RenderOverlays {
                     help_visible: false,
+                    help_scroll: None,
                     toast: None,
                     input_page: None,
                     settings: None,

@@ -67,6 +67,7 @@ fn main() -> anyhow::Result<()> {
             e_tui::ui::RenderOverlays {
                 input_page: None,
                 help_visible: false,
+                help_scroll: None,
                 toast: None,
                 settings: None,
                 login: None,

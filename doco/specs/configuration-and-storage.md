@@ -10,7 +10,7 @@
 ## Key mappings and themes
 
 - The embedded default key mapping is the sole binding default source. A user mapping replaces values by action; invalid startup input falls back to defaults, while invalid reload retains the last valid mapping.
-- Runtime handlers consume semantic actions, not reconstructed legacy key events. Effective help and hints MUST use the resolved mapping.
+- Runtime handlers consume semantic actions, not reconstructed legacy key events. Effective help and hints MUST use the resolved mapping. Help inherits movement, half-page, and page navigation from `full_screen`; its close binding remains owned by `help`.
 - Built-in and user themes use the same parser. A valid user theme wins by name; an invalid file MUST NOT shadow the embedded fallback.
 - Theme references and fixed semantic roles MUST validate as a complete unit. Presentation caches MUST invalidate when resolved styling changes.
 

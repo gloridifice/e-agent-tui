@@ -1,6 +1,5 @@
 //! Visible transcript row materialization and viewport painting.
 
-use super::super::overlay::help_overlay;
 use super::refresh_transcript_cache;
 use super::*;
 
@@ -11,7 +10,6 @@ pub(super) fn render_transcript_impl(
     state: &mut TuiApp,
     scroll: &mut ScrollState,
     theme: &Theme,
-    help_visible: bool,
     bottom_rows: usize,
 ) -> usize {
     let screen_height = area.height as usize;
@@ -23,22 +21,17 @@ pub(super) fn render_transcript_impl(
         } else {
             screen_height.saturating_sub(bottom_rows).max(1)
         };
-        let mut display = if help_visible {
-            help_overlay(&state.config, theme)
-        } else {
-            let mut lines = draft
-                .pending_card
-                .as_ref()
-                .map(|card| display_item_lines(&DisplayItem::Card(card.clone()), state, width))
-                .unwrap_or_default();
-            if let Some(notice) = &draft.notice {
-                lines.push(Line::from(Span::styled(
-                    notice.clone(),
-                    theme.log.warning.style(),
-                )));
-            }
-            lines
-        };
+        let mut display = draft
+            .pending_card
+            .as_ref()
+            .map(|card| display_item_lines(&DisplayItem::Card(card.clone()), state, width))
+            .unwrap_or_default();
+        if let Some(notice) = &draft.notice {
+            display.push(Line::from(Span::styled(
+                notice.clone(),
+                theme.log.warning.style(),
+            )));
+        }
         display.truncate(bottom_y);
         frame.render_widget(
             Paragraph::new(Text::from(display)).style(Style::default().fg(theme.fg)),
@@ -138,12 +131,6 @@ pub(super) fn render_transcript_impl(
         .render
         .transcript_cache
         .record_materialized_rows(display.len());
-    if help_visible {
-        if bottom_rows != 0 {
-            display.clear();
-        }
-        display.extend(help_overlay(&state.config, theme));
-    }
     // Lazy scroll-back hint at the top of the transcript (display-only).
     if show_hint {
         let hint = if state.session.history_loading {
@@ -159,7 +146,7 @@ pub(super) fn render_transcript_impl(
         );
     }
     // In combined mode the bottom stack owns the rows below `bottom_y`, so the
-    // transcript/help/hint paragraph must never paint into that area.
+    // transcript/hint paragraph must never paint into that area.
     display.truncate(bottom_y);
     let paragraph = Paragraph::new(Text::from(display)).style(Style::default().fg(theme.fg));
     frame.render_widget(paragraph, area);

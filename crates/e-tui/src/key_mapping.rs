@@ -367,6 +367,10 @@ impl KeyMapping {
         let mut history = source[&Scope::FullScreen].clone();
         history.extend(source[&Scope::History].clone());
         effective.insert(Scope::History, history);
+        let mut help = source[&Scope::FullScreen].clone();
+        help.remove(&Action::Exit);
+        help.extend(source[&Scope::Help].clone());
+        effective.insert(Scope::Help, help);
         let result = Self {
             source: Arc::new(source),
             effective: Arc::new(effective),
@@ -449,14 +453,15 @@ impl KeyMapping {
     }
 
     fn binding_path(&self, scope: Scope, action: Action) -> String {
-        let inherited =
-            if scope == Scope::History && self.source[&Scope::FullScreen].contains_key(&action) {
-                Some(Scope::FullScreen)
-            } else {
-                [Scope::Message, Scope::MessageEdit, Scope::ReadMode]
-                    .into_iter()
-                    .find(|candidate| self.source[candidate].contains_key(&action))
-            };
+        let inherited = if matches!(scope, Scope::History | Scope::Help)
+            && self.source[&Scope::FullScreen].contains_key(&action)
+        {
+            Some(Scope::FullScreen)
+        } else {
+            [Scope::Message, Scope::MessageEdit, Scope::ReadMode]
+                .into_iter()
+                .find(|candidate| self.source[candidate].contains_key(&action))
+        };
         let owner = self.source[&scope]
             .contains_key(&action)
             .then_some(scope)
@@ -503,7 +508,11 @@ impl KeyMapping {
     fn global_is_active(scope: Scope, action: Action) -> bool {
         !(matches!(
             scope,
-            Scope::ReadMode | Scope::ReadModeItem | Scope::FullScreen | Scope::History
+            Scope::ReadMode
+                | Scope::ReadModeItem
+                | Scope::FullScreen
+                | Scope::History
+                | Scope::Help
         ) && matches!(action, Action::PageUp | Action::PageDown))
     }
 

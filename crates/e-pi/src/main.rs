@@ -533,6 +533,7 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
                     input: &mut interaction.input,
                     input_page: &mut interaction.input_page,
                     help_visible: &mut interaction.help_visible,
+                    help_scroll: &mut interaction.help_scroll,
                     notice: &mut interaction.notice,
                     mouse_selection: &mut interaction.mouse_selection,
                     pane_resize: &mut interaction.pane_resize,
@@ -569,6 +570,7 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
                                 input: &mut interaction.input,
                                 input_page: &mut interaction.input_page,
                                 help_visible: &mut interaction.help_visible,
+                                help_scroll: &mut interaction.help_scroll,
                                 notice: &mut interaction.notice,
                                 mouse_selection: &mut interaction.mouse_selection,
                                 pane_resize: &mut interaction.pane_resize,
@@ -670,6 +672,7 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
                     &theme,
                     e_tui::ui::RenderOverlays {
                         help_visible: interaction.help_visible,
+                        help_scroll: Some(&mut interaction.help_scroll),
                         toast: notice,
                         input_page: interaction.input_page.as_mut(),
                         settings: None,

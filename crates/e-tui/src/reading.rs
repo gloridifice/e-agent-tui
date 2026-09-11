@@ -761,6 +761,7 @@ mod tests {
                     &theme,
                     RenderOverlays {
                         help_visible: false,
+                        help_scroll: None,
                         toast: None,
                         input_page: None,
                         settings: None,

@@ -178,6 +178,7 @@ fn run(width: u16, height: u16) -> anyhow::Result<()> {
             RenderOverlays {
                 input_page: None,
                 help_visible: false,
+                help_scroll: None,
                 toast: None,
                 settings: None,
                 login: None,
@@ -232,6 +233,7 @@ fn run(width: u16, height: u16) -> anyhow::Result<()> {
                 RenderOverlays {
                     input_page: None,
                     help_visible: false,
+                    help_scroll: None,
                     toast: None,
                     settings: None,
                     login: None,

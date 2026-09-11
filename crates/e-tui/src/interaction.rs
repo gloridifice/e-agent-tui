@@ -154,6 +154,41 @@ impl Default for ScrollState {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HelpScrollState {
+    offset: usize,
+    max_offset: usize,
+    viewport_rows: usize,
+}
+
+impl HelpScrollState {
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    pub fn offset(self) -> usize {
+        self.offset
+    }
+
+    pub fn viewport_rows(self) -> usize {
+        self.viewport_rows
+    }
+
+    pub fn update_viewport(&mut self, total_rows: usize, viewport_rows: usize) {
+        self.viewport_rows = viewport_rows;
+        self.max_offset = total_rows.saturating_sub(viewport_rows);
+        self.offset = self.offset.min(self.max_offset);
+    }
+
+    pub fn scroll_lines(&mut self, up: bool, rows: usize) {
+        self.offset = if up {
+            self.offset.saturating_sub(rows.max(1))
+        } else {
+            self.offset.saturating_add(rows.max(1)).min(self.max_offset)
+        };
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptDelivery {
     Asap,
@@ -349,6 +384,7 @@ pub struct InteractionModel {
     pub scroll: ScrollState,
     pub input_page: Option<InputPageSession>,
     pub help_visible: bool,
+    pub help_scroll: HelpScrollState,
     pub approval: Option<ApprovalCard>,
     pub question: Option<String>,
     pub queue: PendingPromptQueue,
@@ -364,6 +400,7 @@ impl InteractionModel {
             scroll: ScrollState::default(),
             input_page: None,
             help_visible: false,
+            help_scroll: HelpScrollState::default(),
             approval: None,
             question: None,
             queue: PendingPromptQueue::default(),

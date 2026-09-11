@@ -66,9 +66,9 @@ pub use config::{Config, HexRgb, PaneWidthPercent, RevealRate, ThinkingDisplayMo
 pub use event::{InputEvent, PointerEvent};
 pub use i18n::Language;
 pub use interaction::{
-    InteractionModel, PaneResizeDrag, PaneResizeState, ScrollState, MIN_PREVIEW_COLUMNS,
-    MIN_PREVIEW_PANE_WIDTH, PREVIEW_RIGHT_MARGIN_COLUMNS, PREVIEW_SEPARATOR_COLUMNS,
-    PREVIEW_SEPARATOR_GAP_COLUMNS,
+    HelpScrollState, InteractionModel, PaneResizeDrag, PaneResizeState, ScrollState,
+    MIN_PREVIEW_COLUMNS, MIN_PREVIEW_PANE_WIDTH, PREVIEW_RIGHT_MARGIN_COLUMNS,
+    PREVIEW_SEPARATOR_COLUMNS, PREVIEW_SEPARATOR_GAP_COLUMNS,
 };
 pub use mouse_selection::{MouseSelection, SelectionFrame, SelectionUpdate};
 pub use notice::{NoticeState, COPY_NOTICE_MIN_SECS};

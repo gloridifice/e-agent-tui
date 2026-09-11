@@ -26,7 +26,7 @@ pub enum TerminalRoute {
     Pointer(PointerEvent),
     Paste { text: String },
     ReadClipboard,
-    Help { dismiss: bool },
+    Help { action: Option<Action> },
     OpenHelp,
     Global(Action),
     TranscriptPage { up: bool },
@@ -107,13 +107,16 @@ pub fn route_terminal_event_with_mapping(
         Event::Paste(_) if focus.approval_open || focus.help_visible => TerminalRoute::Ignore,
         Event::Paste(text) => TerminalRoute::Paste { text },
         Event::Key(key) if key.kind == KeyEventKind::Release => TerminalRoute::Ignore,
-        Event::Key(key) if focus.history_view_open => TerminalRoute::History(key),
         Event::Key(key) if focus.help_visible => TerminalRoute::Help {
-            dismiss: mapping.resolve(Scope::Help, &key) == Some(Action::Close)
-                || mapping.resolve(Scope::Global, &key) == Some(Action::PrintHelp),
+            action: mapping.resolve(Scope::Help, &key).or_else(|| {
+                (mapping.resolve(Scope::Global, &key) == Some(Action::PrintHelp))
+                    .then_some(Action::Close)
+            }),
         },
+        Event::Key(_) if global == Some(Action::PrintHelp) => TerminalRoute::OpenHelp,
+        Event::Key(key) if focus.history_view_open => TerminalRoute::History(key),
         Event::Key(_) if global.is_some() => match global.unwrap() {
-            Action::PrintHelp => TerminalRoute::OpenHelp,
+            Action::PrintHelp => unreachable!("help is routed before blocking contexts"),
             Action::PageUp => TerminalRoute::TranscriptPage { up: true },
             Action::PageDown => TerminalRoute::TranscriptPage { up: false },
             _ if focus.input_page_open || focus.approval_open || focus.reading_view_open => {
@@ -224,6 +227,47 @@ mod tests {
                 TerminalFocus::default()
             ),
             TerminalRoute::Global(Action::CopyLink)
+        );
+    }
+
+    #[test]
+    fn help_owns_navigation_and_the_global_toggle_over_other_contexts() {
+        let mapping =
+            KeyMapping::from_user_toml_for("", crate::key_mapping::Platform::Other).unwrap();
+        let help = TerminalFocus {
+            help_visible: true,
+            ..TerminalFocus::default()
+        };
+        assert_eq!(
+            route_terminal_event_with_mapping(
+                Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+                help,
+                &mapping,
+            ),
+            TerminalRoute::Help {
+                action: Some(Action::MoveDown)
+            }
+        );
+        assert_eq!(
+            route_terminal_event_with_mapping(
+                Event::Key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL)),
+                help,
+                &mapping,
+            ),
+            TerminalRoute::Help {
+                action: Some(Action::Close)
+            }
+        );
+        assert_eq!(
+            route_terminal_event_with_mapping(
+                Event::Key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL)),
+                TerminalFocus {
+                    history_view_open: true,
+                    ..TerminalFocus::default()
+                },
+                &mapping,
+            ),
+            TerminalRoute::OpenHelp
         );
     }
 

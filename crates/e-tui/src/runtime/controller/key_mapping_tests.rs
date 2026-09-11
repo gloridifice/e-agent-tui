@@ -39,6 +39,7 @@ impl Harness {
             input: &mut i.input,
             input_page: &mut i.input_page,
             help_visible: &mut i.help_visible,
+            help_scroll: &mut i.help_scroll,
             notice: &mut i.notice,
             mouse_selection: &mut i.mouse_selection,
             pane_resize: &mut i.pane_resize,
@@ -123,7 +124,8 @@ impl Harness {
                     &mut self.interaction.scroll,
                     &self.theme,
                     crate::ui::RenderOverlays {
-                        help_visible: false,
+                        help_visible: self.interaction.help_visible,
+                        help_scroll: Some(&mut self.interaction.help_scroll),
                         toast: None,
                         input_page: None,
                         settings: None,
@@ -651,8 +653,8 @@ fn key_mapping_composer_search_and_suggestion_have_independent_bindings() {
     }
     h.press(KeyCode::F(3), KeyModifiers::NONE);
     assert!(h.interaction.input.suggest.is_none());
-    assert!(h.state.lock().unwrap().transcript.nodes().iter().any(|node| matches!(&node.item,
-        crate::display::DisplayItem::Block(block) if block.content.contains("Active key mappings"))));
+    assert!(h.interaction.help_visible);
+    assert!(h.state.lock().unwrap().transcript.nodes().is_empty());
 }
 
 #[test]
@@ -863,11 +865,25 @@ fn key_mapping_reading_exit_and_item_return_preserve_complete_source() {
 }
 
 #[test]
-fn key_mapping_help_uses_effective_labels_in_both_languages() {
-    let mut h = Harness::new("[global]\nprint_help='f1'\n[message]\npaste='nop'");
+fn slash_help_opens_the_modal_without_a_transcript_item() {
+    let mut h = Harness::new("");
+    for key in "/help".chars() {
+        h.press(KeyCode::Char(key), KeyModifiers::NONE);
+    }
+    h.press(KeyCode::Enter, KeyModifiers::NONE);
+
+    assert!(h.interaction.help_visible);
+    assert!(h.state.lock().unwrap().transcript.nodes().is_empty());
+}
+
+#[test]
+fn key_mapping_help_uses_effective_labels_and_full_screen_navigation() {
+    let mut h = Harness::new(
+        "[global]\nprint_help='f1'\n[message]\npaste='nop'\n[full_screen]\nmove_down='x'",
+    );
     for language in [Language::English, Language::SimplifiedChinese] {
         h.config.language = language;
-        let markdown = crate::help::markdown(&h.config, &[]);
+        let markdown = crate::help::markdown(&h.config);
         assert!(markdown.contains("`F1`"));
         assert!(markdown.contains("`—`"));
         assert!(!markdown.contains("key.action."));
@@ -876,6 +892,13 @@ fn key_mapping_help_uses_effective_labels_in_both_languages() {
     assert!(!h.interaction.help_visible);
     h.press(KeyCode::F(1), KeyModifiers::NONE);
     assert!(h.interaction.help_visible);
+    h.render();
+    assert!(h.interaction.help_scroll.viewport_rows() > 0);
+    h.press(KeyCode::Char('x'), KeyModifiers::NONE);
+    assert_eq!(h.interaction.help_scroll.offset(), 1);
     h.press(KeyCode::F(1), KeyModifiers::NONE);
     assert!(!h.interaction.help_visible);
+    h.press(KeyCode::F(1), KeyModifiers::NONE);
+    assert!(h.interaction.help_visible);
+    assert_eq!(h.interaction.help_scroll.offset(), 0);
 }

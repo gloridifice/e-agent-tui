@@ -880,20 +880,27 @@ mod tests {
 
     #[test]
     fn table_renders_boxed_and_atomic() {
-        let lines = render("| a | b |\n|---|---|\n| 1 | 2 |");
-        let text = plain(&lines);
-        assert!(
-            text[0].starts_with("┌") && text[0].contains("┬"),
-            "top border: {}",
-            text[0]
-        );
-        assert!(text.iter().any(|l| l.starts_with("├")), "header separator");
-        assert!(text.last().unwrap().starts_with("└"), "bottom border");
-        assert!(lines.iter().all(|r| r.atomic), "all table rows atomic");
-        assert!(
-            lines.iter().all(|r| r.raw_line.is_none()),
-            "no row-level mapping for table"
-        );
+        let source = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |";
+        for lines in [render(source), render_at(source, 24)] {
+            let text = plain(&lines);
+            assert!(
+                text[0].starts_with("┌") && text[0].contains("┬"),
+                "top border: {}",
+                text[0]
+            );
+            assert_eq!(
+                text.iter()
+                    .filter_map(|row| row.chars().next())
+                    .collect::<String>(),
+                "┌│├│├│└",
+                "one separator between logical rows: {text:?}"
+            );
+            assert!(lines.iter().all(|r| r.atomic), "all table rows atomic");
+            assert!(
+                lines.iter().all(|r| r.raw_line.is_none()),
+                "no row-level mapping for table"
+            );
+        }
     }
 
     /// Regression: bold and inline code inside table cells used to leak their
@@ -963,7 +970,7 @@ mod tests {
         };
         let long = "x".repeat(30);
         let lines = render_markdown(
-            &format!("| c |\n|---|\n| {long} |"),
+            &format!("| c |\n|---|\n| {long} |\n| next |"),
             &theme,
             &mut next,
             &options,
@@ -994,6 +1001,65 @@ mod tests {
         );
         assert_eq!(text[0].chars().next(), Some('\u{250c}'));
         assert_eq!(text[0].chars().last(), Some('\u{2510}'));
+        assert_eq!(
+            text.iter()
+                .filter_map(|row| row.chars().next())
+                .collect::<String>(),
+            "┌│├││├│└",
+            "wrapped continuation lines stay together: {text:?}"
+        );
+    }
+
+    #[test]
+    fn table_collapsed_and_expanded_rows_have_separators() {
+        let mut source = String::from("| step | description |\n|---|---|\n");
+        for i in 1..=25 {
+            source.push_str(&format!("| row{i:02} | operation details for this row |\n"));
+        }
+        let theme = Theme::ferra();
+        for content_width in [None, Some(64)] {
+            for expanded in [false, true] {
+                let mut options = RenderOptions {
+                    content_width,
+                    ..Default::default()
+                };
+                if expanded {
+                    options.expanded.insert(0);
+                }
+                let mut units = HashMap::new();
+                let lines = render_markdown(&source, &theme, &mut 0, &options, &mut units);
+                let text = plain(&lines);
+                let expected_rows = if expanded { 26 } else { 7 };
+                assert_eq!(text.len(), expected_rows * 2 + 1, "{text:?}");
+                for (index, row) in text.iter().enumerate() {
+                    let expected = if index == 0 {
+                        '┌'
+                    } else if index == text.len() - 1 {
+                        '└'
+                    } else if index % 2 == 0 {
+                        '├'
+                    } else {
+                        '│'
+                    };
+                    assert_eq!(row.chars().next(), Some(expected), "{text:?}");
+                }
+                assert_eq!(
+                    text.iter().any(|row| row.contains("20 lines hidden")),
+                    !expanded
+                );
+                for i in 1..=25 {
+                    assert_eq!(
+                        text.iter().any(|row| row.contains(&format!("row{i:02}"))),
+                        expanded || i <= 3 || i >= 24,
+                        "retained row {i}: {text:?}"
+                    );
+                }
+                assert!(lines
+                    .iter()
+                    .all(|row| row.unit == 0 && row.atomic && row.raw_line.is_none()));
+                assert_eq!(units.get(&0).map(String::as_str), Some(source.as_str()));
+            }
+        }
     }
 
     #[test]

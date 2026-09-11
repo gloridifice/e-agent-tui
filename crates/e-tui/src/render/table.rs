@@ -105,6 +105,9 @@ pub(super) fn render_table(
     let collapsed =
         !options.expanded.contains(&unit) && body_rows.len() > options.collapse_rows / 2;
     let push_row = |out: &mut Vec<RenderLine>, row_idx: usize, header: bool| {
+        if row_idx != 0 {
+            push_plain(out, unit, table_border("├", "┼", "┤", &widths), dim_style);
+        }
         if options.content_width.is_some() {
             push_table_cell_rows(out, unit, dim_style, &widths, &layouts[row_idx]);
         } else {
@@ -123,9 +126,8 @@ pub(super) fn render_table(
 
     push_plain(out, unit, table_border("┌", "┬", "┐", &widths), dim_style);
     if collapsed {
-        // Header + separator + first rows … last rows.
+        // Header + first rows … last rows, separated at logical-row boundaries.
         push_row(out, 0, true);
-        push_plain(out, unit, table_border("├", "┼", "┤", &widths), dim_style);
         let shown = 3usize.min(body_rows.len().saturating_sub(1));
         for idx in &body_rows[1..1 + shown] {
             push_row(out, *idx, false);
@@ -140,16 +142,13 @@ pub(super) fn render_table(
         let hint_pad =
             total_width.saturating_sub(UnicodeWidthStr::width(hint_content.as_str()) + 2);
         let hint = format!("│{hint_content}{}│", " ".repeat(hint_pad));
+        push_plain(out, unit, table_border("├", "┼", "┤", &widths), dim_style);
         push_plain(out, unit, hint, dim_style);
         for idx in &body_rows[body_rows.len() - 2..] {
             push_row(out, *idx, false);
         }
     } else {
-        for (r, _row) in rows.iter().enumerate() {
-            if r == 1 && has_header {
-                push_plain(out, unit, table_border("├", "┼", "┤", &widths), dim_style);
-                continue;
-            }
+        for &r in &body_rows {
             push_row(out, r, r == 0);
         }
     }

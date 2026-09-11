@@ -1,11 +1,16 @@
 <!-- doco:managed template=v1 -->
 # Execute
 
-Use an explicitly selected active change. Read `doco context <id>`, its proposal,
-implement and tasks, relevant current docs, actual source and tests. Check the
-baseline against real interfaces and uncommitted changes. Do not redesign merely
-because a new unrelated commit exists. Check overlapping changes before execution
-and again before completion.
+Use an explicitly selected active change. Read `doco context <id>`, its proposal
+and, for a full package, implement and tasks, plus relevant current docs, actual
+source and tests. For proposal-only changes, execute directly against the stated
+scope and acceptance criteria. Check the baseline against real interfaces and
+uncommitted changes. Do not redesign merely because a new unrelated commit exists.
+Check overlapping changes before execution and again before completion.
+
+If proposal-only execution reveals unresolved design choices, dependent steps or
+materially expanded risk, stop and convert it to a full package before continuing.
+Do not use proposal-only mode to bypass design or verification.
 
 Implement in dependency order. Local naming, helper extraction and equivalent
 mechanical fixes are discretionary. Do not silently change public API semantics,

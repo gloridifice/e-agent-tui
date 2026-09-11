@@ -1,20 +1,28 @@
 <!-- doco:managed template=v1 -->
 # Create
 
-1. Decide whether the user requested implementation/change tracking, not merely
-   discussion or investigation. Run `doco list`; reuse an active ID for the same
-   goal instead of fragmenting follow-up fixes and verification into new changes.
+1. Decide whether a tracked change is actually requested or useful. Creating a
+   doco change is not required for routine behavior fixes or implementation
+   details, and doco is not an implementation-history mechanism. Create one when
+   the user requests tracking or the goal benefits from durable design,
+   coordination, handoff or lifecycle review. Run `doco list`; reuse an active ID
+   for the same goal instead of fragmenting follow-up work into new changes.
 2. Read current architecture, relevant specs, effective ADRs and actual source
    and tests. Exclude unrelated active changes, completed snapshots, archived
    history and tmp unless explicitly needed. CLI context is a path aid, not a
    semantic relevance engine.
-3. For a new goal, agree on a unique lowercase-hyphen ID and run `doco new <id>`.
-   Templates under `../templates/` are skeletons, not a finished design. Replace
-   every TODO placeholder. Small changes may be short but require all three files.
+3. For a new goal, agree on a unique lowercase-hyphen ID. Use `doco new <id>
+   --proposal-only` only when intended behavior and acceptance fit completely in
+   proposal.md, no unresolved design choice or dependent task breakdown is needed,
+   and one implementer can safely execute and verify it directly. Otherwise use
+   `doco new <id>` for the default full package. Templates under `../templates/`
+   are skeletons, not finished designs; replace every TODO placeholder. The mode
+   is explicit: never infer it from line count or silently omit files from a full
+   package.
 4. Write proposal: problem, motivation, scope, non-goals, acceptance criteria and
    intended contract changes; set Result to Pending until delivered. It must
    remain understandable after all of work/ is deleted.
-5. Write work/implement.md: actual baseline and affected source entry points;
+5. For a full package, write work/implement.md: actual baseline and affected source entry points;
    distinguish existing from planned APIs. Cover module boundaries, call/data
    flow, API signatures, error semantics, state ownership, lifetime, persistence,
    concurrency and compatibility where relevant. Specify algorithm steps,
@@ -23,7 +31,7 @@
 6. Close correctness/architecture/API/core-algorithm decisions before handing off.
    State fixed choices versus local discretion, blocking open questions,
    verification and current-document impact (explicitly none when appropriate).
-7. Write work/tasks.md: `- [ ] 1.1 action`, stable unique two-level positive-integer
+7. For a full package, write work/tasks.md: `- [ ] 1.1 action`, stable unique two-level positive-integer
    IDs (`1.1`, `1.2`, `2.1`; no zero or leading zero), Acceptance lines,
    Dependencies lines where needed, and a final verification task. Dependencies
    must exist and be acyclic. Include document updates only if actually affected.

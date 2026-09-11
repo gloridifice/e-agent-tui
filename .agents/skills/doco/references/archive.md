@@ -1,6 +1,10 @@
 <!-- doco:managed template=v1 -->
 # Archive or cancel
 
+Archive is not an implementation-history store. Full packages lose work/ and
+proposal-only packages never contain it; Git or normal delivery records must
+preserve implementation-level history.
+
 Ordinary archive accepts completed changes only. Confirm the proposal stands on
 its own and retained files do not depend on work/. Current facts were synchronized
 at completion; do not overwrite current architecture/specs from an old design.
@@ -11,6 +15,8 @@ entries and destination. Only after explicit authorization use `doco archive <id
 research/logs. Unknown files outside work/ are a conflict, not silently deleted.
 Only proposal.md remains in archived/. No Git history or code is modified, and
 unrelated tmp HTML is not implicitly cleaned.
+After `doco archive`, no need to re-list or read archived/ to confirm the move and
+retained proposal.
 
 A failed deletion may leave a partial work/ in the original lifecycle directory.
 Report the actual state; resolve the filesystem problem and retry the same command.

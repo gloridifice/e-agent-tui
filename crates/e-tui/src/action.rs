@@ -197,7 +197,7 @@ pub fn clipboard_preview(text: &str, limit: usize) -> (String, bool) {
 pub enum EffectResult {
     LinksValidated {
         request: crate::link_copy::LinkValidationRequest,
-        validations: Vec<crate::link_copy::PathValidation>,
+        validations: Vec<crate::link_copy::CandidateGroupValidation>,
     },
     PathsCompleted {
         request: crate::path_completion::PathCompletionRequest,

@@ -218,7 +218,9 @@ fn quick_links_agent_settlement_arms_targets_only_until_the_next_user_turn() {
     assert!(RuntimeController::apply_effect_result(
         EffectResult::LinksValidated {
             request: request.clone(),
-            validations: Vec::new()
+            validations: vec![crate::link_copy::CandidateGroupValidation {
+                alternatives: vec![crate::link_copy::PathValidation::NotRequired],
+            }],
         },
         &h.state,
         Instant::now()
@@ -288,7 +290,9 @@ fn quick_links_latest_message_validation_and_source_layout_are_stale_safe() {
     assert!(RuntimeController::apply_effect_result(
         EffectResult::LinksValidated {
             request: current.clone(),
-            validations: Vec::new()
+            validations: vec![crate::link_copy::CandidateGroupValidation {
+                alternatives: vec![crate::link_copy::PathValidation::NotRequired],
+            }],
         },
         &h.state,
         Instant::now()

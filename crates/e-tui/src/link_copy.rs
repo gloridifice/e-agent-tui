@@ -12,6 +12,7 @@ use crate::display::DisplayId;
 
 pub const TAGS: &str = "1234567890abcdefghijklmnopqrstuvwxyz";
 pub const MAX_CANDIDATES: usize = 256;
+const MAX_ALTERNATIVES_PER_GROUP: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PathConfidence {
@@ -20,18 +21,37 @@ pub enum PathConfidence {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkTargetKind {
+    Uri,
+    AbsolutePath,
+    WorkspaceRelative { normalized: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkCandidate {
     pub target: String,
-    pub relative: Option<String>,
+    pub kind: LinkTargetKind,
     pub confidence: PathConfidence,
     pub retain_missing: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkCandidateGroup {
+    pub alternatives: Vec<LinkCandidate>,
+    pub require_existing: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PathValidation {
+    NotRequired,
     Exists,
     Missing,
     Rejected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CandidateGroupValidation {
+    pub alternatives: Vec<PathValidation>,
 }
 
 pub use crate::display::TaggedLink;
@@ -40,7 +60,7 @@ pub use crate::display::TaggedLink;
 pub struct LinkValidationRequest {
     pub generation: u64,
     pub cwd: String,
-    pub candidates: Vec<LinkCandidate>,
+    pub groups: Vec<LinkCandidateGroup>,
 }
 
 #[derive(Debug, Default)]
@@ -78,33 +98,28 @@ impl LinkCopyState {
         Some(LinkValidationRequest {
             generation: self.generation,
             cwd: cwd.into(),
-            candidates: discover(source),
+            groups: discover(source),
         })
     }
 
     pub fn complete(
         &mut self,
         request: &LinkValidationRequest,
-        validations: &[PathValidation],
+        validations: &[CandidateGroupValidation],
     ) -> bool {
         if self.owner.is_none() || self.generation != request.generation || self.cwd != request.cwd
         {
             return false;
         }
+        let mut seen = HashSet::new();
         self.links = request
-            .candidates
+            .groups
             .iter()
-            .enumerate()
-            .filter(|(index, candidate)| {
-                candidate.relative.is_none()
-                    || match validations.get(*index) {
-                        Some(PathValidation::Exists) => true,
-                        Some(PathValidation::Missing) => candidate.retain_missing,
-                        _ => false,
-                    }
-            })
+            .zip(validations)
+            .filter_map(|(group, validation)| resolve_group(group, validation))
+            .filter(|candidate| seen.insert(candidate.target.clone()))
             .zip(TAGS.chars())
-            .map(|((_, candidate), tag)| TaggedLink {
+            .map(|(candidate, tag)| TaggedLink {
                 target: candidate.target.clone(),
                 tag,
             })
@@ -118,6 +133,36 @@ impl LinkCopyState {
             .find(|link| link.tag == tag)
             .map(|link| link.target.clone())
     }
+}
+
+fn resolve_group<'a>(
+    group: &'a LinkCandidateGroup,
+    validation: &CandidateGroupValidation,
+) -> Option<&'a LinkCandidate> {
+    if group.alternatives.len() != validation.alternatives.len() {
+        return None;
+    }
+    for (candidate, status) in group.alternatives.iter().zip(&validation.alternatives) {
+        let accepted = matches!(
+            (&candidate.kind, status),
+            (LinkTargetKind::Uri, PathValidation::NotRequired)
+                | (
+                    LinkTargetKind::AbsolutePath | LinkTargetKind::WorkspaceRelative { .. },
+                    PathValidation::Exists
+                )
+        );
+        if accepted {
+            return Some(candidate);
+        }
+    }
+    if group.require_existing || group.alternatives.len() != 1 {
+        return None;
+    }
+    group.alternatives.first().filter(|candidate| {
+        matches!(candidate.kind, LinkTargetKind::WorkspaceRelative { .. })
+            && candidate.retain_missing
+            && validation.alternatives.first() == Some(&PathValidation::Missing)
+    })
 }
 
 fn relative_path(text: &str) -> Option<String> {
@@ -138,6 +183,7 @@ fn relative_path(text: &str) -> Option<String> {
 
 fn classify(text: &str, delimited: bool) -> Option<LinkCandidate> {
     if text.is_empty()
+        || text.chars().all(char::is_whitespace)
         || text.chars().all(|c| matches!(c, '/' | '\\'))
         || text.chars().any(char::is_control)
     {
@@ -160,12 +206,20 @@ fn classify(text: &str, delimited: bool) -> Option<LinkCandidate> {
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
     });
-    if absolute || uri {
+    if absolute {
         return Some(LinkCandidate {
             target: text.into(),
-            relative: None,
+            kind: LinkTargetKind::AbsolutePath,
             confidence: PathConfidence::High,
-            retain_missing: true,
+            retain_missing: false,
+        });
+    }
+    if uri {
+        return Some(LinkCandidate {
+            target: text.into(),
+            kind: LinkTargetKind::Uri,
+            confidence: PathConfidence::High,
+            retain_missing: false,
         });
     }
     if text.contains(['=', ';', '{', '}', '"', '\'', '`', '|', '*', '<', '>']) {
@@ -200,13 +254,63 @@ fn classify(text: &str, delimited: bool) -> Option<LinkCandidate> {
     }
     Some(LinkCandidate {
         target: text.into(),
-        relative: Some(relative_path(text)?),
+        kind: LinkTargetKind::WorkspaceRelative {
+            normalized: relative_path(text)?,
+        },
         confidence: if explicit || extension || dotfile || directory {
             PathConfidence::High
         } else {
             PathConfidence::Medium
         },
         retain_missing: explicit || dotfile || directory || (separator && extension),
+    })
+}
+
+fn is_soft_boundary(c: char) -> bool {
+    matches!(c, '（' | '【' | '〔' | '《' | '〈' | '［' | '｛')
+}
+
+fn candidate_group(text: &str, delimited: bool) -> Option<LinkCandidateGroup> {
+    let complete = classify(text, delimited);
+    if complete
+        .as_ref()
+        .is_some_and(|candidate| matches!(candidate.kind, LinkTargetKind::Uri))
+    {
+        return complete.map(|candidate| LinkCandidateGroup {
+            alternatives: vec![candidate],
+            require_existing: false,
+        });
+    }
+
+    let mut alternatives = complete.into_iter().collect::<Vec<_>>();
+    let mut derived = false;
+    let boundaries = text
+        .char_indices()
+        .filter_map(|(index, c)| is_soft_boundary(c).then_some(index))
+        .collect::<Vec<_>>();
+    for boundary in boundaries.into_iter().rev() {
+        if alternatives.len() >= MAX_ALTERNATIVES_PER_GROUP {
+            break;
+        }
+        let prefix = trim_token(&text[..boundary]);
+        let Some(candidate) = classify(prefix, delimited) else {
+            continue;
+        };
+        if matches!(candidate.kind, LinkTargetKind::Uri)
+            || alternatives
+                .iter()
+                .any(|existing| existing.target == candidate.target)
+        {
+            continue;
+        }
+        derived = true;
+        alternatives.push(candidate);
+    }
+    alternatives.sort_by(|left, right| right.target.len().cmp(&left.target.len()));
+    alternatives.truncate(MAX_ALTERNATIVES_PER_GROUP);
+    (!alternatives.is_empty()).then_some(LinkCandidateGroup {
+        alternatives,
+        require_existing: derived,
     })
 }
 
@@ -223,25 +327,62 @@ fn trim_token(mut text: &str) -> &str {
     text
 }
 
-fn scan_text(mut text: &str, add: &mut impl FnMut(&str, bool)) {
-    let delimiter = |c: char| {
-        c.is_whitespace() || matches!(c, '"' | '\'' | '`' | '<' | '>' | '，' | '。' | '；' | '：')
-    };
+fn is_hard_boundary(c: char) -> bool {
+    c.is_whitespace() || matches!(c, '"' | '\'' | '`' | '<' | '>' | '，' | '。' | '；' | '：')
+}
+
+fn is_target_boundary(c: char) -> bool {
+    is_hard_boundary(c)
+        || is_soft_boundary(c)
+        || matches!(
+            c,
+            '(' | ')'
+                | '['
+                | ']'
+                | '{'
+                | '}'
+                | ','
+                | ';'
+                | ':'
+                | '！'
+                | '？'
+                | '）'
+                | '】'
+                | '〕'
+                | '》'
+                | '〉'
+                | '］'
+                | '｝'
+        )
+}
+
+fn scan_text(mut text: &str, base_position: usize, add: &mut impl FnMut(&str, bool, usize)) {
+    let delimiter = is_hard_boundary;
+    let mut offset = 0;
     while let Some(first) = text.chars().next() {
         if matches!(first, '"' | '\'') {
             let rest = &text[first.len_utf8()..];
             if let Some(end) = rest.find(first) {
-                add(&rest[..end], true);
-                text = &rest[end + first.len_utf8()..];
+                add(
+                    &rest[..end],
+                    true,
+                    base_position + offset + first.len_utf8(),
+                );
+                let consumed = first.len_utf8() + end + first.len_utf8();
+                offset += consumed;
+                text = &text[consumed..];
                 continue;
             }
         }
         if delimiter(first) {
+            offset += first.len_utf8();
             text = &text[first.len_utf8()..];
             continue;
         }
         let end = text.find(delimiter).unwrap_or(text.len());
-        let token = trim_token(&text[..end]);
+        let raw = &text[..end];
+        let token = trim_token(raw);
+        let token_offset = raw.find(token).unwrap_or_default();
         let rest = text[end..].trim_start();
         let is_unquoted_command_placeholder = token.starts_with('/')
             && rest.starts_with('<')
@@ -252,13 +393,14 @@ fn scan_text(mut text: &str, add: &mut impl FnMut(&str, bool)) {
                     .is_none_or(|next| delimiter(next))
             });
         if !is_unquoted_command_placeholder {
-            add(token, false);
+            add(token, false, base_position + offset + token_offset);
         }
+        offset += end;
         text = &text[end..];
     }
 }
 
-pub fn discover(source: &str) -> Vec<LinkCandidate> {
+pub fn discover(source: &str) -> Vec<LinkCandidateGroup> {
     let words: Vec<_> = source.split_whitespace().collect();
     let mut command_tokens: HashSet<String> = words
         .windows(2)
@@ -267,65 +409,134 @@ pub fn discover(source: &str) -> Vec<LinkCandidate> {
                 .then(|| trim_token(pair[0]).to_owned())
         })
         .collect();
-    let mut seen = HashSet::new();
-    let mut candidates = Vec::new();
     let quoted = source
         .match_indices('"')
         .map(|(index, _)| index)
         .collect::<Vec<_>>();
-    for pair in quoted.chunks_exact(2) {
-        let target = &source[pair[0] + 1..pair[1]];
-        if target.starts_with('/') && target.contains('<') && target.contains('>') {
-            if let Some(candidate) = classify(target, true) {
-                command_tokens.insert(
-                    target
-                        .split_whitespace()
-                        .next()
-                        .unwrap_or_default()
-                        .to_owned(),
-                );
-                seen.insert(candidate.target.clone());
-                candidates.push(candidate);
-            }
-        }
+    let quoted_targets = quoted
+        .chunks_exact(2)
+        .map(|pair| {
+            (
+                pair[0]..pair[1] + 1,
+                source[pair[0] + 1..pair[1]].to_owned(),
+            )
+        })
+        .collect::<Vec<_>>();
+    for (_, target) in quoted_targets.iter().filter(|(_, target)| {
+        target.starts_with('/') && target.contains('<') && target.contains('>')
+    }) {
+        command_tokens.insert(
+            target
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .to_owned(),
+        );
     }
-    let mut add = |text: &str, delimited: bool| {
-        if candidates.len() >= MAX_CANDIDATES {
+
+    let mut seen = HashSet::new();
+    let mut groups = Vec::new();
+    let mut next_order = 0;
+    let mut add_group = |group: LinkCandidateGroup, position: usize| {
+        if group
+            .alternatives
+            .iter()
+            .any(|candidate| command_tokens.contains(&candidate.target))
+        {
             return;
         }
-        if let Some(candidate) = classify(text, delimited) {
-            if !command_tokens.contains(&candidate.target) && seen.insert(candidate.target.clone())
-            {
-                candidates.push(candidate);
-            }
+        let signature = (
+            group
+                .alternatives
+                .iter()
+                .map(|candidate| candidate.target.clone())
+                .collect::<Vec<_>>(),
+            group.require_existing,
+        );
+        if seen.insert(signature) {
+            groups.push((position, next_order, group));
+            next_order += 1;
+        }
+    };
+    for (range, target) in &quoted_targets {
+        if let Some(group) = candidate_group(target, true) {
+            add_group(group, range.start + 1);
+        }
+    }
+    let mut add = |text: &str, delimited: bool, position: usize| {
+        if quoted_targets.iter().any(|(range, quoted)| {
+            range.contains(&position) && quoted != text && quoted.contains(text)
+        }) {
+            return;
+        }
+        if let Some(group) = candidate_group(text, delimited) {
+            add_group(group, position);
         }
     };
     let mut destinations = Vec::new();
-    for event in Parser::new(source) {
+    for (event, range) in Parser::new(source).into_offset_iter() {
         match event {
             Event::Start(Tag::Link { dest_url, .. })
-            | Event::Start(Tag::Image { dest_url, .. }) => destinations.push(dest_url),
+            | Event::Start(Tag::Image { dest_url, .. }) => {
+                let position = source[range.clone()]
+                    .find(dest_url.as_ref())
+                    .map(|offset| range.start + offset)
+                    .unwrap_or(range.start);
+                destinations.push((dest_url, position));
+            }
             Event::End(TagEnd::Link | TagEnd::Image) => {
-                if let Some(destination) = destinations.pop() {
-                    add(&destination, true);
+                if let Some((destination, position)) = destinations.pop() {
+                    add(&destination, true, position);
                 }
             }
             Event::Code(text) => {
-                if classify(&text, true).is_some() {
-                    add(&text, true);
+                let position = source[range.clone()]
+                    .find(text.as_ref())
+                    .map(|offset| range.start + offset)
+                    .unwrap_or(range.start);
+                if candidate_group(&text, true).is_some() {
+                    add(&text, true, position);
                 } else {
-                    for word in text.split_whitespace() {
-                        add(trim_token(word), false);
-                    }
+                    scan_text(&text, position, &mut add);
                 }
             }
             Event::Text(text) | Event::Html(text) | Event::InlineHtml(text) => {
-                scan_text(&text, &mut add);
+                scan_text(&text, range.start, &mut add);
             }
             _ => {}
         }
     }
-    candidates
+    groups.sort_by_key(|(position, order, _)| (*position, *order));
+    let groups = groups
+        .into_iter()
+        .map(|(_, _, group)| group)
+        .collect::<Vec<_>>();
+    let mut filesystem_hypotheses = 0;
+    let mut bounded = Vec::new();
+    for mut group in groups {
+        if bounded.len() >= MAX_CANDIDATES {
+            break;
+        }
+        let filesystem_count = group
+            .alternatives
+            .iter()
+            .filter(|candidate| !matches!(candidate.kind, LinkTargetKind::Uri))
+            .count();
+        let remaining = MAX_CANDIDATES.saturating_sub(filesystem_hypotheses);
+        if filesystem_count > remaining {
+            group.alternatives.truncate(remaining);
+        }
+        if group.alternatives.is_empty() {
+            continue;
+        }
+        filesystem_hypotheses += group
+            .alternatives
+            .iter()
+            .filter(|candidate| !matches!(candidate.kind, LinkTargetKind::Uri))
+            .count();
+        bounded.push(group);
+    }
+    bounded
 }
 
 /// Insert suffixes before wrapping while preserving the original styled spans.
@@ -338,49 +549,48 @@ pub fn annotate(line: &mut Line<'static>, links: &[TaggedLink], style: Style) {
         .iter()
         .map(|span| span.content.as_ref())
         .collect();
-    let mut suffixes = Vec::new();
-    for link in links {
+    let mut matches = Vec::new();
+    for (order, link) in links.iter().enumerate() {
         for (start, _) in text.match_indices(&link.target) {
             let end = start + link.target.len();
-            let boundary = |c: char| {
-                c.is_whitespace()
-                    || matches!(
-                        c,
-                        '(' | ')'
-                            | '['
-                            | ']'
-                            | '<'
-                            | '>'
-                            | '"'
-                            | '\''
-                            | '`'
-                            | ','
-                            | ';'
-                            | '，'
-                            | '。'
-                            | '；'
-                            | ':'
-                            | '：'
-                    )
-            };
-            if text[..start].chars().next_back().is_none_or(boundary)
+            if text[..start]
+                .chars()
+                .next_back()
+                .is_none_or(is_target_boundary)
                 && text[end..].chars().next().is_none_or(|c| {
                     if matches!(c, '.' | ',' | ';' | ':' | '!' | '?') {
                         text[end + c.len_utf8()..]
                             .chars()
                             .next()
-                            .is_none_or(boundary)
+                            .is_none_or(is_target_boundary)
                     } else {
-                        boundary(c)
+                        is_target_boundary(c)
                     }
                 })
             {
-                suffixes.push((end, link.tag));
+                matches.push((start, end, order, link.tag));
             }
         }
     }
+    matches.sort_unstable_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| (right.1 - right.0).cmp(&(left.1 - left.0)))
+            .then_with(|| left.2.cmp(&right.2))
+    });
+    let mut selected: Vec<(usize, usize, char)> = Vec::new();
+    for (start, end, _, tag) in matches {
+        if selected.iter().all(|(selected_start, selected_end, _)| {
+            end <= *selected_start || start >= *selected_end
+        }) {
+            selected.push((start, end, tag));
+        }
+    }
+    let mut suffixes = selected
+        .into_iter()
+        .map(|(_, end, tag)| (end, tag))
+        .collect::<Vec<_>>();
     suffixes.sort_unstable();
-    suffixes.dedup_by_key(|entry| entry.0);
     let mut suffixes = suffixes.into_iter().peekable();
     let mut spans = Vec::new();
     let mut offset = 0;
@@ -411,6 +621,32 @@ pub fn annotate(line: &mut Line<'static>, links: &[TaggedLink], style: Style) {
 mod tests {
     use super::*;
 
+    fn candidates(groups: &[LinkCandidateGroup]) -> impl Iterator<Item = &LinkCandidate> {
+        groups.iter().flat_map(|group| group.alternatives.iter())
+    }
+
+    fn targets(source: &str) -> Vec<String> {
+        candidates(&discover(source))
+            .map(|candidate| candidate.target.clone())
+            .collect()
+    }
+
+    fn validation(alternatives: &[PathValidation]) -> CandidateGroupValidation {
+        CandidateGroupValidation {
+            alternatives: alternatives.to_vec(),
+        }
+    }
+
+    fn uri_validations(request: &LinkValidationRequest) -> Vec<CandidateGroupValidation> {
+        request
+            .groups
+            .iter()
+            .map(|group| CandidateGroupValidation {
+                alternatives: vec![PathValidation::NotRequired; group.alternatives.len()],
+            })
+            .collect()
+    }
+
     #[test]
     fn quick_links_after_chinese_colon_are_discovered_and_tagged() {
         let examples = [
@@ -426,22 +662,18 @@ mod tests {
             .map(|(label, target)| format!("- {label}：{target}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let candidates = discover(&source);
+        let groups = discover(&source);
         assert_eq!(
-            candidates
-                .iter()
+            candidates(&groups)
                 .map(|candidate| candidate.target.as_str())
                 .collect::<Vec<_>>(),
             examples.map(|(_, target)| target)
         );
-        assert!(candidates
-            .iter()
-            .all(|candidate| candidate.relative.is_none()));
-        let links: Vec<_> = candidates
-            .into_iter()
+        assert!(candidates(&groups).all(|candidate| matches!(candidate.kind, LinkTargetKind::Uri)));
+        let links: Vec<_> = candidates(&groups)
             .zip(TAGS.chars())
             .map(|(candidate, tag)| TaggedLink {
-                target: candidate.target,
+                target: candidate.target.clone(),
                 tag,
             })
             .collect();
@@ -470,10 +702,7 @@ mod tests {
             assert!(discover(source).is_empty(), "source: {source:?}");
         }
         assert_eq!(
-            discover("/ /tmp /tmp/ https://example.com/ src/main")
-                .iter()
-                .map(|candidate| candidate.target.as_str())
-                .collect::<Vec<_>>(),
+            targets("/ /tmp /tmp/ https://example.com/ src/main"),
             ["/tmp", "/tmp/", "https://example.com/", "src/main"]
         );
     }
@@ -503,12 +732,12 @@ mod tests {
                     lookup.program->entrypoints, L\"prepare_by_behavior\", group.behavior_index);\n\
                     // comment";
         for source in [code.to_owned(), format!("```cpp\n{code}\n```")] {
+            let groups = discover(&source);
             assert!(
-                discover(&source)
-                    .iter()
-                    .all(|candidate| candidate.relative.is_some()),
-                "false URI/absolute path: {:?}",
-                discover(&source)
+                candidates(&groups).all(|candidate| {
+                    matches!(candidate.kind, LinkTargetKind::WorkspaceRelative { .. })
+                }),
+                "false URI/absolute path: {groups:?}"
             );
         }
         for target in ["std::array", "drh1::work_graph_entrypoint_index()"] {
@@ -531,13 +760,7 @@ mod tests {
             targets.map(|target| format!("`{target}`")).join(" "),
             format!("```text\n{}\n```", targets.join(" ")),
         ] {
-            assert_eq!(
-                discover(&source)
-                    .iter()
-                    .map(|candidate| candidate.target.as_str())
-                    .collect::<Vec<_>>(),
-                targets
-            );
+            assert_eq!(super::tests::targets(&source), targets);
         }
     }
 
@@ -556,9 +779,7 @@ mod tests {
                 format!("```text\n{text}\n```"),
             ] {
                 assert!(
-                    discover(&source)
-                        .iter()
-                        .all(|candidate| candidate.target != text),
+                    targets(&source).iter().all(|candidate| candidate != text),
                     "false URI: {source:?}"
                 );
             }
@@ -577,41 +798,25 @@ mod tests {
             targets.map(|target| format!("`{target}`")).join(" "),
             targets.map(|target| format!("\"{target}\"")).join(" "),
         ] {
-            assert_eq!(
-                discover(&source)
-                    .iter()
-                    .map(|candidate| candidate.target.as_str())
-                    .collect::<Vec<_>>(),
-                targets
-            );
+            assert_eq!(super::tests::targets(&source), targets);
         }
         assert!(discover("`feat: refine skill reads, preview and link targets`").is_empty());
     }
 
     #[test]
     fn quick_links_do_not_join_space_separated_command_syntax() {
-        assert_eq!(
-            discover("/opsx-apply <other>")
-                .iter()
-                .map(|candidate| candidate.target.as_str())
-                .collect::<Vec<_>>(),
-            Vec::<&str>::new()
-        );
-        assert_eq!(
-            discover(r#""/opsx-apply <other>""#)
-                .iter()
-                .map(|candidate| candidate.target.as_str())
-                .collect::<Vec<_>>(),
-            ["/opsx-apply <other>"]
-        );
+        assert_eq!(targets("/opsx-apply <other>"), Vec::<&str>::new());
+        assert_eq!(targets(r#""/opsx-apply <other>""#), ["/opsx-apply <other>"]);
     }
 
     #[test]
     fn quick_links_discover_mixed_paths_without_probing_prose() {
-        let candidates = discover(
+        let groups = discover(
             r"See https://example.com/docs, C:\Users\test\README.md and /tmp/session.jsonl. `src/main` README Makefile .gitignore foo/ src\lib.rs ../escape `a b/file.rs` [guide](https://example.com/docs)",
         );
-        let values: Vec<_> = candidates.iter().map(|c| c.target.as_str()).collect();
+        let values: Vec<_> = candidates(&groups)
+            .map(|candidate| candidate.target.as_str())
+            .collect();
         assert_eq!(
             values,
             [
@@ -629,24 +834,125 @@ mod tests {
         );
         assert!(discover("ordinary lowercase prose without paths").is_empty());
         assert_eq!(
-            discover("[src/first.rs](src/second.rs)")
-                .iter()
-                .map(|candidate| candidate.target.as_str())
-                .collect::<Vec<_>>(),
+            targets("[src/first.rs](src/second.rs)"),
             ["src/first.rs", "src/second.rs"]
         );
         assert_eq!(
-            discover(r#""C:\Program Files\app.exe" "src/a b.rs""#)
-                .iter()
-                .map(|candidate| candidate.target.as_str())
-                .collect::<Vec<_>>(),
+            targets(r#""C:\Program Files\app.exe" "src/a b.rs""#),
             [r"C:\Program Files\app.exe", "src/a b.rs"]
         );
         assert_eq!(relative_path("src/../README").as_deref(), Some("README"));
         assert_eq!(relative_path("src/../../outside"), None);
         assert_eq!(
-            discover("mailto:a@example.com https://example.com/a(b).")[1].target,
+            discover("mailto:a@example.com https://example.com/a(b).")[1].alternatives[0].target,
             "https://example.com/a(b)"
+        );
+    }
+
+    #[test]
+    fn quick_links_group_chinese_wrapper_hypotheses_and_require_existence() {
+        let source = "final-report/2_virtual_geometry_demo.html（+340/−7 行）";
+        let groups = discover(source);
+        assert_eq!(groups.len(), 1);
+        assert!(groups[0].require_existing);
+        assert_eq!(
+            groups[0]
+                .alternatives
+                .iter()
+                .map(|candidate| candidate.target.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "final-report/2_virtual_geometry_demo.html（+340/−7",
+                "final-report/2_virtual_geometry_demo.html",
+            ]
+        );
+
+        let resolve = |statuses: &[PathValidation]| {
+            let mut state = LinkCopyState::default();
+            let request = state
+                .select(DisplayId::event(1, "answer"), source, "root")
+                .unwrap();
+            assert!(state.complete(&request, &[validation(statuses)]));
+            state.links.first().map(|link| link.target.clone())
+        };
+        assert_eq!(
+            resolve(&[PathValidation::Missing, PathValidation::Exists]).as_deref(),
+            Some("final-report/2_virtual_geometry_demo.html")
+        );
+        assert_eq!(
+            resolve(&[PathValidation::Exists, PathValidation::Exists]).as_deref(),
+            Some("final-report/2_virtual_geometry_demo.html（+340/−7")
+        );
+        assert_eq!(
+            resolve(&[PathValidation::Exists, PathValidation::Missing]).as_deref(),
+            Some("final-report/2_virtual_geometry_demo.html（+340/−7")
+        );
+        assert_eq!(
+            resolve(&[PathValidation::Missing, PathValidation::Missing]),
+            None
+        );
+    }
+
+    #[test]
+    fn quick_links_soft_boundaries_annotate_and_longest_overlap_wins() {
+        let wrappers = ['（', '【', '〔', '《', '〈', '［', '｛'];
+        let mut line = Line::raw(
+            wrappers
+                .iter()
+                .map(|wrapper| format!("src/main.rs{wrapper}note"))
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+        annotate(
+            &mut line,
+            &[TaggedLink {
+                target: "src/main.rs".into(),
+                tag: '1',
+            }],
+            Style::default(),
+        );
+        for wrapper in wrappers {
+            assert!(line
+                .to_string()
+                .contains(&format!("src/main.rs~1{wrapper}")));
+        }
+
+        let mut line = Line::raw("path（note） path");
+        annotate(
+            &mut line,
+            &[
+                TaggedLink {
+                    target: "path".into(),
+                    tag: '1',
+                },
+                TaggedLink {
+                    target: "path（note）".into(),
+                    tag: '2',
+                },
+            ],
+            Style::default(),
+        );
+        assert_eq!(line.to_string(), "path（note）~2 path~1");
+    }
+
+    #[test]
+    fn quick_links_bound_total_filesystem_hypotheses() {
+        let source = (0..300)
+            .map(|index| format!("path/{index}.rs（note"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let groups = discover(&source);
+        assert!(groups.len() <= MAX_CANDIDATES);
+        assert!(groups
+            .iter()
+            .all(|group| group.alternatives.len() <= MAX_ALTERNATIVES_PER_GROUP));
+        assert!(
+            groups
+                .iter()
+                .flat_map(|group| &group.alternatives)
+                .filter(|candidate| !matches!(candidate.kind, LinkTargetKind::Uri))
+                .count()
+                <= MAX_CANDIDATES
         );
     }
 
@@ -660,13 +966,14 @@ mod tests {
         let request = state
             .select(DisplayId::event(1, "answer"), &source, "root")
             .unwrap();
-        assert!(state.complete(&request, &[]));
+        let validations = uri_validations(&request);
+        assert!(state.complete(&request, &validations));
         assert_eq!(state.links.len(), 36);
         assert_eq!(state.links[0].tag, '1');
         assert_eq!(state.links[9].tag, '0');
         assert_eq!(state.links[35].tag, 'z');
         state.clear();
-        assert!(!state.complete(&request, &[]));
+        assert!(!state.complete(&request, &validations));
         let request = state
             .select(
                 DisplayId::event(2, "answer"),
@@ -677,10 +984,10 @@ mod tests {
         assert!(state.complete(
             &request,
             &[
-                PathValidation::Exists,
-                PathValidation::Missing,
-                PathValidation::Rejected,
-                PathValidation::Missing
+                validation(&[PathValidation::Exists]),
+                validation(&[PathValidation::Missing]),
+                validation(&[PathValidation::Rejected]),
+                validation(&[PathValidation::Missing]),
             ]
         ));
         assert_eq!(

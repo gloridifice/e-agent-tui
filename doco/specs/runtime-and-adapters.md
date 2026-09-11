@@ -11,6 +11,7 @@
 
 - `RuntimeController` MUST return owned actions/effects. Runners MUST release frontend state guards before awaiting or performing external work.
 - The shared executor MUST process effects in order and return every completion for reduction; it MUST NOT borrow UI state or silently drop effects.
+- Quick-link filesystem validation MUST remain adapter-owned, bounded, and outside frontend state guards. URI targets require no probe. Workspace-relative targets MUST remain contained after lexical and symlink resolution. Absolute targets MUST exist in the native filesystem but MAY resolve outside the workspace; foreign-platform syntax and Windows UNC/device namespaces MUST be rejected without probing. Validation MUST NOT replace the source spelling returned for copy.
 - Code MUST NOT re-lock or await while an `if let` or `match` scrutinee still owns a state guard.
 - Terminal setup, restoration, event routing, synchronized frame submission, and shared scheduling policy belong to `e-tui`; provider selection loops and external ports remain adapter-owned.
 

@@ -25,5 +25,6 @@
 
 - Rendering layers point downward as Screen to Pane to Region to Component. Provider-specific rendering is forbidden.
 - Visual mouse selection copies only committed visible cells, remains inside its starting pane, preserves graphemes, and excludes separators. Reading copy uses complete owning-block source instead.
+- Quick-link discovery from the latest completed assistant Markdown MUST remain pure and bounded. URI, absolute-path, and workspace-relative targets MUST be classified explicitly. Chinese/full-width opening wrappers are soft local-path boundaries: discovery retains longest-first hypotheses, validation selects at most one existing interpretation, and no interpretation is retained when an ambiguous group has no existing path. Selected targets are deduplicated before the first 36 receive presentation-only tags; overlapping rendered matches use the longest selected target, while semantic and copied source remains unchanged.
 - Selection holds an immutable presented snapshot while background reduction continues; cancellation or release restores live rendering without losing dirty work.
 - The terminal hardware cursor MUST remain hidden; the TUI uses a software cursor and a separate IME anchor.

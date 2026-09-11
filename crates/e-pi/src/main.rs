@@ -87,7 +87,7 @@ impl UiActionPorts for PiRuntimePorts {
     async fn validate_links(
         &mut self,
         request: &e_tui::link_copy::LinkValidationRequest,
-    ) -> Vec<e_tui::link_copy::PathValidation> {
+    ) -> Vec<e_tui::link_copy::CandidateGroupValidation> {
         let request = request.clone();
         tokio::task::spawn_blocking(move || e_pi::path_completion::validate_links(&request))
             .await

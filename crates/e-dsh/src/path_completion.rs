@@ -56,61 +56,107 @@ pub fn complete(request: &PathCompletionRequest) -> Vec<PathCandidate> {
     candidates
 }
 
+fn absolute_is_probeable(path: &Path) -> bool {
+    if !path.is_absolute() {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        use std::path::Prefix;
+        matches!(
+            path.components().next(),
+            Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::Disk(_))
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
+}
+
+fn validate_absolute(target: &str) -> e_tui::link_copy::PathValidation {
+    use e_tui::link_copy::PathValidation::{Exists, Missing, Rejected};
+    let path = Path::new(target);
+    if !absolute_is_probeable(path) {
+        return Rejected;
+    }
+    match path.canonicalize() {
+        Ok(_) => Exists,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Missing,
+        Err(_) => Rejected,
+    }
+}
+
+fn validate_relative(root: Option<&Path>, relative: &str) -> e_tui::link_copy::PathValidation {
+    use e_tui::link_copy::PathValidation::{Exists, Missing, Rejected};
+    let Some(root) = root else {
+        return Rejected;
+    };
+    let relative = Path::new(relative);
+    if relative
+        .components()
+        .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
+    {
+        return Rejected;
+    }
+    let mut path = root.join(relative);
+    let mut missing = false;
+    loop {
+        match path.canonicalize() {
+            Ok(resolved) => {
+                return if !resolved.starts_with(root) {
+                    Rejected
+                } else if missing {
+                    Missing
+                } else {
+                    Exists
+                };
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if path
+                    .symlink_metadata()
+                    .is_ok_and(|metadata| metadata.file_type().is_symlink())
+                {
+                    return Rejected;
+                }
+                missing = true;
+                if !path.pop() {
+                    return Rejected;
+                }
+            }
+            Err(_) => return Rejected,
+        }
+    }
+}
+
 pub fn validate_links(
     request: &e_tui::link_copy::LinkValidationRequest,
-) -> Vec<e_tui::link_copy::PathValidation> {
-    use e_tui::link_copy::PathValidation::{Exists, Missing, Rejected};
-    let root = request
-        .candidates
-        .iter()
-        .any(|candidate| candidate.relative.is_some())
+) -> Vec<e_tui::link_copy::CandidateGroupValidation> {
+    use e_tui::link_copy::{CandidateGroupValidation, LinkTargetKind, PathValidation::NotRequired};
+    let needs_root = request.groups.iter().any(|group| {
+        group
+            .alternatives
+            .iter()
+            .any(|candidate| matches!(candidate.kind, LinkTargetKind::WorkspaceRelative { .. }))
+    });
+    let root = needs_root
         .then(|| Path::new(&request.cwd).canonicalize().ok())
         .flatten();
     request
-        .candidates
+        .groups
         .iter()
-        .map(|candidate| {
-            let Some(relative) = &candidate.relative else {
-                return Exists;
-            };
-            let Some(root) = &root else {
-                return Rejected;
-            };
-            let relative = Path::new(relative);
-            if relative
-                .components()
-                .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
-            {
-                return Rejected;
-            }
-            let mut path = root.join(relative);
-            let mut missing = false;
-            loop {
-                match path.canonicalize() {
-                    Ok(resolved) => {
-                        return if !resolved.starts_with(root) {
-                            Rejected
-                        } else if missing {
-                            Missing
-                        } else {
-                            Exists
-                        }
+        .map(|group| CandidateGroupValidation {
+            alternatives: group
+                .alternatives
+                .iter()
+                .map(|candidate| match &candidate.kind {
+                    LinkTargetKind::Uri => NotRequired,
+                    LinkTargetKind::AbsolutePath => validate_absolute(&candidate.target),
+                    LinkTargetKind::WorkspaceRelative { normalized } => {
+                        validate_relative(root.as_deref(), normalized)
                     }
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        if path
-                            .symlink_metadata()
-                            .is_ok_and(|metadata| metadata.file_type().is_symlink())
-                        {
-                            return Rejected;
-                        }
-                        missing = true;
-                        if !path.pop() {
-                            return Rejected;
-                        }
-                    }
-                    Err(_) => return Rejected,
-                }
-            }
+                })
+                .collect(),
         })
         .collect()
 }
@@ -143,13 +189,69 @@ mod tests {
         let request = LinkValidationRequest {
             generation: 1,
             cwd: root.path().to_str().unwrap().into(),
-            candidates: discover(
+            groups: discover(
                 "src/main README ./missing.rs escape/ escape/missing.rs https://example.com",
             ),
         };
         assert_eq!(
-            super::validate_links(&request),
-            [Exists, Exists, Missing, Rejected, Rejected, Exists]
+            super::validate_links(&request)
+                .into_iter()
+                .flat_map(|group| group.alternatives)
+                .collect::<Vec<_>>(),
+            [
+                Exists,
+                Exists,
+                Missing,
+                Rejected,
+                Rejected,
+                e_tui::link_copy::PathValidation::NotRequired,
+            ]
         );
+    }
+
+    #[test]
+    fn quick_links_validate_ambiguous_and_external_absolute_paths() {
+        use e_tui::link_copy::{
+            discover, LinkValidationRequest,
+            PathValidation::{Exists, Missing, NotRequired, Rejected},
+        };
+        let root = tempfile::tempdir().unwrap();
+        let report_dir = root.path().join("final-report");
+        std::fs::create_dir(&report_dir).unwrap();
+        std::fs::write(report_dir.join("2_virtual_geometry_demo.html"), "").unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let external = outside.path().join("external.txt");
+        std::fs::write(&external, "").unwrap();
+        let missing = outside.path().join("missing.txt");
+        let source = format!(
+            "final-report/2_virtual_geometry_demo.html（+340/−7 行） \"{}\" \"{}\" https://example.com",
+            external.display(),
+            missing.display()
+        );
+        let request = LinkValidationRequest {
+            generation: 1,
+            cwd: root.path().to_string_lossy().into_owned(),
+            groups: discover(&source),
+        };
+        assert_eq!(
+            super::validate_links(&request)
+                .into_iter()
+                .flat_map(|group| group.alternatives)
+                .collect::<Vec<_>>(),
+            [Missing, Exists, Exists, Missing, NotRequired]
+        );
+
+        #[cfg(windows)]
+        {
+            assert!(!super::absolute_is_probeable(std::path::Path::new(
+                r"\\server\share\file.txt"
+            )));
+            assert!(!super::absolute_is_probeable(std::path::Path::new(
+                r"\\.\device"
+            )));
+            assert_eq!(super::validate_absolute("/tmp/foreign.txt"), Rejected);
+        }
+        #[cfg(not(windows))]
+        assert_eq!(super::validate_absolute(r"C:\foreign\file.txt"), Rejected);
     }
 }

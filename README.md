@@ -42,7 +42,7 @@ cargo install e-pi
 pie
 ```
 
-`pie` launches the official `pi --mode rpc` runtime and reuses Pi's native models, credentials, extensions, resources, and session files. Use `pie --session <session.jsonl>` to resume directly; `pie --approve` or `pie --no-approve` explicitly overrides Pi's native project-trust behavior. Run `pie --help` for all launch options.
+`pie` launches the official `pi --mode rpc` runtime and reuses Pi's native models, credentials, extensions, resources, and session files. Inside `pie`, use `/login [provider]` for Pi's native API-key, OAuth, browser, device-code, and multi-step setup flows, and `/logout` to remove a stored credential. Use `pie --session <session.jsonl>` to resume directly; `pie --approve` or `pie --no-approve` explicitly overrides Pi's native project-trust behavior. Run `pie --help` for all launch options.
 
 Type `@` in the composer to browse project-relative paths. Use ↑/↓ to select, Tab or Enter to fill (directories continue browsing), and Esc to dismiss; Enter sends only after file completion closes. Paths containing spaces are quoted automatically.
 

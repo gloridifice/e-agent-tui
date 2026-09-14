@@ -16,7 +16,8 @@
 
 ## External effects
 
-- Clipboard, path completion, theme discovery/installation, config writes, and Preview file resolution remain adapter-owned and execute outside frontend locks.
+- Clipboard, path completion, theme discovery/installation, config writes, Preview file resolution, browser opening, and native authentication remain adapter-owned and execute outside frontend locks.
+- Pi credentials remain in Pi's native store and environment resolution. Rust MUST NOT read or write `auth.json`, persist tokens in shared frontend config/history, or retry a credential mutation automatically after an uncertain or partial outcome.
 - Async results MUST carry enough generation, draft, target, and workspace identity to reject stale completion.
 
 ## Execution history

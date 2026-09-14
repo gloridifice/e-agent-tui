@@ -245,8 +245,8 @@ fn image_to_wire(image: e_tui::PromptImage) -> WirePromptImage {
     }
 }
 
-pub fn agent_request_to_client(request: AgentRequest) -> ClientMessage {
-    match request {
+pub fn agent_request_to_client(request: AgentRequest) -> Result<ClientMessage, String> {
+    Ok(match request {
         AgentRequest::Input { prompt } => ClientMessage::Input {
             content: prompt_to_wire(prompt),
             mode: "queue".into(),
@@ -286,6 +286,15 @@ pub fn agent_request_to_client(request: AgentRequest) -> ClientMessage {
             limit,
         },
         AgentRequest::LoginGet => ClientMessage::LoginGet,
+        AgentRequest::AuthGet { .. }
+        | AgentRequest::AuthStart { .. }
+        | AgentRequest::AuthReply { .. }
+        | AgentRequest::AuthOpenUrl { .. }
+        | AgentRequest::AuthCancel => {
+            return Err(
+                "native Pi authentication is not available from the DSH frontend".to_owned(),
+            )
+        }
         AgentRequest::LoginSetApiKey { provider, value } => {
             ClientMessage::LoginSetApiKey { provider, value }
         }
@@ -312,7 +321,7 @@ pub fn agent_request_to_client(request: AgentRequest) -> ClientMessage {
             reasoning_effort,
         },
         AgentRequest::Ping => ClientMessage::Ping,
-    }
+    })
 }
 
 pub fn normalize_host_event(event: HostEvent) -> TimelineRecord {
@@ -1093,7 +1102,8 @@ mod tests {
                     PromptPart::Text("after".into()),
                 ],
             },
-        });
+        })
+        .unwrap();
         let ClientMessage::Input { content, mode } = message else {
             panic!("expected input")
         };
@@ -1120,7 +1130,8 @@ mod tests {
                 error: Some(error),
             }) if session_id == "s1" && prompts == ["same", "same"] && error == "cannot clear"));
         assert_eq!(
-            serde_json::to_value(agent_request_to_client(AgentRequest::ClearAsap)).unwrap(),
+            serde_json::to_value(agent_request_to_client(AgentRequest::ClearAsap).unwrap())
+                .unwrap(),
             serde_json::json!({"type": "clear-asap"})
         );
     }
@@ -1129,7 +1140,8 @@ mod tests {
     fn steering_prompt_sets_the_wire_input_mode() {
         let message = agent_request_to_client(AgentRequest::Steer {
             prompt: PromptInput::text("now"),
-        });
+        })
+        .unwrap();
         assert_eq!(
             serde_json::to_value(message).unwrap(),
             serde_json::json!({
@@ -1321,7 +1333,8 @@ mod tests {
                 selected: vec!["A".into()],
                 custom: None,
             }],
-        });
+        })
+        .unwrap();
         assert!(matches!(
             message,
             ClientMessage::AnswerQuestions { rpc_id, answers }

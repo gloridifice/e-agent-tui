@@ -6,6 +6,7 @@
 //! child-process transport and conversion to/from `e-tui`'s normalized API.
 
 pub mod adapter;
+pub mod auth;
 pub mod config;
 pub mod effects;
 pub mod execution_history_store;

@@ -385,10 +385,82 @@ fn selection_copies_page_masks_and_collapsed_labels_not_source() {
     assert!(copied.contains("●●"));
     assert!(!copied.contains("secret-key-value"));
     assert!(!copied.contains("photo.png"));
+    {
+        let mut page = InputPageSession::authentication(None, false);
+        if let InputPage::Login(login) = &mut page.page {
+            login.start_auth("flow".into());
+            login.apply_auth_prompt(crate::agent::AuthPrompt {
+                flow_id: "flow".into(),
+                prompt_id: "secret".into(),
+                kind: crate::agent::AuthPromptKind::Secret,
+                message: "Enter provider secret".into(),
+                placeholder: None,
+                options: Vec::new(),
+            });
+            login.editing = Some("native-secret-value".into());
+        }
+        h.state.lock().unwrap().interaction.input_page = Some(page);
+    }
+    h.render();
+    let copied = h.copy_screen();
+    assert!(copied.contains("Enter provider secret"));
+    assert!(copied.contains("●●"));
+    assert!(!copied.contains("native-secret-value"));
+    if let Some(InputPageSession {
+        page: InputPage::Login(login),
+        ..
+    }) = h.state.lock().unwrap().interaction.input_page.as_mut()
+    {
+        login.apply_auth_prompt(crate::agent::AuthPrompt {
+            flow_id: "flow".into(),
+            prompt_id: "manual".into(),
+            kind: crate::agent::AuthPromptKind::ManualCode,
+            message: "Paste callback value".into(),
+            placeholder: None,
+            options: Vec::new(),
+        });
+        login.editing = Some("manual-sensitive-value".into());
+    }
+    h.render();
+    let copied = h.copy_screen();
+    assert!(copied.contains("Paste callback value"));
+    assert!(copied.contains("●●"));
+    assert!(!copied.contains("manual-sensitive-value"));
     h.state.lock().unwrap().interaction.input_page =
         Some(InputPageSession::settings(Default::default()));
     h.render();
     h.copy_text("/settings");
+}
+
+#[test]
+fn native_select_keeps_the_focused_option_visible_while_scrolling() {
+    let mut h = Harness::new();
+    {
+        let mut page = InputPageSession::authentication(None, false);
+        if let InputPage::Login(login) = &mut page.page {
+            login.start_auth("flow".into());
+            login.apply_auth_prompt(crate::agent::AuthPrompt {
+                flow_id: "flow".into(),
+                prompt_id: "select".into(),
+                kind: crate::agent::AuthPromptKind::Select,
+                message: "Choose an account".into(),
+                placeholder: None,
+                options: (0..40)
+                    .map(|index| crate::agent::AuthPromptOption {
+                        value: format!("option-{index}"),
+                        label: format!("Option {index}"),
+                        description: None,
+                    })
+                    .collect(),
+            });
+            login.pos = 39;
+        }
+        h.state.lock().unwrap().interaction.input_page = Some(page);
+    }
+    h.render();
+    let copied = h.copy_screen();
+    assert!(copied.contains("Choose an account"));
+    assert!(copied.contains("Option 39"), "{copied}");
 }
 
 #[test]

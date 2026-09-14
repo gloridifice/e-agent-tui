@@ -190,13 +190,16 @@ struct DshAgentPort<'a, T> {
     outbound: &'a T,
 }
 
-impl<T: BridgeTransportPort> AgentRequestPort for DshAgentPort<'_, T> {
+impl<T: BridgeTransportPort + Sync> AgentRequestPort for DshAgentPort<'_, T> {
     fn send_agent_request(
         &mut self,
         request: e_tui::AgentRequest,
     ) -> impl std::future::Future<Output = Result<(), String>> + Send {
-        self.outbound
-            .send_message(e_dsh::bridge::adapter::agent_request_to_client(request))
+        let outbound = self.outbound;
+        async move {
+            let message = e_dsh::bridge::adapter::agent_request_to_client(request)?;
+            outbound.send_message(message).await
+        }
     }
 }
 

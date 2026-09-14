@@ -169,6 +169,11 @@ pub(super) fn route(adapter: &mut PiAdapter, request: AgentRequest) -> AdapterOu
             },
         )),
         AgentRequest::LoginGet
+        | AgentRequest::AuthGet { .. }
+        | AgentRequest::AuthStart { .. }
+        | AgentRequest::AuthReply { .. }
+        | AgentRequest::AuthOpenUrl { .. }
+        | AgentRequest::AuthCancel
         | AgentRequest::LoginSetApiKey { .. }
         | AgentRequest::LoginProxyCreate { .. }
         | AgentRequest::LoginProxyDelete { .. } => adapter.unsupported(

@@ -209,21 +209,6 @@ fn dispatch_response(adapter: &mut PiAdapter, record: RpcRecord) -> AdapterOutpu
         "get_messages" => session::messages_response(adapter, response.data.as_ref()),
         "get_commands" => adapter.commands_response(response.data.as_ref()),
         "get_available_models" => model::models_response(adapter, response.data.as_ref()),
-        "get_available_thinking_levels" => {
-            if let Some(levels) = response
-                .data
-                .as_ref()
-                .and_then(|data| data.get("levels"))
-                .and_then(Value::as_array)
-            {
-                adapter.thinking_levels = levels
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_owned)
-                    .collect();
-            }
-            model::available_model_catalog(adapter)
-        }
         "new_session" => {
             let Some(id) = response.id else {
                 return adapter.protocol_error("new_session response has no id".into());

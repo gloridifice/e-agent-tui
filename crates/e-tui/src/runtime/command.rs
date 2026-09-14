@@ -203,6 +203,19 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
         submit_skill(line, &context, &mut outcome);
         return outcome;
     }
+    let is_pi = context.state.lock().unwrap().frontend == crate::FrontendKind::Pi;
+    if name == "logout" && is_pi {
+        if !raw_input.trim().is_empty() {
+            push_error(context.state, "Usage: /logout");
+        } else {
+            *context.input_page = Some(InputPageSession::authentication(None, true));
+            outcome.outbound.push(AgentRequest::AuthGet {
+                provider_ref: None,
+                logout: true,
+            });
+        }
+        return outcome;
+    }
     let Some(command) = builtin_command(name) else {
         // A client-only draft is not attached to an agent of its own. Never
         // let an integrated command mutate the retained old session.
@@ -238,11 +251,24 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
             }));
         }
         CommandAction::Login => {
-            if reject_arguments(&context, name, raw_input) {
-                return outcome;
+            if is_pi {
+                let provider_ref =
+                    (!raw_input.trim().is_empty()).then(|| raw_input.trim().to_owned());
+                *context.input_page = Some(InputPageSession::authentication(
+                    provider_ref.clone(),
+                    false,
+                ));
+                outcome.outbound.push(AgentRequest::AuthGet {
+                    provider_ref,
+                    logout: false,
+                });
+            } else {
+                if reject_arguments(&context, name, raw_input) {
+                    return outcome;
+                }
+                *context.input_page = Some(InputPageSession::login());
+                outcome.outbound.push(AgentRequest::LoginGet);
             }
-            *context.input_page = Some(InputPageSession::login());
-            outcome.outbound.push(AgentRequest::LoginGet);
         }
         CommandAction::Theme => {
             if reject_arguments(&context, name, raw_input) {
@@ -856,5 +882,55 @@ mod tests {
                 reasoning_effort: Some(effort),
             }] if provider == "openai" && model == "gpt" && effort == "high"
         ));
+    }
+
+    #[test]
+    fn pi_login_and_logout_are_local_authentication_commands() {
+        for (line, expected_ref, logout) in [
+            ("/login", None, false),
+            ("/login OpenAI", Some("OpenAI"), false),
+            ("/login Google Gemini", Some("Google Gemini"), false),
+            ("/logout", None, true),
+        ] {
+            let state = Arc::new(Mutex::new(RuntimeState::default()));
+            state.lock().unwrap().frontend = crate::FrontendKind::Pi;
+            let mut input_page = None;
+            let mut config = Config::default();
+            let mut themes = Vec::new();
+            let mut paste = config.paste_placeholder_chars;
+            let mut history = config.history_limit;
+            let mut theme = config.theme();
+            let outcome = handle_local_command(
+                line.into(),
+                LocalCommandContext {
+                    language: config.language,
+                    input_page: &mut input_page,
+                    integrated_commands: &[],
+                    config: &mut config,
+                    themes: &mut themes,
+                    new_modes: &[],
+                    model_providers: &[],
+                    current_model: None,
+                    input_paste_placeholder_chars: &mut paste,
+                    input_history_limit: &mut history,
+                    theme: &mut theme,
+                    question_open: false,
+                    approval_open: false,
+                    state: &state,
+                },
+            );
+            assert!(matches!(
+                outcome.outbound.as_slice(),
+                [AgentRequest::AuthGet { provider_ref, logout: actual_logout }]
+                    if provider_ref.as_deref() == expected_ref && *actual_logout == logout
+            ));
+            assert!(matches!(
+                input_page,
+                Some(InputPageSession {
+                    page: crate::input_page::InputPage::Login(_),
+                    ..
+                })
+            ));
+        }
     }
 }

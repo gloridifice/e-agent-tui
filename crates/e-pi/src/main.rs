@@ -13,7 +13,8 @@ use std::{collections::VecDeque, path::PathBuf};
 
 use anyhow::{bail, Context};
 use e_pi::{
-    adapter::{AdapterOutput, PiAdapter},
+    adapter::{AdapterOutput, PiAdapter, AUTH_REFRESH_COMMAND},
+    auth::{control_from_record, AuthAction, AuthAssets, AuthControl, AuthManager},
     process::{PiLaunchOptions, PiProcess, PiProcessEvent, ProjectTrust},
     protocol::RpcCommand,
 };
@@ -219,6 +220,38 @@ async fn route_output(
     Ok(())
 }
 
+async fn route_auth_action(
+    action: AuthAction,
+    rpc: &tokio::sync::mpsc::Sender<RpcCommand>,
+    pending: &mut VecDeque<AgentEvent>,
+) -> Result<(), String> {
+    match action {
+        AuthAction::Event(event) => pending.push_back(event),
+        AuthAction::RefreshRuntime { flow_id, provider } => {
+            let payload = serde_json::to_string(&serde_json::json!({
+                "flowId": &flow_id,
+                "provider": &provider,
+            }))
+            .map_err(|error| format!("cannot encode Pi authentication refresh: {error}"))?;
+            rpc.send(RpcCommand::Prompt {
+                id: Some(format!("auth-refresh-{flow_id}")),
+                message: format!("/{AUTH_REFRESH_COMMAND} {payload}"),
+                streaming_behavior: None,
+            })
+            .await
+            .map_err(|_| "Pi RPC stdin channel closed".to_owned())?;
+        }
+        AuthAction::Ignore | AuthAction::Deadline => {}
+        AuthAction::Fatal(message) => pending.push_back(AgentEvent::Interaction(
+            e_tui::agent::InteractionEvent::Error {
+                code: "pi-authentication".into(),
+                message,
+            },
+        )),
+    }
+    Ok(())
+}
+
 async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
     let mut phases =
         e_tui::profile::PhaseTimers::new(std::env::var("DSH_TUI_TIMING").as_deref() == Ok("1"));
@@ -248,6 +281,11 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
     if launch.session.is_none() && config.remember_last_session {
         launch.session = e_pi::config::StateFile::load().last_session_path;
     }
+    let auth_assets = AuthAssets::materialize().context("prepare Pi authentication assets")?;
+    launch
+        .extension_paths
+        .push(auth_assets.companion().to_path_buf());
+    let mut auth = AuthManager::new(auth_assets);
     let _z = e_tui::tracy_zone!("Pi RPC spawn");
     let mut process = PiProcess::spawn(&launch).await?;
     let rpc = process.sender();
@@ -344,6 +382,49 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
                 maybe = process.recv() => {
                     match maybe {
                         Some(PiProcessEvent::Record(record)) => {
+                            if let Some(control) = control_from_record(&record) {
+                                match control {
+                                    Ok(AuthControl::Context { context }) => {
+                                        let configured = tokio::time::timeout(
+                                            Duration::from_secs(15),
+                                            auth.configure(context),
+                                        )
+                                        .await;
+                                        let error = match configured {
+                                            Ok(Ok(())) => None,
+                                            Ok(Err(error)) => Some(error),
+                                            Err(_) => Some("Pi authentication helper startup timed out".into()),
+                                        };
+                                        if let Some(error) = error {
+                                            pending_inbound.push_back(AgentEvent::Interaction(
+                                                e_tui::agent::InteractionEvent::Error {
+                                                    code: "pi-authentication".into(),
+                                                    message: error,
+                                                },
+                                            ));
+                                        }
+                                    }
+                                    Ok(control) => {
+                                        for action in auth.control(control) {
+                                            if let Err(error) = route_auth_action(action, &rpc, &mut pending_inbound).await {
+                                                fatal = Some(error);
+                                                break 'outer;
+                                            }
+                                        }
+                                        let output = adapter.request(AgentRequest::ModelGet);
+                                        if let Err(error) = route_output(output, &rpc, &mut pending_inbound, &history, &mut reported_history_error).await {
+                                            fatal = Some(error);
+                                            break 'outer;
+                                        }
+                                    }
+                                    Err(error) => pending_inbound.push_back(AgentEvent::Interaction(
+                                        e_tui::agent::InteractionEvent::Error {
+                                            code: "pi-authentication".into(),
+                                            message: error,
+                                        },
+                                    )),
+                                }
+                            }
                             if let Err(error) = route_output(adapter.record(record), &rpc, &mut pending_inbound, &history, &mut reported_history_error).await {
                                 fatal = Some(error);
                                 break 'outer;
@@ -371,11 +452,59 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
                         fatal = Some("Pi adapter request channel closed".into());
                         break 'outer;
                     };
-                    if let Err(error) = route_output(adapter.request(request), &rpc, &mut pending_inbound, &history, &mut reported_history_error).await {
+                    if matches!(
+                        &request,
+                        AgentRequest::AuthGet { .. }
+                            | AgentRequest::AuthStart { .. }
+                            | AgentRequest::AuthReply { .. }
+                            | AgentRequest::AuthOpenUrl { .. }
+                            | AgentRequest::AuthCancel
+                    ) {
+                        let blocked = matches!(&request, AgentRequest::AuthStart { .. }) && {
+                            let state = state_r.lock().unwrap();
+                            state.session.status != e_tui::SessionStatus::Idle || state.session.working
+                        };
+                        if blocked {
+                            pending_inbound.push_back(AgentEvent::Interaction(
+                                e_tui::agent::InteractionEvent::AuthStarted {
+                                    flow_id: "blocked".into(),
+                                },
+                            ));
+                            pending_inbound.push_back(AgentEvent::Interaction(
+                                e_tui::agent::InteractionEvent::AuthFinished {
+                                    flow_id: "blocked".into(),
+                                    outcome: e_tui::agent::AuthOutcomeKind::Failed,
+                                    message: "Wait for the current Pi turn to finish before changing credentials".into(),
+                                },
+                            ));
+                        } else {
+                            for action in auth.request(request) {
+                                if let Err(error) = route_auth_action(action, &rpc, &mut pending_inbound).await {
+                                    fatal = Some(error);
+                                    break 'outer;
+                                }
+                            }
+                        }
+                    } else if let Err(error) = route_output(adapter.request(request), &rpc, &mut pending_inbound, &history, &mut reported_history_error).await {
                         fatal = Some(error);
                         break 'outer;
                     }
                     first_inbound = pending_inbound.pop_front();
+                }
+                action = auth.recv() => {
+                    if let Some(action) = action {
+                        if let Err(error) = route_auth_action(action, &rpc, &mut pending_inbound).await {
+                            fatal = Some(error);
+                            break 'outer;
+                        }
+                        for action in auth.expire_deadlines() {
+                            if let Err(error) = route_auth_action(action, &rpc, &mut pending_inbound).await {
+                                fatal = Some(error);
+                                break 'outer;
+                            }
+                        }
+                        first_inbound = pending_inbound.pop_front();
+                    }
                 }
                 batch = session_loader.next_batch() => {
                     RuntimeController::apply_resume_batch(batch, &state_r);
@@ -737,6 +866,7 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
     if let Err(error) = history_shutdown {
         eprintln!("{error}");
     }
+    auth.shutdown().await;
     process.shutdown().await;
     terminal.restore_terminal().ok();
     if let Some(reason) = fatal {
@@ -758,6 +888,36 @@ mod tests {
         let cli = parse_cli_from(args(&[])).unwrap();
         assert_eq!(cli.launch.trust, ProjectTrust::Native);
         assert!(cli.launch.session.is_none());
+    }
+
+    #[tokio::test]
+    async fn auth_refresh_control_uses_correlated_json_arguments() {
+        let (rpc, mut commands) = tokio::sync::mpsc::channel(1);
+        let mut pending = VecDeque::new();
+        route_auth_action(
+            AuthAction::RefreshRuntime {
+                flow_id: "flow-1".into(),
+                provider: "provider with spaces".into(),
+            },
+            &rpc,
+            &mut pending,
+        )
+        .await
+        .unwrap();
+        let RpcCommand::Prompt { message, .. } = commands.recv().await.unwrap() else {
+            panic!("expected refresh prompt")
+        };
+        let payload = message
+            .strip_prefix(&format!("/{AUTH_REFRESH_COMMAND} "))
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(payload).unwrap(),
+            serde_json::json!({
+                "flowId": "flow-1",
+                "provider": "provider with spaces",
+            })
+        );
+        assert!(pending.is_empty());
     }
 
     #[test]

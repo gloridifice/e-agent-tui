@@ -8,13 +8,15 @@ This document records implemented ownership and data flow. Exact behavior belong
 DSH host <-> bridge/ <-> WebSocket <-> crates/e-dsh ─┐
                                                      ├─> crates/e-tui
 Pi child <-------- JSONL stdio ------> crates/e-pi ──┘
+   ^ public companion extension          |
+   └── native-auth refresh/context       └── JSONL stdio ──> Pi SDK auth helper
 ```
 
 ## Rust workspace
 
 - `crates/e-tui` owns provider-neutral state, event projection, interaction, rendering, and runtime policy.
 - `crates/e-dsh` owns DSH wire conversion, WebSocket transport, launcher/setup, and external effects.
-- `crates/e-pi` owns Pi RPC DTOs, bounded JSONL framing, child lifecycle, native session discovery, and external effects.
+- `crates/e-pi` owns Pi RPC DTOs, bounded JSONL framing, child lifecycle, native session discovery, Pi-native authentication integration, and external effects. Authentication uses an embedded public-API companion extension for runtime context/refresh and a lazily started SDK helper for native provider interactions; Pi remains the credential and OAuth owner.
 - Both adapters depend on `e-tui`; they never depend on each other. Provider payloads do not cross adapter boundaries.
 - Runners execute owned frontend effects only after releasing UI state guards. Shared scheduling and input policy remain in `e-tui`.
 

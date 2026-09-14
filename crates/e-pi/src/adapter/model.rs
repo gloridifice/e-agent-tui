@@ -17,6 +17,26 @@ fn thinking_label(level: &str) -> String {
     }
 }
 
+/// Pi thinking levels in the fixed order Pi itself presents them.
+const PI_THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/// Mirror Pi's `getSupportedThinkingLevels`: the fixed level order filtered by
+/// the model's `thinkingLevelMap`, where `null` hides a level and `xhigh`/`max`
+/// exist only through a non-null map entry. Map values translate a Pi level to a
+/// provider effort and are never level ids.
+fn supported_thinking_levels(model: &Value) -> Vec<String> {
+    let map = model.get("thinkingLevelMap").and_then(Value::as_object);
+    PI_THINKING_LEVELS
+        .iter()
+        .copied()
+        .filter(|level| match map.and_then(|map| map.get(*level)) {
+            Some(Value::Null) => false,
+            entry => !matches!(*level, "xhigh" | "max") || entry.is_some(),
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
 pub(super) fn models_response(adapter: &mut PiAdapter, data: Option<&Value>) -> AdapterOutput {
     adapter.available_models = data
         .and_then(|data| data.get("models"))
@@ -52,24 +72,16 @@ pub(super) fn model_catalog(adapter: &PiAdapter, models: &[Value]) -> AdapterOut
             .get("reasoning")
             .and_then(Value::as_bool)
             .unwrap_or(false)
-            .then(|| {
-                let levels = model
-                    .get("thinkingLevelMap")
-                    .and_then(Value::as_object)
-                    .map(|map| map.keys().cloned().collect::<Vec<_>>())
-                    .filter(|levels| !levels.is_empty())
-                    .unwrap_or_else(|| adapter.thinking_levels.clone());
-                ModelReasoning {
-                    efforts: levels
-                        .iter()
-                        .map(|level| ReasoningEffort {
-                            id: level.clone(),
-                            name: thinking_label(level),
-                            description: None,
-                        })
-                        .collect(),
-                    default_effort: adapter.thinking_level.clone(),
-                }
+            .then(|| ModelReasoning {
+                efforts: supported_thinking_levels(model)
+                    .into_iter()
+                    .map(|level| ReasoningEffort {
+                        name: thinking_label(&level),
+                        id: level,
+                        description: None,
+                    })
+                    .collect(),
+                default_effort: adapter.thinking_level.clone(),
             });
         let descriptor = ModelDescriptor {
             id: model_id.to_owned(),
@@ -118,6 +130,38 @@ pub(super) fn model_catalog(adapter: &PiAdapter, models: &[Value]) -> AdapterOut
 mod tests {
     use super::*;
 
+    fn providers(models: Value) -> Vec<ModelProvider> {
+        let mut adapter = PiAdapter::new(".", "sessions");
+        let output = models_response(&mut adapter, Some(&serde_json::json!({ "models": models })));
+        match output.events.into_iter().next() {
+            Some(AgentEvent::Catalog(CatalogEvent::Models { providers, .. })) => providers,
+            _ => panic!("expected model catalog"),
+        }
+    }
+
+    fn efforts<'a>(
+        providers: &'a [ModelProvider],
+        provider: &str,
+        model: &str,
+    ) -> Option<&'a ModelReasoning> {
+        providers
+            .iter()
+            .find(|item| item.id == provider)?
+            .models
+            .iter()
+            .find(|item| item.id == model)?
+            .reasoning
+            .as_ref()
+    }
+
+    fn effort_ids(reasoning: &ModelReasoning) -> Vec<&str> {
+        reasoning
+            .efforts
+            .iter()
+            .map(|effort| effort.id.as_str())
+            .collect()
+    }
+
     #[test]
     fn model_catalog_preserves_context_window_capacity() {
         let mut adapter = PiAdapter::new(".", "sessions");
@@ -137,5 +181,77 @@ mod tests {
             panic!("expected model catalog");
         };
         assert_eq!(providers[0].models[0].context_window, Some(276_000));
+    }
+
+    #[test]
+    fn model_catalog_derives_pi_thinking_levels_per_route() {
+        let providers = providers(serde_json::json!([
+            {
+                "provider": "openai-codex",
+                "id": "gpt-5.6-sol",
+                "name": "GPT-5.6 Sol",
+                "reasoning": true,
+                "thinkingLevelMap": { "xhigh": "xhigh", "max": "max", "minimal": "low" }
+            },
+            {
+                "provider": "openai-codex",
+                "id": "gpt-6-astra",
+                "name": "GPT-6 Astra",
+                "reasoning": true,
+                "thinkingLevelMap": {
+                    "off": null, "minimal": "low", "low": "low", "medium": "medium",
+                    "high": "high", "xhigh": "xhigh", "max": "max"
+                }
+            },
+            {
+                "provider": "codemaker",
+                "id": "kimi-k2.7-code",
+                "name": "Kimi K2.7 Code",
+                "reasoning": true
+            },
+            {
+                "provider": "openai",
+                "id": "gpt-4o",
+                "name": "GPT-4o",
+                "reasoning": false
+            }
+        ]));
+
+        let opt_in = efforts(&providers, "openai-codex", "gpt-5.6-sol").expect("sol reasoning");
+        assert_eq!(
+            effort_ids(opt_in),
+            ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+        );
+        assert_eq!(opt_in.efforts[5].name, "Xhigh");
+
+        let hidden = efforts(&providers, "openai-codex", "gpt-6-astra").expect("astra reasoning");
+        assert_eq!(
+            effort_ids(hidden),
+            ["minimal", "low", "medium", "high", "xhigh", "max"]
+        );
+
+        let unmapped = efforts(&providers, "codemaker", "kimi-k2.7-code").expect("kimi reasoning");
+        assert_eq!(
+            effort_ids(unmapped),
+            ["off", "minimal", "low", "medium", "high"]
+        );
+
+        assert!(efforts(&providers, "openai", "gpt-4o").is_none());
+    }
+
+    #[test]
+    fn model_catalog_accepts_a_map_that_hides_every_level() {
+        let providers = providers(serde_json::json!([{
+            "provider": "openai",
+            "id": "gpt",
+            "name": "GPT",
+            "reasoning": true,
+            "thinkingLevelMap": {
+                "off": null, "minimal": null, "low": null, "medium": null, "high": null
+            }
+        }]));
+
+        let reasoning = efforts(&providers, "openai", "gpt").expect("reasoning");
+        assert!(reasoning.efforts.is_empty());
     }
 }

@@ -90,6 +90,15 @@ impl InputPageSession {
         page
     }
 
+    pub fn authentication(provider_ref: Option<String>, logout: bool) -> Self {
+        let mut page = Self::new(InputPage::Login(LoginState::native_loading(
+            provider_ref,
+            logout,
+        )));
+        page.rebuild_focus();
+        page
+    }
+
     pub fn model() -> Self {
         Self::new(InputPage::Model(ModelPage::loading()))
     }
@@ -172,6 +181,14 @@ impl InputPageSession {
                 LoginAction::None => PageOutcome::default(),
                 LoginAction::Exit => PageOutcome::close(),
                 LoginAction::Send(message) => PageOutcome::send(message, false),
+                LoginAction::Copy(value) => PageOutcome {
+                    close: false,
+                    effects: vec![PageEffect::WriteClipboard(value)],
+                },
+                LoginAction::Cancel => PageOutcome {
+                    close: true,
+                    effects: vec![PageEffect::Send(AgentRequest::AuthCancel)],
+                },
             },
             InputPage::Model(model) => match key {
                 Command(Action::Back | Action::Close) => PageOutcome::close(),
@@ -274,6 +291,59 @@ impl InputPageSession {
     pub fn apply_login(&mut self, view: LoginView) {
         if let InputPage::Login(login) = &mut self.page {
             login.apply(view);
+            self.rebuild_focus();
+        }
+    }
+
+    pub fn apply_auth_catalog(
+        &mut self,
+        providers: Vec<crate::agent::AuthProvider>,
+        provider_ref: Option<String>,
+        logout: bool,
+        error: Option<String>,
+    ) {
+        if let InputPage::Login(login) = &mut self.page {
+            login.apply_auth_catalog(providers, provider_ref, logout, error);
+            self.rebuild_focus();
+        }
+    }
+
+    pub fn start_auth(&mut self, flow_id: String) {
+        if let InputPage::Login(login) = &mut self.page {
+            login.start_auth(flow_id);
+            self.rebuild_focus();
+        }
+    }
+
+    pub fn apply_auth_prompt(&mut self, prompt: crate::agent::AuthPrompt) {
+        if let InputPage::Login(login) = &mut self.page {
+            login.apply_auth_prompt(prompt);
+            self.rebuild_focus();
+        }
+    }
+
+    pub fn withdraw_auth_prompt(&mut self, flow_id: &str, prompt_id: &str) {
+        if let InputPage::Login(login) = &mut self.page {
+            login.withdraw_auth_prompt(flow_id, prompt_id);
+            self.rebuild_focus();
+        }
+    }
+
+    pub fn apply_auth_notice(&mut self, notice: crate::agent::AuthNotice) {
+        if let InputPage::Login(login) = &mut self.page {
+            login.apply_auth_notice(notice);
+            self.rebuild_focus();
+        }
+    }
+
+    pub fn finish_auth(
+        &mut self,
+        flow_id: &str,
+        outcome: crate::agent::AuthOutcomeKind,
+        message: String,
+    ) {
+        if let InputPage::Login(login) = &mut self.page {
+            login.finish_auth(flow_id, outcome, message);
             self.rebuild_focus();
         }
     }
@@ -514,7 +584,14 @@ fn login_focus_targets(login: &LoginState) -> Vec<(FocusId, usize)> {
             (FocusId::new(format!("login:proxy-delete:{id}:cancel")), 0),
             (FocusId::new(format!("login:proxy-delete:{id}:delete")), 1),
         ],
+        LoginPage::NativeProviders
+        | LoginPage::NativeMethods { .. }
+        | LoginPage::NativeLogout { .. }
+        | LoginPage::NativePrompt(_) => (0..login.row_count())
+            .filter_map(|pos| Some((FocusId::new(login.row_focus_id(pos)?), pos)))
+            .collect(),
         LoginPage::ApiKey { .. } => Vec::new(),
+        LoginPage::NativeWaiting { .. } | LoginPage::NativeOutcome { .. } => Vec::new(),
     }
 }
 
@@ -523,7 +600,13 @@ fn login_focus_nodes(login: &LoginState) -> Vec<FocusNode> {
         .into_iter()
         .map(|(id, _)| id)
         .collect();
-    linear_focus_nodes(&ids, matches!(login.page, LoginPage::ProxyDelete { .. }))
+    linear_focus_nodes(
+        &ids,
+        matches!(
+            login.page,
+            LoginPage::ProxyDelete { .. } | LoginPage::NativeLogout { .. }
+        ),
+    )
 }
 
 #[cfg(test)]

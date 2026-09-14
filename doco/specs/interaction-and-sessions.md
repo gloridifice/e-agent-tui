@@ -8,6 +8,12 @@
 - Help is a blocking input context. It owns close and inherited full-screen scrolling actions while visible; reopening resets its independent scroll position without changing the composer or underlying page.
 - Mouse wheel routes to the pane under the pointer. While Help is visible, the wheel scrolls the modal; otherwise separator capture takes priority over text selection.
 
+## Authentication pages
+
+- Authentication pages discover provider IDs, labels, methods, safe status, and removability from the adapter. They MUST support correlated text, secret, choice, authorization-link, device-code, progress, cancellation, withdrawal, and terminal outcome events without hard-coded provider sequences.
+- Secret and manual callback editors are ephemeral, start empty, mask display, and drop their buffers on submit, cancellation, or page replacement. Authentication mutations are admitted only while the conversation is idle and MUST NOT materialize a draft session or enter ASAP/follow-up queues. Leaving a page with an active flow cancels that flow; every native page MUST remain closable even when a result never arrives.
+- Pi `/login [provider]` resolves a stable ID first and otherwise an unambiguous name. Pi `/logout` lists only stored credentials that native logout can remove and requires confirmation. Unknown references and unavailable native support remain local errors and MUST NOT become model prompts. DSH retains its API-key/proxy login workflow.
+
 ## Prompt queues
 
 - Pending prompts preserve FIFO within ASAP and after-turn classes; ASAP candidates have dispatch/display priority.

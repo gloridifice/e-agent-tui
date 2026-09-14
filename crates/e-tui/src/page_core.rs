@@ -216,6 +216,7 @@ impl ViewportState {
 
 pub enum PageEffect {
     Send(AgentRequest),
+    WriteClipboard(String),
     ConfigChanged,
 }
 

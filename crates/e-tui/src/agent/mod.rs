@@ -95,6 +95,75 @@ pub struct CredentialProvider {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthMethod {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthProvider {
+    pub id: String,
+    pub name: String,
+    pub methods: Vec<AuthMethod>,
+    pub configured: bool,
+    pub removable: bool,
+    /// Display label for a configured credential, localized by the frontend when
+    /// absent; adapters MUST NOT send machine tokens here.
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthPromptKind {
+    Text,
+    Secret,
+    ManualCode,
+    Select,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthPromptOption {
+    pub value: String,
+    pub label: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthPrompt {
+    pub flow_id: String,
+    pub prompt_id: String,
+    pub kind: AuthPromptKind,
+    pub message: String,
+    pub placeholder: Option<String>,
+    pub options: Vec<AuthPromptOption>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthNoticeKind {
+    AuthorizationUrl,
+    DeviceCode,
+    Information,
+    Progress,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthNotice {
+    pub flow_id: String,
+    pub kind: AuthNoticeKind,
+    pub message: String,
+    pub url: Option<String>,
+    pub code: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthOutcomeKind {
+    Succeeded,
+    Cancelled,
+    Failed,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProxyRoute {
     pub id: String,
     pub name: String,
@@ -151,6 +220,12 @@ pub enum CatalogEvent {
         proxies: Vec<ProxyRoute>,
         error: Option<String>,
     },
+    Authentication {
+        providers: Vec<AuthProvider>,
+        provider_ref: Option<String>,
+        logout: bool,
+        error: Option<String>,
+    },
     Models {
         providers: Vec<ModelProvider>,
         current: Option<ModelSelection>,
@@ -205,6 +280,20 @@ pub enum InteractionEvent {
     QuestionResolved {
         request_id: String,
         outcome: String,
+    },
+    AuthStarted {
+        flow_id: String,
+    },
+    AuthPrompt(AuthPrompt),
+    AuthPromptWithdrawn {
+        flow_id: String,
+        prompt_id: String,
+    },
+    AuthNotice(AuthNotice),
+    AuthFinished {
+        flow_id: String,
+        outcome: AuthOutcomeKind,
+        message: String,
     },
     Error {
         code: String,

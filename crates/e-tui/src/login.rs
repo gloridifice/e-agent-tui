@@ -1,18 +1,16 @@
-//! /login panel (D33): the input bar becomes a login page with a two-way
-//! menu — API key / Proxy — each opening a sub-page.
-//!
-//! - API key: lists the model providers; Enter opens that provider's API key
-//!   entry (the secret is typed fresh, never prefilled or read back).
-//! - Proxy: lists saved proxy routes plus `+ New`; the create form collects
-//!   base URL, API key, protocol (three choices) and model name — none of
-//!   which is mandatory except a non-empty base URL.
+//! Provider-neutral login page state. DSH uses API-key and proxy subpages;
+//! adapters with native authentication capabilities use provider/method,
+//! interactive prompt, guidance, and credential-removal subpages.
 
 #[cfg(test)]
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::{
     action::AgentRequest,
-    agent::{CredentialProvider, ProxyRoute},
+    agent::{
+        AuthNotice, AuthOutcomeKind, AuthPrompt, AuthPromptKind, AuthProvider, CredentialProvider,
+        ProxyRoute,
+    },
     page_core::{handle_text_input, TextEditResult, TextEditor},
 };
 
@@ -41,6 +39,21 @@ pub enum Page {
     ProxyForm,
     /// Confirmation before deleting an existing proxy route.
     ProxyDelete { id: String, name: String },
+    /// Native authentication provider selection.
+    NativeProviders,
+    /// Native method selection for one provider.
+    NativeMethods { provider: String },
+    /// Confirmation before removing a native stored credential.
+    NativeLogout { provider: String },
+    /// A provider-owned text, secret, or choice prompt.
+    NativePrompt(AuthPrompt),
+    /// Native code is waiting on the provider or runtime synchronization.
+    NativeWaiting { flow_id: Option<String> },
+    /// Terminal native authentication result.
+    NativeOutcome {
+        outcome: AuthOutcomeKind,
+        message: String,
+    },
 }
 
 /// What the UI should do after a key press.
@@ -50,6 +63,16 @@ pub enum LoginAction {
     Exit,
     /// Send one bridge message.
     Send(AgentRequest),
+    Copy(String),
+    /// Cancel the active native flow and close the page.
+    Cancel,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NativeNoticeAction {
+    OpenUrl(String),
+    CopyUrl(String),
+    CopyCode(String),
 }
 
 /// The four proxy-form fields plus a save row, in display order.
@@ -76,6 +99,10 @@ pub struct LoginState {
     // ---- bridge-synced state (the `login` frame) ----
     pub providers: Vec<CredentialProvider>,
     pub proxies: Vec<ProxyRoute>,
+    pub auth_providers: Vec<AuthProvider>,
+    pub auth_notices: Vec<AuthNotice>,
+    pub auth_logout: bool,
+    pub provider_ref: Option<String>,
     /// Proxy create form draft.
     pub draft: ProxyDraft,
 }
@@ -90,6 +117,10 @@ impl Default for LoginState {
             loading: true,
             providers: Vec::new(),
             proxies: Vec::new(),
+            auth_providers: Vec::new(),
+            auth_notices: Vec::new(),
+            auth_logout: false,
+            provider_ref: None,
             draft: ProxyDraft::default(),
         }
     }
@@ -103,6 +134,133 @@ pub struct LoginView {
 }
 
 impl LoginState {
+    pub fn native_loading(provider_ref: Option<String>, logout: bool) -> Self {
+        Self {
+            page: Page::NativeProviders,
+            provider_ref,
+            auth_logout: logout,
+            ..Self::default()
+        }
+    }
+
+    pub fn apply_auth_catalog(
+        &mut self,
+        providers: Vec<AuthProvider>,
+        provider_ref: Option<String>,
+        logout: bool,
+        error: Option<String>,
+    ) {
+        self.auth_providers = if logout {
+            providers
+                .into_iter()
+                .filter(|provider| Self::provider_actionable(provider, true))
+                .collect()
+        } else {
+            providers
+        };
+        self.provider_ref = provider_ref.or_else(|| self.provider_ref.take());
+        self.auth_logout = logout;
+        self.error = error;
+        self.loading = false;
+        self.page = Page::NativeProviders;
+        self.pos = 0;
+        if let Some(reference) = self.provider_ref.as_deref() {
+            if let Some(exact) = self
+                .auth_providers
+                .iter()
+                .position(|provider| provider.id.eq_ignore_ascii_case(reference))
+            {
+                self.pos = exact;
+            } else {
+                let matches = self
+                    .auth_providers
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, provider)| provider.name.eq_ignore_ascii_case(reference))
+                    .map(|(index, _)| index)
+                    .collect::<Vec<_>>();
+                match matches.as_slice() {
+                    [index] => self.pos = *index,
+                    [] => {
+                        self.error = Some(format!("Unknown authentication provider: {reference}"))
+                    }
+                    _ => {
+                        self.error = Some(format!("Ambiguous authentication provider: {reference}"))
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn start_auth(&mut self, flow_id: String) {
+        self.editing = None;
+        self.auth_notices.clear();
+        self.loading = false;
+        self.page = Page::NativeWaiting {
+            flow_id: Some(flow_id),
+        };
+    }
+
+    pub fn apply_auth_prompt(&mut self, prompt: AuthPrompt) {
+        if !self.accepts_flow(&prompt.flow_id) {
+            return;
+        }
+        self.editing = match prompt.kind {
+            AuthPromptKind::Text | AuthPromptKind::Secret => Some(String::new()),
+            AuthPromptKind::ManualCode | AuthPromptKind::Select => None,
+        };
+        self.pos = 0;
+        self.loading = false;
+        self.page = Page::NativePrompt(prompt);
+    }
+
+    pub fn withdraw_auth_prompt(&mut self, flow_id: &str, prompt_id: &str) {
+        if matches!(&self.page, Page::NativePrompt(prompt)
+            if prompt.flow_id == flow_id && prompt.prompt_id == prompt_id)
+        {
+            self.editing = None;
+            self.page = Page::NativeWaiting {
+                flow_id: Some(flow_id.to_owned()),
+            };
+        }
+    }
+
+    pub fn apply_auth_notice(&mut self, notice: AuthNotice) {
+        if !self.accepts_flow(&notice.flow_id) {
+            return;
+        }
+        let flow_id = notice.flow_id.clone();
+        self.auth_notices.push(notice);
+        if self.auth_notices.len() > 8 {
+            self.auth_notices.remove(0);
+        }
+        if matches!(self.page, Page::NativeWaiting { .. }) {
+            self.page = Page::NativeWaiting {
+                flow_id: Some(flow_id),
+            };
+            self.pos = self.pos.min(self.row_count().saturating_sub(1));
+        }
+    }
+
+    pub fn finish_auth(&mut self, flow_id: &str, outcome: AuthOutcomeKind, message: String) {
+        if !self.accepts_flow(flow_id) {
+            return;
+        }
+        self.editing = None;
+        self.loading = false;
+        self.page = Page::NativeOutcome { outcome, message };
+    }
+
+    fn accepts_flow(&self, flow_id: &str) -> bool {
+        match &self.page {
+            Page::NativeWaiting {
+                flow_id: Some(active),
+            } => active == flow_id,
+            Page::NativePrompt(prompt) => prompt.flow_id == flow_id,
+            _ => false,
+        }
+    }
+
     /// Apply one bridge `login` frame.
     pub fn apply(&mut self, view: LoginView) {
         let edited_provider = match &self.page {
@@ -148,54 +306,126 @@ impl LoginState {
             .or_else(|| {
                 focused_proxy.and_then(|id| self.proxies.iter().position(|proxy| proxy.id == id))
             })
-            .unwrap_or_else(|| self.pos.min(self.list_len().saturating_sub(1)));
+            .unwrap_or_else(|| self.pos.min(self.row_count().saturating_sub(1)));
         self.clamp_to_actionable();
+    }
+
+    pub fn native_notice_actions(&self) -> Vec<NativeNoticeAction> {
+        let mut actions = Vec::new();
+        for notice in &self.auth_notices {
+            if let Some(url) = notice.url.as_ref() {
+                actions.push(NativeNoticeAction::OpenUrl(url.clone()));
+                actions.push(NativeNoticeAction::CopyUrl(url.clone()));
+            }
+            if let Some(code) = notice.code.as_ref() {
+                actions.push(NativeNoticeAction::CopyCode(code.clone()));
+            }
+        }
+        actions
+    }
+
+    /// Whether a native provider row may be selected. The single eligibility
+    /// rule shared by cursor movement, focus building, and rendering.
+    pub fn provider_actionable(provider: &AuthProvider, logout: bool) -> bool {
+        if logout {
+            provider.removable
+        } else {
+            !provider.methods.is_empty()
+        }
+    }
+
+    /// Stable focus identity of a cursor row on a native page.
+    pub fn row_focus_id(&self, index: usize) -> Option<String> {
+        if !self.row_actionable(index) {
+            return None;
+        }
+        match &self.page {
+            Page::NativeProviders => self
+                .auth_providers
+                .get(index)
+                .map(|provider| format!("auth:provider:{}", provider.id)),
+            Page::NativeMethods { provider } => self
+                .auth_providers
+                .iter()
+                .find(|candidate| candidate.id == *provider)?
+                .methods
+                .get(index)
+                .map(|method| format!("auth:method:{}", method.id)),
+            Page::NativeLogout { provider } => match index {
+                0 => Some(format!("auth:logout:{provider}:cancel")),
+                1 => Some(format!("auth:logout:{provider}:remove")),
+                _ => None,
+            },
+            Page::NativePrompt(prompt) if prompt.kind == AuthPromptKind::Select => prompt
+                .options
+                .get(index)
+                .map(|option| format!("auth:prompt:{}:{}", prompt.prompt_id, option.value)),
+            _ => None,
+        }
     }
 
     /// Number of selectable rows on the current list page (menu/providers/
     /// proxy-list). Proxy-list has one extra `+ New` row.
-    fn list_len(&self) -> usize {
+    pub fn row_count(&self) -> usize {
         match self.page {
             Page::Menu => 2,
             Page::Providers => self.providers.len(),
             Page::ProxyList => self.proxies.len() + 1,
             Page::ProxyDelete { .. } => 2,
+            Page::NativeProviders => self.auth_providers.len(),
+            Page::NativeMethods { ref provider } => self
+                .auth_providers
+                .iter()
+                .find(|candidate| candidate.id == *provider)
+                .map_or(0, |candidate| candidate.methods.len()),
+            Page::NativeLogout { .. } => 2,
+            Page::NativeWaiting { .. } => self.native_notice_actions().len().max(1),
+            Page::NativePrompt(ref prompt) if prompt.kind == AuthPromptKind::Select => {
+                prompt.options.len()
+            }
+            Page::NativePrompt(ref prompt) if prompt.kind == AuthPromptKind::ManualCode => {
+                self.native_notice_actions().len() + 1
+            }
             _ => 1,
         }
     }
-    fn actionable(&self, index: usize) -> bool {
+    pub fn row_actionable(&self, index: usize) -> bool {
         match self.page {
             Page::Providers => self
                 .providers
                 .get(index)
                 .is_some_and(|provider| provider.api_key_writable),
-            _ => index < self.list_len(),
+            Page::NativeProviders => self
+                .auth_providers
+                .get(index)
+                .is_some_and(|provider| Self::provider_actionable(provider, self.auth_logout)),
+            _ => index < self.row_count(),
         }
     }
 
     fn clamp_to_actionable(&mut self) {
-        if self.actionable(self.pos) {
+        if self.row_actionable(self.pos) {
             return;
         }
-        if let Some(index) = (0..self.list_len()).find(|index| self.actionable(*index)) {
+        if let Some(index) = (0..self.row_count()).find(|index| self.row_actionable(*index)) {
             self.pos = index;
         } else {
             self.pos = 0;
         }
     }
     fn move_pos(&mut self, delta: i32) {
-        if self.list_len() == 0 {
+        if self.row_count() == 0 {
             self.pos = 0;
             return;
         }
         let mut next = self.pos as i32;
         loop {
             let candidate = next + delta;
-            if candidate < 0 || candidate >= self.list_len() as i32 {
+            if candidate < 0 || candidate >= self.row_count() as i32 {
                 break;
             }
             next = candidate;
-            if self.actionable(next as usize) {
+            if self.row_actionable(next as usize) {
                 self.pos = next as usize;
                 break;
             }
@@ -262,11 +492,24 @@ impl LoginState {
             let mut editor = TextEditor {
                 buf,
                 secret: matches!(self.page, Page::ApiKey { .. })
-                    || matches!(self.page, Page::ProxyForm if self.pos == 1),
+                    || matches!(self.page, Page::ProxyForm if self.pos == 1)
+                    || matches!(&self.page, Page::NativePrompt(prompt)
+                        if matches!(prompt.kind, AuthPromptKind::Secret | AuthPromptKind::ManualCode)),
             };
             return match handle_text_input(&mut editor, key) {
                 TextEditResult::Confirm(buf) => {
-                    if let Page::ApiKey { provider, .. } = &self.page {
+                    if let Page::NativePrompt(prompt) = &self.page {
+                        let (flow_id, prompt_id) =
+                            (prompt.flow_id.clone(), prompt.prompt_id.clone());
+                        self.page = Page::NativeWaiting {
+                            flow_id: Some(flow_id.clone()),
+                        };
+                        LoginAction::Send(AgentRequest::AuthReply {
+                            flow_id,
+                            prompt_id,
+                            value: buf,
+                        })
+                    } else if let Page::ApiKey { provider, .. } = &self.page {
                         let provider = provider.clone();
                         let action = LoginAction::Send(AgentRequest::LoginSetApiKey {
                             provider,
@@ -283,12 +526,19 @@ impl LoginState {
                     }
                 }
                 TextEditResult::Cancel => {
-                    if matches!(self.page, Page::ApiKey { .. }) {
-                        self.page = Page::Providers;
-                        self.pos = 0;
-                        self.clamp_to_actionable();
+                    if let Page::NativePrompt(prompt) = &self.page {
+                        self.page = Page::NativeWaiting {
+                            flow_id: Some(prompt.flow_id.clone()),
+                        };
+                        LoginAction::Send(AgentRequest::AuthCancel)
+                    } else {
+                        if matches!(self.page, Page::ApiKey { .. }) {
+                            self.page = Page::Providers;
+                            self.pos = 0;
+                            self.clamp_to_actionable();
+                        }
+                        LoginAction::None
                     }
-                    LoginAction::None
                 }
                 TextEditResult::Continue => {
                     self.editing = Some(editor.buf);
@@ -340,6 +590,201 @@ impl LoginState {
                 }
                 LoginAction::None
             }
+
+            (Page::NativeProviders, Command(Action::Back | Action::Close)) => LoginAction::Exit,
+            (Page::NativeProviders, Command(Action::MoveUp)) => {
+                self.move_pos(-1);
+                LoginAction::None
+            }
+            (Page::NativeProviders, Command(Action::MoveDown)) => {
+                self.move_pos(1);
+                LoginAction::None
+            }
+            (Page::NativeProviders, Command(Action::Confirm)) => {
+                let Some(provider) = self.auth_providers.get(self.pos) else {
+                    return LoginAction::None;
+                };
+                if self.auth_logout {
+                    self.page = Page::NativeLogout {
+                        provider: provider.id.clone(),
+                    };
+                    self.pos = 0;
+                    return LoginAction::None;
+                }
+                if provider.methods.len() == 1 {
+                    let request = AgentRequest::AuthStart {
+                        provider: provider.id.clone(),
+                        method: Some(provider.methods[0].id.clone()),
+                        logout: false,
+                    };
+                    self.auth_notices.clear();
+                    self.page = Page::NativeWaiting { flow_id: None };
+                    return LoginAction::Send(request);
+                }
+                self.page = Page::NativeMethods {
+                    provider: provider.id.clone(),
+                };
+                self.pos = 0;
+                LoginAction::None
+            }
+            (Page::NativeMethods { .. }, Command(Action::Back)) => {
+                self.page = Page::NativeProviders;
+                self.pos = 0;
+                LoginAction::None
+            }
+            (Page::NativeMethods { .. }, Command(Action::MoveUp)) => {
+                self.move_pos(-1);
+                LoginAction::None
+            }
+            (Page::NativeMethods { .. }, Command(Action::MoveDown)) => {
+                self.move_pos(1);
+                LoginAction::None
+            }
+            (Page::NativeMethods { provider }, Command(Action::Confirm)) => {
+                let method = self
+                    .auth_providers
+                    .iter()
+                    .find(|candidate| candidate.id == *provider)
+                    .and_then(|candidate| candidate.methods.get(self.pos));
+                let Some(method) = method else {
+                    return LoginAction::None;
+                };
+                let request = AgentRequest::AuthStart {
+                    provider: provider.clone(),
+                    method: Some(method.id.clone()),
+                    logout: false,
+                };
+                self.auth_notices.clear();
+                self.page = Page::NativeWaiting { flow_id: None };
+                LoginAction::Send(request)
+            }
+            (Page::NativeLogout { .. }, Command(Action::Back)) => {
+                self.page = Page::NativeProviders;
+                self.pos = 0;
+                LoginAction::None
+            }
+            (Page::NativeLogout { .. }, Command(Action::MoveUp)) => {
+                self.pos = self.pos.saturating_sub(1);
+                LoginAction::None
+            }
+            (Page::NativeLogout { .. }, Command(Action::MoveDown)) => {
+                self.pos = (self.pos + 1).min(1);
+                LoginAction::None
+            }
+            (Page::NativeLogout { provider }, Command(Action::Confirm)) => {
+                if self.pos == 0 {
+                    self.page = Page::NativeProviders;
+                    self.pos = 0;
+                    LoginAction::None
+                } else {
+                    let request = AgentRequest::AuthStart {
+                        provider: provider.clone(),
+                        method: None,
+                        logout: true,
+                    };
+                    self.page = Page::NativeWaiting { flow_id: None };
+                    LoginAction::Send(request)
+                }
+            }
+            (Page::NativeWaiting { .. }, Command(Action::MoveUp)) => {
+                self.move_pos(-1);
+                LoginAction::None
+            }
+            (Page::NativeWaiting { .. }, Command(Action::MoveDown)) => {
+                self.move_pos(1);
+                LoginAction::None
+            }
+            (Page::NativeWaiting { flow_id }, Command(Action::Confirm)) => {
+                let Some(flow_id) = flow_id.clone() else {
+                    return LoginAction::None;
+                };
+                match self.native_notice_actions().get(self.pos).cloned() {
+                    Some(NativeNoticeAction::OpenUrl(url)) => {
+                        LoginAction::Send(AgentRequest::AuthOpenUrl { flow_id, url })
+                    }
+                    Some(NativeNoticeAction::CopyUrl(value))
+                    | Some(NativeNoticeAction::CopyCode(value)) => LoginAction::Copy(value),
+                    None => LoginAction::None,
+                }
+            }
+            (Page::NativePrompt(prompt), Command(Action::MoveUp))
+                if prompt.kind == AuthPromptKind::ManualCode =>
+            {
+                self.move_pos(-1);
+                LoginAction::None
+            }
+            (Page::NativePrompt(prompt), Command(Action::MoveDown))
+                if prompt.kind == AuthPromptKind::ManualCode =>
+            {
+                self.move_pos(1);
+                LoginAction::None
+            }
+            (Page::NativePrompt(prompt), Command(Action::Confirm))
+                if prompt.kind == AuthPromptKind::ManualCode =>
+            {
+                let actions = self.native_notice_actions();
+                if self.pos == actions.len() {
+                    self.editing = Some(String::new());
+                    LoginAction::None
+                } else {
+                    match actions.get(self.pos).cloned() {
+                        Some(NativeNoticeAction::OpenUrl(url)) => {
+                            LoginAction::Send(AgentRequest::AuthOpenUrl {
+                                flow_id: prompt.flow_id.clone(),
+                                url,
+                            })
+                        }
+                        Some(NativeNoticeAction::CopyUrl(value))
+                        | Some(NativeNoticeAction::CopyCode(value)) => LoginAction::Copy(value),
+                        None => LoginAction::None,
+                    }
+                }
+            }
+            (Page::NativePrompt(prompt), Command(Action::MoveUp))
+                if prompt.kind == AuthPromptKind::Select =>
+            {
+                self.pos = self.pos.saturating_sub(1);
+                LoginAction::None
+            }
+            (Page::NativePrompt(prompt), Command(Action::MoveDown))
+                if prompt.kind == AuthPromptKind::Select =>
+            {
+                self.pos = (self.pos + 1).min(prompt.options.len().saturating_sub(1));
+                LoginAction::None
+            }
+            (Page::NativePrompt(prompt), Command(Action::Confirm))
+                if prompt.kind == AuthPromptKind::Select =>
+            {
+                let Some(option) = prompt.options.get(self.pos) else {
+                    return LoginAction::None;
+                };
+                let flow_id = prompt.flow_id.clone();
+                let request = AgentRequest::AuthReply {
+                    flow_id: flow_id.clone(),
+                    prompt_id: prompt.prompt_id.clone(),
+                    value: option.value.clone(),
+                };
+                self.page = Page::NativeWaiting {
+                    flow_id: Some(flow_id),
+                };
+                LoginAction::Send(request)
+            }
+            (Page::NativePrompt(prompt), Command(Action::Back | Action::Close)) => {
+                let flow_id = prompt.flow_id.clone();
+                self.editing = None;
+                self.page = Page::NativeWaiting {
+                    flow_id: Some(flow_id),
+                };
+                LoginAction::Send(AgentRequest::AuthCancel)
+            }
+            (Page::NativeWaiting { .. }, Command(Action::Back | Action::Close)) => {
+                self.editing = None;
+                LoginAction::Cancel
+            }
+            (
+                Page::NativeOutcome { .. },
+                Command(Action::Back | Action::Close | Action::Confirm),
+            ) => LoginAction::Exit,
 
             (Page::ApiKey { .. }, _) => LoginAction::None,
 
@@ -609,6 +1054,237 @@ mod tests {
             s.handle_key(&key(KeyCode::Char(ch)));
         }
         assert_eq!(s.editing.as_deref(), Some("hjkl"));
+    }
+
+    fn auth_provider(id: &str, methods: &[&str], removable: bool) -> AuthProvider {
+        AuthProvider {
+            id: id.into(),
+            name: format!("Provider {id}"),
+            methods: methods
+                .iter()
+                .map(|method| crate::agent::AuthMethod {
+                    id: (*method).into(),
+                    name: (*method).into(),
+                    description: None,
+                })
+                .collect(),
+            configured: removable,
+            removable,
+            source: removable.then(|| "API key".into()),
+        }
+    }
+
+    #[test]
+    fn native_auth_uses_stable_methods_and_ephemeral_secret_replies() {
+        let mut state = LoginState::native_loading(Some("two".into()), false);
+        state.apply_auth_catalog(
+            vec![
+                auth_provider("one", &["api_key"], false),
+                auth_provider("two", &["api_key", "oauth"], false),
+            ],
+            None,
+            false,
+            None,
+        );
+        assert_eq!(state.pos, 1);
+        state.handle_key(&key(KeyCode::Enter));
+        assert!(matches!(
+            state.page,
+            Page::NativeMethods { ref provider } if provider == "two"
+        ));
+        state.handle_key(&key(KeyCode::Down));
+        assert!(matches!(
+            state.handle_key(&key(KeyCode::Enter)),
+            LoginAction::Send(AgentRequest::AuthStart { ref provider, method: Some(ref method), .. })
+                if provider == "two" && method == "oauth"
+        ));
+
+        state.start_auth("flow".into());
+        state.apply_auth_prompt(AuthPrompt {
+            flow_id: "flow".into(),
+            prompt_id: "secret".into(),
+            kind: AuthPromptKind::Secret,
+            message: "Secret".into(),
+            placeholder: None,
+            options: Vec::new(),
+        });
+        type_text(&mut state, "not-retained");
+        assert!(matches!(
+            state.handle_key(&key(KeyCode::Enter)),
+            LoginAction::Send(AgentRequest::AuthReply { ref flow_id, ref prompt_id, ref value })
+                if flow_id == "flow" && prompt_id == "secret" && value == "not-retained"
+        ));
+        assert!(state.editing.is_none());
+        assert!(matches!(state.page, Page::NativeWaiting { .. }));
+    }
+
+    #[test]
+    fn native_logout_filters_non_stored_credentials_and_rejects_stale_events() {
+        let mut state = LoginState::native_loading(None, true);
+        state.apply_auth_catalog(
+            vec![
+                auth_provider("ambient", &["api_key"], false),
+                auth_provider("stored", &["api_key"], true),
+            ],
+            None,
+            true,
+            None,
+        );
+        assert_eq!(state.auth_providers.len(), 1);
+        assert_eq!(state.auth_providers[0].id, "stored");
+        state.start_auth("current".into());
+        state.finish_auth("stale", AuthOutcomeKind::Succeeded, "wrong".into());
+        assert!(matches!(state.page, Page::NativeWaiting { .. }));
+        state.finish_auth("current", AuthOutcomeKind::Succeeded, "done".into());
+        assert!(matches!(
+            state.page,
+            Page::NativeOutcome {
+                outcome: AuthOutcomeKind::Succeeded,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn native_notice_actions_open_and_copy_explicit_values() {
+        let mut state = LoginState::native_loading(None, false);
+        state.start_auth("flow-actions".into());
+        state.apply_auth_notice(AuthNotice {
+            flow_id: "flow-actions".into(),
+            kind: crate::agent::AuthNoticeKind::DeviceCode,
+            message: "Continue in browser".into(),
+            url: Some("https://example.test/device".into()),
+            code: Some("ABCD-EFGH".into()),
+        });
+        assert!(matches!(
+            state.handle_key(&key(KeyCode::Enter)),
+            LoginAction::Send(AgentRequest::AuthOpenUrl { flow_id, url })
+                if flow_id == "flow-actions" && url == "https://example.test/device"
+        ));
+        state.handle_key(&key(KeyCode::Down));
+        assert!(matches!(
+            state.handle_key(&key(KeyCode::Enter)),
+            LoginAction::Copy(value) if value == "https://example.test/device"
+        ));
+        state.handle_key(&key(KeyCode::Down));
+        assert!(matches!(
+            state.handle_key(&key(KeyCode::Enter)),
+            LoginAction::Copy(value) if value == "ABCD-EFGH"
+        ));
+    }
+
+    #[test]
+    fn manual_callback_prompt_keeps_notice_actions_before_masked_entry() {
+        let mut state = LoginState::native_loading(None, false);
+        state.start_auth("flow-manual".into());
+        state.apply_auth_notice(AuthNotice {
+            flow_id: "flow-manual".into(),
+            kind: crate::agent::AuthNoticeKind::AuthorizationUrl,
+            message: "Open the authorization page".into(),
+            url: Some("https://example.test/auth".into()),
+            code: None,
+        });
+        state.apply_auth_prompt(AuthPrompt {
+            flow_id: "flow-manual".into(),
+            prompt_id: "manual".into(),
+            kind: AuthPromptKind::ManualCode,
+            message: "Paste callback URL or code".into(),
+            placeholder: None,
+            options: Vec::new(),
+        });
+        assert!(state.editing.is_none());
+        assert!(matches!(
+            state.handle_key(&key(KeyCode::Enter)),
+            LoginAction::Send(AgentRequest::AuthOpenUrl { .. })
+        ));
+        state.handle_key(&key(KeyCode::Down));
+        assert!(matches!(
+            state.handle_key(&key(KeyCode::Enter)),
+            LoginAction::Copy(value) if value == "https://example.test/auth"
+        ));
+        state.handle_key(&key(KeyCode::Down));
+        assert!(matches!(
+            state.handle_key(&key(KeyCode::Enter)),
+            LoginAction::None
+        ));
+        assert_eq!(state.editing.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn native_prompt_preserves_empty_text_answers() {
+        let mut state = LoginState::native_loading(None, false);
+        state.start_auth("flow-empty".into());
+        state.apply_auth_prompt(AuthPrompt {
+            flow_id: "flow-empty".into(),
+            prompt_id: "text".into(),
+            kind: AuthPromptKind::Text,
+            message: "Optional account".into(),
+            placeholder: None,
+            options: Vec::new(),
+        });
+        assert!(matches!(
+            state.handle_key(&key(KeyCode::Enter)),
+            LoginAction::Send(AgentRequest::AuthReply { value, .. }) if value.is_empty()
+        ));
+    }
+
+    #[test]
+    fn native_pages_always_offer_a_way_to_cancel_and_leave() {
+        let mut state = LoginState::native_loading(None, false);
+        state.start_auth("flow".into());
+        state.apply_auth_prompt(AuthPrompt {
+            flow_id: "flow".into(),
+            prompt_id: "select".into(),
+            kind: AuthPromptKind::Select,
+            message: "Choose an account".into(),
+            placeholder: None,
+            options: vec![crate::agent::AuthPromptOption {
+                value: "one".into(),
+                label: "One".into(),
+                description: None,
+            }],
+        });
+        assert!(matches!(
+            state.handle_key(&key(KeyCode::Esc)),
+            LoginAction::Send(AgentRequest::AuthCancel)
+        ));
+        assert!(matches!(state.page, Page::NativeWaiting { .. }));
+        assert!(matches!(
+            state.handle_key(&key(KeyCode::Esc)),
+            LoginAction::Cancel
+        ));
+    }
+
+    #[test]
+    fn native_prompt_cancellation_drops_the_secret_buffer() {
+        let mut state = LoginState::native_loading(None, false);
+        state.start_auth("flow".into());
+        state.apply_auth_prompt(AuthPrompt {
+            flow_id: "flow".into(),
+            prompt_id: "secret".into(),
+            kind: AuthPromptKind::Secret,
+            message: "Secret".into(),
+            placeholder: None,
+            options: Vec::new(),
+        });
+        type_text(&mut state, "discard-me");
+        assert!(matches!(
+            state.handle_key(&key(KeyCode::Esc)),
+            LoginAction::Send(AgentRequest::AuthCancel)
+        ));
+        assert!(state.editing.is_none());
+        state.finish_auth(
+            "flow",
+            AuthOutcomeKind::Cancelled,
+            "Authentication cancelled".into(),
+        );
+        assert!(matches!(
+            state.page,
+            Page::NativeOutcome {
+                outcome: AuthOutcomeKind::Cancelled,
+                ..
+            }
+        ));
     }
 
     #[test]

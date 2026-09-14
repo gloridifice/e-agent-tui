@@ -37,6 +37,8 @@ pub struct PiLaunchOptions {
     pub executable: String,
     /// Optional executable prefix arguments, primarily for wrappers.
     pub executable_args: Vec<String>,
+    /// Explicit Pi extension assets owned by this host process.
+    pub extension_paths: Vec<PathBuf>,
 }
 
 impl PiLaunchOptions {
@@ -47,6 +49,7 @@ impl PiLaunchOptions {
             trust: ProjectTrust::Native,
             executable: std::env::var("PIE_PI_COMMAND").unwrap_or_else(|_| "pi".into()),
             executable_args: Vec::new(),
+            extension_paths: Vec::new(),
         }
     }
 
@@ -59,6 +62,12 @@ impl PiLaunchOptions {
         }
         if let Some(session) = &self.session {
             args.extend(["--session".into(), session.clone()]);
+        }
+        for extension in &self.extension_paths {
+            args.extend([
+                "--extension".into(),
+                extension.to_string_lossy().into_owned(),
+            ]);
         }
         args
     }

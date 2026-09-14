@@ -295,6 +295,16 @@ pub(super) fn apply_catalog(
                 });
             }
         }
+        CatalogEvent::Authentication {
+            providers,
+            provider_ref,
+            logout,
+            error,
+        } => {
+            if let Some(page) = ui.input_page.as_mut() {
+                page.apply_auth_catalog(providers, provider_ref, logout, error);
+            }
+        }
         CatalogEvent::Models { providers, current } => {
             let selected = current
                 .as_ref()
@@ -365,6 +375,35 @@ pub(super) fn apply_interaction(
                 == Some(request_id.as_str())
             {
                 *ui.input_page = None;
+            }
+        }
+        InteractionEvent::AuthStarted { flow_id } => {
+            if let Some(page) = ui.input_page.as_mut() {
+                page.start_auth(flow_id);
+            }
+        }
+        InteractionEvent::AuthPrompt(prompt) => {
+            if let Some(page) = ui.input_page.as_mut() {
+                page.apply_auth_prompt(prompt);
+            }
+        }
+        InteractionEvent::AuthPromptWithdrawn { flow_id, prompt_id } => {
+            if let Some(page) = ui.input_page.as_mut() {
+                page.withdraw_auth_prompt(&flow_id, &prompt_id);
+            }
+        }
+        InteractionEvent::AuthNotice(notice) => {
+            if let Some(page) = ui.input_page.as_mut() {
+                page.apply_auth_notice(notice);
+            }
+        }
+        InteractionEvent::AuthFinished {
+            flow_id,
+            outcome,
+            message,
+        } => {
+            if let Some(page) = ui.input_page.as_mut() {
+                page.finish_auth(&flow_id, outcome, message);
             }
         }
         InteractionEvent::Error { code, message } => {

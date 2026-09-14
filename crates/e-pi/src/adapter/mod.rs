@@ -65,6 +65,10 @@ struct PendingSkillPrompt {
     trailing_text: Option<String>,
 }
 
+pub const AUTH_STATUS_KEY: &str = "pie-native-auth-v1";
+pub const AUTH_CONTEXT_COMMAND: &str = "__pie_native_auth_context_v1";
+pub const AUTH_REFRESH_COMMAND: &str = "__pie_native_auth_refresh_v1";
+
 pub struct PiAdapter {
     cwd: PathBuf,
     session_root: PathBuf,
@@ -91,7 +95,6 @@ pub struct PiAdapter {
     current_model: Option<Value>,
     available_models: Vec<Value>,
     thinking_level: Option<String>,
-    thinking_levels: Vec<String>,
     pending_new: HashMap<String, NewSubmission>,
     pending_model_effort: HashMap<String, Option<String>>,
     configuration_request: Option<String>,
@@ -136,7 +139,6 @@ impl PiAdapter {
             current_model: None,
             available_models: Vec::new(),
             thinking_level: None,
-            thinking_levels: vec!["off".into()],
             pending_new: HashMap::new(),
             pending_model_effort: HashMap::new(),
             configuration_request: None,
@@ -318,6 +320,8 @@ impl PiAdapter {
     fn commands_response(&mut self, data: Option<&Value>) -> AdapterOutput {
         let mut commands = Vec::new();
         let mut skills = Vec::new();
+        let mut auth_context = false;
+        let mut auth_refresh = false;
         for command in data
             .and_then(|data| data.get("commands"))
             .and_then(Value::as_array)
@@ -327,6 +331,14 @@ impl PiAdapter {
             let Some(name) = command.get("name").and_then(Value::as_str) else {
                 continue;
             };
+            if name == AUTH_CONTEXT_COMMAND {
+                auth_context = true;
+                continue;
+            }
+            if name == AUTH_REFRESH_COMMAND {
+                auth_refresh = true;
+                continue;
+            }
             let description = command
                 .get("description")
                 .and_then(Value::as_str)
@@ -345,13 +357,29 @@ impl PiAdapter {
                 input_hint: None,
             });
         }
-        AdapterOutput {
+        let auth_companion = auth_context && auth_refresh;
+        if auth_companion {
+            commands.push(CommandDescriptor {
+                name: "logout".into(),
+                description: "Remove a stored provider credential".into(),
+                input_hint: None,
+            });
+        }
+        let mut output = AdapterOutput {
             commands: Vec::new(),
             events: vec![
                 AgentEvent::Catalog(CatalogEvent::Commands(commands)),
                 AgentEvent::Catalog(CatalogEvent::Skills(skills)),
             ],
+        };
+        if auth_companion {
+            output.commands.push(RpcCommand::Prompt {
+                id: Some(self.request_id("auth-context")),
+                message: format!("/{AUTH_CONTEXT_COMMAND}"),
+                streaming_behavior: None,
+            });
         }
+        output
     }
 
     fn timeline(&mut self, fact: TimelineFact) -> AdapterOutput {
@@ -386,9 +414,6 @@ impl PiAdapter {
             RpcCommand::GetAvailableModels {
                 id: Some(self.request_id("models")),
             },
-            RpcCommand::GetAvailableThinkingLevels {
-                id: Some(self.request_id("thinking-levels")),
-            },
         ]
     }
 
@@ -399,9 +424,6 @@ impl PiAdapter {
             },
             RpcCommand::GetAvailableModels {
                 id: Some(self.request_id("models")),
-            },
-            RpcCommand::GetAvailableThinkingLevels {
-                id: Some(self.request_id("thinking-levels")),
             },
         ]
     }
@@ -522,9 +544,10 @@ mod tests {
     fn startup_queries_authoritative_surfaces() {
         let mut adapter = PiAdapter::new(".", "sessions");
         let commands = adapter.startup_commands();
-        assert_eq!(commands.len(), 5);
+        assert_eq!(commands.len(), 4);
         assert!(matches!(commands[0], RpcCommand::GetState { .. }));
         assert!(matches!(commands[1], RpcCommand::GetMessages { .. }));
+        assert!(matches!(commands[3], RpcCommand::GetAvailableModels { .. }));
     }
 
     #[test]
@@ -545,6 +568,27 @@ mod tests {
                 && commands[0].name == "review"
                 && skills.len() == 1
                 && skills[0].name == "code-review"
+        ));
+    }
+
+    #[test]
+    fn auth_companion_controls_are_hidden_and_enable_logout() {
+        let mut adapter = PiAdapter::new(".", "sessions");
+        let output = adapter.commands_response(Some(&serde_json::json!({
+            "commands": [
+                {"name": AUTH_CONTEXT_COMMAND, "description": "internal"},
+                {"name": AUTH_REFRESH_COMMAND, "description": "internal"}
+            ]
+        })));
+        assert!(matches!(
+            output.events.as_slice(),
+            [AgentEvent::Catalog(CatalogEvent::Commands(commands)), _]
+                if commands.len() == 1 && commands[0].name == "logout"
+        ));
+        assert!(matches!(
+            output.commands.as_slice(),
+            [RpcCommand::Prompt { message, .. }]
+                if message == &format!("/{AUTH_CONTEXT_COMMAND}")
         ));
     }
 

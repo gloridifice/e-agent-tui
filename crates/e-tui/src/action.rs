@@ -116,7 +116,7 @@ pub enum ClipboardPaste {
     Image(PromptImage),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum AgentRequest {
     Input {
         prompt: PromptInput,
@@ -154,6 +154,25 @@ pub enum AgentRequest {
         limit: usize,
     },
     LoginGet,
+    AuthGet {
+        provider_ref: Option<String>,
+        logout: bool,
+    },
+    AuthStart {
+        provider: String,
+        method: Option<String>,
+        logout: bool,
+    },
+    AuthReply {
+        flow_id: String,
+        prompt_id: String,
+        value: String,
+    },
+    AuthOpenUrl {
+        flow_id: String,
+        url: String,
+    },
+    AuthCancel,
     LoginSetApiKey {
         provider: String,
         value: String,
@@ -174,6 +193,128 @@ pub enum AgentRequest {
         reasoning_effort: Option<String>,
     },
     Ping,
+}
+
+impl std::fmt::Debug for AgentRequest {
+    /// Names the variant so requests stay diagnosable, and never formats a
+    /// credential or provider answer.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        const REDACTED: &str = "<redacted>";
+        match self {
+            Self::Input { prompt } => formatter.debug_tuple("Input").field(prompt).finish(),
+            Self::Steer { prompt } => formatter.debug_tuple("Steer").field(prompt).finish(),
+            Self::ClearAsap => formatter.write_str("ClearAsap"),
+            Self::NewInput { mode, prompt } => formatter
+                .debug_struct("NewInput")
+                .field("mode", mode)
+                .field("prompt", prompt)
+                .finish(),
+            Self::Command { line, images } => formatter
+                .debug_struct("Command")
+                .field("line", line)
+                .field("images", &images.len())
+                .finish(),
+            Self::Interrupt => formatter.write_str("Interrupt"),
+            Self::Attach { session_id } => formatter
+                .debug_struct("Attach")
+                .field("session_id", session_id)
+                .finish(),
+            Self::ListSessions => formatter.write_str("ListSessions"),
+            Self::ApprovalAnswer { id, allow } => formatter
+                .debug_struct("ApprovalAnswer")
+                .field("id", id)
+                .field("allow", allow)
+                .finish(),
+            Self::AnswerQuestions {
+                request_id,
+                answers,
+            } => formatter
+                .debug_struct("AnswerQuestions")
+                .field("request_id", request_id)
+                .field("answers", &answers.len())
+                .finish(),
+            Self::CancelQuestions { request_id } => formatter
+                .debug_struct("CancelQuestions")
+                .field("request_id", request_id)
+                .finish(),
+            Self::History {
+                before_sequence,
+                limit,
+            } => formatter
+                .debug_struct("History")
+                .field("before_sequence", before_sequence)
+                .field("limit", limit)
+                .finish(),
+            Self::LoginGet => formatter.write_str("LoginGet"),
+            Self::AuthGet {
+                provider_ref,
+                logout,
+            } => formatter
+                .debug_struct("AuthGet")
+                .field("provider_ref", provider_ref)
+                .field("logout", logout)
+                .finish(),
+            Self::AuthStart {
+                provider,
+                method,
+                logout,
+            } => formatter
+                .debug_struct("AuthStart")
+                .field("provider", provider)
+                .field("method", method)
+                .field("logout", logout)
+                .finish(),
+            Self::AuthReply {
+                flow_id,
+                prompt_id,
+                value: _,
+            } => formatter
+                .debug_struct("AuthReply")
+                .field("flow_id", flow_id)
+                .field("prompt_id", prompt_id)
+                .field("value", &REDACTED)
+                .finish(),
+            Self::AuthOpenUrl { flow_id, url } => formatter
+                .debug_struct("AuthOpenUrl")
+                .field("flow_id", flow_id)
+                .field("url", url)
+                .finish(),
+            Self::AuthCancel => formatter.write_str("AuthCancel"),
+            Self::LoginSetApiKey { provider, value: _ } => formatter
+                .debug_struct("LoginSetApiKey")
+                .field("provider", provider)
+                .field("value", &REDACTED)
+                .finish(),
+            Self::LoginProxyCreate {
+                base_url,
+                api_key: _,
+                protocol,
+                model,
+            } => formatter
+                .debug_struct("LoginProxyCreate")
+                .field("base_url", base_url)
+                .field("api_key", &REDACTED)
+                .field("protocol", protocol)
+                .field("model", model)
+                .finish(),
+            Self::LoginProxyDelete { id } => formatter
+                .debug_struct("LoginProxyDelete")
+                .field("id", id)
+                .finish(),
+            Self::ModelGet => formatter.write_str("ModelGet"),
+            Self::ModelSet {
+                provider,
+                model,
+                reasoning_effort,
+            } => formatter
+                .debug_struct("ModelSet")
+                .field("provider", provider)
+                .field("model", model)
+                .field("reasoning_effort", reasoning_effort)
+                .finish(),
+            Self::Ping => formatter.write_str("Ping"),
+        }
+    }
 }
 
 /// Produce a single-line, grapheme-safe preview for clipboard feedback.

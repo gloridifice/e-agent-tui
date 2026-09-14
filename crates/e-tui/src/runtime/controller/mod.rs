@@ -1292,6 +1292,64 @@ mod tests {
     }
 
     #[test]
+    fn authentication_events_preserve_the_draft_session_and_prompt_queue() {
+        let state = Arc::new(Mutex::new(RuntimeState::default()));
+        state.lock().unwrap().begin_new_conversation("standard");
+        let mut scroll = ScrollState::default();
+        let mut input = InputState::new(&Config::default());
+        input.restore_text("retained draft".into());
+        let mut page = Some(InputPageSession::authentication(None, false));
+        let mut approval = None;
+        let mut question = None;
+        let mut queue = PendingPromptQueue::default();
+        queue.push(
+            PromptInput::text("queued prompt"),
+            crate::interaction::PromptDelivery::AfterTurn,
+        );
+
+        for event in [
+            AgentEvent::Interaction(crate::agent::InteractionEvent::AuthStarted {
+                flow_id: "flow".into(),
+            }),
+            AgentEvent::Interaction(crate::agent::InteractionEvent::AuthNotice(
+                crate::agent::AuthNotice {
+                    flow_id: "flow".into(),
+                    kind: crate::agent::AuthNoticeKind::Progress,
+                    message: "Synchronizing".into(),
+                    url: None,
+                    code: None,
+                },
+            )),
+            AgentEvent::Interaction(crate::agent::InteractionEvent::AuthFinished {
+                flow_id: "flow".into(),
+                outcome: crate::agent::AuthOutcomeKind::Succeeded,
+                message: "Done".into(),
+            }),
+        ] {
+            RuntimeController::apply_agent(
+                event,
+                &state,
+                &mut runtime_ui(
+                    &mut scroll,
+                    &mut input,
+                    &mut page,
+                    &mut approval,
+                    &mut question,
+                    &mut queue,
+                ),
+            );
+        }
+
+        assert_eq!(input.buf, "retained draft");
+        assert_eq!(queue.entries().len(), 1);
+        assert_eq!(
+            queue.entries()[0].prompt.plain_text(),
+            Some("queued prompt")
+        );
+        assert!(state.lock().unwrap().is_new_conversation());
+    }
+
+    #[test]
     fn clipboard_read_failure_becomes_visible_without_reentrant_locking() {
         let state = Mutex::new(RuntimeState::default());
         assert!(RuntimeController::apply_effect_result(

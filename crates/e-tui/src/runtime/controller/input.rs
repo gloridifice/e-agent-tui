@@ -193,6 +193,7 @@ pub(super) fn apply_input_page_key(
     for effect in outcome.effects {
         match effect {
             PageEffect::Send(message) => effects.push(UiAction::Agent(message)),
+            PageEffect::WriteClipboard(value) => effects.push(UiAction::WriteClipboard(value)),
             PageEffect::ConfigChanged => {
                 ui.config.resolved_theme = theme::resolve(&ui.config.theme, ui.themes);
                 super::effect::sync_live_config(ui.config, state, ui.input, ui.theme);

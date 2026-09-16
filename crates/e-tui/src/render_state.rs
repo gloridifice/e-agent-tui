@@ -1,9 +1,6 @@
 //! Width- and materialization-dependent frontend state.
 
-use std::{
-    collections::HashMap,
-    time::Instant,
-};
+use std::{collections::HashMap, time::Instant};
 
 use ratatui::style::Color;
 

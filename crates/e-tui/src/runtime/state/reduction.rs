@@ -627,10 +627,8 @@ impl RuntimeState {
             })
             .unwrap_or_else(|| incoming.content.clone());
         let theme = self.config.theme();
-        let options = crate::render::transcript_options(
-            &self.config,
-            self.render.transcript_cache.width,
-        );
+        let options =
+            crate::render::transcript_options(&self.config, self.render.transcript_cache.width);
         let lines = {
             let render = &mut self.render;
             render

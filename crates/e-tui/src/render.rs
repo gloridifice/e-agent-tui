@@ -5,7 +5,7 @@
 //! number. Tables/mermaid/code blocks are atomic: any of their rendered rows
 //! maps to the whole block (copy mode, M4).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ops::Range;
 
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
@@ -19,10 +19,6 @@ use crate::{
     config::{Config, Theme},
     i18n::Language,
 };
-
-/// Head/tail window sizes for collapsed atomic blocks.
-const CODE_HEAD_ROWS: usize = 15;
-const CODE_TAIL_ROWS: usize = 5;
 
 /// One rendered screen line plus its provenance.
 #[derive(Debug, Clone)]
@@ -75,10 +71,6 @@ pub enum MarkdownStrength {
 pub struct RenderOptions {
     /// Language used for frontend-owned Markdown chrome.
     pub language: Language,
-    /// Units whose collapsed window is expanded (D13).
-    pub expanded: HashSet<u64>,
-    /// Collapse threshold for atomic blocks in rows.
-    pub collapse_rows: usize,
     /// Whether mermaid fences render via WASM (D9); off = raw fence.
     pub mermaid_enabled: bool,
     /// Semantic Markdown palette used by this materialization.
@@ -96,8 +88,6 @@ impl Default for RenderOptions {
     fn default() -> Self {
         Self {
             language: Language::English,
-            expanded: HashSet::new(),
-            collapse_rows: 40,
             mermaid_enabled: true,
             markdown_strength: MarkdownStrength::Normal,
             content_width: None,
@@ -106,15 +96,9 @@ impl Default for RenderOptions {
     }
 }
 
-pub(crate) fn transcript_options(
-    config: &Config,
-    expanded: &HashSet<u64>,
-    content_width: usize,
-) -> RenderOptions {
+pub(crate) fn transcript_options(config: &Config, content_width: usize) -> RenderOptions {
     RenderOptions {
         language: config.language,
-        expanded: expanded.clone(),
-        collapse_rows: config.atomic_collapse_rows,
         mermaid_enabled: config.mermaid_enabled,
         markdown_strength: MarkdownStrength::Normal,
         content_width: Some(content_width),
@@ -827,10 +811,7 @@ mod tests {
         let theme = Theme::ferra();
         let mut next = 0;
         let mut units = HashMap::new();
-        let options = RenderOptions {
-            collapse_rows: 40,
-            ..Default::default()
-        };
+        let options = RenderOptions::default();
         let lines = render_markdown(text, &theme, &mut next, &options, &mut units);
         (lines, units)
     }
@@ -853,7 +834,6 @@ mod tests {
         let mut next = 0;
         let mut units = HashMap::new();
         let options = RenderOptions {
-            collapse_rows: 40,
             content_width: Some(width),
             ..Default::default()
         };
@@ -964,7 +944,6 @@ mod tests {
         let mut next = 0;
         let mut units = HashMap::new();
         let options = RenderOptions {
-            collapse_rows: 40,
             content_width: Some(24),
             ..Default::default()
         };
@@ -1011,54 +990,43 @@ mod tests {
     }
 
     #[test]
-    fn table_collapsed_and_expanded_rows_have_separators() {
+    fn long_table_shows_every_row_with_separators() {
         let mut source = String::from("| step | description |\n|---|---|\n");
-        for i in 1..=25 {
-            source.push_str(&format!("| row{i:02} | operation details for this row |\n"));
+        for i in 1..=100 {
+            source.push_str(&format!("| row{i:03} | operation details for this row |\n"));
         }
         let theme = Theme::ferra();
         for content_width in [None, Some(64)] {
-            for expanded in [false, true] {
-                let mut options = RenderOptions {
-                    content_width,
-                    ..Default::default()
+            let options = RenderOptions {
+                content_width,
+                ..Default::default()
+            };
+            let mut units = HashMap::new();
+            let lines = render_markdown(&source, &theme, &mut 0, &options, &mut units);
+            let text = plain(&lines);
+            assert_eq!(text.len(), 101 * 2 + 1, "{text:?}");
+            for (index, row) in text.iter().enumerate() {
+                let expected = if index == 0 {
+                    '┌'
+                } else if index == text.len() - 1 {
+                    '└'
+                } else if index % 2 == 0 {
+                    '├'
+                } else {
+                    '│'
                 };
-                if expanded {
-                    options.expanded.insert(0);
-                }
-                let mut units = HashMap::new();
-                let lines = render_markdown(&source, &theme, &mut 0, &options, &mut units);
-                let text = plain(&lines);
-                let expected_rows = if expanded { 26 } else { 7 };
-                assert_eq!(text.len(), expected_rows * 2 + 1, "{text:?}");
-                for (index, row) in text.iter().enumerate() {
-                    let expected = if index == 0 {
-                        '┌'
-                    } else if index == text.len() - 1 {
-                        '└'
-                    } else if index % 2 == 0 {
-                        '├'
-                    } else {
-                        '│'
-                    };
-                    assert_eq!(row.chars().next(), Some(expected), "{text:?}");
-                }
-                assert_eq!(
-                    text.iter().any(|row| row.contains("20 lines hidden")),
-                    !expanded
-                );
-                for i in 1..=25 {
-                    assert_eq!(
-                        text.iter().any(|row| row.contains(&format!("row{i:02}"))),
-                        expanded || i <= 3 || i >= 24,
-                        "retained row {i}: {text:?}"
-                    );
-                }
-                assert!(lines
-                    .iter()
-                    .all(|row| row.unit == 0 && row.atomic && row.raw_line.is_none()));
-                assert_eq!(units.get(&0).map(String::as_str), Some(source.as_str()));
+                assert_eq!(row.chars().next(), Some(expected), "{text:?}");
             }
+            for i in 1..=100 {
+                assert!(
+                    text[2 * i + 1].contains(&format!("row{i:03}")),
+                    "retained row {i}: {text:?}"
+                );
+            }
+            assert!(lines
+                .iter()
+                .all(|row| row.unit == 0 && row.atomic && row.raw_line.is_none()));
+            assert_eq!(units.get(&0).map(String::as_str), Some(source.as_str()));
         }
     }
 
@@ -1068,7 +1036,6 @@ mod tests {
         let mut next = 0;
         let mut units = HashMap::new();
         let options = RenderOptions {
-            collapse_rows: 40,
             content_width: Some(64),
             ..Default::default()
         };
@@ -1223,10 +1190,7 @@ mod tests {
         theme.markdown.inline_code.padding = crate::theme::Padding::Separate { left: 2, right: 3 };
         let mut next = 0;
         let mut units = HashMap::new();
-        let options = RenderOptions {
-            collapse_rows: 40,
-            ..Default::default()
-        };
+        let options = RenderOptions::default();
         let lines = render_markdown("a `code` b", &theme, &mut next, &options, &mut units);
         let spans = &lines[0].line.spans;
 
@@ -1257,10 +1221,7 @@ mod tests {
         theme.markdown.inline_code.padding = crate::theme::Padding::All(0);
         let mut next = 0;
         let mut units = HashMap::new();
-        let options = RenderOptions {
-            collapse_rows: 40,
-            ..Default::default()
-        };
+        let options = RenderOptions::default();
         let lines = render_markdown("a `code` b", &theme, &mut next, &options, &mut units);
         let text: String = lines[0]
             .line
@@ -1583,20 +1544,32 @@ mod tests {
     }
 
     #[test]
-    fn code_block_collapses_when_long() {
-        let mut code = String::from("```rust\n");
-        for i in 0..100 {
-            code.push_str(&format!("line {i}\n"));
+    fn long_code_block_shows_every_line_with_source_mapping() {
+        for count in [41, 100, 1000] {
+            let mut code = String::from("```rust\n");
+            for i in 0..count {
+                code.push_str(&format!("let value_{i} = {i};\n"));
+            }
+            code.push_str("```\n");
+            for content_width in [None, Some(24)] {
+                let options = RenderOptions {
+                    content_width,
+                    ..Default::default()
+                };
+                let mut units = HashMap::new();
+                let lines = render_markdown(&code, &Theme::ferra(), &mut 0, &options, &mut units);
+                let text = plain(&lines);
+                assert_eq!(lines.len(), count + 2);
+                for i in 0..count {
+                    assert_eq!(text[i + 1], format!("  let value_{i} = {i};"));
+                    assert_eq!(lines[i + 1].raw_line, Some(i + 1));
+                }
+                assert!(lines
+                    .iter()
+                    .all(|row| row.unit == 0 && row.atomic && row.fill));
+                assert_eq!(units.get(&0).map(String::as_str), Some(code.trim_end()));
+            }
         }
-        code.push_str("```\n");
-        let (lines, _) = render_full(&code);
-        let text = plain(&lines);
-        assert!(
-            text.iter().any(|l| l.contains("80 lines hidden")),
-            "collapse hint present: {:?}",
-            text
-        );
-        assert!(lines.len() < 40, "collapsed: {} lines", lines.len());
     }
 
     #[test]
@@ -1616,38 +1589,35 @@ mod tests {
         let lines = render_markdown(&code, &theme, &mut next, &options, &mut units);
         let text = plain(&lines);
         assert!(text.iter().any(|line| line.contains("代码 · 100 行")));
-        assert!(text.iter().any(|line| line.contains("收起 80 行")));
+        assert_eq!(lines.len(), 102);
+        for i in 0..100 {
+            assert_eq!(text[i + 1], format!("  line {i}"));
+        }
     }
 
     #[test]
-    fn expanded_code_block_shows_all() {
-        let mut code = String::from("```\n");
-        for i in 0..100 {
-            code.push_str(&format!("line {i}\n"));
+    fn long_mermaid_block_shows_every_diagram_row() {
+        let mut source = String::from("graph TD\n");
+        for i in 0..15 {
+            source.push_str(&format!(" N{i} --> N{}\n", i + 1));
         }
-        code.push_str("```\n");
-        let theme = Theme::ferra();
-        let mut next = 0;
-        let mut units = HashMap::new();
-        // Find the code unit id by rendering collapsed first.
-        let collapsed = render_markdown(
-            &code,
-            &theme,
-            &mut next,
-            &RenderOptions::default(),
-            &mut units,
-        );
-        let unit = collapsed[0].unit;
-        let mut options = RenderOptions::default();
-        options.expanded.insert(unit);
-        // Re-render with the SAME unit range (unit 0), as the app does.
-        let lines = render_markdown(&code, &theme, &mut 0, &options, &mut units);
-        let text = plain(&lines);
+        let diagram = crate::mermaid::render(&source, 0).expect("valid diagram");
         assert!(
-            !text.iter().any(|l| l.contains("lines hidden")),
-            "no hint when expanded"
+            diagram.len() > 40,
+            "diagram exceeds the former collapse threshold"
         );
-        // Glow layout: header row + 100 content rows + 1 bottom padding row.
-        assert_eq!(lines.len(), 102);
+        let code = format!("```mermaid\n{source}```");
+        let (lines, units) = render_full(&code);
+        let text = plain(&lines);
+        assert_eq!(lines.len(), diagram.len() + 2);
+        for (i, row) in diagram.iter().enumerate() {
+            let expected: String = row.spans.iter().map(|span| span.text.as_str()).collect();
+            assert_eq!(text[i + 1], format!("  {expected}"));
+            assert_eq!(lines[i + 1].raw_line, None);
+        }
+        assert!(lines
+            .iter()
+            .all(|row| row.unit == 0 && row.atomic && row.fill));
+        assert_eq!(units.get(&0).map(String::as_str), Some(code.as_str()));
     }
 }

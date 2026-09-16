@@ -7,10 +7,7 @@ use crate::{
 };
 
 fn options(state: &TuiApp) -> RenderOptions {
-    crate::render::transcript_options(
-        &state.config,
-        state.render.transcript_cache.width,
-    )
+    crate::render::transcript_options(&state.config, state.render.transcript_cache.width)
 }
 
 pub fn materialize_transcript(state: &mut TuiApp) {

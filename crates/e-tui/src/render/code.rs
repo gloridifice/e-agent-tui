@@ -3,12 +3,10 @@
 use ratatui::text::{Line, Span};
 
 use crate::{
-    i18n::{tr_args, Language},
+    i18n::tr_args,
     render::{RenderLine, RenderOptions},
     theme::Theme,
 };
-
-use super::{CODE_HEAD_ROWS, CODE_TAIL_ROWS};
 
 // ---------------------------------------------------------------------------
 // Mermaid (D9): grok-mermaid WASM -> styled box art; trap falls back to the
@@ -86,10 +84,7 @@ pub(super) fn render_mermaid_block(
 
     match crate::mermaid::render(&source, 0) {
         Ok(diagram) => {
-            let collapsed =
-                !options.expanded.contains(&unit) && diagram.len() > options.collapse_rows;
-            let emit = |i: usize, out: &mut Vec<RenderLine>| {
-                let line = &diagram[i];
+            for line in &diagram {
                 let spans: Vec<Span<'static>> = line
                     .spans
                     .iter()
@@ -116,28 +111,19 @@ pub(super) fn render_mermaid_block(
                     .collect();
                 let mut base = vec![Span::styled("  ", dim)];
                 base.extend(spans);
+                let line = Line::from(base);
+                // Box art must not reach the outer prose wrapper over-width.
+                let line = match options.content_width {
+                    Some(width) => crate::wrap::ellipsize_line(line, width),
+                    None => line,
+                };
                 out.push(RenderLine {
-                    line: Line::from(base),
+                    line,
                     unit,
                     raw_line: None,
                     atomic: true,
                     fill: true,
                 });
-            };
-            if collapsed {
-                let head = CODE_HEAD_ROWS.min(diagram.len());
-                for i in 0..head {
-                    emit(i, out);
-                }
-                let hidden = diagram.len() - head - CODE_TAIL_ROWS;
-                out.push(collapse_hint_row(unit, theme, options.language, hidden));
-                for i in (diagram.len() - CODE_TAIL_ROWS.min(diagram.len()))..diagram.len() {
-                    emit(i, out);
-                }
-            } else {
-                for i in 0..diagram.len() {
-                    emit(i, out);
-                }
             }
         }
         Err(error) => {
@@ -232,10 +218,9 @@ pub(super) fn render_code_block(
         crate::syntax::SyntaxHint::Token(lang.unwrap_or_default()),
         &theme.code,
     );
-    let collapsed = !options.expanded.contains(&unit) && content.len() > options.collapse_rows;
-    let push_content = |i: usize, out: &mut Vec<RenderLine>| {
+    for (i, line) in highlighted.into_iter().enumerate() {
         let mut spans = vec![Span::styled("  ", dim)];
-        spans.extend(highlighted[i].spans.clone());
+        spans.extend(line.spans);
         out.push(RenderLine {
             line: Line::from(spans),
             unit,
@@ -243,40 +228,8 @@ pub(super) fn render_code_block(
             atomic: true,
             fill: true,
         });
-    };
-    if collapsed {
-        for i in 0..CODE_HEAD_ROWS.min(content.len()) {
-            push_content(i, out);
-        }
-        let hidden = content.len() - CODE_HEAD_ROWS - CODE_TAIL_ROWS;
-        out.push(collapse_hint_row(unit, theme, options.language, hidden));
-        for i in (content.len() - CODE_TAIL_ROWS)..content.len() {
-            push_content(i, out);
-        }
-    } else {
-        for i in 0..content.len() {
-            push_content(i, out);
-        }
     }
     block_bottom_pad(unit, theme, out);
-}
-
-/// The collapsed-window hint row (shared by code and mermaid blocks).
-fn collapse_hint_row(unit: u64, theme: &Theme, language: Language, hidden: usize) -> RenderLine {
-    RenderLine {
-        line: Line::from(Span::styled(
-            tr_args(
-                language,
-                "markdown.collapse_hint",
-                &[("hidden", hidden.to_string())],
-            ),
-            theme.code.meta.style(),
-        )),
-        unit,
-        raw_line: None,
-        atomic: true,
-        fill: true,
-    }
 }
 
 /// One row of inner padding below a code/mermaid block: flagged `fill` so the

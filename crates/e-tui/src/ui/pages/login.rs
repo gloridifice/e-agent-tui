@@ -722,7 +722,7 @@ fn login_list_row(
     }
     let mut value = value;
     if focused || editing {
-        value.style = value.style.fg(theme.ok);
+        value.style = value.style.fg(theme.ok).add_modifier(Modifier::BOLD);
     }
     spans.push(value);
     let line = Line::from(spans);

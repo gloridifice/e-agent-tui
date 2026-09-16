@@ -19,7 +19,7 @@ pub(super) fn prefixed_prompt(
         return Ok(None);
     }
     let (letter, _) = crate::model_marks::prefix(text).ok_or("model_prefix.invalid")?;
-    let (mark, _) = app
+    let (mark, model) = app
         .catalogs
         .marked_model(&app.config.model_marks, letter)
         .ok_or("model_prefix.invalid")?;
@@ -32,7 +32,11 @@ pub(super) fn prefixed_prompt(
     Ok(Some(ModelSelection {
         provider: mark.provider.clone(),
         model: mark.model.clone(),
-        reasoning_effort: None,
+        reasoning_effort: crate::catalog::configured_model_effort(
+            &app.config.model_default_efforts,
+            &mark.provider,
+            model,
+        ),
     }))
 }
 

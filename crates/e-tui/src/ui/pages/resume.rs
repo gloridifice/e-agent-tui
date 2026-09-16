@@ -101,9 +101,10 @@ fn resume_row(
     let title_width = available.saturating_sub(age_width + usize::from(age_width > 0));
     let title = trim_to_width(title, title_width);
     let gap = available.saturating_sub(UnicodeWidthStr::width(title.as_str()) + age_width);
+    let title_style = input_page_item_style(theme, focused, false);
     Line::from(vec![
-        Span::styled(marker, input_page_item_style(theme, focused, false)),
-        Span::styled(title, Style::default().fg(theme.fg)),
+        Span::styled(marker, title_style),
+        Span::styled(title, title_style),
         Span::raw(" ".repeat(gap)),
         Span::styled(age, Style::default().fg(theme.dim)),
     ])

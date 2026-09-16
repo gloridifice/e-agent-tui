@@ -5,11 +5,12 @@ import { readFileSync } from 'node:fs'
 const contract = JSON.parse(readFileSync(new URL('../protocol-contract.json', import.meta.url), 'utf8'))
 import { createCompactionModels } from '../src/compaction.js'
 
-function fixture() {
+function fixture(store) {
   const listeners = new Map()
   const agent = { session: { id: 's' } }
   const other = { session: { id: 'other' } }
   const models = createCompactionModels({
+    store,
     ctx: { on: (name, handler) => listeners.set(name, handler) },
     host: { agents: () => ({ get: id => id === 's' ? agent : other }) },
     sessionModel: { catalogModels: async () => ({ groups: [
@@ -47,7 +48,7 @@ test('compaction override routes manual and automatic summary calls without chan
   }
   const normal = Object.freeze({ purpose: 'agent', sessionId: 's', provider: 'original', model: 'large' })
   assert.equal(route(normal).model, 'large')
-  assert.equal(route({ purpose: 'compaction', sessionId: 'other', model: 'other-model' }).model, 'other-model')
+  assert.equal(route({ purpose: 'compaction', sessionId: 'other', model: 'other-model' }).model, 'small')
 })
 
 test('compaction captures each run selection; unset only affects future runs and legacy history is not relabeled', async () => {

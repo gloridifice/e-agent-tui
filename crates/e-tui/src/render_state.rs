@@ -1,7 +1,7 @@
 //! Width- and materialization-dependent frontend state.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     time::Instant,
 };
 
@@ -27,7 +27,6 @@ pub struct RenderState {
     pub activity_transitions: HashMap<DisplayId, ActivityTransition>,
     pub next_unit: u64,
     pub units: HashMap<u64, String>,
-    pub expanded: HashSet<u64>,
     pub transcript_cache: TranscriptRenderCache,
     /// Live assistant Markdown paint cursors. Semantic source remains in the
     /// transcript; replay/history never create these sidecars.
@@ -43,7 +42,6 @@ impl Default for RenderState {
             activity_transitions: HashMap::new(),
             next_unit: 0,
             units: HashMap::new(),
-            expanded: HashSet::new(),
             transcript_cache: TranscriptRenderCache {
                 width: 80,
                 ..TranscriptRenderCache::default()

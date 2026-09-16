@@ -111,14 +111,16 @@ mod tests {
     fn saving_shared_settings_preserves_dsh_mode() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("e/config.toml");
-        let config = Config {
+        let mut config = Config {
             default_mode: "pi".into(),
             theme: "dracula".into(),
             ..Config::default()
         };
 
+        config.model_default_efforts.set("p", "m", "high");
         save_to(&path, &config).unwrap();
         let saved = Config::user_toml_or_default(&std::fs::read_to_string(&path).unwrap());
+        assert_eq!(saved.model_default_efforts.get("p", "m"), Some("high"));
         assert_eq!(saved.default_mode, Config::default().default_mode);
         assert_eq!(saved.theme, config.theme);
 
@@ -127,5 +129,6 @@ mod tests {
         let saved = Config::user_toml_or_default(&std::fs::read_to_string(&path).unwrap());
         assert_eq!(saved.default_mode, "minimal");
         assert_eq!(saved.theme, config.theme);
+        assert_eq!(saved.model_default_efforts.get("p", "m"), Some("high"));
     }
 }

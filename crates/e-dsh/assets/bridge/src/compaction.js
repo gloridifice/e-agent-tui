@@ -1,13 +1,21 @@
-// Runtime-only, session-scoped summary routing. Ordinary agent requests are untouched.
-export function createCompactionModels({ ctx, host, sessionModel }) {
-  const selections = new WeakMap()
+// Each run snapshots the global route; ordinary agent requests are untouched.
+export function createCompactionModels({ ctx, host, sessionModel, store }) {
+  let selected = null
+  const selectionNow = () => {
+    const saved = store ? store.load() : selected
+    return saved && saved.provider === selected?.provider && saved.model === selected?.model ? selected : saved
+  }
+  const save = value => {
+    store?.save(value)
+    selected = value
+  }
   const active = new WeakMap()
   const labels = new WeakMap()
 
   ctx.on('session/event', (session, event) => {
     const id = event.data?.compactionId
     if (event.type === 'compaction/start') {
-      const selection = selections.get(session)
+      const selection = selectionNow()
       active.set(session, { id, selection, start: event, name: selection?.name })
       if (selection) labels.set(event, selection.name)
     } else if (event.type === 'compaction/end') {
@@ -22,7 +30,7 @@ export function createCompactionModels({ ctx, host, sessionModel }) {
     const session = host.agents()?.get(options.sessionId)?.session
     if (!session) return next()
     const run = active.get(session)
-    const selection = run ? run.selection : selections.get(session)
+    const selection = run ? run.selection : selectionNow()
     if (selection) {
       if (Object.isFrozen(options)) throw new Error('Cannot route an immutable compaction request')
       options.provider = selection.provider
@@ -39,8 +47,8 @@ export function createCompactionModels({ ctx, host, sessionModel }) {
     async configure(agent, args, isCurrent) {
       const [operation, reference, extra] = args.trim().split(/\s+/)
       if (operation === 'unset-model' && reference === undefined) {
-        if (isCurrent()) selections.delete(agent.session)
-        return 'Compaction model unset'
+        if (isCurrent()) save(null)
+        return 'Global compaction model unset'
       }
       if (operation !== 'set-model' || !reference || extra !== undefined) {
         throw new Error('Usage: /compact set-model <provider/model> or /compact unset-model')
@@ -52,8 +60,8 @@ export function createCompactionModels({ ctx, host, sessionModel }) {
       const canonical = routes.filter(route => `${route.provider}/${route.model}`.toLowerCase() === reference.toLowerCase())
       const matches = canonical.length ? canonical : routes.filter(route => route.model.toLowerCase() === reference.toLowerCase())
       if (matches.length !== 1) throw new Error(`Unknown or ambiguous compaction model: ${reference}`)
-      if (isCurrent()) selections.set(agent.session, matches[0])
-      return `Compaction model set to ${matches[0].name}`
+      if (isCurrent()) save(matches[0])
+      return `Global compaction model set to ${matches[0].name}`
     },
     project(event) {
       const modelName = labels.get(event)

@@ -9,7 +9,6 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::{
     config::Theme,
-    i18n::tr_args,
     render::{RenderLine, RenderOptions},
 };
 
@@ -102,8 +101,6 @@ pub(super) fn render_table(
     let body_rows: Vec<usize> = (0..rows.len())
         .filter(|r| !(*r == 1 && has_header))
         .collect();
-    let collapsed =
-        !options.expanded.contains(&unit) && body_rows.len() > options.collapse_rows / 2;
     let push_row = |out: &mut Vec<RenderLine>, row_idx: usize, header: bool| {
         if row_idx != 0 {
             push_plain(out, unit, table_border("├", "┼", "┤", &widths), dim_style);
@@ -125,37 +122,13 @@ pub(super) fn render_table(
     };
 
     push_plain(out, unit, table_border("┌", "┬", "┐", &widths), dim_style);
-    if collapsed {
-        // Header + first rows … last rows, separated at logical-row boundaries.
-        push_row(out, 0, true);
-        let shown = 3usize.min(body_rows.len().saturating_sub(1));
-        for idx in &body_rows[1..1 + shown] {
-            push_row(out, *idx, false);
-        }
-        let hidden = body_rows.len() - shown - 1 - 2;
-        let hint_content = tr_args(
-            options.language,
-            "markdown.table_collapse_hint",
-            &[("hidden", hidden.to_string())],
-        );
-        let total_width = 3 * widths.len() + 1 + widths.iter().sum::<usize>();
-        let hint_pad =
-            total_width.saturating_sub(UnicodeWidthStr::width(hint_content.as_str()) + 2);
-        let hint = format!("│{hint_content}{}│", " ".repeat(hint_pad));
-        push_plain(out, unit, table_border("├", "┼", "┤", &widths), dim_style);
-        push_plain(out, unit, hint, dim_style);
-        for idx in &body_rows[body_rows.len() - 2..] {
-            push_row(out, *idx, false);
-        }
-    } else {
-        for &r in &body_rows {
-            push_row(out, r, r == 0);
-        }
+    for &r in &body_rows {
+        push_row(out, r, r == 0);
     }
     push_plain(out, unit, table_border("└", "┴", "┘", &widths), dim_style);
 }
 
-/// One single-span styled row (table borders, hints).
+/// One single-span styled row (table borders).
 fn push_plain(out: &mut Vec<RenderLine>, unit: u64, s: String, style: Style) {
     out.push(RenderLine {
         line: Line::from(Span::styled(s, style)),

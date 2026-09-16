@@ -47,6 +47,8 @@ import { createSessionLister, titleFromObservation } from './session-list.js'
 import { createClientDispatcher } from './dispatcher.js'
 import { createPendingPrompts } from './pending-prompts.js'
 import { createCompactionModels } from './compaction.js'
+import { createCompactionStore } from './compaction-store.js'
+import { createResourceReload } from './reload.js'
 import { shapeCommandsFrame, watchCommandChanges } from './command.js'
 import { encodeBoundedFrame, shapeWelcomeFrame } from './frame.js'
 import {
@@ -91,7 +93,8 @@ function apply(ctx, config = {}) {
   const modelSelection = createModelSelectionAdapter()
   const sessionModel = createSessionModelAdapter(() => host.apiProxy())
   const sessionPrompt = createSessionPromptAdapter(() => host.apiProxy())
-  const compactionModels = createCompactionModels({ ctx, host, sessionModel })
+  const compactionModels = createCompactionModels({ ctx, host, sessionModel, store: createCompactionStore() })
+  const reloadResources = createResourceReload({ host })
 
   // ---- user questions (ask_user_question) ----
   // The host's web UI owns the single userQuestions provider slot, so the
@@ -158,7 +161,7 @@ function apply(ctx, config = {}) {
    * routes — hydrated on resume and reconciled on every selectModel success.
    * When the catalog API is unavailable, fall back to an empty catalog.
    */
-  async function sendModel(ws, agent) {
+  async function sendModel(ws, agent, isCurrent = () => true) {
     let groups = []
     try {
       const catalog = await sessionModel.catalogModels()
@@ -167,13 +170,16 @@ function apply(ctx, config = {}) {
       // A catalog read failure must not silently empty the /model and /effort
       // pickers. Surface the same frame the dispatcher uses for an explicit
       // /model so the client can explain why the picker is empty.
-      send(ws, { type: 'error', code: 'model-failed', message: String(error?.message ?? error) })
+      if (isCurrent()) send(ws, { type: 'error', code: 'model-failed', message: String(error?.message ?? error) })
+      return false
     }
+    if (!isCurrent()) return false
     const current = modelSelections.get(agent.id)?.current
       ?? (agent.options?.provider !== undefined && agent.options?.model !== undefined
         ? { provider: agent.options.provider, model: agent.options.model }
         : undefined)
     send(ws, { type: 'model', ...shapeModelFrame(groups, current) })
+    return true
   }
 
   // ---- snapshot / lazy history paging ----
@@ -339,6 +345,7 @@ function apply(ctx, config = {}) {
       sessionPrompt,
       pendingPrompts,
       compactionModels,
+      reloadResources,
       createUserMessage,
     })
     ws.on('message', dispatcher.handle)

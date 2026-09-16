@@ -223,19 +223,6 @@ pub static ITEMS: &[ItemDef] = &[
     },
     ItemDef {
         category: 1,
-        key: "atomic_collapse_rows",
-        label: "settings.item.atomic_collapse_rows.label",
-        desc: "settings.item.atomic_collapse_rows.desc",
-        kind: ItemKind::Input,
-        get: |c| c.atomic_collapse_rows.to_string(),
-        apply: |c, v| {
-            if let Ok(n) = v.parse() {
-                c.atomic_collapse_rows = n;
-            }
-        },
-    },
-    ItemDef {
-        category: 1,
         key: "copy_toast_secs",
         label: "settings.item.copy_toast_secs.label",
         desc: "settings.item.copy_toast_secs.desc",

@@ -7,6 +7,7 @@
 
 pub mod adapter;
 pub mod auth;
+mod compaction_store;
 pub mod config;
 pub mod effects;
 pub mod execution_history_store;

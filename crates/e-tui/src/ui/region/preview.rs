@@ -322,7 +322,6 @@ fn weak_markdown_lines(
     let mut units = std::collections::HashMap::new();
     let options = RenderOptions {
         language,
-        collapse_rows: usize::MAX,
         mermaid_enabled: false,
         markdown_strength: MarkdownStrength::Weak,
         content_width: Some(width),

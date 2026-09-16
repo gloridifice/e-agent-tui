@@ -56,6 +56,41 @@ fn restore(adapter: &mut PiAdapter, output: AdapterOutput) -> AdapterOutput {
 }
 
 #[test]
+fn compaction_global_route_survives_restart_and_external_unset() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("compaction-model.json");
+    let mut first = configured().with_compaction_model_path(path.clone());
+    command(&mut first, "/compact set-model q/small");
+    let saved = crate::compaction_store::load(&path).unwrap().unwrap();
+    assert_eq!(saved.model, "small");
+    let mut second = configured().with_compaction_model_path(path.clone());
+    second.compaction_model = None;
+    begin(&mut second);
+    command(&mut first, "/compact unset-model");
+    assert!(crate::compaction_store::load(&path).unwrap().is_none());
+    let output = command(&mut first, "/compact");
+    assert!(matches!(output.commands[0], RpcCommand::Compact { .. }));
+    std::fs::write(&path, "invalid").unwrap();
+    assert!(command(&mut first, "/compact").commands.is_empty());
+    command(&mut first, "/compact set-model q/small");
+    first.available_models.clear();
+    assert!(command(&mut first, "/compact").commands.is_empty());
+}
+
+#[test]
+fn compaction_save_failure_does_not_change_runtime_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut adapter = configured().with_compaction_model_path(dir.path().to_path_buf());
+    let before = adapter.compaction_model.clone();
+    let result = command(&mut adapter, "/compact unset-model");
+    assert_eq!(adapter.compaction_model, before);
+    assert!(matches!(
+        &result.events[0],
+        AgentEvent::Interaction(InteractionEvent::Error { .. })
+    ));
+}
+
+#[test]
 fn compaction_manual_holds_work_through_success_and_failure_restoration() {
     for success in [true, false] {
         let mut adapter = configured();

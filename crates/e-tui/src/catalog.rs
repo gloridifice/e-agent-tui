@@ -29,6 +29,50 @@ pub struct CatalogModel {
     pub current_model: Option<ModelSelection>,
 }
 
+/// Prefer a canonical route, otherwise accept only an unambiguous bare model id.
+pub(crate) fn resolve_model_reference<'a>(
+    providers: &'a [ModelProvider],
+    reference: &str,
+) -> Option<(&'a ModelProvider, &'a ModelDescriptor)> {
+    let reference = reference.trim();
+    if reference.is_empty() {
+        return None;
+    }
+    let unique = |canonical: bool| {
+        let mut matches = providers.iter().flat_map(|provider| {
+            provider.models.iter().filter_map(move |model| {
+                let matches = if canonical {
+                    format!("{}/{}", provider.id, model.id).eq_ignore_ascii_case(reference)
+                } else {
+                    model.id.eq_ignore_ascii_case(reference)
+                };
+                matches.then_some((provider, model))
+            })
+        });
+        match (matches.next(), matches.next()) {
+            (Some(route), None) => Ok(Some(route)),
+            (None, _) => Ok(None),
+            _ => Err(()),
+        }
+    };
+    unique(true).ok()?.or_else(|| unique(false).ok().flatten())
+}
+
+pub(crate) fn configured_model_effort(
+    defaults: &crate::model_defaults::ModelDefaultEfforts,
+    provider: &str,
+    model: &ModelDescriptor,
+) -> Option<String> {
+    let saved = defaults.get(provider, &model.id)?;
+    model
+        .reasoning
+        .as_ref()?
+        .efforts
+        .iter()
+        .find(|effort| effort.id == saved)
+        .map(|effort| effort.id.clone())
+}
+
 impl CatalogModel {
     pub fn marked_model<'a>(
         &self,

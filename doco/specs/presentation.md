@@ -13,6 +13,7 @@
 - Wrapping MUST preserve UAX #14 break opportunities, keep glued punctuation from starting rows, and fall back to grapheme splitting only for over-wide atoms.
 - Structural changes may rebuild layout. Streaming and paced reveal MUST splice only the affected suffix; spinner frames MUST patch active ranges. Reading and Preview navigation MUST NOT flatten or rebuild transcript semantics.
 - Markdown inline styling MUST consume parser events, not reparse flattened text. Tables, lists, quotes, code blocks, and provenance MUST share width-aware layout rules.
+- Markdown tables and code blocks, including rendered Mermaid diagrams, MUST retain every row regardless of block length; presentation MUST NOT replace middle rows with a collapsed head/tail window.
 
 ## Reveal and Preview
 
@@ -29,4 +30,5 @@
 - Quick-link discovery from the latest completed assistant Markdown MUST remain pure and bounded. URI, absolute-path, and workspace-relative targets MUST be classified explicitly. Chinese/full-width opening wrappers are soft local-path boundaries: discovery retains longest-first hypotheses, validation selects at most one existing interpretation, and no interpretation is retained when an ambiguous group has no existing path. Selected targets are deduplicated before the first 36 receive presentation-only tags; overlapping rendered matches use the longest selected target, while semantic and copied source remains unchanged.
 - Selection holds an immutable presented snapshot while background reduction continues; cancellation or release restores live rendering without losing dirty work.
 - Authentication secrets and manual callback values MUST render only as masks and MUST be absent from copy surfaces, transcript/history, errors, diagnostics, and provider catalogs. Authorization URLs, device codes, provider labels, and native guidance are displayable metadata; URLs and device codes expose explicit page-local open/copy actions and MUST NOT enter transcript notifications.
+- Model menus show an e-configured default effort after the model name and before any letter mark. The annotation uses the subdued activity-label tone (Umber in Ferra), reserves display width before name clipping, and reads only in-memory config.
 - The terminal hardware cursor MUST remain hidden; the TUI uses a software cursor and a separate IME anchor.

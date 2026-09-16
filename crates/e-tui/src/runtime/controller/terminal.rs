@@ -753,6 +753,12 @@ pub(super) fn apply_ordinary_key(
             *ui.input_page = None;
             ui.mouse_selection.clear();
         }
+        if command.config_changed {
+            super::effect::sync_live_config(ui.config, state, ui.input, ui.theme);
+            outcome
+                .effects
+                .push(UiAction::PersistConfig(ui.config.clone()));
+        }
         if command.reload_config {
             outcome.effects.push(UiAction::ReloadConfig);
         }

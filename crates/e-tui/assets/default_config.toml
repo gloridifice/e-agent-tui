@@ -13,12 +13,12 @@ background_color = "#000000"
 language = "en"
 remember_last_session = false
 model_marks = []
+model_default_efforts = []
 default_mode = "standard"
 # Kept for compatibility with older config files; Enter always sends.
 enter_sends = true
 paste_placeholder_chars = 64
 long_content_lines = 20
-atomic_collapse_rows = 40
 copy_toast_secs = 3
 history_limit = 1000
 

@@ -53,6 +53,7 @@ function harness(options = {}) {
     },
     sessionPrompt: options.sessionPrompt,
     compactionModels: options.compactionModels,
+    reloadResources: options.reloadResources,
     createUserMessage: (message) => message,
   })
   return { dispatcher, frames, closes, followups, steerings, cancellations, conn, conns, modelSelections }
@@ -106,6 +107,24 @@ test('compaction configuration is acknowledged before a dependent compact comman
   await new Promise(resolve => setImmediate(resolve))
   assert.deepEqual(calls, ['set-model p/small', 'compact'])
   assert(h.frames.some(frame => frame.type === 'command-result' && frame.text === 'configured'))
+})
+
+test('reload waits for backend refresh and suppresses stale results', async () => {
+  for (const stale of [false, true]) {
+    let finish
+    const h = harness({ reloadResources: () => new Promise(resolve => { finish = resolve }) })
+    const send = message => h.dispatcher.handle(Buffer.from(JSON.stringify(message)))
+    send({ type: 'hello', token: 'secret' })
+    await new Promise(resolve => setImmediate(resolve))
+    send({ type: 'command', line: '/reload' })
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(h.frames.length, 0)
+    if (stale) h.conns.delete(h.conn)
+    finish([{ type: 'skills', skills: [{ name: 'new-skill', description: 'new' }] }])
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(h.frames.length, stale ? 0 : 2)
+    if (!stale) assert.equal(h.frames[1].commandId, 'reload')
+  }
 })
 
 test('attached skill command forwards its trailing prompt without generic execution', async () => {

@@ -84,6 +84,12 @@ You can run `/econfig` in `e` to open or show the config path of your device.
 - `key_mapping.toml`: Key mapping overrides.
 - `themes/`: custom theme folder.
 
+### Model default effort
+
+Use `/model <model-id> set-default-effort <effort>` to save a model's default reasoning effort. Completion lists models, the subcommand, and that model's supported efforts; use `provider/model` when a bare id is ambiguous. The model menu shows the saved effort after its name in Umber.
+
+Preferences live only in e's `config.toml`, not Pi's configuration. They apply the next time you select the model (including marked prompts); setting a default does not change the current session's effort. Explicit `/effort` selections and resumed sessions keep their own effort.
+
 ### Execution history
 
 While `dshe` or `pie` is attached to a session, it records output-free execution metadata under `<e-config>/cache/e-dsh/history/` or `<e-config>/cache/e-pi/history/`, using the [shared configuration directory](#config). Each history root contains a `workspaces.json` mapping its workspace folders to working-directory paths. The trace contains commands, references, timings, outcomes, and observed line counts, but not tool output, file contents, patches, or model text. Commands themselves can contain sensitive values, so review a trace before sharing it.
@@ -96,7 +102,9 @@ Recording covers activity observed while an `e` client is attached. Workspaces f
 
 Use `/compact set-model` to open the model menu, or `/compact set-model <provider/model>` (a unique bare model id also works). `/compact unset-model` clears the override. DSH applies it to manual and automatic compaction; Pi applies it only to manual `/compact` and restores the previous model and reasoning effort afterward. Pi automatic compaction remains native.
 
-The override is runtime-only: per DSH session, or until `pie` exits. Activity labels show `compacting with <model_name>` and `compacting complete with <model_name>` when the model is known. A smaller model still needs enough context capacity for the history being summarized.
+The override is user-wide and shared by `dshe` and `pie`, across projects, sessions, and restarts. It is stored in `<config_dir>/compaction-model.json`; each supported compaction reads the latest setting. The selected provider/model must be available in the backend using it. Activity labels show `compacting with <model_name>` and `compacting complete with <model_name>` when the model is known. A smaller model still needs enough context capacity for the history being summarized.
+
+`/reload` reloads frontend configuration and themes, and refreshes backend resources and catalogs. Pi reloads extensions, skills, prompts, and context files; DSH invalidates its skill cache and rediscovers skills, commands, and models. DSH plugin code replacement still requires a service restart.
 
 ### Key mapping
 

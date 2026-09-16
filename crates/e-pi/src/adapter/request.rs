@@ -7,11 +7,34 @@ use e_tui::{
 
 use crate::protocol::{ExtensionUiResponse, RpcCommand, StreamingBehavior};
 
-use super::{extension, session, AdapterOutput, NewSubmission, PendingExtensionUi, PiAdapter};
+use super::{
+    extension, session, AdapterOutput, NewSubmission, PendingExtensionUi, PendingReload, PiAdapter,
+    ReloadStep,
+};
 
 fn command_line(adapter: &mut PiAdapter, line: String) -> AdapterOutput {
     let line = normalize_skill_line(line);
     let skill = line.starts_with("/skill:");
+    if line.trim() == "/reload" {
+        if !adapter.reload_available {
+            return adapter.unsupported("Pi resource reload companion unavailable; restart pie");
+        }
+        if adapter.is_streaming {
+            return adapter.unsupported("Wait for Pi to become idle before /reload");
+        }
+        let id = adapter.request_id("reload");
+        adapter.pending_reload = Some(PendingReload {
+            id: id.clone(),
+            step: ReloadStep::CompanionPrompt,
+            error: None,
+        });
+        adapter.configuration_request = Some(id.clone());
+        return AdapterOutput::command(RpcCommand::Prompt {
+            id: Some(id),
+            message: format!("/{}", super::RELOAD_COMMAND),
+            streaming_behavior: None,
+        });
+    }
     if let Some(rest) = line
         .strip_prefix("/compact")
         .filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))

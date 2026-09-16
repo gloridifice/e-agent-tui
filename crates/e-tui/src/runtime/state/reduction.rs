@@ -629,7 +629,6 @@ impl RuntimeState {
         let theme = self.config.theme();
         let options = crate::render::transcript_options(
             &self.config,
-            &self.render.expanded,
             self.render.transcript_cache.width,
         );
         let lines = {

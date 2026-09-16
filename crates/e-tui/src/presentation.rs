@@ -1,4 +1,4 @@
-//! Markdown materialization and expansion over the canonical transcript.
+//! Markdown materialization over the canonical transcript.
 
 use crate::{
     app::TuiApp,
@@ -9,7 +9,6 @@ use crate::{
 fn options(state: &TuiApp) -> RenderOptions {
     crate::render::transcript_options(
         &state.config,
-        &state.render.expanded,
         state.render.transcript_cache.width,
     )
 }
@@ -58,18 +57,4 @@ pub fn materialize_transcript(state: &mut TuiApp) {
             state.transcript.touch(&id);
         }
     }
-}
-
-pub fn toggle_expand(state: &mut TuiApp, unit: u64) {
-    if !state.render.units.contains_key(&unit) {
-        return;
-    }
-    let Some(id) = state.render.markdown_layout.display_for_unit(unit).cloned() else {
-        return;
-    };
-    if !state.render.expanded.remove(&unit) {
-        state.render.expanded.insert(unit);
-    }
-    state.render.markdown_layout.invalidate(&id);
-    state.render.transcript_cache.invalidate();
 }

@@ -280,10 +280,10 @@ impl ModelPage {
         {
             return PageOutcome::default();
         }
-        self.select(&mark.provider, &mark.model)
+        self.select(&mark.provider, &mark.model, config)
     }
 
-    fn select(&self, provider: &str, model: &str) -> PageOutcome {
+    fn select(&self, provider: &str, model: &str, config: &Config) -> PageOutcome {
         if self.for_compaction {
             return PageOutcome::send(
                 AgentRequest::Command {
@@ -297,13 +297,24 @@ impl ModelPage {
             AgentRequest::ModelSet {
                 provider: provider.to_owned(),
                 model: model.to_owned(),
-                reasoning_effort: None,
+                reasoning_effort: self
+                    .providers
+                    .iter()
+                    .find(|item| item.id == provider)
+                    .and_then(|provider| provider.models.iter().find(|item| item.id == model))
+                    .and_then(|model| {
+                        crate::catalog::configured_model_effort(
+                            &config.model_default_efforts,
+                            provider,
+                            model,
+                        )
+                    }),
             },
             true,
         )
     }
 
-    pub(super) fn activate(&mut self, focus: &mut FocusState) -> PageOutcome {
+    pub(super) fn activate(&mut self, focus: &mut FocusState, config: &Config) -> PageOutcome {
         let Some(id) = focus.current.as_ref().map(|id| id.0.clone()) else {
             return PageOutcome::default();
         };
@@ -333,7 +344,7 @@ impl ModelPage {
             return PageOutcome::default();
         }
         self.focused_model(focus)
-            .map(|(provider, model)| self.select(provider, model))
+            .map(|(provider, model)| self.select(provider, model, config))
             .unwrap_or_default()
     }
 }

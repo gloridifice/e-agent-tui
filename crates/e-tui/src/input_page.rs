@@ -192,7 +192,7 @@ impl InputPageSession {
             },
             InputPage::Model(model) => match key {
                 Command(Action::Back | Action::Close) => PageOutcome::close(),
-                Command(Action::Confirm) => model.activate(&mut self.focus),
+                Command(Action::Confirm) => model.activate(&mut self.focus, config),
                 MappedKey::MarkModel(letter) => model.mark(letter, &self.focus, config),
                 MappedKey::SelectModel(letter) => model.select_mark(letter, config),
                 _ => PageOutcome::default(),
@@ -1178,6 +1178,38 @@ mod tests {
                 reasoning_effort: None,
             })] if provider == "p" && model == "m"
         ));
+    }
+
+    #[test]
+    fn model_default_effort_applies_to_picker_and_marks_only_when_supported() {
+        for (saved, expected) in [("high", Some("high")), ("removed", None)] {
+            for key_code in [KeyCode::Enter, KeyCode::Char('a')] {
+                let mut page = marked_model_page();
+                let InputPage::Model(model) = &mut page.page else {
+                    unreachable!()
+                };
+                model.providers[0].models[0].reasoning = Some(crate::agent::ModelReasoning {
+                    efforts: vec![ReasoningEffort {
+                        id: "high".into(),
+                        name: "High".into(),
+                        description: None,
+                    }],
+                    default_effort: None,
+                });
+                page.focus.set(ModelPage::model_focus("p", "m"));
+                let mut config = Config::default();
+                config.model_marks.toggle('a', "p", "m");
+                config.model_default_efforts.set("p", "m", saved);
+                config.model_default_efforts.set("q", "m", "low");
+                let outcome = page.handle_key(&key(key_code), &mut config);
+                assert!(outcome.close);
+                assert!(
+                    matches!(outcome.effects.as_slice(), [PageEffect::Send(AgentRequest::ModelSet {
+                    provider, model, reasoning_effort,
+                })] if provider == "p" && model == "m" && reasoning_effort.as_deref() == expected)
+                );
+            }
+        }
     }
 
     #[test]

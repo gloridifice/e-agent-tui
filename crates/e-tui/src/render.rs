@@ -84,10 +84,10 @@ pub struct RenderOptions {
     /// Semantic Markdown palette used by this materialization.
     pub markdown_strength: MarkdownStrength,
     /// Optional display width of the surface these lines are painted into.
-    /// When set, tables size their columns to fit it and wrap cell text
-    /// inside the box, and list items pre-wrap with a hanging indent so
-    /// continuation rows stay in the text column. `None` renders unbounded
-    /// logical rows and leaves wrapping to the paint-time wrapper.
+    /// When set, tables wrap cell text inside fitted columns, list items
+    /// pre-wrap with a hanging indent, and Mermaid diagrams clip over-wide
+    /// rows to preserve their geometry. `None` renders unbounded logical
+    /// rows and leaves wrapping to the paint-time wrapper.
     pub content_width: Option<usize>,
     pub link_tags: Vec<crate::link_copy::TaggedLink>,
 }

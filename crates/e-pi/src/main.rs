@@ -292,7 +292,8 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
     let mut adapter = PiAdapter::new(
         &launch.cwd,
         e_pi::session_index::project_session_root(&launch.cwd),
-    );
+    )
+    .with_compaction_model_path(e_pi::config::config_dir().join("compaction-model.json"));
     let mut pending_inbound = VecDeque::new();
     let history = Arc::new(std::sync::Mutex::new(
         e_pi::execution_history_store::HistoryRecorder::new("e-pi"),

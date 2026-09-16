@@ -95,7 +95,14 @@ pub(super) fn render_model_page(
             let suffix = mark
                 .map(|letter| format!(" [{letter}]"))
                 .unwrap_or_default();
-            let name_width = (columns[2].width as usize).saturating_sub(2 + suffix.len());
+            let effort = config
+                .model_default_efforts
+                .get(active_provider, &model.id)
+                .map(|effort| format!(" {effort}"))
+                .unwrap_or_default();
+            let name_width = (columns[2].width as usize).saturating_sub(
+                2 + unicode_width::UnicodeWidthStr::width(effort.as_str()) + suffix.len(),
+            );
             let name = if name_width == 0 {
                 String::new()
             } else {
@@ -104,6 +111,7 @@ pub(super) fn render_model_page(
             model_rows.push(Line::from(vec![
                 Span::styled(if selected { "● " } else { "○ " }, style),
                 Span::styled(name, style),
+                Span::styled(effort, Style::default().fg(theme.activity.label.fg)),
                 Span::styled(suffix, Style::default().fg(theme.dim)),
             ]));
         }

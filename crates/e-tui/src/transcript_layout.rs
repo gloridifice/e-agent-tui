@@ -179,6 +179,48 @@ mod tests {
     }
 
     #[test]
+    fn mermaid_clips_without_wrapping_and_restores_on_resize() {
+        let id = DisplayId::correlated("assistant", "mermaid-width");
+        let theme = Theme::ferra();
+        let source = "```mermaid\ngraph LR\n A[\"first long box\"] --> B[\"中文节点内容\"] --> C[\"third long box\"]\n```";
+        let mut registry = MarkdownLayoutRegistry::default();
+        let mut next_unit = 0;
+        let mut units = HashMap::new();
+        let mut options = RenderOptions::default();
+        let full = registry
+            .materialize(&id, source, &theme, &mut next_unit, &options, &mut units)
+            .to_vec();
+        let full_width = full.iter().map(|row| row.line.width()).max().unwrap();
+        assert!(full_width > 24);
+
+        for width in [24, full_width, 1, 9, full_width - 1, full_width + 8] {
+            options.content_width = Some(width);
+            let rows =
+                registry.materialize(&id, source, &theme, &mut next_unit, &options, &mut units);
+            assert_eq!(rows.len(), full.len());
+            assert!(rows
+                .iter()
+                .all(|row| row.atomic && row.unit == full[0].unit));
+            assert_eq!(units.get(&full[0].unit).map(String::as_str), Some(source));
+            // Header and bottom padding are not diagram geometry.
+            for (row, original) in rows[1..rows.len() - 1].iter().zip(&full[1..full.len() - 1]) {
+                assert!(row.line.width() <= width, "width={width}: {:?}", row.line);
+                assert_eq!(wrapped_rows(&row.line, width), 1);
+                assert_eq!(wrap_line(row.line.clone(), width).len(), 1);
+                assert_eq!(row.raw_line, original.raw_line);
+                let text = row.line.to_string();
+                let original_text = original.line.to_string();
+                if original.line.width() > width {
+                    let prefix = text.strip_suffix('…').expect("overflow is marked");
+                    assert!(original_text.starts_with(prefix));
+                } else {
+                    assert_eq!(text, original_text);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn wrapping_keeps_combining_and_zwj_graphemes_intact_across_styles() {
         let line = Line::from(vec![
             Span::styled("e", Style::default().fg(Color::Red)),

@@ -17,6 +17,14 @@ function refreshFailed(result) {
 }
 
 export default function registerPieNativeAuth(pi) {
+  pi.registerCommand("__pie_reload_v1", {
+    description: "Internal pie resource reload",
+    handler: async (_args, ctx) => {
+      if (!ctx.isIdle()) throw new Error("Wait for Pi to become idle before /reload");
+      await ctx.reload();
+    },
+  });
+
   pi.registerCommand(CONTEXT_COMMAND, {
     description: "Internal pie authentication context",
     handler: async (_args, ctx) => {

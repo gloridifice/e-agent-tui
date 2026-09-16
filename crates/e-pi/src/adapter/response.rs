@@ -5,9 +5,49 @@ use e_tui::agent::{AgentEvent, InteractionEvent};
 use crate::protocol::{response, RpcCommand, RpcRecord};
 use serde_json::Value;
 
-use super::{model, session, AdapterOutput, NewSubmission, PiAdapter};
+use super::{model, session, AdapterOutput, NewSubmission, PendingReload, PiAdapter, ReloadStep};
 
-pub(super) fn dispatch(adapter: &mut PiAdapter, record: RpcRecord) -> AdapterOutput {
+pub(super) fn dispatch(adapter: &mut PiAdapter, mut record: RpcRecord) -> AdapterOutput {
+    let reload = adapter
+        .pending_reload
+        .as_ref()
+        .is_some_and(|pending| record.string("id") == Some(pending.id.as_str()));
+    if reload {
+        if let Some(error) = adapter
+            .pending_reload
+            .as_mut()
+            .and_then(|pending| pending.error.take())
+        {
+            record.fields.insert("success".into(), Value::Bool(false));
+            record.fields.insert("error".into(), Value::String(error));
+        }
+        if record.bool("success") == Some(true) && record.string("command") != Some("get_commands")
+        {
+            let id = adapter.request_id("reload-catalog");
+            let next = match record.string("command") {
+                Some("prompt") => RpcCommand::GetState {
+                    id: Some(id.clone()),
+                },
+                Some("get_state") => RpcCommand::GetAvailableModels {
+                    id: Some(id.clone()),
+                },
+                Some("get_available_models") => RpcCommand::GetCommands {
+                    id: Some(id.clone()),
+                },
+                _ => return adapter.protocol_error("Unexpected reload response".into()),
+            };
+            let mut output = dispatch_response(adapter, record);
+            adapter.pending_reload = Some(PendingReload {
+                id: id.clone(),
+                step: ReloadStep::Catalog,
+                error: None,
+            });
+            adapter.configuration_request = Some(id);
+            output.commands.push(next);
+            return output;
+        }
+        adapter.pending_reload = None;
+    }
     if let Some(mut output) = super::compaction::response(adapter, &record) {
         drain_deferred(adapter, &mut output);
         return output;
@@ -30,6 +70,15 @@ pub(super) fn dispatch(adapter: &mut PiAdapter, record: RpcRecord) -> AdapterOut
     let successful = record.bool("success") == Some(true);
     let failed = record.bool("success") == Some(false);
     let mut output = dispatch_response(adapter, record);
+    if reload && successful {
+        output
+            .events
+            .push(AgentEvent::Interaction(InteractionEvent::CommandResult {
+                id: "reload".into(),
+                outcome: "success".into(),
+                text: Some("Pi resources and catalogs reloaded".into()),
+            }));
+    }
     if skill {
         output.merge(finish_skill_prompt(adapter, successful));
     }

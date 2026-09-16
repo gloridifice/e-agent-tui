@@ -103,7 +103,6 @@ pub(super) fn render_help_modal(
     let mut units = std::collections::HashMap::new();
     let options = crate::render::RenderOptions {
         language: config.language,
-        collapse_rows: usize::MAX,
         mermaid_enabled: false,
         content_width: Some(usize::from(content.width)),
         ..Default::default()

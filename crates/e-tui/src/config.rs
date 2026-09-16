@@ -298,6 +298,20 @@ impl<'de> Deserialize<'de> for PaneWidthPercent {
     }
 }
 
+/// User-wide route stored separately from frontend presentation settings.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct CompactionModel {
+    pub version: u32,
+    pub provider: String,
+    pub model: String,
+}
+
+impl CompactionModel {
+    pub fn is_valid(&self) -> bool {
+        self.version == 1 && !self.provider.trim().is_empty() && !self.model.trim().is_empty()
+    }
+}
+
 // ---------- full config ----------
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -326,13 +340,13 @@ pub struct Config {
     pub language: Language,
     pub remember_last_session: bool,
     pub model_marks: crate::model_marks::ModelMarks,
+    pub model_default_efforts: crate::model_defaults::ModelDefaultEfforts,
     /// Agent-preset mode for bare `/new` and the session a fresh TUI process
     /// opens (the bridge falls back to `standard` when this id is stale).
     pub default_mode: String,
     pub enter_sends: bool,
     pub paste_placeholder_chars: usize,
     pub long_content_lines: usize,
-    pub atomic_collapse_rows: usize,
     pub copy_toast_secs: u64,
     pub history_limit: usize,
     // 显示
@@ -459,6 +473,7 @@ mod tests {
                 spinner_frame_ms = 250
                 page_align = "right"
                 input_style = "square"
+                atomic_collapse_rows = 1
             "#,
         )
         .expect("partial config overlays defaults");
@@ -481,7 +496,9 @@ mod tests {
         assert_eq!(config.thinking_display, "compact");
         assert_eq!(config.thinking_lines, 2);
         assert_eq!(config.resolved_theme.user, Theme::ferra().user);
-        assert!(!toml::to_string(&config).unwrap().contains("input_style"));
+        let persisted = toml::to_string(&config).unwrap();
+        assert!(!persisted.contains("input_style"));
+        assert!(!persisted.contains("atomic_collapse_rows"));
     }
 
     #[test]

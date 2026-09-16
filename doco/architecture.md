@@ -16,7 +16,7 @@ Pi child <-------- JSONL stdio ------> crates/e-pi ──┘
 
 - `crates/e-tui` owns provider-neutral state, event projection, interaction, rendering, and runtime policy.
 - `crates/e-dsh` owns DSH wire conversion, WebSocket transport, launcher/setup, and external effects.
-- `crates/e-pi` owns Pi RPC DTOs, bounded JSONL framing, child lifecycle, native session discovery, Pi-native authentication integration, and external effects. Authentication uses an embedded public-API companion extension for runtime context/refresh and a lazily started SDK helper for native provider interactions; Pi remains the credential and OAuth owner.
+- `crates/e-pi` owns Pi RPC DTOs, bounded JSONL framing, child lifecycle, native session discovery, Pi-native authentication integration, and external effects. Authentication uses an embedded public-API companion extension for runtime context/refresh and a lazily started SDK helper for native provider interactions; Pi remains the credential and OAuth owner. The companion also exposes native resource reload; the adapter refreshes catalogs only after that operation settles.
 - Both adapters depend on `e-tui`; they never depend on each other. Provider payloads do not cross adapter boundaries.
 - Runners execute owned frontend effects only after releasing UI state guards. Shared scheduling and input policy remain in `e-tui`.
 
@@ -33,6 +33,8 @@ See [bridge contracts](specs/dsh-bridge.md).
 ## State and effects
 
 Frontend semantic state is provider-neutral. Presentation caches and reveal progress are derived state. Adapters own filesystem, process, clipboard, transport, and provider persistence effects. Execution-history records are normalized before entering shared code and exclude model text, file contents, patches, and raw unknown payloads.
+
+Compaction selection uses one user-wide route file shared by the Pi adapter and DSH bridge; each compaction captures the latest route, independently of session cwd. Filesystem persistence remains adapter-owned and its data schema belongs to `e-tui`.
 
 See [configuration and storage contracts](specs/configuration-and-storage.md).
 

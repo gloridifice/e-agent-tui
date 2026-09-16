@@ -994,6 +994,12 @@ impl InputState {
         // runs before command-name matching so exact `/skill` immediately
         // transitions from the command catalog to the skill roster.
         if let Some((command, query)) = completion_context(&self.buf) {
+            if command.completion == CompletionKind::Model {
+                if let Some((reference, arguments)) = query.split_once(char::is_whitespace) {
+                    self.suggest = self.model_setting_suggestion(reference, arguments, catalogs);
+                    return;
+                }
+            }
             let compact_model =
                 command.completion == CompletionKind::Compact && query.starts_with("set-model ");
             let query = if compact_model {
@@ -1184,6 +1190,56 @@ impl InputState {
             return;
         }
         self.suggest = None;
+    }
+
+    fn model_setting_suggestion(
+        &self,
+        reference: &str,
+        arguments: &str,
+        catalogs: &CatalogModel,
+    ) -> Option<Suggestion> {
+        if self.buf.contains('\n') {
+            return None;
+        }
+        let (_, model) =
+            crate::catalog::resolve_model_reference(&catalogs.model_providers, reference)?;
+        let efforts = &model.reasoning.as_ref()?.efforts;
+        if efforts.is_empty() {
+            return None;
+        }
+        let arguments = arguments.trim_start();
+        let (matches, descriptions, kind) = if let Some((subcommand, query)) =
+            arguments.split_once(char::is_whitespace)
+        {
+            let query = query.trim_start();
+            if subcommand != "set-default-effort" || query.contains(char::is_whitespace) {
+                return None;
+            }
+            let ranked = match_efforts(query, efforts);
+            (
+                ranked
+                    .iter()
+                    .map(|effort| format!("/model {reference} set-default-effort {}", effort.id))
+                    .collect::<Vec<_>>(),
+                ranked.iter().map(|effort| effort.name.clone()).collect(),
+                SuggestionKind::Efforts,
+            )
+        } else {
+            crate::command_catalog::rank_text(&arguments.to_lowercase(), "set-default-effort")?;
+            (
+                vec![format!("/model {reference} set-default-effort")],
+                vec![tr(self.language, "command.model.set_default_effort")],
+                SuggestionKind::Subcommands,
+            )
+        };
+        (!matches.is_empty()).then(|| Suggestion {
+            query: self.buf.clone(),
+            sel: 0,
+            sources: vec![CommandSource::Builtin; matches.len()],
+            matches,
+            descriptions,
+            kind,
+        })
     }
 
     fn insert_char(&mut self, c: char) {
@@ -2369,6 +2425,83 @@ mod tests {
             }],
             ..CatalogModel::default()
         }
+    }
+
+    #[test]
+    fn model_default_effort_completion_uses_target_not_current_route() {
+        let mut catalogs = sample_effort_catalog();
+        let mut other = catalogs.model_providers[0].clone();
+        other.id = "other".into();
+        other.models[0].id = "vendor/other-model".into();
+        other.models[0]
+            .reasoning
+            .as_mut()
+            .unwrap()
+            .efforts
+            .truncate(1);
+        catalogs.model_providers.push(other);
+        for (line, expected) in [
+            ("/model gpt ", vec!["/model gpt set-default-effort"]),
+            (
+                "/model openai/gpt set-d",
+                vec!["/model openai/gpt set-default-effort"],
+            ),
+            (
+                "/model other/vendor/other-model set-default-effort ",
+                vec!["/model other/vendor/other-model set-default-effort low"],
+            ),
+            (
+                "/model gpt set-default-effort max",
+                vec!["/model gpt set-default-effort xhigh"],
+            ),
+            ("/model unknown set-default-effort ", vec![]),
+            ("/model gpt unknown ", vec![]),
+            ("/model gpt set-default-effort low extra", vec![]),
+        ] {
+            let mut input = state();
+            for character in line.chars() {
+                input.handle_key_with_catalog(&key(KeyCode::Char(character)), true, &catalogs);
+            }
+            let actual = input
+                .suggest
+                .as_ref()
+                .map(|s| s.matches.clone())
+                .unwrap_or_default();
+            assert_eq!(actual, expected, "{line}");
+        }
+        catalogs.model_providers[1].models[0].id = "gpt".into();
+        let mut input = state();
+        input.buf = "/model gpt set-default-effort ".into();
+        input.refresh_suggest(&catalogs);
+        assert!(
+            input.suggest.is_none(),
+            "ambiguous bare ids have no effort completion"
+        );
+        input.buf = "/model other/gpt set-default-effort ".into();
+        input.refresh_suggest(&catalogs);
+        assert_eq!(
+            input.suggest.unwrap().matches,
+            ["/model other/gpt set-default-effort low"]
+        );
+    }
+
+    #[test]
+    fn model_default_effort_completion_tab_and_escape_preserve_typed_query() {
+        let catalogs = sample_effort_catalog();
+        let mut input = state();
+        for character in "/model gpt set-d".chars() {
+            input.handle_key_with_catalog(&key(KeyCode::Char(character)), true, &catalogs);
+        }
+        input.handle_key_with_catalog(&key(KeyCode::Tab), true, &catalogs);
+        assert_eq!(input.buf, "/model gpt set-default-effort");
+        for character in " max".chars() {
+            input.handle_key_with_catalog(&key(KeyCode::Char(character)), true, &catalogs);
+        }
+        input.handle_key_with_catalog(&key(KeyCode::Tab), true, &catalogs);
+        assert_eq!(input.buf, "/model gpt set-default-effort xhigh");
+        input.handle_key_with_catalog(&key(KeyCode::Esc), true, &catalogs);
+        assert_eq!(input.buf, "/model gpt set-default-effort max");
+        assert!(input.suggest.is_none());
     }
 
     #[test]

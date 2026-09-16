@@ -463,7 +463,6 @@ impl RuntimeState {
         self.link_copy.clear();
         self.session_state_events.clear();
         self.render.units.clear();
-        self.render.expanded.clear();
         self.render.next_unit = 0;
         self.next_thinking_id = 0;
         self.next_local_display_id = 0;

@@ -71,9 +71,20 @@ pub(super) fn command(adapter: &mut PiAdapter, args: &str) -> AdapterOutput {
             if candidates.len() != 1 || set_model(String::new(), candidates[0]).is_none() {
                 return adapter.unsupported("Unknown or ambiguous compaction model");
             }
+            if let Some(path) = &adapter.compaction_model_path {
+                let route = e_tui::config::CompactionModel {
+                    version: 1,
+                    provider: candidates[0]["provider"].as_str().unwrap().into(),
+                    model: candidates[0]["id"].as_str().unwrap().into(),
+                };
+                if let Err(error) = crate::compaction_store::save(path, Some(&route)) {
+                    return adapter
+                        .unsupported(&format!("Cannot save global compaction model: {error}"));
+                }
+            }
             adapter.compaction_model = Some(candidates[0].clone());
             result(format!(
-                "Compaction model set to {}",
+                "Global compaction model set to {}",
                 model_name(candidates[0]).unwrap_or_default()
             ))
         }
@@ -81,10 +92,36 @@ pub(super) fn command(adapter: &mut PiAdapter, args: &str) -> AdapterOutput {
             if words.next().is_some() {
                 return adapter.unsupported("Usage: /compact unset-model");
             }
+            if let Some(path) = &adapter.compaction_model_path {
+                if let Err(error) = crate::compaction_store::save(path, None) {
+                    return adapter
+                        .unsupported(&format!("Cannot clear global compaction model: {error}"));
+                }
+            }
             adapter.compaction_model = None;
-            result("Compaction model unset".into())
+            result("Global compaction model unset".into())
         }
         _ => {
+            if let Some(path) = &adapter.compaction_model_path {
+                let route = match crate::compaction_store::load(path) {
+                    Ok(route) => route,
+                    Err(error) => {
+                        return adapter
+                            .unsupported(&format!("Cannot load global compaction model: {error}"))
+                    }
+                };
+                adapter.compaction_model = if let Some(route) = route {
+                    let Some(model) = adapter.available_models.iter().find(|model| {
+                        model["provider"].as_str() == Some(route.provider.as_str())
+                            && model["id"].as_str() == Some(route.model.as_str())
+                    }) else {
+                        return adapter.unsupported(&format!("Global compaction model {}/{} is unavailable; use /compact set-model or /compact unset-model", route.provider, route.model));
+                    };
+                    Some(model.clone())
+                } else {
+                    None
+                };
+            }
             let instructions = (!args.trim().is_empty()).then(|| args.trim().to_owned());
             let Some(target) = adapter.compaction_model.clone() else {
                 return AdapterOutput::command(RpcCommand::Compact {

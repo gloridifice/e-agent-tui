@@ -28,6 +28,7 @@ export function createClientDispatcher({
   sessionPrompt,
   pendingPrompts,
   compactionModels,
+  reloadResources,
   createUserMessage,
 }) {
   let conn = null
@@ -157,6 +158,29 @@ export function createClientDispatcher({
     }
   }
 
+  /**
+   * Serialize one bridge-owned command behind pending model updates. Every such
+   * command shares the abort registration, the staleness rule, and the error
+   * frame mapping; only the command body differs.
+   */
+  function queueCommand(ws, current, { code, timeoutMs }, run) {
+    const isCurrent = () => conns.isCurrent(current, conn)
+    const controller = new AbortController()
+    current.commandAborts ??= new Set()
+    current.commandAborts.add(controller)
+    const signals = [current.abort.signal, controller.signal]
+    if (timeoutMs !== undefined) signals.push(AbortSignal.timeout(timeoutMs))
+    const signal = AbortSignal.any(signals)
+    const update = Promise.resolve(modelUpdates).then(async () => {
+      if (!isCurrent()) return
+      await run(signal, isCurrent)
+    }).catch(error => {
+      if (isCurrent()) send(ws, { type: 'error', code, message: String(error?.message ?? error) })
+    }).finally(() => current.commandAborts.delete(controller))
+    modelUpdates = update
+    void update.finally(() => { if (modelUpdates === update) modelUpdates = null })
+  }
+
   function command(msg) {
     if (!conn || typeof msg.line !== 'string') return
     let images
@@ -167,20 +191,31 @@ export function createClientDispatcher({
       return
     }
     const trimmed = msg.line.trim()
+    if (trimmed === '/reload') {
+      const current = conn
+      queueCommand(ws, current, { code: 'reload-failed', timeoutMs: 15_000 }, async (signal, isCurrent) => {
+        if (images.length) throw new Error('/reload does not accept images')
+        if (!reloadResources) throw new Error('DSH resource reload unavailable')
+        const frames = await reloadResources(current, signal)
+        if (!isCurrent()) return
+        signal.throwIfAborted()
+        for (const frame of frames) send(ws, frame)
+        if (await sendModel(ws, current.agent, () => isCurrent() && !signal.aborted) === false) {
+          throw new Error('DSH model catalog refresh failed')
+        }
+        signal.throwIfAborted()
+        if (isCurrent()) send(ws, { type: 'command-result', commandId: 'reload', kind: 'success', text: 'DSH skills and catalogs reloaded' })
+      })
+      return
+    }
     if (/^\/compact\s+(set-model|unset-model)(?:\s|$)/.test(trimmed)) {
       const current = conn
-      const isCurrent = () => conns.isCurrent(current, conn)
-      const update = Promise.resolve(modelUpdates).then(async () => {
-        if (!isCurrent()) return
+      queueCommand(ws, current, { code: 'compaction-model-failed' }, async (_signal, isCurrent) => {
         if (images.length) throw new Error('/compact model configuration does not accept images')
         if (!compactionModels) throw new Error('Compaction model routing unavailable')
         const text = await compactionModels.configure(current.agent, trimmed.replace(/^\/compact\s+/, ''), isCurrent)
         if (isCurrent()) send(ws, { type: 'command-result', commandId: 'compaction-model', kind: 'success', text })
-      }).catch(error => {
-        if (isCurrent()) send(ws, { type: 'error', code: 'compaction-model-failed', message: String(error?.message ?? error) })
       })
-      modelUpdates = update
-      void update.finally(() => { if (modelUpdates === update) modelUpdates = null })
       return
     }
     if (trimmed === '/new' || trimmed.startsWith('/new ')) {

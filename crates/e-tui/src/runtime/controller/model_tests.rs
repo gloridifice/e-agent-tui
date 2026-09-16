@@ -153,6 +153,47 @@ fn assert_model(actions: &[UiAction], p: &str, m: &str, effort: Option<&str>) {
 }
 
 #[test]
+fn model_default_effort_is_captured_in_queue_and_does_not_replace_restored_effort() {
+    let h = Harness::new();
+    {
+        let mut app = h.0.lock().unwrap();
+        app.catalogs.model_providers[0].models[0].reasoning = Some(crate::agent::ModelReasoning {
+            efforts: ["low", "high"]
+                .into_iter()
+                .map(|id| crate::agent::ReasoningEffort {
+                    id: id.into(),
+                    name: id.into(),
+                    description: None,
+                })
+                .collect(),
+            default_effort: None,
+        });
+        app.config.model_default_efforts.set("p", "luna", "low");
+        app.config
+            .model_default_efforts
+            .set("base-provider", "base", "low");
+    }
+    h.submit("//i captured", true);
+    h.0.lock()
+        .unwrap()
+        .config
+        .model_default_efforts
+        .set("p", "luna", "high");
+    assert_model(&h.dispatch(), "p", "luna", Some("low"));
+    h.confirm_target();
+    assert!(
+        matches!(h.dispatch().as_slice(), [UiAction::Agent(AgentRequest::Input { prompt })]
+        if prompt == &"captured")
+    );
+    h.status(AgentStatus::Running);
+    h.echo("captured");
+    h.status(AgentStatus::Idle);
+    assert_model(&h.dispatch(), "base-provider", "base", Some("high"));
+    h.confirm(Harness::original());
+    assert!(h.0.lock().unwrap().session.temporary_model.is_none());
+}
+
+#[test]
 fn temporary_model_keeps_steering_and_tool_steps_then_restores_before_after_turn() {
     let h = Harness::new();
     h.start();

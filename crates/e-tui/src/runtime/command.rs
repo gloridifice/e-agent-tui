@@ -19,6 +19,7 @@ use crate::{
     AgentRequest, Config, Theme,
 };
 use crate::{
+    catalog::resolve_model_reference,
     command_catalog::{resolve_fixed_subcommand, CommandAction, NewMode},
     i18n::{tr, tr_args, Language},
     input_page::InputPageSession,
@@ -32,6 +33,7 @@ pub struct CommandOutcome {
     /// interruptible until its direct result/error arrives.
     pub starts_interruptible_command: bool,
     pub reload_config: bool,
+    pub config_changed: bool,
     pub new_conversation: bool,
     pub activate_reading: bool,
     pub history: Option<FixedSubcommandAction>,
@@ -119,42 +121,6 @@ fn submit_skill(line: String, context: &LocalCommandContext<'_>, outcome: &mut C
     } else {
         state.admit_submission(&prompt, true);
         forward(line, outcome, false);
-    }
-}
-
-fn resolve_model_reference(
-    providers: &[ModelProvider],
-    reference: &str,
-) -> Option<(String, String)> {
-    let reference = reference.trim();
-    if reference.is_empty() {
-        return None;
-    }
-
-    let mut canonical = providers.iter().flat_map(|provider| {
-        provider.models.iter().filter_map(move |model| {
-            format!("{}/{}", provider.id, model.id)
-                .eq_ignore_ascii_case(reference)
-                .then(|| (provider.id.clone(), model.id.clone()))
-        })
-    });
-    match (canonical.next(), canonical.next()) {
-        (Some(route), None) => return Some(route),
-        (Some(_), Some(_)) => return None,
-        (None, _) => {}
-    }
-
-    let mut bare = providers.iter().flat_map(|provider| {
-        provider.models.iter().filter_map(move |model| {
-            model
-                .id
-                .eq_ignore_ascii_case(reference)
-                .then(|| (provider.id.clone(), model.id.clone()))
-        })
-    });
-    match (bare.next(), bare.next()) {
-        (Some(route), None) => Some(route),
-        _ => None,
     }
 }
 
@@ -287,35 +253,70 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
                 // to the next materialized session (including a deferred `/new`).
                 *context.input_page = Some(InputPageSession::model());
                 outcome.outbound.push(AgentRequest::ModelGet);
-            } else if reference.split_whitespace().count() != 1 {
-                push_error(context.state, tr(context.language, "command.model.usage"));
-            } else if let Some((provider, model)) =
-                resolve_model_reference(context.model_providers, reference)
-            {
-                outcome.outbound.push(AgentRequest::ModelSet {
-                    provider,
-                    model,
-                    reasoning_effort: None,
-                });
             } else {
-                push_error(
-                    context.state,
-                    tr_args(
-                        context.language,
-                        "command.model.not_found",
-                        &[("reference", reference.to_owned())],
-                    ),
-                );
+                let parts: Vec<_> = reference.split_whitespace().collect();
+                let default_effort = match parts.as_slice() {
+                    [_] => None,
+                    [_, "set-default-effort", effort] => Some(*effort),
+                    _ => {
+                        push_error(context.state, tr(context.language, "command.model.usage"));
+                        return outcome;
+                    }
+                };
+                let Some((provider, model)) =
+                    resolve_model_reference(context.model_providers, parts[0])
+                else {
+                    push_error(
+                        context.state,
+                        tr_args(
+                            context.language,
+                            "command.model.not_found",
+                            &[("reference", parts[0].to_owned())],
+                        ),
+                    );
+                    return outcome;
+                };
+                if let Some(reference) = default_effort {
+                    let effort = model.reasoning.as_ref().and_then(|reasoning| {
+                        reasoning
+                            .efforts
+                            .iter()
+                            .find(|effort| effort.id.eq_ignore_ascii_case(reference))
+                    });
+                    if let Some(effort) = effort {
+                        context.config.model_default_efforts.set(
+                            &provider.id,
+                            &model.id,
+                            &effort.id,
+                        );
+                        outcome.config_changed = true;
+                    } else {
+                        push_error(
+                            context.state,
+                            tr_args(
+                                context.language,
+                                "command.model.effort_not_found",
+                                &[
+                                    ("reference", reference.to_owned()),
+                                    ("model", parts[0].to_owned()),
+                                ],
+                            ),
+                        );
+                    }
+                } else {
+                    outcome.outbound.push(AgentRequest::ModelSet {
+                        provider: provider.id.clone(),
+                        model: model.id.clone(),
+                        reasoning_effort: crate::catalog::configured_model_effort(
+                            &context.config.model_default_efforts,
+                            &provider.id,
+                            model,
+                        ),
+                    });
+                }
             }
         }
         CommandAction::Compact => {
-            if has_new_conversation(context.state) {
-                set_new_conversation_notice(
-                    context.state,
-                    tr(context.language, "command.new.must_send"),
-                );
-                return outcome;
-            }
             let args = raw_input.trim();
             let mut parts = args.split_whitespace();
             match parts.next() {
@@ -328,7 +329,7 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
                             resolve_model_reference(context.model_providers, reference)
                         {
                             forward(
-                                format!("/compact set-model {provider}/{model}"),
+                                format!("/compact set-model {}/{}", provider.id, model.id),
                                 &mut outcome,
                                 false,
                             );
@@ -354,7 +355,16 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
                         forward("/compact unset-model".into(), &mut outcome, false);
                     }
                 }
-                _ => forward(line, &mut outcome, true),
+                _ => {
+                    if has_new_conversation(context.state) {
+                        set_new_conversation_notice(
+                            context.state,
+                            tr(context.language, "command.new.must_send"),
+                        );
+                    } else {
+                        forward(line, &mut outcome, true);
+                    }
+                }
             }
         }
         CommandAction::Effort => {
@@ -391,6 +401,7 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
                 return outcome;
             }
             outcome.reload_config = true;
+            forward("/reload".into(), &mut outcome, false);
         }
         CommandAction::Econfig => {
             if !reject_arguments(&context, name, raw_input) {
@@ -713,12 +724,14 @@ mod tests {
             model_provider("openrouter", &["shared"]),
         ];
         assert_eq!(
-            resolve_model_reference(&providers, "anthropic/claude-sonnet"),
-            Some(("anthropic".into(), "claude-sonnet".into()))
+            resolve_model_reference(&providers, "anthropic/claude-sonnet")
+                .map(|(p, m)| (p.id.as_str(), m.id.as_str())),
+            Some(("anthropic", "claude-sonnet"))
         );
         assert_eq!(
-            resolve_model_reference(&providers, "claude-sonnet"),
-            Some(("anthropic".into(), "claude-sonnet".into()))
+            resolve_model_reference(&providers, "claude-sonnet")
+                .map(|(p, m)| (p.id.as_str(), m.id.as_str())),
+            Some(("anthropic", "claude-sonnet"))
         );
         assert_eq!(resolve_model_reference(&providers, "shared"), None);
 
@@ -760,6 +773,73 @@ mod tests {
     }
 
     #[test]
+    fn model_default_effort_command_validates_route_and_never_calls_backend() {
+        let mut providers = vec![
+            model_provider("p", &["m", "shared", "plain"]),
+            model_provider("q", &["shared"]),
+        ];
+        providers[0].models[0].reasoning = Some(crate::agent::ModelReasoning {
+            efforts: vec![crate::agent::ReasoningEffort {
+                id: "high".into(),
+                name: "High".into(),
+                description: None,
+            }],
+            default_effort: None,
+        });
+        for (line, valid) in [
+            ("/model p/m set-default-effort high", true),
+            ("/model M set-default-effort HIGH", true),
+            ("/model shared set-default-effort high", false),
+            ("/model p/plain set-default-effort high", false),
+            ("/model missing set-default-effort high", false),
+            ("/model p/m set-default-effort low", false),
+            ("/model p/m set-default-effort", false),
+            ("/model p/m set-default-effort high extra", false),
+            ("/model p/m unknown high", false),
+        ] {
+            let state = Arc::new(Mutex::new(RuntimeState::default()));
+            let mut config = Config::default();
+            config.model_default_efforts.set("q", "shared", "low");
+            let mut page = None;
+            let mut paste = config.paste_placeholder_chars;
+            let mut history = config.history_limit;
+            let mut theme = config.theme();
+            let outcome = handle_local_command(
+                line.into(),
+                LocalCommandContext {
+                    language: config.language,
+                    input_page: &mut page,
+                    integrated_commands: &[],
+                    config: &mut config,
+                    themes: &mut Vec::new(),
+                    new_modes: &[],
+                    model_providers: &providers,
+                    current_model: None,
+                    input_paste_placeholder_chars: &mut paste,
+                    input_history_limit: &mut history,
+                    theme: &mut theme,
+                    question_open: false,
+                    approval_open: false,
+                    state: &state,
+                },
+            );
+            assert!(outcome.outbound.is_empty(), "{line}");
+            assert!(!outcome.starts_interruptible_command);
+            assert_eq!(outcome.config_changed, valid, "{line}");
+            assert_eq!(
+                config.model_default_efforts.get("p", "m"),
+                valid.then_some("high")
+            );
+            assert_eq!(config.model_default_efforts.get("q", "shared"), Some("low"));
+            assert_eq!(
+                state.lock().unwrap().transcript.nodes().is_empty(),
+                valid,
+                "{line}"
+            );
+        }
+    }
+
+    #[test]
     fn compaction_model_commands_reuse_catalog_without_selecting_chat_model() {
         let providers = vec![
             model_provider("p", &["small", "shared"]),
@@ -771,6 +851,7 @@ mod tests {
             "/compact unset-model",
             "/compact set-model shared",
             "/compact unset-model extra",
+            "/reload",
         ] {
             let state = Arc::new(Mutex::new(RuntimeState::default()));
             let mut input_page = None;
@@ -799,6 +880,12 @@ mod tests {
             );
             assert!(!outcome.starts_interruptible_command);
             match line {
+                "/reload" => {
+                    assert!(outcome.reload_config);
+                    assert!(
+                        matches!(&outcome.outbound[..], [AgentRequest::Command { line, .. }] if line == "/reload")
+                    );
+                }
                 "/compact set-model small" => assert!(
                     matches!(&outcome.outbound[..], [AgentRequest::Command { line, .. }] if line == "/compact set-model p/small")
                 ),
@@ -815,6 +902,64 @@ mod tests {
                 _ => assert!(outcome.outbound.is_empty()),
             }
         }
+    }
+
+    #[test]
+    fn compaction_model_configuration_works_while_a_new_conversation_is_drafted() {
+        let providers = vec![model_provider("p", &["small"])];
+        let state = Arc::new(Mutex::new(RuntimeState::default()));
+        state.lock().unwrap().begin_new_conversation("standard");
+        let mut config = Config::default();
+        let language = config.language;
+        let mut paste = config.paste_placeholder_chars;
+        let mut history = config.history_limit;
+        let mut theme = config.theme();
+        let mut input_page = None;
+        let mut run = |line: &str, input_page: &mut Option<InputPageSession>| {
+            handle_local_command(
+                line.into(),
+                LocalCommandContext {
+                    language,
+                    input_page,
+                    integrated_commands: &[],
+                    config: &mut config,
+                    themes: &mut Vec::new(),
+                    new_modes: &[],
+                    model_providers: &providers,
+                    current_model: None,
+                    input_paste_placeholder_chars: &mut paste,
+                    input_history_limit: &mut history,
+                    theme: &mut theme,
+                    question_open: false,
+                    approval_open: false,
+                    state: &state,
+                },
+            )
+        };
+        let notice = |state: &Arc<Mutex<RuntimeState>>| {
+            state
+                .lock()
+                .unwrap()
+                .session
+                .new_conversation
+                .as_ref()
+                .and_then(|draft| draft.notice.clone())
+        };
+
+        let outcome = run("/compact set-model small", &mut input_page);
+        assert!(matches!(
+            &outcome.outbound[..],
+            [AgentRequest::Command { line, .. }] if line == "/compact set-model p/small"
+        ));
+        assert_eq!(notice(&state), None);
+
+        // A bare `/compact` still needs the materialized session.
+        let outcome = run("/compact", &mut input_page);
+        assert!(outcome.outbound.is_empty());
+        assert_eq!(
+            notice(&state).as_deref(),
+            Some(tr(language, "command.new.must_send").as_str())
+        );
     }
 
     #[test]

@@ -65,9 +65,24 @@ struct PendingSkillPrompt {
     trailing_text: Option<String>,
 }
 
+/// Outstanding `/reload` step. Only the companion prompt can report that the
+/// reload itself failed; catalog reads raise no extension errors.
+struct PendingReload {
+    id: String,
+    step: ReloadStep,
+    error: Option<String>,
+}
+
+#[derive(PartialEq)]
+enum ReloadStep {
+    CompanionPrompt,
+    Catalog,
+}
+
 pub const AUTH_STATUS_KEY: &str = "pie-native-auth-v1";
 pub const AUTH_CONTEXT_COMMAND: &str = "__pie_native_auth_context_v1";
 pub const AUTH_REFRESH_COMMAND: &str = "__pie_native_auth_refresh_v1";
+pub const RELOAD_COMMAND: &str = "__pie_reload_v1";
 
 pub struct PiAdapter {
     cwd: PathBuf,
@@ -88,6 +103,9 @@ pub struct PiAdapter {
     pending_command_prompt: Option<String>,
     pending_skill_prompt: Option<PendingSkillPrompt>,
     compaction_model: Option<Value>,
+    compaction_model_path: Option<std::path::PathBuf>,
+    reload_available: bool,
+    pending_reload: Option<PendingReload>,
     pending_compaction: Option<compaction::Pending>,
     active_compaction_model: Option<String>,
     active_compaction_id: Option<String>,
@@ -132,6 +150,9 @@ impl PiAdapter {
             pending_command_prompt: None,
             pending_skill_prompt: None,
             compaction_model: None,
+            compaction_model_path: None,
+            reload_available: false,
+            pending_reload: None,
             pending_compaction: None,
             active_compaction_model: None,
             active_compaction_id: None,
@@ -149,6 +170,11 @@ impl PiAdapter {
             pending_stats_request: None,
             stats_refresh_queued: false,
         }
+    }
+
+    pub fn with_compaction_model_path(mut self, path: std::path::PathBuf) -> Self {
+        self.compaction_model_path = Some(path);
+        self
     }
 
     pub fn startup_commands(&mut self) -> Vec<RpcCommand> {
@@ -303,6 +329,15 @@ impl PiAdapter {
                 retry: record.field("attempt").and_then(Value::as_u64).unwrap_or(1),
             }),
             "extension_error" => {
+                // An unrelated extension failing while the catalog steps are
+                // outstanding must not turn the reload into a failure; its own
+                // error event below still reaches the frontend.
+                if let Some(pending) = self.pending_reload.as_mut() {
+                    if pending.step == ReloadStep::CompanionPrompt {
+                        pending.error =
+                            Some(record.string("error").unwrap_or("Pi reload failed").into());
+                    }
+                }
                 AdapterOutput::event(AgentEvent::Interaction(InteractionEvent::Error {
                     code: "pi-extension".into(),
                     message: record
@@ -322,6 +357,7 @@ impl PiAdapter {
         let mut skills = Vec::new();
         let mut auth_context = false;
         let mut auth_refresh = false;
+        self.reload_available = false;
         for command in data
             .and_then(|data| data.get("commands"))
             .and_then(Value::as_array)
@@ -331,6 +367,10 @@ impl PiAdapter {
             let Some(name) = command.get("name").and_then(Value::as_str) else {
                 continue;
             };
+            if name == RELOAD_COMMAND {
+                self.reload_available = true;
+                continue;
+            }
             if name == AUTH_CONTEXT_COMMAND {
                 auth_context = true;
                 continue;
@@ -460,6 +500,8 @@ mod model;
 mod queue;
 #[cfg(test)]
 mod queue_tests;
+#[cfg(test)]
+mod reload_tests;
 mod request;
 mod response;
 mod session;

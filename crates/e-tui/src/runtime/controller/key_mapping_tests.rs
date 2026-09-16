@@ -503,6 +503,86 @@ fn key_mapping_model_marks_persist_and_select_without_touching_the_draft() {
 }
 
 #[test]
+fn model_default_effort_command_persists_and_applies_only_on_selection() {
+    use crate::agent::{
+        ModelDescriptor, ModelProvider, ModelReasoning, ModelSelection, ReasoningEffort,
+    };
+    let mut h = Harness::new("");
+    let original = ModelSelection {
+        provider: "p".into(),
+        model: "m".into(),
+        reasoning_effort: Some("low".into()),
+    };
+    {
+        let mut app = h.state.lock().unwrap();
+        app.frontend = crate::FrontendKind::Pi;
+        app.catalogs.model_providers = vec![ModelProvider {
+            id: "p".into(),
+            name: "Provider".into(),
+            models: vec![ModelDescriptor {
+                id: "m".into(),
+                name: "Model".into(),
+                description: None,
+                context_window: None,
+                reasoning: Some(ModelReasoning {
+                    efforts: ["low", "high"]
+                        .into_iter()
+                        .map(|id| ReasoningEffort {
+                            id: id.into(),
+                            name: id.into(),
+                            description: None,
+                        })
+                        .collect(),
+                    default_effort: None,
+                }),
+            }],
+        }];
+        app.catalogs.current_model = Some(original.clone());
+    }
+    h.interaction
+        .input
+        .restore_text("/model m set-default-effort high".into());
+    let actions = h.press(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(
+        matches!(actions.as_slice(), [UiAction::PersistConfig(config)]
+        if config.model_default_efforts.get("p", "m") == Some("high"))
+    );
+    assert_eq!(
+        h.state.lock().unwrap().catalogs.current_model,
+        Some(original)
+    );
+    assert_eq!(
+        h.state
+            .lock()
+            .unwrap()
+            .config
+            .model_default_efforts
+            .get("p", "m"),
+        Some("high")
+    );
+    assert!(h.state.try_lock().is_ok());
+    RuntimeController::apply_effect_result(
+        EffectResult::ConfigPersisted(Err("read only".into())),
+        &h.state,
+        Instant::now(),
+    );
+    assert!(!h.state.lock().unwrap().transcript.nodes().is_empty());
+
+    let reloaded = Config::from_user_toml(&toml::to_string(&h.config).unwrap()).unwrap();
+    h.reload(reloaded);
+    for (line, expected) in [("/model m", "high"), ("/effort low", "low")] {
+        h.interaction.input.restore_text(line.into());
+        let actions = h.press(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(
+            matches!(actions.as_slice(), [UiAction::Agent(AgentRequest::ModelSet {
+            provider, model, reasoning_effort: Some(effort),
+        })] if provider == "p" && model == "m" && effort == expected)
+        );
+    }
+    assert_eq!(h.config.model_default_efforts.get("p", "m"), Some("high"));
+}
+
+#[test]
 fn key_mapping_queue_submission_and_cancel_are_remapped_without_fallback() {
     let mut h = Harness::new("[message.working]\nsend_asap='f2'\nsend_after_turn='f3'\n[message]\ncancel_or_interrupt='f4'");
     h.state.lock().unwrap().session.status = crate::SessionStatus::Running;

@@ -92,13 +92,18 @@ fn render_ruled_line(frame: &mut Frame, area: ratatui::layout::Rect, theme: &The
 }
 
 fn input_page_item_style(theme: &Theme, focused: bool, selected: bool) -> Style {
-    Style::default().fg(if selected {
+    let style = Style::default().fg(if selected {
         theme.coral
     } else if focused {
         theme.ok
     } else {
         theme.fg
-    })
+    });
+    if focused {
+        style.add_modifier(Modifier::BOLD)
+    } else {
+        style
+    }
 }
 
 pub(super) fn render_input_page(
@@ -186,6 +191,59 @@ mod tests {
     use ratatui::{backend::TestBackend, Terminal};
 
     #[test]
+    fn focused_option_row_renders_bold_without_bolding_other_rows() {
+        let descriptor = |name: &str| crate::agent::ModelDescriptor {
+            id: name.into(),
+            name: name.into(),
+            description: None,
+            context_window: None,
+            reasoning: None,
+        };
+        let mut page = InputPageSession::model();
+        page.apply_model(
+            vec![
+                crate::agent::ModelProvider {
+                    id: "a".into(),
+                    name: "Alpha".into(),
+                    models: vec![descriptor("Model One"), descriptor("Model Two")],
+                },
+                crate::agent::ModelProvider {
+                    id: "b".into(),
+                    name: "Bravo".into(),
+                    models: Vec::new(),
+                },
+            ],
+            Some(("a".into(), "Model One".into())),
+        );
+        page.focus.set(FocusId::new("model:a:Model One"));
+        let config = crate::Config::default();
+        let mut terminal = Terminal::new(TestBackend::new(100, 16)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_input_page(frame, frame.area(), &mut page, &config, &config.theme());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let word_is_bold = |word: &str| {
+            (0..16).any(|y| {
+                let row: String = (0..100).map(|x| buffer[(x, y)].symbol()).collect();
+                row.find(word).is_some_and(|byte| {
+                    let start = row[..byte].chars().count() as u16;
+                    (0..word.chars().count() as u16).all(|offset| {
+                        buffer[(start + offset, y)]
+                            .modifier
+                            .contains(Modifier::BOLD)
+                    })
+                })
+            })
+        };
+        assert!(word_is_bold("Model One"), "focused row is not bold");
+        for unfocused in ["Model Two", "Alpha", "Bravo"] {
+            assert!(!word_is_bold(unfocused), "{unfocused} is bolded");
+        }
+    }
+
+    #[test]
     fn model_height_tracks_active_column_and_terminal_cap() {
         let mut page = InputPageSession::model();
         assert_eq!(preferred_rows(&page), 7);
@@ -270,6 +328,73 @@ mod tests {
                     assert!(text.contains("short [a]"), "{text}");
                     assert!(text.contains("Shift+letter mark/unmark"), "{text}");
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn model_default_effort_suffix_reserves_space_before_letter_mark() {
+        let mut page = InputPageSession::model();
+        page.apply_model(
+            vec![crate::agent::ModelProvider {
+                id: "p".into(),
+                name: "Provider".into(),
+                models: ["short", "模型 very long name repeated many times"]
+                    .into_iter()
+                    .map(|name| crate::agent::ModelDescriptor {
+                        id: name.into(),
+                        name: name.into(),
+                        description: None,
+                        context_window: None,
+                        reasoning: None,
+                    })
+                    .collect(),
+            }],
+            None,
+        );
+        let mut config = crate::Config::default();
+        config.model_default_efforts.set("p", "short", "high");
+        config
+            .model_default_efforts
+            .set("p", "模型 very long name repeated many times", "强度");
+        config.model_marks.toggle('a', "p", "short");
+        config
+            .model_marks
+            .toggle('b', "p", "模型 very long name repeated many times");
+        for width in [32, 80, 120] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 10)).unwrap();
+            terminal
+                .draw(|frame| {
+                    render_input_page(frame, frame.area(), &mut page, &config, &config.theme());
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let lines: Vec<String> = (0..10)
+                .map(|y| {
+                    (0..width)
+                        .filter(|&x| {
+                            x == 0
+                                || unicode_width::UnicodeWidthStr::width(
+                                    buffer[(x - 1, y)].symbol(),
+                                ) < 2
+                        })
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect()
+                })
+                .collect();
+            assert!(
+                lines.iter().any(|line| line.contains(" high [a]")),
+                "{lines:?}"
+            );
+            assert!(
+                lines.iter().any(|line| line.contains(" 强度 [b]")),
+                "{lines:?}"
+            );
+            if width >= 80 {
+                assert!(
+                    lines.iter().any(|line| line.contains("short high [a]")),
+                    "{lines:?}"
+                );
             }
         }
     }

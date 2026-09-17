@@ -37,6 +37,7 @@ pub struct CommandOutcome {
     pub new_conversation: bool,
     pub activate_reading: bool,
     pub history: Option<FixedSubcommandAction>,
+    pub copy_markdown: Option<String>,
     pub open_help: bool,
     pub quit: bool,
 }
@@ -412,6 +413,23 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
                     .push_system_message(context.config.config_path_display.clone());
             }
         }
+        CommandAction::Copy => {
+            if reject_arguments(&context, name, raw_input) {
+                return outcome;
+            }
+            outcome.copy_markdown = context
+                .state
+                .lock()
+                .unwrap()
+                .latest_completed_assistant_markdown()
+                .map(str::to_owned);
+            if outcome.copy_markdown.is_none() {
+                push_error(
+                    context.state,
+                    tr(context.language, "command.copy.unavailable"),
+                );
+            }
+        }
         CommandAction::Help => {
             if !reject_arguments(&context, name, raw_input) {
                 outcome.open_help = true;
@@ -646,6 +664,50 @@ mod tests {
             };
             assert_eq!(block.content == expected, valid);
             assert!(!block.streaming);
+        }
+    }
+
+    #[test]
+    fn copy_without_source_or_with_arguments_reports_a_local_error() {
+        for (line, expected) in [
+            (
+                "/copy",
+                "No completed assistant Markdown response is available to copy",
+            ),
+            ("/copy extra", "Usage: /copy"),
+        ] {
+            let state = Arc::new(Mutex::new(RuntimeState::default()));
+            let mut input_page = None;
+            let mut config = Config::default();
+            let mut paste = config.paste_placeholder_chars;
+            let mut history = config.history_limit;
+            let mut theme = config.theme();
+            let outcome = handle_local_command(
+                line.into(),
+                LocalCommandContext {
+                    language: config.language,
+                    input_page: &mut input_page,
+                    integrated_commands: &[],
+                    config: &mut config,
+                    themes: &mut Vec::new(),
+                    new_modes: &[],
+                    model_providers: &[],
+                    current_model: None,
+                    input_paste_placeholder_chars: &mut paste,
+                    input_history_limit: &mut history,
+                    theme: &mut theme,
+                    question_open: false,
+                    approval_open: false,
+                    state: &state,
+                },
+            );
+            assert!(outcome.copy_markdown.is_none());
+            assert!(outcome.outbound.is_empty());
+            let app = state.lock().unwrap();
+            assert!(matches!(
+                &app.transcript.nodes().last().unwrap().item,
+                DisplayItem::Block(block) if block.copy_source == expected
+            ));
         }
     }
 

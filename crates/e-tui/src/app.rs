@@ -480,6 +480,23 @@ impl TuiApp {
         false
     }
 
+    pub fn latest_completed_assistant_markdown(&self) -> Option<&str> {
+        self.transcript
+            .nodes()
+            .iter()
+            .rev()
+            .find_map(|node| match &node.item {
+                DisplayItem::Block(block)
+                    if block.format == TranscriptFormat::Markdown
+                        && block.id.0.starts_with("assistant-answer:")
+                        && !block.streaming =>
+                {
+                    Some(block.copy_source.as_str())
+                }
+                _ => None,
+            })
+    }
+
     pub fn refresh_link_copy(&mut self) {
         let latest = if self.session.new_conversation.is_some() {
             None

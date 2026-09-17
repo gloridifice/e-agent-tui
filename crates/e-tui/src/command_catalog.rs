@@ -41,6 +41,7 @@ pub enum CommandAction {
     Theme,
     Reload,
     Econfig,
+    Copy,
     Skill,
     Forward,
     Help,
@@ -161,6 +162,7 @@ pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
         None,
         Econfig
     ),
+    command!("copy", "command.copy.description", None, None, Copy),
     command!(
         "skill",
         "command.skill.description",

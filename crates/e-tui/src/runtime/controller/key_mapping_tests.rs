@@ -345,6 +345,51 @@ fn quick_links_latest_message_validation_and_source_layout_are_stale_safe() {
 }
 
 #[test]
+fn slash_copy_writes_the_latest_completed_assistant_markdown_source() {
+    use crate::display::{DisplayId, DisplayItem, DisplayTone, TranscriptBlock, TranscriptFormat};
+
+    let mut h = Harness::new("");
+    {
+        let mut app = h.state.lock().unwrap();
+        for (correlation, content, source, streaming) in [
+            ("1:1", "rendered first", "# first", false),
+            ("2:1", "rendered second", "**second**", false),
+            ("3:1", "partial third", "_partial_", true),
+        ] {
+            app.transcript.append(
+                DisplayItem::Block(TranscriptBlock {
+                    id: DisplayId::correlated("assistant-answer", correlation),
+                    unit: None,
+                    content: content.into(),
+                    format: TranscriptFormat::Markdown,
+                    tone: DisplayTone::Normal,
+                    copy_source: source.into(),
+                    streaming,
+                }),
+                None,
+            );
+        }
+        app.push_local_markdown("# local notice");
+    }
+    h.agent_fact(
+        4,
+        crate::agent::TimelineFact::UserMessage {
+            text: "newer user card".into(),
+            source_kind: Some("user".into()),
+            content: Vec::new(),
+            source: Default::default(),
+        },
+    );
+
+    for key in "/copy".chars() {
+        assert!(h.press(KeyCode::Char(key), KeyModifiers::NONE).is_empty());
+    }
+    assert!(
+        matches!(h.press(KeyCode::Enter, KeyModifiers::NONE).as_slice(), [UiAction::WriteClipboard(text)] if text == "**second**")
+    );
+}
+
+#[test]
 fn history_opens_top50_directly_and_tab_cannot_switch_or_query() {
     use crate::execution_history::{HistoryQueryKind, HistoryQueryResult};
 

@@ -70,6 +70,15 @@ Choose validation proportionally to the change and read [readme/testing.md](read
 - DSH profiles, setup, bridge deployment, and upgrades: [readme/dsh-integration.md](readme/dsh-integration.md)
 - Operational diagnosis: [readme/troubleshooting.md](readme/troubleshooting.md)
 
+## Testing
+
+- Do not add, modify, or expand tests unless explicitly requested by the user.
+- Bug fixes do not automatically require regression tests.
+- Do not add regression tests merely because a bug was fixed.
+- You may run existing tests to validate changes.
+- Prefer build, typecheck, lint, and existing tests for validation.
+- If you believe a new test is necessary, explain why instead of adding it automatically.
+
 <!-- DOCO:START -->
 <!-- doco:entry template=v1 -->
 ## Doco

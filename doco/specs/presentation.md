@@ -22,6 +22,12 @@
 - Preview selection, scroll, layout cache, and reveal progress are independent of transcript state. Stale async results MUST be rejected by target identity and revision.
 - Tool Preview MUST use provider-neutral seeds. File mutation previews use event-supplied fragments; the frontend MUST NOT read files or compute missing diffs.
 
+## Execution-history timeline
+
+- The chronological history view uses a fixed vertical scale of five seconds per row and MUST preserve elapsed gaps. Events sharing a row remain message blocks inside their enclosing user-to-agent-stop turn; they MUST NOT become independent turns or duplicate usage.
+- Total and per-model token/price summaries are part of the scrollable document. Known native prices are summed; any subtotal containing unpriced token usage is marked partial or unknown rather than treating the missing amount as zero. Agent-stop rows show whole-turn usage totals; open turns have no stop total.
+- The timeline uses semantic theme roles and has no title, explanatory legend, column-heading block, row cursor/highlight, sticky section, or bottom detail/key bar. The operation ranking retains its existing presentation.
+
 ## Screen and copy
 
 - Rendering layers point downward as Screen to Pane to Region to Component. Provider-specific rendering is forbidden.

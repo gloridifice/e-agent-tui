@@ -1,6 +1,12 @@
-//! Session-scoped state for the execution-history ranking page.
+//! Session-scoped state for execution-history ranking and timeline views.
 
-use crate::execution_history::{ExecutionCall, HistoryQueryResult};
+use crate::execution_history::{ExecutionCall, ExecutionRecord, HistoryQueryResult};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistoryView {
+    Ranking,
+    Timeline,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HistoryLoadState {
@@ -17,8 +23,11 @@ pub struct HistoryPage {
     pub cwd: String,
     pub state: HistoryLoadState,
     pub calls: Vec<ExecutionCall>,
+    pub records: Vec<ExecutionRecord>,
     pub warnings: Vec<String>,
-    offset: usize,
+    pub view: HistoryView,
+    ranking_offset: usize,
+    timeline_offset: usize,
     pub body_height: usize,
 }
 
@@ -30,8 +39,11 @@ impl HistoryPage {
             cwd,
             state: HistoryLoadState::Loading,
             calls: Vec::new(),
+            records: Vec::new(),
             warnings: Vec::new(),
-            offset: 0,
+            view: HistoryView::Ranking,
+            ranking_offset: 0,
+            timeline_offset: 0,
             body_height: 1,
         }
     }
@@ -41,8 +53,19 @@ impl HistoryPage {
             return false;
         }
         self.calls = result.ranked_calls;
+        self.records = result.records;
         self.warnings = result.warnings;
-        self.state = if self.calls.is_empty() {
+        let has_timeline = self.records.iter().any(|record| {
+            matches!(
+                &record.event,
+                crate::execution_history::ExecutionEvent::TurnStarted { .. }
+                    | crate::execution_history::ExecutionEvent::TurnFinished { .. }
+                    | crate::execution_history::ExecutionEvent::ModelSelected { .. }
+                    | crate::execution_history::ExecutionEvent::MessageObserved { .. }
+                    | crate::execution_history::ExecutionEvent::UsageRecorded { .. }
+            )
+        });
+        self.state = if self.calls.is_empty() && !has_timeline {
             HistoryLoadState::Empty
         } else {
             HistoryLoadState::Ready
@@ -59,11 +82,24 @@ impl HistoryPage {
     }
 
     pub fn offset(&self) -> usize {
-        self.offset
+        match self.view {
+            HistoryView::Ranking => self.ranking_offset,
+            HistoryView::Timeline => self.timeline_offset,
+        }
     }
 
     pub fn set_offset(&mut self, value: usize) {
-        self.offset = value;
+        match self.view {
+            HistoryView::Ranking => self.ranking_offset = value,
+            HistoryView::Timeline => self.timeline_offset = value,
+        }
+    }
+
+    pub fn toggle_view(&mut self) {
+        self.view = match self.view {
+            HistoryView::Ranking => HistoryView::Timeline,
+            HistoryView::Timeline => HistoryView::Ranking,
+        };
     }
 }
 

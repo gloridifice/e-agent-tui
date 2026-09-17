@@ -73,6 +73,43 @@ pub enum OperationSummary {
     Search { query: String, path: Option<String> },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelIdentity {
+    pub provider: String,
+    pub model: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoryMessageKind {
+    User,
+    Reasoning,
+    Assistant,
+    ToolCall,
+    ToolResult,
+    ModelChange,
+    AgentStop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TokenUsageRecord {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+}
+
+impl TokenUsageRecord {
+    pub fn total(self) -> u64 {
+        self.input_tokens
+            .saturating_add(self.output_tokens)
+            .saturating_add(self.cache_read_tokens)
+            .saturating_add(self.cache_write_tokens)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OperationStart {
@@ -109,6 +146,20 @@ pub enum ExecutionEvent {
     TurnFinished {
         turn_id: String,
         outcome: ExecutionOutcome,
+    },
+    ModelSelected {
+        model: ModelIdentity,
+    },
+    MessageObserved {
+        turn_id: Option<String>,
+        kind: HistoryMessageKind,
+        model: Option<ModelIdentity>,
+    },
+    UsageRecorded {
+        turn_id: Option<String>,
+        model: Option<ModelIdentity>,
+        usage: TokenUsageRecord,
+        cost_usd_nanos: Option<u64>,
     },
     Started(OperationStart),
     Finished(OperationFinish),

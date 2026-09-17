@@ -29,6 +29,11 @@
 - New-session failure restores the draft input. Model/effort selection made during the draft applies to the materialized session.
 - Resume results MUST preserve stable identity through progressive updates. Native session reads remain adapter-owned, bounded, read-only, and outside UI locks.
 
+## Execution history
+
+- Opening history starts in the longest-operation ranking. The history-scoped `toggle_view` action defaults to Tab and switches between ranking and chronological timeline without issuing another query or changing the composer draft.
+- Ranking and timeline keep independent vertical offsets. Existing full-screen movement, mouse-wheel, and exit actions apply to the active view; all bindings remain semantic and configurable.
+
 ## Commands and model selection
 
 - Built-in commands have one metadata registry. Adapter command catalogs MAY extend it, but built-ins win name collisions.

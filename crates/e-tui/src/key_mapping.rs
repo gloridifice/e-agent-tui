@@ -20,6 +20,7 @@ pub enum Action {
     OpenSettings,
     ResumeSession,
     TogglePreview,
+    ToggleView,
     CopyLink,
     PageUp,
     PageDown,
@@ -400,9 +401,6 @@ impl KeyMapping {
                 } else {
                     format!("{prefix}.{name}")
                 };
-                if path == "history.toggle_view" {
-                    continue;
-                }
                 if let Some(table) = value.as_table() {
                     if !Scope::ALL.iter().any(|s| s.name() == path) {
                         return Err(format!("{path}: unknown scope"));

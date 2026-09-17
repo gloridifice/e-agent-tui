@@ -5,9 +5,9 @@ use std::collections::{HashMap, HashSet};
 use crate::{
     agent::tool::{ToolActivity, ToolCapability, ToolReference},
     execution_history::{
-        calls_from_records, ExecutionEvent, ExecutionOutcome, ExecutionRecord, MeasuredDuration,
-        ObservedOutputLines, OperationFinish, OperationKind, OperationStart, OperationSummary,
-        TimingSource,
+        calls_from_records, ExecutionEvent, ExecutionOutcome, ExecutionRecord, HistoryMessageKind,
+        MeasuredDuration, ModelIdentity, ObservedOutputLines, OperationFinish, OperationKind,
+        OperationStart, OperationSummary, TimingSource, TokenUsageRecord,
     },
     preview::ToolPreviewPrimary,
 };
@@ -93,6 +93,17 @@ pub struct ObservedAt {
     pub monotonic_ms: u64,
 }
 
+impl From<crate::agent::timeline::TokenUsage> for TokenUsageRecord {
+    fn from(usage: crate::agent::timeline::TokenUsage) -> Self {
+        Self {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cache_read_tokens: usage.cache_read_tokens,
+            cache_write_tokens: usage.cache_write_tokens,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct ActiveOperation {
     backend_start_ms: Option<u64>,
@@ -110,6 +121,9 @@ pub struct ExecutionCapture {
     active: HashMap<String, ActiveOperation>,
     active_models: Vec<String>,
     terminal: HashSet<String>,
+    current_model: Option<ModelIdentity>,
+    pending_cost_usd_nanos: Option<u64>,
+    pending_usage: Option<TokenUsageRecord>,
 }
 
 impl ExecutionCapture {
@@ -123,7 +137,20 @@ impl ExecutionCapture {
             active: HashMap::new(),
             active_models: Vec::new(),
             terminal: HashSet::new(),
+            current_model: None,
+            pending_cost_usd_nanos: None,
+            pending_usage: None,
         }
+    }
+
+    pub fn set_initial_model(&mut self, provider: Option<&str>, model: Option<&str>) {
+        self.current_model = match (provider, model) {
+            (Some(provider), Some(model)) => Some(ModelIdentity {
+                provider: provider.to_owned(),
+                model: model.to_owned(),
+            }),
+            _ => None,
+        };
     }
 
     pub fn attached(&mut self, at: ObservedAt) -> ExecutionRecord {
@@ -135,33 +162,99 @@ impl ExecutionCapture {
     }
 
     pub fn observe(&mut self, event: &crate::AgentEvent, at: ObservedAt) -> Vec<ExecutionRecord> {
-        use crate::agent::{timeline::TimelineFact, TimelineEvent};
+        use crate::agent::{timeline::TimelineFact, CatalogEvent, TimelineEvent};
+        if let crate::AgentEvent::Catalog(CatalogEvent::Models {
+            current: Some(current),
+            ..
+        }) = event
+        {
+            let model = ModelIdentity {
+                provider: current.provider.clone(),
+                model: current.model.clone(),
+            };
+            if self.current_model.as_ref() == Some(&model) {
+                return Vec::new();
+            }
+            self.current_model = Some(model.clone());
+            return vec![self.record(at.wall_unix_ms, ExecutionEvent::ModelSelected { model })];
+        }
         let crate::AgentEvent::Timeline(TimelineEvent::Append(timeline)) = event else {
             return Vec::new();
         };
         let backend_time = timeline.time_ms;
         let record_time = backend_time.unwrap_or(at.wall_unix_ms);
         match &timeline.fact {
+            TimelineFact::UserMessage { .. } => {
+                let mut records = Vec::new();
+                if self.current_turn.is_none() {
+                    let turn_id = self.begin_turn();
+                    records.push(self.record(record_time, ExecutionEvent::TurnStarted { turn_id }));
+                }
+                records.push(self.message(record_time, HistoryMessageKind::User));
+                records
+            }
             TimelineFact::TurnStart => {
-                let turn_id = format!("turn-{}", self.next_turn);
-                self.next_turn = self.next_turn.saturating_add(1);
-                self.current_turn = Some(turn_id.clone());
-                vec![self.record(record_time, ExecutionEvent::TurnStarted { turn_id })]
+                if self.current_turn.is_some() {
+                    Vec::new()
+                } else {
+                    let turn_id = self.begin_turn();
+                    vec![self.record(record_time, ExecutionEvent::TurnStarted { turn_id })]
+                }
             }
             TimelineFact::TurnEnd { error_message, .. } => {
                 let turn_id = self
                     .current_turn
-                    .take()
+                    .clone()
                     .unwrap_or_else(|| "turn-unknown".into());
                 let outcome = if error_message.is_some() {
                     ExecutionOutcome::Failure
                 } else {
                     ExecutionOutcome::Success
                 };
-                vec![self.record(
-                    record_time,
-                    ExecutionEvent::TurnFinished { turn_id, outcome },
-                )]
+                let records = vec![
+                    self.message(record_time, HistoryMessageKind::AgentStop),
+                    self.record(
+                        record_time,
+                        ExecutionEvent::TurnFinished {
+                            turn_id: turn_id.clone(),
+                            outcome,
+                        },
+                    ),
+                ];
+                self.current_turn = None;
+                self.pending_usage = None;
+                self.pending_cost_usd_nanos = None;
+                records
+            }
+            TimelineFact::UsageCost { usd_nanos } => {
+                self.pending_cost_usd_nanos = Some(*usd_nanos);
+                Vec::new()
+            }
+            TimelineFact::AssistantChunk {
+                usage: Some(usage), ..
+            } => {
+                self.pending_usage = Some(TokenUsageRecord::from(*usage));
+                Vec::new()
+            }
+            TimelineFact::AssistantMessage { usage, .. } => {
+                let mut records = vec![self.message(record_time, HistoryMessageKind::Assistant)];
+                let cost_usd_nanos = self.pending_cost_usd_nanos.take();
+                let usage = usage
+                    .map(TokenUsageRecord::from)
+                    .or_else(|| self.pending_usage.take());
+                self.pending_usage = None;
+                if let Some(usage) = usage {
+                    records.push(self.record(
+                        record_time,
+                        ExecutionEvent::UsageRecorded {
+                            turn_id: self.current_turn.clone(),
+                            model: self.current_model.clone(),
+                            usage,
+                            cost_usd_nanos,
+                        },
+                    ));
+                }
+                records
             }
             TimelineFact::ToolCall(activity) => {
                 let operation =
@@ -193,9 +286,10 @@ impl ExecutionCapture {
                 self.next_model = self.next_model.saturating_add(1);
                 let operation = OperationStart {
                     call_id,
-                    turn_id: turn
-                        .map(|turn| format!("turn-{turn}"))
-                        .or_else(|| self.current_turn.clone()),
+                    turn_id: self
+                        .current_turn
+                        .clone()
+                        .or_else(|| turn.map(|turn| format!("turn-{turn}"))),
                     parent_id: None,
                     kind: OperationKind::Model,
                     name: "model".into(),
@@ -256,6 +350,24 @@ impl ExecutionCapture {
             ),
             _ => Vec::new(),
         }
+    }
+
+    fn begin_turn(&mut self) -> String {
+        let turn_id = format!("turn-{}", self.next_turn);
+        self.next_turn = self.next_turn.saturating_add(1);
+        self.current_turn = Some(turn_id.clone());
+        turn_id
+    }
+
+    fn message(&mut self, time_unix_ms: u64, kind: HistoryMessageKind) -> ExecutionRecord {
+        self.record(
+            time_unix_ms,
+            ExecutionEvent::MessageObserved {
+                turn_id: self.current_turn.clone(),
+                kind,
+                model: self.current_model.clone(),
+            },
+        )
     }
 
     fn start(

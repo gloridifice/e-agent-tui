@@ -13,7 +13,7 @@ use crate::{
 };
 
 use super::{
-    content::{assistant_fact, content_parts, content_text, user_fact},
+    content::{assistant_fact, content_parts, content_text, usage_cost_usd_nanos, user_fact},
     tool, AdapterOutput, PiAdapter,
 };
 
@@ -194,11 +194,14 @@ pub(super) fn live_message(adapter: &mut PiAdapter, message: &Value) -> AdapterO
             output.events.extend(title_events(adapter));
             output
         }
-        Some("assistant") => adapter.timeline(assistant_fact(
-            message,
-            Some(adapter.current_turn.max(1)),
-            Some(0),
-        )),
+        Some("assistant") => {
+            let fact = assistant_fact(message, Some(adapter.current_turn.max(1)), Some(0));
+            let mut output = usage_cost_usd_nanos(message)
+                .map(|usd_nanos| adapter.timeline(TimelineFact::UsageCost { usd_nanos }))
+                .unwrap_or_default();
+            output.merge(adapter.timeline(fact));
+            output
+        }
         // `tool_execution_end` carries the same result immediately
         // before Pi appends its durable `toolResult` message. The former
         // owns live tool projection; suppress the latter duplicate.

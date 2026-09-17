@@ -115,6 +115,10 @@ pub(super) fn apply_terminal_route(
                         close = true;
                         changed = true;
                     }
+                    Some(Action::ToggleView) => {
+                        page.toggle_view();
+                        changed = true;
+                    }
                     Some(Action::MoveDown) => {
                         page.set_offset(current.saturating_add(1));
                         changed = true;
@@ -662,6 +666,9 @@ pub(super) fn apply_ordinary_key(
                 };
                 agent_action(request)
             }));
+        if let Some(markdown) = command.copy_markdown {
+            outcome.effects.push(UiAction::WriteClipboard(markdown));
+        }
         if let Some(history_action) = command.history {
             let request = {
                 let mut app = state.lock().unwrap();

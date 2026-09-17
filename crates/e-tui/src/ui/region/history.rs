@@ -12,8 +12,11 @@ use ratatui::{
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::{
-    execution_history::{ExecutionCall, ExecutionOutcome, OperationKind, OperationSummary},
-    history_page::{HistoryLoadState, HistoryPage},
+    execution_history::{
+        ExecutionCall, ExecutionEvent, ExecutionOutcome, HistoryMessageKind, OperationKind,
+        OperationSummary,
+    },
+    history_page::{HistoryLoadState, HistoryPage, HistoryView},
     key_mapping::{Action, KeyMapping, Scope},
     theme::{Theme, ThemeStyle},
     ui::component::command::{self, CommandColors},
@@ -349,6 +352,524 @@ fn ready_document(width: usize, page: &HistoryPage, theme: &Theme) -> Vec<Row> {
     rows
 }
 
+const TIMELINE_ROW_MS: u64 = 5_000;
+
+#[derive(Debug, Clone, Default)]
+struct UsageSummary {
+    tokens: u64,
+    known_cost_usd_nanos: u64,
+    missing_cost: bool,
+    samples: usize,
+}
+
+impl UsageSummary {
+    fn add(&mut self, tokens: u64, cost_usd_nanos: Option<u64>) {
+        self.tokens = self.tokens.saturating_add(tokens);
+        self.samples = self.samples.saturating_add(1);
+        if let Some(cost) = cost_usd_nanos {
+            self.known_cost_usd_nanos = self.known_cost_usd_nanos.saturating_add(cost);
+        } else if tokens > 0 {
+            self.missing_cost = true;
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TimelineItem {
+    label: &'static str,
+    kind: HistoryMessageKind,
+    model: Option<String>,
+    turn: Option<(String, String)>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct TimelineBucket {
+    items: Vec<TimelineItem>,
+}
+
+struct TimelineDocument {
+    header: Vec<Row>,
+    buckets: BTreeMap<usize, TimelineBucket>,
+    row_count: usize,
+    origin_ms: u64,
+    turn_usage: BTreeMap<(String, String), UsageSummary>,
+}
+
+fn model_text(model: &crate::execution_history::ModelIdentity) -> String {
+    format!("{}/{}", model.provider, model.model)
+}
+
+fn comma_number(value: u64) -> String {
+    let digits = value.to_string();
+    let mut result = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, character) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            result.push(',');
+        }
+        result.push(character);
+    }
+    result
+}
+
+fn token_total(summary: &UsageSummary) -> String {
+    if summary.samples == 0 {
+        "unknown".into()
+    } else {
+        comma_number(summary.tokens)
+    }
+}
+
+fn price(summary: &UsageSummary) -> String {
+    if summary.samples == 0 {
+        return "unknown".into();
+    }
+    if summary.missing_cost && summary.known_cost_usd_nanos == 0 {
+        return "unknown".into();
+    }
+    let amount = summary.known_cost_usd_nanos as f64 / 1_000_000_000.0;
+    if summary.missing_cost {
+        format!("${amount:.4} + ?")
+    } else {
+        format!("${amount:.4}")
+    }
+}
+
+fn message_label(kind: HistoryMessageKind) -> &'static str {
+    match kind {
+        HistoryMessageKind::User => "USER",
+        HistoryMessageKind::Reasoning => "THINK",
+        HistoryMessageKind::Assistant => "ASSISTANT",
+        HistoryMessageKind::ToolCall => "TOOL",
+        HistoryMessageKind::ToolResult => "RESULT",
+        HistoryMessageKind::ModelChange => "MODEL",
+        HistoryMessageKind::AgentStop => "AGENT STOP",
+    }
+}
+
+fn message_style(theme: &Theme, kind: HistoryMessageKind) -> ThemeStyle {
+    match kind {
+        HistoryMessageKind::User => theme.history.heading,
+        HistoryMessageKind::Reasoning | HistoryMessageKind::ModelChange => {
+            theme.history.operation.model
+        }
+        HistoryMessageKind::Assistant => theme.history.operation.read,
+        HistoryMessageKind::ToolCall => theme.history.operation.bash,
+        HistoryMessageKind::ToolResult => theme.history.operation.search,
+        HistoryMessageKind::AgentStop => theme.working_status.success,
+    }
+}
+
+fn timeline_document(width: usize, page: &HistoryPage, theme: &Theme) -> TimelineDocument {
+    let mut total = UsageSummary::default();
+    let mut models: BTreeMap<String, UsageSummary> = BTreeMap::new();
+    let mut turns: BTreeMap<(String, String), bool> = BTreeMap::new();
+    let mut turn_usage: BTreeMap<(String, String), UsageSummary> = BTreeMap::new();
+    for record in &page.records {
+        match &record.event {
+            ExecutionEvent::MessageObserved {
+                turn_id: Some(turn_id),
+                kind: HistoryMessageKind::User,
+                ..
+            } => {
+                turns
+                    .entry((record.run_id.clone(), turn_id.clone()))
+                    .or_default();
+            }
+            ExecutionEvent::TurnFinished { turn_id, .. } => {
+                if let Some(closed) = turns.get_mut(&(record.run_id.clone(), turn_id.clone())) {
+                    *closed = true;
+                }
+            }
+            ExecutionEvent::UsageRecorded {
+                turn_id,
+                model,
+                usage,
+                cost_usd_nanos,
+            } => {
+                let tokens = usage.total();
+                total.add(tokens, *cost_usd_nanos);
+                models
+                    .entry(model.as_ref().map_or_else(|| "unknown".into(), model_text))
+                    .or_default()
+                    .add(tokens, *cost_usd_nanos);
+                if let Some(turn_id) = turn_id {
+                    turn_usage
+                        .entry((record.run_id.clone(), turn_id.clone()))
+                        .or_default()
+                        .add(tokens, *cost_usd_nanos);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let closed = turns.values().filter(|closed| **closed).count();
+    let open = turns.len().saturating_sub(closed);
+    let mut event_operations: BTreeMap<(String, String), OperationKind> = BTreeMap::new();
+    let mut events = 0_usize;
+    for record in &page.records {
+        match &record.event {
+            ExecutionEvent::MessageObserved { .. } | ExecutionEvent::ModelSelected { .. } => {
+                events += 1;
+            }
+            ExecutionEvent::Started(operation) => {
+                event_operations.insert(
+                    (record.run_id.clone(), operation.call_id.clone()),
+                    operation.kind,
+                );
+                events += 1;
+            }
+            ExecutionEvent::Finished(finish)
+                if event_operations
+                    .get(&(record.run_id.clone(), finish.call_id.clone()))
+                    .is_some_and(|kind| *kind != OperationKind::Model) =>
+            {
+                events += 1;
+            }
+            _ => {}
+        }
+    }
+    let mut header = Vec::new();
+    if width >= 86 {
+        let mut labels = Vec::new();
+        put(&mut labels, 2, "TOTAL TOKENS", theme.history.metadata);
+        put(&mut labels, 25, "TOTAL COST", theme.history.metadata);
+        put(&mut labels, 48, "TURNS", theme.history.metadata);
+        put(&mut labels, 69, "EVENTS", theme.history.metadata);
+        header.push(labels);
+        let mut values = Vec::new();
+        put(&mut values, 2, token_total(&total), theme.history.heading);
+        put(
+            &mut values,
+            25,
+            price(&total),
+            theme.history.duration.highest,
+        );
+        put(
+            &mut values,
+            48,
+            format!("{closed} closed / {open} open"),
+            theme.history.text,
+        );
+        put(&mut values, 69, events.to_string(), theme.history.text);
+        header.push(values);
+    } else {
+        let mut tokens = Vec::new();
+        put(&mut tokens, 2, "TOTAL TOKENS", theme.history.metadata);
+        put(&mut tokens, 18, token_total(&total), theme.history.heading);
+        put(&mut tokens, 38, "TOTAL COST", theme.history.metadata);
+        put(
+            &mut tokens,
+            52,
+            price(&total),
+            theme.history.duration.highest,
+        );
+        header.push(tokens);
+        let mut turns_row = Vec::new();
+        put(&mut turns_row, 2, "TURNS", theme.history.metadata);
+        put(
+            &mut turns_row,
+            10,
+            format!("{closed} closed / {open} open"),
+            theme.history.text,
+        );
+        put(&mut turns_row, 38, "EVENTS", theme.history.metadata);
+        put(&mut turns_row, 48, events.to_string(), theme.history.text);
+        header.push(turns_row);
+    }
+    header.push(blank());
+    for (model, usage) in &models {
+        let mut row = Vec::new();
+        let token_x: usize = if width >= 86 { 48 } else { 38 };
+        let cost_x: usize = if width >= 86 { 69 } else { 54 };
+        put(
+            &mut row,
+            2,
+            clip_width(model, token_x.saturating_sub(4)),
+            theme.history.operation.model,
+        );
+        put(
+            &mut row,
+            token_x,
+            format!("{} tok", comma_number(usage.tokens)),
+            theme.history.text,
+        );
+        put(
+            &mut row,
+            cost_x,
+            price(usage),
+            theme.history.duration.remaining,
+        );
+        header.push(row);
+    }
+    for warning in &page.warnings {
+        let mut row = Vec::new();
+        put(&mut row, 2, format!("! {warning}"), theme.log.warning);
+        header.push(row);
+    }
+    header.push(blank());
+
+    let mut raw_items = Vec::new();
+    let mut current_models: BTreeMap<String, String> = BTreeMap::new();
+    let mut operations: BTreeMap<(String, String), (OperationKind, Option<String>)> =
+        BTreeMap::new();
+    for record in &page.records {
+        match &record.event {
+            ExecutionEvent::MessageObserved {
+                turn_id,
+                kind,
+                model,
+            } => {
+                let model = model
+                    .as_ref()
+                    .map(model_text)
+                    .or_else(|| current_models.get(&record.run_id).cloned());
+                if let Some(model) = &model {
+                    current_models.insert(record.run_id.clone(), model.clone());
+                }
+                raw_items.push((
+                    record.time_unix_ms,
+                    TimelineItem {
+                        label: message_label(*kind),
+                        kind: *kind,
+                        model,
+                        turn: turn_id
+                            .as_ref()
+                            .map(|turn| (record.run_id.clone(), turn.clone())),
+                    },
+                ));
+            }
+            ExecutionEvent::ModelSelected { model } => {
+                let model = model_text(model);
+                current_models.insert(record.run_id.clone(), model.clone());
+                raw_items.push((
+                    record.time_unix_ms,
+                    TimelineItem {
+                        label: "MODEL",
+                        kind: HistoryMessageKind::ModelChange,
+                        model: Some(model),
+                        turn: None,
+                    },
+                ));
+            }
+            ExecutionEvent::Started(operation) => {
+                operations.insert(
+                    (record.run_id.clone(), operation.call_id.clone()),
+                    (operation.kind, operation.turn_id.clone()),
+                );
+                let kind = if operation.kind == OperationKind::Model {
+                    HistoryMessageKind::Reasoning
+                } else {
+                    HistoryMessageKind::ToolCall
+                };
+                raw_items.push((
+                    record.time_unix_ms,
+                    TimelineItem {
+                        label: message_label(kind),
+                        kind,
+                        model: current_models.get(&record.run_id).cloned(),
+                        turn: operation
+                            .turn_id
+                            .as_ref()
+                            .map(|turn| (record.run_id.clone(), turn.clone())),
+                    },
+                ));
+            }
+            ExecutionEvent::Finished(finish) => {
+                let Some((kind, turn_id)) =
+                    operations.get(&(record.run_id.clone(), finish.call_id.clone()))
+                else {
+                    continue;
+                };
+                if *kind == OperationKind::Model {
+                    continue;
+                }
+                raw_items.push((
+                    record.time_unix_ms,
+                    TimelineItem {
+                        label: message_label(HistoryMessageKind::ToolResult),
+                        kind: HistoryMessageKind::ToolResult,
+                        model: current_models.get(&record.run_id).cloned(),
+                        turn: turn_id
+                            .as_ref()
+                            .map(|turn| (record.run_id.clone(), turn.clone())),
+                    },
+                ));
+            }
+            _ => {}
+        }
+    }
+    let Some(first_ms) = raw_items.iter().map(|(time, _)| *time).min() else {
+        let mut unavailable = Vec::new();
+        put(
+            &mut unavailable,
+            2,
+            "Timeline data is unavailable for this legacy history.",
+            theme.history.metadata,
+        );
+        header.push(unavailable);
+        return TimelineDocument {
+            header,
+            buckets: BTreeMap::new(),
+            row_count: 0,
+            origin_ms: 0,
+            turn_usage,
+        };
+    };
+    let last_ms = raw_items
+        .iter()
+        .map(|(time, _)| *time)
+        .max()
+        .unwrap_or(first_ms);
+    let origin_ms = first_ms / TIMELINE_ROW_MS * TIMELINE_ROW_MS;
+    let row_count =
+        usize::try_from((last_ms - origin_ms) / TIMELINE_ROW_MS + 1).unwrap_or(usize::MAX);
+    let mut buckets: BTreeMap<usize, TimelineBucket> = BTreeMap::new();
+    for (time, item) in raw_items {
+        let index = usize::try_from((time - origin_ms) / TIMELINE_ROW_MS).unwrap_or(usize::MAX);
+        buckets.entry(index).or_default().items.push(item);
+    }
+    TimelineDocument {
+        header,
+        buckets,
+        row_count,
+        origin_ms,
+        turn_usage,
+    }
+}
+
+fn timeline_row(index: usize, width: usize, document: &TimelineDocument, theme: &Theme) -> Row {
+    let mut row = Vec::new();
+    let time = document
+        .origin_ms
+        .saturating_add((index as u64).saturating_mul(TIMELINE_ROW_MS));
+    let (time_x, model_x, model_width, axis_x, event_x, detail_x): (
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
+    ) = if width >= 100 {
+        (2, 12, 30, 44, 48, 72)
+    } else if width >= 70 {
+        (1, 10, 20, 32, 36, 54)
+    } else {
+        (1, usize::MAX, 0, 10, 14, 36)
+    };
+    put(&mut row, time_x, clock(time, false), theme.history.metadata);
+    put(&mut row, axis_x, "│", theme.history.separator);
+    let Some(bucket) = document.buckets.get(&index) else {
+        return row;
+    };
+    let mut model_names = Vec::new();
+    for item in &bucket.items {
+        if let Some(model) = &item.model {
+            if !model_names.contains(model) {
+                model_names.push(model.clone());
+            }
+        }
+    }
+    if model_x != usize::MAX {
+        put(
+            &mut row,
+            model_x,
+            clip_width(&model_names.join(", "), model_width),
+            theme.history.operation.model,
+        );
+    }
+    let details = bucket
+        .items
+        .iter()
+        .filter(|item| item.kind == HistoryMessageKind::AgentStop)
+        .filter_map(|item| item.turn.as_ref())
+        .filter_map(|turn| document.turn_usage.get(turn))
+        .map(|usage| format!("{} tok  {}", comma_number(usage.tokens), price(usage)))
+        .collect::<Vec<_>>()
+        .join(" · ");
+    let mut grouped: Vec<(HistoryMessageKind, &'static str, usize)> = Vec::new();
+    for item in &bucket.items {
+        if let Some((_, _, count)) = grouped.iter_mut().find(|(kind, _, _)| *kind == item.kind) {
+            *count += 1;
+        } else {
+            grouped.push((item.kind, item.label, 1));
+        }
+    }
+    let event_limit = if details.is_empty() {
+        width
+    } else {
+        detail_x.saturating_sub(1)
+    };
+    let mut x = event_x;
+    for (item_index, (kind, label, count)) in grouped.into_iter().enumerate() {
+        if x >= event_limit {
+            break;
+        }
+        if item_index > 0 {
+            if x.saturating_add(3) >= event_limit {
+                break;
+            }
+            put(&mut row, x, " · ", theme.history.separator);
+            x += 3;
+        }
+        let label = if count > 1 {
+            format!("{label}×{count}")
+        } else {
+            label.to_owned()
+        };
+        let label = clip_width(&label, event_limit.saturating_sub(x));
+        put(&mut row, x, &label, message_style(theme, kind));
+        x += label.width();
+    }
+    if !details.is_empty() && detail_x < width {
+        put(
+            &mut row,
+            detail_x,
+            clip_width(&details, width.saturating_sub(detail_x)),
+            theme.history.duration.highest,
+        );
+    }
+    row
+}
+
+fn render_rows(frame: &mut Frame, area: Rect, rows: impl Iterator<Item = Row>, width: usize) {
+    let buffer = frame.buffer_mut();
+    for (local_y, row) in rows.enumerate() {
+        let y = area.y + local_y as u16;
+        for run in row {
+            if run.x >= width {
+                continue;
+            }
+            buffer.set_stringn(
+                area.x + run.x as u16,
+                y,
+                &run.text,
+                width - run.x,
+                run.style,
+            );
+        }
+    }
+}
+
+fn render_timeline(frame: &mut Frame, area: Rect, page: &mut HistoryPage, theme: &Theme) {
+    let width = usize::from(area.width);
+    let body_height = usize::from(area.height).max(1);
+    page.body_height = body_height;
+    let document = timeline_document(width, page, theme);
+    let total_rows = document.header.len().saturating_add(document.row_count);
+    let maximum = total_rows.saturating_sub(body_height);
+    let offset = page.offset().min(maximum);
+    page.set_offset(offset);
+    let rows = (offset..offset.saturating_add(body_height).min(total_rows)).map(|index| {
+        if index < document.header.len() {
+            document.header[index].clone()
+        } else {
+            timeline_row(index - document.header.len(), width, &document, theme)
+        }
+    });
+    render_rows(frame, area, rows, width);
+}
+
 pub fn render(
     frame: &mut Frame,
     area: Rect,
@@ -365,6 +886,15 @@ pub fn render(
         return;
     }
     let width = usize::from(area.width);
+    if page.view == HistoryView::Timeline
+        && matches!(
+            &page.state,
+            HistoryLoadState::Ready | HistoryLoadState::Empty
+        )
+    {
+        render_timeline(frame, area, page, theme);
+        return;
+    }
     let mut rows = match &page.state {
         HistoryLoadState::Loading => {
             let mut row = Vec::new();

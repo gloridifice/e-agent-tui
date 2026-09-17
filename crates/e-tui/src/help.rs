@@ -128,6 +128,7 @@ pub(crate) fn markdown(config: &crate::Config) -> String {
             (Scope::ReadMode, Some("help.context.blocks")),
             (Scope::ReadModeItem, Some("help.context.items")),
             (Scope::FullScreen, Some("help.context.full_screen")),
+            (Scope::History, Some("help.context.history")),
         ],
     );
     append_group(

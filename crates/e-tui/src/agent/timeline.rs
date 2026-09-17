@@ -74,6 +74,11 @@ pub enum TimelineFact {
         step: Option<u64>,
         usage: Option<TokenUsage>,
     },
+    /// Provider-reported price for the immediately following final assistant
+    /// message. This is capture metadata and never a transcript surface.
+    UsageCost {
+        usd_nanos: u64,
+    },
     ToolCall(ToolActivity),
     ToolResult {
         activity_id: String,

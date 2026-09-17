@@ -13,7 +13,7 @@
 ## Key mappings and themes
 
 - The embedded default key mapping is the sole binding default source. A user mapping replaces values by action; invalid startup input falls back to defaults, while invalid reload retains the last valid mapping.
-- Runtime handlers consume semantic actions, not reconstructed legacy key events. Effective help and hints MUST use the resolved mapping. Help inherits movement, half-page, and page navigation from `full_screen`; its close binding remains owned by `help`.
+- Runtime handlers consume semantic actions, not reconstructed legacy key events. Effective help and hints MUST use the resolved mapping. Help and history inherit movement, half-page, and page navigation from `full_screen`; help close remains owned by `help`, while history owns its view toggle.
 - Built-in and user themes use the same parser. A valid user theme wins by name; an invalid file MUST NOT shadow the embedded fallback.
 - Theme references and fixed semantic roles MUST validate as a complete unit. Presentation caches MUST invalidate when resolved styling changes.
 
@@ -27,5 +27,7 @@
 
 - Each adapter stores append-only JSONL under its frontend-specific config cache and registers workspace identity through bounded locking and atomic replacement.
 - Workspace identity uses versioned lexical normalization of the backend-confirmed absolute cwd; it MUST NOT silently promote to a Git root, resolve symlinks, or blanket-fold case.
-- Shared records MUST exclude tool output, file contents, patches, model text, and unknown raw arguments. Unsupported versions or conflicting identities fail explicitly; malformed originals are preserved.
-- History reads use a finite watermark. Shared ranking remains bounded and deterministic; absence of valid duration data MUST NOT produce invented measurements.
+- Shared records MUST exclude tool output, file contents, patches, model text, and unknown raw arguments. They MAY persist exact provider/model identity, normalized message kind, turn identity, disjoint input/output/cache token counts, and provider-reported price as integer USD nanodollars. Unsupported versions or conflicting identities fail explicitly; malformed originals are preserved.
+- A recorded history turn begins with an observed normalized user message and ends with normalized agent stop. Reasoning, assistant, tool call/result, and model-change records remain events inside that turn. Final assistant usage is recorded once; streaming chunks and tool events MUST NOT duplicate it.
+- Native price is optional. Pi records the per-response price exposed by native usage; DSH leaves price absent while its host contract provides none. Missing price MUST NOT be stored or aggregated as zero.
+- History reads use a finite watermark. Chronological records and the bounded deterministic ranking used by the history page MUST share that watermark; absence of valid duration data MUST NOT produce invented measurements.

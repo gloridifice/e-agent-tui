@@ -119,6 +119,12 @@ pub(super) fn content_text(content: &Value) -> String {
         .collect::<Vec<_>>()
         .join("")
 }
+pub(super) fn usage_cost_usd_nanos(message: &Value) -> Option<u64> {
+    let usd = message.get("usage")?.get("cost")?.get("total")?.as_f64()?;
+    (usd.is_finite() && usd >= 0.0 && usd <= u64::MAX as f64 / 1_000_000_000.0)
+        .then(|| (usd * 1_000_000_000.0).round() as u64)
+}
+
 pub(super) fn token_usage(value: &Value) -> TokenUsage {
     TokenUsage {
         input_tokens: value.get("input").and_then(Value::as_u64).unwrap_or(0),

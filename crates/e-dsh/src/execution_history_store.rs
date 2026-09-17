@@ -503,6 +503,7 @@ impl HistoryRecorder {
             let store = HistoryStore::open_at(identity.clone(), root)?;
             self.resume_metrics = load_trace_metrics(&store)?;
             let mut capture = e_tui::execution_capture::ExecutionCapture::new(run_id);
+            capture.set_initial_model(session.provider.as_deref(), session.model.as_deref());
             store.record(capture.attached(now))?;
             self.active_identity = Some(identity);
             self.store = Some(store);
@@ -597,11 +598,7 @@ impl HistoryRecorder {
         };
         Ok(e_tui::execution_history::HistoryQueryResult {
             path: page.path.to_string_lossy().into_owned(),
-            records: if request.kind == e_tui::execution_history::HistoryQueryKind::Longest50 {
-                Vec::new()
-            } else {
-                page.records
-            },
+            records: page.records,
             ranked_calls,
             warnings: page.warnings,
             watermark: page.watermark,

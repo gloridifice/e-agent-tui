@@ -69,6 +69,15 @@ pub(super) fn pi_edit_mutation_diff(
         })
 }
 pub(super) fn tool_activity(id: &str, name: &str, arguments: Value) -> ToolActivity {
+    tool_activity_with_state(id, name, arguments, ActivityState::Running)
+}
+
+pub(super) fn tool_activity_with_state(
+    id: &str,
+    name: &str,
+    arguments: Value,
+    state: ActivityState,
+) -> ToolActivity {
     let mut capability = match name.to_ascii_lowercase().as_str() {
         "read" => ToolCapability::Read,
         "edit" => ToolCapability::Edit,
@@ -183,7 +192,7 @@ pub(super) fn tool_activity(id: &str, name: &str, arguments: Value) -> ToolActiv
         capability,
         label: name.into(),
         summary,
-        state: ActivityState::Running,
+        state,
         reference,
         items: Vec::new(),
         preview,

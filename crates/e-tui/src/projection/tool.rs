@@ -141,7 +141,11 @@ impl ToolProjectionState {
                 action: *action,
                 call_id: call_id.clone(),
                 file: path.clone(),
-                ok: None,
+                ok: match activity.state {
+                    AgentActivityState::Success => Some(true),
+                    AgentActivityState::Failure | AgentActivityState::Cancelled => Some(false),
+                    AgentActivityState::Waiting | AgentActivityState::Running => None,
+                },
                 execution_metrics: None,
             });
             self.calls.insert(
@@ -192,8 +196,10 @@ impl ToolProjectionState {
                 kind,
             },
         );
+        let state = display_activity_state(activity.state);
         let mut row = ActivityRow::tool(id, label);
         row.kind = kind;
+        row.state = state;
         row.summary = summary;
         if skill {
             if let Some(ToolReference::Path { path } | ToolReference::Lines { path, .. }) =
@@ -206,8 +212,8 @@ impl ToolProjectionState {
                 });
             }
         }
-        row.start_ms = Some(now_ms);
-        if !create && !skill {
+        row.start_ms = state.is_active().then_some(now_ms);
+        if !create && !skill && state.is_active() {
             row.output_lines = Some(0);
             row.live_duration_since = Some(std::time::Instant::now());
         }
@@ -286,6 +292,16 @@ impl ToolProjectionState {
                 })
                 .collect()
         })
+    }
+}
+
+fn display_activity_state(state: AgentActivityState) -> ActivityState {
+    match state {
+        AgentActivityState::Waiting => ActivityState::Waiting,
+        AgentActivityState::Running => ActivityState::Running,
+        AgentActivityState::Success => ActivityState::Success,
+        AgentActivityState::Failure => ActivityState::Failure,
+        AgentActivityState::Cancelled => ActivityState::Cancelled,
     }
 }
 

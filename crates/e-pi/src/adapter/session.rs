@@ -2,6 +2,7 @@
 
 use e_tui::agent::{
     timeline::{TimelineFact, TimelineRecord},
+    tool::ActivityState,
     AgentEvent, AgentStatus, AttachedSession, SessionEvent, TimelineEvent,
 };
 
@@ -229,16 +230,22 @@ pub(super) fn snapshot_message(
         Some("user") => vec![adapter.record_fact(user_fact(message))],
         Some("assistant") => {
             let mut records = vec![adapter.record_fact(assistant_fact(message, turn, Some(0)))];
+            let tool_state = match message.get("stopReason").and_then(Value::as_str) {
+                Some("aborted") => ActivityState::Cancelled,
+                Some("error") => ActivityState::Failure,
+                _ => ActivityState::Running,
+            };
             for call in content_parts(message)
                 .filter(|part| part.get("type").and_then(Value::as_str) == Some("toolCall"))
             {
-                records.push(
-                    adapter.record_fact(TimelineFact::ToolCall(tool::tool_activity(
+                records.push(adapter.record_fact(TimelineFact::ToolCall(
+                    tool::tool_activity_with_state(
                         call.get("id").and_then(Value::as_str).unwrap_or("pi-tool"),
                         call.get("name").and_then(Value::as_str).unwrap_or("tool"),
                         call.get("arguments").cloned().unwrap_or(Value::Null),
-                    ))),
-                );
+                        tool_state,
+                    ),
+                )));
             }
             records
         }

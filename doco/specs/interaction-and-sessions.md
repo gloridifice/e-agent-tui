@@ -5,6 +5,7 @@
 - Input, page, Reading, approval, search/completion, and link-selection contexts MUST resolve semantic actions before text insertion. Disabled child actions MUST NOT fall through to parent behavior.
 - Composer cursor positions are character indices; byte slicing MUST use explicit character-to-byte conversion. Atomic paste/image blocks MUST be skipped or removed as units and MUST expand losslessly on submission.
 - Input Pages MUST use one closed frontend-owned session/controller and return effects for execution after state borrows are released. Text-edit states treat ordinary letters as text.
+- `@` path completion MUST match the unfinished name within the selected directory using a case-insensitive contiguous substring; it MUST preserve native parent-directory resolution, exact-directory descent, candidate spelling, and directory-first ordering. It MUST NOT perform recursive or subsequence matching.
 - Help is a blocking input context. It owns close and inherited full-screen scrolling actions while visible; reopening resets its independent scroll position without changing the composer or underlying page.
 - Mouse wheel routes to the pane under the pointer. While Help is visible, the wheel scrolls the modal; otherwise separator capture takes priority over text selection.
 

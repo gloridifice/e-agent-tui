@@ -1,6 +1,8 @@
 use std::path::{Component, Path};
 
-use e_tui::path_completion::{PathCandidate, PathCompletionRequest};
+use e_tui::path_completion::{
+    finalize_candidates, PathCandidate, PathCompletionRequest, PathNameMatcher,
+};
 
 pub fn complete(request: &PathCompletionRequest) -> Vec<PathCandidate> {
     let root = Path::new(&request.cwd);
@@ -25,15 +27,13 @@ pub fn complete(request: &PathCompletionRequest) -> Vec<PathCandidate> {
     let Ok(entries) = root.join(directory).read_dir() else {
         return Vec::new();
     };
-    let prefix = prefix.to_lowercase();
-    let mut candidates = entries
+    let matcher = PathNameMatcher::new(prefix);
+    let candidates = entries
         .take(4096)
         .filter_map(Result::ok)
         .filter_map(|entry| {
             let name = entry.file_name().into_string().ok()?;
-            if !name.to_lowercase().starts_with(&prefix)
-                || name.chars().any(|c| c.is_control() || c == '"')
-            {
+            if !matcher.matches(&name) {
                 return None;
             }
             let kind = entry.file_type().ok()?;
@@ -46,14 +46,7 @@ pub fn complete(request: &PathCompletionRequest) -> Vec<PathCandidate> {
             })
         })
         .collect::<Vec<_>>();
-    candidates.sort_by(|a, b| {
-        b.label
-            .ends_with('/')
-            .cmp(&a.label.ends_with('/'))
-            .then_with(|| a.label.cmp(&b.label))
-    });
-    candidates.truncate(100);
-    candidates
+    finalize_candidates(candidates)
 }
 
 fn absolute_is_probeable(path: &Path) -> bool {
@@ -163,6 +156,28 @@ pub fn validate_links(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn completion_uses_shared_substring_policy() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("readme")).unwrap();
+        std::fs::write(root.path().join("README.md"), "").unwrap();
+        let buffer = "@ea";
+        let request = super::PathCompletionRequest::new(
+            root.path().to_str().unwrap(),
+            buffer,
+            buffer.chars().count(),
+        )
+        .unwrap();
+        let candidates = super::complete(&request);
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|c| c.path.as_str())
+                .collect::<Vec<_>>(),
+            ["readme/", "README.md"]
+        );
+    }
+
     #[test]
     fn quick_links_validate_workspace_and_reject_symlink_escape() {
         use e_tui::link_copy::{

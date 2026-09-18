@@ -15,6 +15,7 @@ use anyhow::{bail, Context};
 use e_pi::{
     adapter::{AdapterOutput, PiAdapter, AUTH_REFRESH_COMMAND},
     auth::{control_from_record, AuthAction, AuthAssets, AuthControl, AuthManager},
+    herdr::{Reporter as HerdrReporter, Status as HerdrStatus},
     process::{PiLaunchOptions, PiProcess, PiProcessEvent, ProjectTrust},
     protocol::RpcCommand,
 };
@@ -252,7 +253,19 @@ async fn route_auth_action(
     Ok(())
 }
 
-async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
+async fn run(launch: PiLaunchOptions) -> anyhow::Result<()> {
+    let herdr = HerdrReporter::from_env();
+    let result = run_frontend(launch, herdr.as_ref()).await;
+    if let Some(herdr) = herdr {
+        herdr.shutdown().await;
+    }
+    result
+}
+
+async fn run_frontend(
+    mut launch: PiLaunchOptions,
+    herdr: Option<&HerdrReporter>,
+) -> anyhow::Result<()> {
     let mut phases =
         e_tui::profile::PhaseTimers::new(std::env::var("DSH_TUI_TIMING").as_deref() == Ok("1"));
     #[allow(unused_variables)]
@@ -352,6 +365,13 @@ async fn run(mut launch: PiLaunchOptions) -> anyhow::Result<()> {
 
     'outer: loop {
         let _main_loop_zone = e_tui::tracy_zone!("main loop");
+        if let Some(herdr) = herdr {
+            let status = {
+                let state = state_r.lock().unwrap();
+                HerdrStatus::from_runtime(&state)
+            };
+            herdr.report(status);
+        }
         let mut pending_event = None;
         let mut first_inbound = None;
         RuntimeController::reconcile_presentation(

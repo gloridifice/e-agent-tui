@@ -17,6 +17,13 @@
 - Terminal setup, restoration, event routing, synchronized frame submission, and shared scheduling policy belong to `e-tui`; provider selection loops and external ports remain adapter-owned.
 - Authentication requests/events are provider-neutral in `e-tui`. `e-pi` MUST execute Pi authentication through public native APIs outside frontend locks and outside prompt queues/history; `e-tui` MUST NOT know Pi credential paths, token shapes, or OAuth endpoints. A committed Pi credential mutation MUST synchronize the affected provider in the live conversation runtime before reporting success; remote-catalog refresh is a separate best-effort result. Session replacement invalidates active authentication state and MUST report that invalidation as a terminal outcome for an in-flight flow. Recovery guidance in adapter messages MUST name an action the frontend actually performs.
 
+## Herdr status reporting
+
+- `e-pi` owns optional pane-local Herdr status reporting. It MUST remain disabled outside a Herdr-managed environment and MUST NOT introduce Herdr protocol or process effects into `e-tui`.
+- Reports MUST distinguish active work, readiness, and pending user decisions using runtime and interaction state. Pi's settled-run lifecycle determines completion; individual turn/tool completion is insufficient. Herdr owns the distinction between seen idle results and unseen done results.
+- Reporting MUST be asynchronous, bounded, best-effort, and independent of conversation success. Repeated states MUST be deduplicated without idle polling. Shutdown and returned runtime errors MUST attempt to release the reporting source after outstanding reports. Reports MUST NOT contain conversation text or authentication secrets, links, or codes.
+- This integration reports status only; it MUST NOT claim native session-restore authority or modify the official Pi integration.
+
 ## Scheduling and transport bounds
 
 - Idle runtime waits MUST remain deadline-driven; a fixed polling ticker is forbidden.

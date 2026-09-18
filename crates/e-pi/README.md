@@ -22,6 +22,12 @@ pie --help
 
 See the [project README](https://github.com/gloridifice/e#quick-start-pi) for configuration and usage guidance.
 
+## Herdr status
+
+When launched inside a Herdr pane, `pie` automatically reports idle, working, and waiting-for-input states as `pie`. No Pi plugin is required. Herdr decides whether a completed result appears as idle or unseen/done. Reporting is best-effort and does not affect the conversation if Herdr is unavailable.
+
+This integration supports status display only, not automatic session restore after a Herdr server restart. Resume a saved session explicitly with `pie --session <file>`.
+
 ## License
 
 MIT

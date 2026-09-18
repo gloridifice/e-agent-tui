@@ -72,7 +72,7 @@ The three Rust packages inherit one workspace version and are released together 
 cargo install cargo-release --locked
 ```
 
-Before publishing, start from a clean `master` checkout and run the package verifier described in [testing](testing.md). The first release publishes the version already declared in the workspace (`0.0.1`):
+Before publishing, start from a clean `master` checkout and run the package verifier described in [testing](testing.md). To publish the version already declared in the workspace:
 
 ```powershell
 cargo release --workspace             # dry run

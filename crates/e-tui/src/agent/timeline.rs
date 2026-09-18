@@ -171,6 +171,9 @@ pub enum TimelineFact {
         id: String,
         model_name: Option<String>,
     },
+    AutoCompactionStarted {
+        id: String,
+    },
     CompactionSummary {
         id: String,
         summary: String,
@@ -178,6 +181,10 @@ pub enum TimelineFact {
     CompactionFinished {
         id: String,
         model_name: Option<String>,
+        error: Option<String>,
+    },
+    AutoCompactionFinished {
+        id: String,
         error: Option<String>,
     },
     GoalChanged {
@@ -238,8 +245,10 @@ impl TimelineRecord {
                 | TimelineFact::WorkflowMemberFinished { .. }
                 | TimelineFact::WorkflowFinished { .. }
                 | TimelineFact::CompactionStarted { .. }
+                | TimelineFact::AutoCompactionStarted { .. }
                 | TimelineFact::CompactionSummary { .. }
                 | TimelineFact::CompactionFinished { .. }
+                | TimelineFact::AutoCompactionFinished { .. }
                 | TimelineFact::GoalChanged { .. }
                 | TimelineFact::ModeChanged { .. }
                 | TimelineFact::PresetSelected { .. }

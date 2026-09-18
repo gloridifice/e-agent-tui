@@ -1142,6 +1142,7 @@ impl RuntimeState {
                     if matches!(
                         event.fact,
                         TimelineFact::CompactionFinished { error: None, .. }
+                            | TimelineFact::AutoCompactionFinished { error: None, .. }
                     ) {
                         self.session.context_usage_unknown = true;
                     }

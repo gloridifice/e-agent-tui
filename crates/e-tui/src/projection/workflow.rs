@@ -83,6 +83,17 @@ pub fn project(event: &TimelineRecord) -> Option<WorkflowProjection> {
                 mutation: ActivityMutation::Upsert(row),
             })
         }
+        TimelineFact::AutoCompactionStarted { id: compaction_id } => {
+            let mut row = ActivityRow::root(
+                DisplayId::correlated("compaction", compaction_id),
+                "auto compacting with default model",
+            );
+            row.start_ms = event.time_ms;
+            Some(WorkflowProjection::Compaction {
+                key: compaction_id.clone(),
+                mutation: ActivityMutation::Upsert(row),
+            })
+        }
         TimelineFact::CompactionSummary {
             id: compaction_id, ..
         } => Some(WorkflowProjection::Compaction {
@@ -104,6 +115,24 @@ pub fn project(event: &TimelineRecord) -> Option<WorkflowProjection> {
                 label: error
                     .is_none()
                     .then(|| compaction_label("compacting complete", model_name.as_deref())),
+                state: if error.is_none() {
+                    ActivityState::Success
+                } else {
+                    ActivityState::Failure
+                },
+                summary: error.clone(),
+            },
+        }),
+        TimelineFact::AutoCompactionFinished {
+            id: compaction_id,
+            error,
+        } => Some(WorkflowProjection::Compaction {
+            key: compaction_id.clone(),
+            mutation: ActivityMutation::Settle {
+                id: DisplayId::correlated("compaction", compaction_id),
+                label: error
+                    .is_none()
+                    .then(|| "auto compacting complete with default model".into()),
                 state: if error.is_none() {
                     ActivityState::Success
                 } else {

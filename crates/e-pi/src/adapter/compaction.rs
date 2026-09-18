@@ -311,6 +311,10 @@ pub(super) fn response(adapter: &mut PiAdapter, record: &RpcRecord) -> Option<Ad
     Some(output)
 }
 
+pub(super) fn is_automatic(reason: Option<&str>) -> bool {
+    matches!(reason, Some("threshold" | "overflow"))
+}
+
 pub(super) fn active_model_name(adapter: &PiAdapter, reason: Option<&str>) -> Option<String> {
     if reason == Some("manual") {
         if let Some(pending) = &adapter.pending_compaction {

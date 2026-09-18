@@ -109,6 +109,7 @@ pub struct PiAdapter {
     pending_compaction: Option<compaction::Pending>,
     active_compaction_model: Option<String>,
     active_compaction_id: Option<String>,
+    active_compaction_automatic: Option<bool>,
     last_attached_session: Option<String>,
     current_model: Option<Value>,
     available_models: Vec<Value>,
@@ -156,6 +157,7 @@ impl PiAdapter {
             pending_compaction: None,
             active_compaction_model: None,
             active_compaction_id: None,
+            active_compaction_automatic: None,
             last_attached_session: None,
             current_model: None,
             available_models: Vec::new(),
@@ -285,13 +287,22 @@ impl PiAdapter {
             "tool_execution_end" => tool::tool_end(self, &record),
             "compaction_start" => {
                 let id = self.request_id("compaction");
+                let automatic = compaction::is_automatic(record.string("reason"));
                 self.active_compaction_id = Some(id.clone());
-                self.active_compaction_model =
-                    compaction::active_model_name(self, record.string("reason"));
-                self.timeline(TimelineFact::CompactionStarted {
-                    id,
-                    model_name: self.active_compaction_model.clone(),
-                })
+                self.active_compaction_automatic = Some(automatic);
+                self.active_compaction_model = if automatic {
+                    None
+                } else {
+                    compaction::active_model_name(self, record.string("reason"))
+                };
+                if automatic {
+                    self.timeline(TimelineFact::AutoCompactionStarted { id })
+                } else {
+                    self.timeline(TimelineFact::CompactionStarted {
+                        id,
+                        model_name: self.active_compaction_model.clone(),
+                    })
+                }
             }
             "compaction_end" => {
                 let error = record
@@ -306,11 +317,19 @@ impl PiAdapter {
                     .active_compaction_id
                     .take()
                     .unwrap_or_else(|| self.request_id("compaction"));
-                let mut output = self.timeline(TimelineFact::CompactionFinished {
-                    id,
-                    model_name,
-                    error,
-                });
+                let automatic = self
+                    .active_compaction_automatic
+                    .take()
+                    .unwrap_or_else(|| compaction::is_automatic(record.string("reason")));
+                let mut output = if automatic {
+                    self.timeline(TimelineFact::AutoCompactionFinished { id, error })
+                } else {
+                    self.timeline(TimelineFact::CompactionFinished {
+                        id,
+                        model_name,
+                        error,
+                    })
+                };
                 output.merge(session::refresh_stats(self));
                 output
             }

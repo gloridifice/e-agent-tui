@@ -20,19 +20,21 @@ The new command is:
 - The model menu displays the stored effort id immediately after the model name, before an optional letter mark, using the existing subdued activity-label tone (umber in the default Ferra theme). Keep suffix width accounting Unicode-safe and perform no render-time I/O.
 - Preserve unrelated uncommitted work, including current compaction/reload command and configuration changes. No effort-level projection changes, default-model setting, clear-default command, or automatic startup/session-resume override is included.
 
-### Verification
+## Verification
 
 Scoped tests cover config round trips and validation, route-specific command parsing/completion, persistence effects, picker selection, explicit effort precedence, and queued temporary model restoration. Check adapter config persistence using a temporary directory. Run formatting and compilation checks proportionate to the shared frontend changes; no real user configuration may be modified by tests.
 
-### Current-document impact
+## Current-document impact
 
 Document the new e-only persisted preference in configuration/storage, its selection semantics in interaction/sessions, and its menu annotation in presentation. Add concise command usage to the user README and update command-local hints/translations. Existing keys and detailed help navigation remain unchanged.
 
 ## Result
 
-Implemented; the change remains active, not completed or archived.
-
-The model command and target-specific completion persist exact-route preferences through e's existing config effect. The model menu annotates saved efforts, and direct/menu/marked selections apply supported defaults without replacing explicit or restored efforts. The preference schema stays a leaf; catalog policy validates defaults against model capabilities. Current configuration, interaction, and presentation contracts and the README are synchronized.
+Delivered. The model command and target-specific completion persist exact-route preferences
+through e's existing config effect. The model menu annotates saved efforts, and direct/menu/marked
+selections apply supported defaults without replacing explicit or restored efforts. The
+preference schema stays a leaf; catalog policy validates defaults against model capabilities.
+Current configuration, interaction, and presentation contracts and the README are synchronized.
 
 Verification passed:
 
@@ -43,4 +45,5 @@ Verification passed:
 - `cargo fmt --all --check`, `git diff --check`, and `doco check model-default-effort`.
 - `cargo clippy --workspace --all-targets`: completed with existing warnings outside this feature; the new-code warning was corrected.
 
-No live terminal or real user configuration was used for validation. No implementation scope is deferred; unrelated concurrent changes were preserved.
+No live terminal or real user configuration was used for validation. No implementation scope is
+deferred; unrelated concurrent changes were preserved.

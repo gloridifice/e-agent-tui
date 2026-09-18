@@ -28,11 +28,18 @@ prevents abandoned calls from looking active.
 No current architecture or public contract document requires an update: this
 is an internal correction of normalized history state.
 
+## Verification
+
+Focused verification stayed inside the adapter/projection boundary: `cargo test -p e-pi --lib
+history` (18 tests), formatting, and downstream compilation passed. No new regression test was
+added per request, and no current architecture or public contract document required an update.
+
 ## Result
 
-Implemented and verified for the approved scope. Pi history replay now derives a
-terminal activity state from assistant `error`/`aborted` stop reasons, and the
-shared tool projection honors terminal activity states without starting live
-timers. No new regression test was added per request; existing focused adapter
-and projection tests, formatting, and downstream compilation passed. The
-change remains active and has not been completed or archived.
+Delivered. Pi history replay now derives a terminal activity state from assistant
+`error`/`aborted` stop reasons, and the shared tool projection honors terminal activity states
+without starting live timers; fragments with a durable `toolResult` still settle by that result
+and ordinary completed history is unchanged. The fix stays inside the Pi history
+adapter/projection boundary, and no architecture or public contract document required an update.
+No new regression test was added per request; `cargo test -p e-pi --lib history` (18 tests),
+formatting, and downstream compilation passed.

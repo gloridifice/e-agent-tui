@@ -122,8 +122,8 @@ the scope and acceptance authority when those working files are removed.
 
 ## Result
 
-Implementation and verification are delivered for the approved narrowed scope.
-The change remains active and has not been completed or archived. Validation used
-isolated fake credentials and did not authorize or perform a live provider login;
-see [the validation report](work/validation-report.md) for coverage limits and
-repository-level check failures.
+Delivered for the approved narrowed scope. Validation used isolated fake credentials and did
+not authorize or perform a live provider login; see
+[the validation report](work/validation-report.md) for coverage limits and repository-level check
+failures. Unsupported later runtime provider registrations and non-exported Pi built-in extension
+factories remain documented limitations rather than delivered behavior.

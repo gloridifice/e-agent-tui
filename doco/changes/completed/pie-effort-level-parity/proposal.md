@@ -107,8 +107,7 @@ statement, the adapter-owned effort projection in
 
 ## Result
 
-Implementation and verification are delivered for the approved scope. The
-change remains active and has not been completed or archived.
+Delivered and verified for the approved scope.
 
 `model_catalog` now derives each reasoning model's efforts from Pi's fixed level
 order with Pi's `null`-hidden and `xhigh`/`max` opt-in rules. The session-scoped

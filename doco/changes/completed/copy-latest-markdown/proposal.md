@@ -24,4 +24,13 @@ Non-goals:
 
 ## Result
 
-Implemented and verified for the approved scope. The shared frontend now discovers the latest eligible semantic source, dispatches clipboard writing outside the state lock, and exposes the localized built-in command in both adapters. Focused command, controller, command-catalog, and localization tests passed. The current presentation contract is synchronized. The change remains active and has not been completed or archived.
+Delivered. The shared built-in registry and localized slash completion expose `copy` to both
+frontends. The frontend resolves the complete semantic Markdown source of the most recent
+completed assistant answer, ignoring rendered text, reveal progress, reasoning, tool output,
+local notices, and user cards, and dispatches the adapter-owned clipboard `UiAction` outside the
+state lock. Arguments and a transcript without a completed assistant answer report localized
+local errors without writing the clipboard.
+
+Verification: focused command, controller, command-catalog, and localization tests passed
+(`cargo test -p e-tui copy`: 25). The current presentation contract is synchronized. No live
+terminal clipboard smoke run was performed.

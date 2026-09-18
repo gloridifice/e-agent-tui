@@ -48,4 +48,27 @@ that were never observed by e, or replacing the operation-ranking view.
 
 ## Result
 
-Pending — not completed.
+Delivered. The append-only execution-history schema now carries provider-neutral model identity,
+normalized message kind, and per-response usage records (disjoint input/output/cache-read/
+cache-write counts plus an optional provider-reported price in integer nanodollars). A turn spans
+a normalized user message to agent stop, and both adapter stores return chronological records
+under the same finite watermark as the existing top-50 ranking. The history page keeps the
+ranking as its initial view and adds the approved Ferra timeline: five-second rows, scrolling
+session and per-model summaries, agent-stop turn totals, and no title, legend, cursor, or bottom
+bar. `history.toggle_view` (Tab) switches views with independent offsets. Unknown price is never
+displayed or aggregated as zero, older version-1 files stay readable, and configuration/storage,
+interaction/session, and presentation contracts were updated.
+
+Verification: `cargo fmt --all -- --check`, `cargo check -p e-tui -p e-pi -p e-dsh`,
+`cargo test -p e-tui execution_history::tests::ingress_capture` (2), `cargo test -p e-tui
+ui::region::history` (4), `cargo test -p e-pi --lib history` (18), DSH history tests (17),
+`cargo test -p e-pi cost` (3), and `cargo clippy -p e-tui -p e-pi -p e-dsh --lib --no-deps`
+passed with no warning pointing at this change.
+
+Known limitations carried into completion: two pre-existing e-tui tests still assert the retired
+"Tab cannot switch history views" behavior and fail
+(`key_mapping::tests::history_scope_ignores_retired_toggle_and_keeps_navigation_overrides` and
+`runtime::controller::key_mapping_tests::history_opens_top50_directly_and_tab_cannot_switch_or_query`);
+repository policy forbids editing tests without an explicit request, so they were left as
+recorded. No live-provider timeline smoke run was performed, because new records require an
+attached Pi or DSH session.

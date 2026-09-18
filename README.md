@@ -8,6 +8,8 @@
 <a href="#quick-start-dsh">Start for DSH</a> | <a href="#quick-start-pi">Start for Pi</a> | <a href="#build-yourself">Build Yourself</a> | <a href="#development">Development</a>
 </p>
 
+https://github.com/user-attachments/assets/45a75c55-7e3b-4af3-b1e2-1c6306b80358
+
 ## Quick Start DSH
 
 > Windows and PowerShell are currently the primary supported environment.

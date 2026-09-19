@@ -2,7 +2,8 @@
 <img src="./readme/logo.png" width="128">
 </p>
 
-`e` is a terminal UI for coding agents, designed to be concise, attention-friendly, lightweight, and fast. It provides `dshe` for [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness) and the experimental `pie` frontend for Pi. It does not alter either agent runtime. The project is still in an early stage of development.
+`e` is a terminal UI for coding agents, designed to be concise, attention-friendly, lightweight, and fast. It provides `dshe` for [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness) and the `pie` frontend for Pi.
+It does not alter either agent runtime. The project is still in an early stage of development.
 
 <p align="center">
 <a href="#quick-start-dsh">Start for DSH</a> | <a href="#quick-start-pi">Start for Pi</a> | <a href="#build-yourself">Build Yourself</a> | <a href="#development">Development</a>

@@ -49,6 +49,10 @@ pie
 
 Type `@` in the composer to browse project-relative paths. Use ↑/↓ to select, Tab or Enter to fill (directories continue browsing), and Esc to dismiss; Enter sends only after file completion closes. Paths containing spaces are quoted automatically.
 
+## Prebuilt binaries
+
+Download the Windows x64 ZIP or Linux x64 tarball from [GitHub Releases](https://github.com/gloridifice/e/releases). Each archive includes `dshe` and `pie`; extract them into a directory on `PATH`. `SHA256SUMS` provides archive checksums. Rust/Cargo is not needed for these downloads, but the runtime prerequisites above still apply; run `dshe setup` before using DSH.
+
 ## Build Yourself
 
 To build without installing:
@@ -73,6 +77,12 @@ For a profiling build, enable the optional Tracy integration:
 cargo build --release --features tracy
 ```
 
+## Features
+
+- **Model default effort:** Use `/model <model-id> set-default-effort <effort>` to save a default for future model selections without changing the current session's effort.
+- **Execution history:** Use `/history` to view slow operations and the usage timeline, or `/history copy` to copy execution metadata that may contain sensitive command arguments.
+- **Compaction model:** Use `/compact set-model` or `/compact unset-model` to configure a shared override for DSH compaction and Pi manual compaction.
+
 ## Config
 
 `e`'s config is under:
@@ -87,44 +97,10 @@ You can run `/econfig` in `e` to open or show the config path of your device.
 - `key_mapping.toml`: Key mapping overrides.
 - `themes/`: custom theme folder.
 
-### Model default effort
+- **Key mapping:** Customize `key_mapping.toml` using the [key mapping guide](readme/key-mapping.md) and [default bindings](crates/e-tui/assets/default_key_mapping.toml).
+- **Themes:** Use `/theme` to switch themes or add custom TOML files under `themes/`, following the [bundled examples](crates/e-tui/assets/themes/).
 
-Use `/model <model-id> set-default-effort <effort>` to save a model's default reasoning effort. Completion lists models, the subcommand, and that model's supported efforts; use `provider/model` when a bare id is ambiguous. The model menu shows the saved effort after its name in Umber.
-
-Preferences live only in e's `config.toml`, not Pi's configuration. They apply the next time you select the model (including marked prompts); setting a default does not change the current session's effort. Explicit `/effort` selections and resumed sessions keep their own effort.
-
-### Execution history
-
-While `dshe` or `pie` is attached to a session, it records output-free execution metadata under `<e-config>/cache/e-dsh/history/` or `<e-config>/cache/e-pi/history/`, using the [shared configuration directory](#config). Each history root contains a `workspaces.json` mapping its workspace folders to working-directory paths. The trace contains commands, references, timings, outcomes, observed line counts, model routes, and token/price usage, but not tool output, file contents, patches, or model text. DSH prices remain unknown because its host events do not provide them. Commands themselves can contain sensitive values, so review a trace before sharing it.
-
-Use `/history` (or `/history show`) to open the session's 50 longest measured operations in the message pane, leaving split Preview visible. Press Tab to switch between that ranking and a fixed-scale chronological usage timeline. `/history path` inserts the absolute trace path, `/history copy` copies chronological history, and `/history copy-10` copies the ten longest measured operations. In the page, `j`/`k`, `d`/`u`, `f`/`b`, PageUp/PageDown, mouse wheel, and `q`/Esc navigate or exit. Movement keys are configurable in `full_screen`; Tab is configurable as `history.toggle_view`.
-
-Recording covers activity observed while an `e` client is attached. Workspaces follow the confirmed session cwd without Git-root promotion. Legacy project-local histories are neither read nor migrated; project files and native backend sessions remain untouched. Traces are not automatically deleted despite living under `cache`.
-
-### Compaction model
-
-Use `/compact set-model` to open the model menu, or `/compact set-model <provider/model>` (a unique bare model id also works). `/compact unset-model` clears the override. DSH applies it to manual and automatic compaction; Pi applies it only to manual `/compact` and restores the previous model and reasoning effort afterward. Pi automatic compaction remains native.
-
-The override is user-wide and shared by `dshe` and `pie`, across projects, sessions, and restarts. It is stored in `<config_dir>/compaction-model.json`; each supported compaction reads the latest setting. The selected provider/model must be available in the backend using it. Manual and DSH activity labels show `compacting with <model_name>` and `compacting complete with <model_name>` when the model is known. Pi automatic compaction instead shows `auto compacting with default model` and `auto compacting complete with default model`; it does not infer which model a custom compaction extension uses. A smaller model still needs enough context capacity for the history being summarized.
-
-`/reload` reloads frontend configuration and themes, and refreshes backend resources and catalogs. Pi reloads extensions, skills, prompts, and context files; DSH invalidates its skill cache and rediscovers skills, commands, and models. DSH plugin code replacement still requires a service restart.
-
-### Key mapping
-
-Bindings are configurable in `<config_path>/key_mapping.toml`; see [key mappings](readme/key-mapping.md) and the complete [defaults](crates/e-tui/assets/default_key_mapping.toml). Below, **Main** means Command on macOS and Ctrl on Windows/Linux (the terminal must forward the shortcut).
-
-In `/model`, **Shift+letter** marks/unmarks the focused model; the plain **letter** switches to it and closes the menu. Marks are saved and shown as Bark-colored ` [a]` suffixes. Letters already mapped in the menu are reserved (by default `h/j/k/l/q`).
-
-Prefix a prompt with `//<mark>` (for example `//i commit`) to use that model for one turn. The Umber model-name preview is not sent. The status-bar model becomes italic; ASAP steering keeps the temporary model, while after-turn messages wait for the original model and reasoning effort to be restored.
-
-Press **Ctrl+Y**, then a link's tag (`1`–`9`, `0`, `a`–`z`) to copy it. The latest completed answer labels up to 36 distinct URLs and paths with Umber `~<tag>` suffixes; Esc cancels. See [link copy](readme/key-mapping.md#quick-link-copy) for path validation and remapping.
-
-Mouse: the wheel scrolls the pane under the pointer (messages or Preview). Drag any visible TUI text to copy on release, including input, status, paths, history, and popups. Multiline selection follows rows within the pane where the drag starts; the display pauses during selection while background work continues. A press on the separator resizes instead. Reading View copy still copies the complete source block.
-
-### Themes
-
-Use `/theme` to choose Ferra (default), Rider Dark, Dracula, Catppuccin (Mocha), One Dark, or SynthWave '84. Custom themes are discovered under `<config_path>/themes/<theme_name>.toml`.
-See [themes folder](crates/e-tui/assets/themes/) for example.
+Use `/reload` to reload configuration, themes, and backend resources; replacing DSH plugin code still requires a service restart.
 
 ## Development
 

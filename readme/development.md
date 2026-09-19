@@ -90,6 +90,21 @@ Cargo-release publishes `e-tui` before the two adapters and uses one shared `v<v
 
 Never use `--allow-dirty` or `--no-verify` for an executed release. Uncommitted changes also make the dry run fail, even if all package builds pass. A crates.io version cannot be overwritten; yank a bad version and publish a new synchronized patch instead.
 
+### GitHub binary releases
+
+Pushing a stable `vX.Y.Z` tag triggers [the release workflow](../.github/workflows/release.yml). The tag must match every Rust workspace package version; prerelease tags are not accepted. The workflow checks generated bridge assets and protocol artifacts, runs bridge tests, then builds both `dshe` and `pie` for Windows x64 (MSVC) and Linux x64 (GNU, built on Ubuntu 22.04).
+
+Each platform archive contains both executables, the README, and the license. After all builds succeed, the workflow uploads the archives and `SHA256SUMS` to a draft GitHub Release and publishes it with generated release notes. It uses the repository's `GITHUB_TOKEN` with release-job-only write permission; no additional publishing secret is needed. If publication fails after draft creation, inspect the draft and either finish publishing it or delete it before rerunning the publish job.
+
+The existing cargo-release flow pushes the shared tag and therefore triggers binary publication automatically. To publish binaries without publishing to crates.io, commit synchronized package versions and `Cargo.lock`, then push the corresponding tag manually:
+
+```powershell
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Use the actual workspace version and a new tag; do not move an existing release tag. The GitHub workflow does not publish crates to crates.io. Downloaded executables still require their external DSH/Pi runtimes and setup described in the root README.
+
 ## Bridge development
 
 Bridge source changes are not visible to a running DSH service until the deployed package is replaced and DSH is restarted. Before a packaged build, run `node tools/sync-release-assets.mjs` so `e-dsh` embeds the current generated mirror. Follow [DSH integration](dsh-integration.md) for packaged and development deployment flows, and [testing](testing.md) for bridge and compatibility checks.

@@ -36,7 +36,7 @@ cd bridge
 npm test
 ```
 
-The package script uses `--test-isolation=none` to avoid `EPERM` when tests spawn sandboxed processes. File-layer tests must use a temporary home directory and must never touch the real `%DSH_HOME%`.
+The package script uses `--experimental-test-isolation=none` to avoid `EPERM` when tests spawn sandboxed processes while remaining compatible with Node.js 22. File-layer tests must use a temporary home directory and must never touch the real `%DSH_HOME%`.
 
 ## Release assets and package archives
 

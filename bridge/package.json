@@ -6,7 +6,7 @@
   "main": "src/index.js",
   "description": "WebSocket bridge exposing DSH session events and controls to the dsh-tui terminal client.",
   "scripts": {
-    "test": "node --test --test-isolation=none \"test/*.test.js\"",
+    "test": "node --test --experimental-test-isolation=none \"test/*.test.js\"",
     "sync-protocol": "node ../tools/sync-protocol-contract.mjs",
     "check-protocol": "node ../tools/sync-protocol-contract.mjs --check",
     "sync-release-assets": "node ../tools/sync-release-assets.mjs",

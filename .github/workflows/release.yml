@@ -1,0 +1,127 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate release
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Check tag and package versions
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { execFileSync } from 'node:child_process';
+          const tag = process.env.RELEASE_TAG;
+          if (!/^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(tag)) {
+            throw new Error(`Expected a stable vX.Y.Z tag, got ${tag}`);
+          }
+          const metadata = JSON.parse(execFileSync('cargo', [
+            'metadata', '--no-deps', '--format-version', '1', '--locked',
+          ], { encoding: 'utf8' }));
+          for (const pkg of metadata.packages.filter(pkg => metadata.workspace_members.includes(pkg.id))) {
+            if (`v${pkg.version}` !== tag) {
+              throw new Error(`${pkg.name} version ${pkg.version} does not match ${tag}`);
+            }
+          }
+          NODE
+      - name: Check generated assets and protocol
+        run: |
+          node tools/sync-release-assets.mjs --check
+          node tools/sync-protocol-contract.mjs --check
+      - name: Test bridge
+        run: npm test --prefix bridge
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            extension: ''
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            extension: '.exe'
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+      TARGET: ${{ matrix.target }}
+      EXE_EXTENSION: ${{ matrix.extension }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Build executables
+        run: cargo build --release --locked --target "$TARGET" -p e-dsh -p e-pi --bins
+      - name: Stage executables and documentation
+        run: |
+          mkdir -p staging dist
+          cp "target/$TARGET/release/dshe$EXE_EXTENSION" staging/
+          cp "target/$TARGET/release/pie$EXE_EXTENSION" staging/
+          cp README.md LICENSE.md staging/
+      - name: Package Linux archive
+        if: runner.os == 'Linux'
+        run: tar -czf "dist/e-$RELEASE_TAG-$TARGET.tar.gz" -C staging .
+      - name: Package Windows archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path staging/* -DestinationPath "dist/e-$env:RELEASE_TAG-$env:TARGET.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum *.tar.gz *.zip > SHA256SUMS
+      - name: Upload and publish release
+        run: |
+          gh release create "$RELEASE_TAG" dist/* \
+            --verify-tag --draft --title "$RELEASE_TAG" --generate-notes
+          gh release edit "$RELEASE_TAG" --draft=false

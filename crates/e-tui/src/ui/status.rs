@@ -119,14 +119,14 @@ pub(super) fn render_input_header(
         )
     });
     // Reserve effort before clipping the route, leaving both rule ends visible.
-    let effort_width = effort.as_ref().map_or(0, |span| span.width() + 2);
+    let effort_width = effort.as_ref().map_or(0, |span| span.width() + 1);
     let mut label = crate::wrap::ellipsize_line(
         Line::from(left_spans),
         available.saturating_sub(effort_width),
     );
     if let Some(effort) = effort {
         if !label.spans.is_empty() {
-            label.push_span(Span::styled("  ", dim));
+            label.push_span(Span::styled(" ", dim));
         }
         label.push_span(effort);
     }

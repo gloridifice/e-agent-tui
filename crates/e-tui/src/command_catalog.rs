@@ -206,6 +206,13 @@ pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
     command!("quit", "command.quit.description", None, None, Quit),
 ];
 
+pub(crate) fn parse_command_line(line: &str) -> Option<(&str, &str)> {
+    let body = line.strip_prefix('/')?;
+    let split = body.find(char::is_whitespace).unwrap_or(body.len());
+    let (name, raw_input) = body.split_at(split);
+    (!name.is_empty()).then_some((name, raw_input))
+}
+
 pub fn builtin_command(name: &str) -> Option<&'static BuiltinCommand> {
     BUILTIN_COMMANDS.iter().find(|command| command.name == name)
 }

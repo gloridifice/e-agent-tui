@@ -17,13 +17,31 @@ enum Stage {
     Failed,
 }
 
+#[derive(Clone)]
+struct Route {
+    model: Value,
+    effort: String,
+}
+
+struct ModelSelection {
+    id: String,
+    provider: String,
+    model: String,
+    requested_effort: Option<String>,
+    session_id: String,
+}
+
 pub(super) struct Pending {
     id: String,
     stage: Stage,
-    original: Option<Value>,
-    effort: Option<String>,
+    original: Option<Route>,
+    return_route: Option<Route>,
     target: Value,
     instructions: Option<String>,
+    session_id: String,
+    controls_open: bool,
+    compact_finished: bool,
+    selection: Option<ModelSelection>,
     cancelled: bool,
 }
 
@@ -134,9 +152,13 @@ pub(super) fn command(adapter: &mut PiAdapter, args: &str) -> AdapterOutput {
                 id: id.clone(),
                 stage: Stage::Abort,
                 original: None,
-                effort: None,
+                return_route: None,
                 target,
                 instructions,
+                session_id: adapter.session_id.clone(),
+                controls_open: false,
+                compact_finished: false,
+                selection: None,
                 cancelled: false,
             });
             AdapterOutput::command(RpcCommand::Abort { id: Some(id) })
@@ -155,6 +177,7 @@ pub(super) fn model_name(model: &Value) -> Option<String> {
 pub(super) fn interrupt(adapter: &mut PiAdapter) {
     if let Some(pending) = &mut adapter.pending_compaction {
         pending.cancelled = true;
+        pending.controls_open = false;
     }
 }
 
@@ -174,15 +197,263 @@ fn set_model(id: String, model: &Value) -> Option<RpcCommand> {
     })
 }
 
+pub(super) fn controls_open(adapter: &PiAdapter) -> bool {
+    adapter.pending_compaction.as_ref().is_some_and(|pending| {
+        pending.stage == Stage::Compact
+            && pending.controls_open
+            && !pending.compact_finished
+            && !pending.cancelled
+            && pending.session_id == adapter.session_id
+    })
+}
+
+pub(super) fn manual_started(adapter: &mut PiAdapter, reason: Option<&str>) -> bool {
+    if reason != Some("manual") {
+        return false;
+    }
+    let Some(pending) = adapter.pending_compaction.as_mut() else {
+        return false;
+    };
+    if pending.stage != Stage::Compact
+        || pending.compact_finished
+        || pending.cancelled
+        || pending.controls_open
+        || pending.session_id != adapter.session_id
+    {
+        return false;
+    }
+    pending.controls_open = true;
+    true
+}
+
+pub(super) fn begin_model_selection(
+    adapter: &mut PiAdapter,
+    id: String,
+    provider: String,
+    model: String,
+    requested_effort: Option<String>,
+) {
+    let Some(pending) = adapter.pending_compaction.as_mut() else {
+        return;
+    };
+    if pending.stage != Stage::Compact
+        || !pending.controls_open
+        || pending.compact_finished
+        || pending.selection.is_some()
+        || pending.session_id != adapter.session_id
+    {
+        return;
+    }
+    pending.selection = Some(ModelSelection {
+        id,
+        provider,
+        model,
+        requested_effort,
+        session_id: adapter.session_id.clone(),
+    });
+}
+
+pub(super) fn is_model_selection_response(adapter: &PiAdapter, id: Option<&str>) -> bool {
+    id.is_some_and(|id| {
+        adapter
+            .pending_compaction
+            .as_ref()
+            .and_then(|pending| pending.selection.as_ref())
+            .is_some_and(|selection| selection.id == id)
+    })
+}
+
+pub(super) fn advance_model_selection(
+    adapter: &mut PiAdapter,
+    completed_id: &str,
+    next_id: String,
+) {
+    let Some(selection) = adapter
+        .pending_compaction
+        .as_mut()
+        .and_then(|pending| pending.selection.as_mut())
+    else {
+        return;
+    };
+    if selection.id == completed_id {
+        selection.id = next_id;
+    }
+}
+
+pub(super) fn validate_model_selection(
+    adapter: &PiAdapter,
+    id: &str,
+    data: Option<&Value>,
+) -> Result<(), String> {
+    let pending = adapter
+        .pending_compaction
+        .as_ref()
+        .ok_or_else(|| "Compaction transaction is no longer active".to_owned())?;
+    let selection = pending
+        .selection
+        .as_ref()
+        .filter(|selection| selection.id == id)
+        .ok_or_else(|| "Model selection response is stale".to_owned())?;
+    if selection.session_id != pending.session_id || pending.session_id != adapter.session_id {
+        return Err("Model selection belongs to a replaced session".into());
+    }
+    let data = data.ok_or_else(|| "Model selection state is missing".to_owned())?;
+    if data.get("sessionId").and_then(Value::as_str) != Some(pending.session_id.as_str()) {
+        return Err("Model selection state belongs to a different session".into());
+    }
+    let model = data
+        .get("model")
+        .filter(|model| !model.is_null())
+        .ok_or_else(|| "Selected model state is missing".to_owned())?;
+    if model.get("provider").and_then(Value::as_str) != Some(selection.provider.as_str())
+        || model.get("id").and_then(Value::as_str) != Some(selection.model.as_str())
+    {
+        return Err("Selected model was not confirmed".into());
+    }
+    let effort = data
+        .get("thinkingLevel")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Selected thinking level is missing".to_owned())?;
+    if selection
+        .requested_effort
+        .as_deref()
+        .is_some_and(|requested| requested != effort)
+    {
+        return Err("Selected thinking level was not confirmed".into());
+    }
+    Ok(())
+}
+
+fn continue_transaction(
+    adapter: &mut PiAdapter,
+    mut pending: Pending,
+    mut output: AdapterOutput,
+) -> AdapterOutput {
+    let id = adapter.request_id("compaction-step");
+    pending.id = id.clone();
+    let command = match pending.stage {
+        Stage::Snapshot | Stage::Verify => RpcCommand::GetState { id: Some(id) },
+        Stage::Select => set_model(id, &pending.target).expect("catalog model route"),
+        Stage::Compact => RpcCommand::Compact {
+            id: Some(id),
+            custom_instructions: pending.instructions.clone(),
+        },
+        Stage::RestoreModel => set_model(
+            id,
+            &pending.return_route.as_ref().expect("return route").model,
+        )
+        .expect("return route"),
+        Stage::RestoreEffort => RpcCommand::SetThinkingLevel {
+            id: Some(id),
+            level: pending
+                .return_route
+                .as_ref()
+                .expect("return route")
+                .effort
+                .clone(),
+        },
+        Stage::Abort | Stage::Failed => unreachable!(),
+    };
+    adapter.pending_compaction = Some(pending);
+    output.commands.push(command);
+    output
+}
+
+fn restore_or_wait(
+    adapter: &mut PiAdapter,
+    mut pending: Pending,
+    mut output: AdapterOutput,
+) -> AdapterOutput {
+    pending.controls_open = false;
+    if pending.session_id != adapter.session_id {
+        pending.stage = Stage::Failed;
+        output.merge(adapter.unsupported(
+            "Compaction belongs to a replaced session. Dependent work is held; restart pie to recover.",
+        ));
+        adapter.pending_compaction = Some(pending);
+        return output;
+    }
+    if pending.selection.is_some() {
+        adapter.pending_compaction = Some(pending);
+        output
+    } else {
+        pending.stage = Stage::RestoreModel;
+        continue_transaction(adapter, pending, output)
+    }
+}
+
+pub(super) fn confirm_model_selection(
+    adapter: &mut PiAdapter,
+    id: &str,
+    data: &Value,
+) -> AdapterOutput {
+    let Some(mut pending) = adapter.pending_compaction.take() else {
+        return AdapterOutput::default();
+    };
+    let matches = pending
+        .selection
+        .as_ref()
+        .is_some_and(|selection| selection.id == id);
+    if !matches {
+        adapter.pending_compaction = Some(pending);
+        return AdapterOutput::default();
+    }
+    let Some(model) = data.get("model").filter(|model| !model.is_null()).cloned() else {
+        adapter.pending_compaction = Some(pending);
+        return AdapterOutput::default();
+    };
+    let Some(effort) = data
+        .get("thinkingLevel")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+    else {
+        adapter.pending_compaction = Some(pending);
+        return AdapterOutput::default();
+    };
+    pending.return_route = Some(Route { model, effort });
+    pending.selection = None;
+    if pending.compact_finished {
+        restore_or_wait(adapter, pending, AdapterOutput::default())
+    } else {
+        adapter.pending_compaction = Some(pending);
+        AdapterOutput::default()
+    }
+}
+
+pub(super) fn fail_model_selection(adapter: &mut PiAdapter, id: &str) -> AdapterOutput {
+    let Some(mut pending) = adapter.pending_compaction.take() else {
+        return AdapterOutput::default();
+    };
+    if pending
+        .selection
+        .as_ref()
+        .is_none_or(|selection| selection.id != id)
+    {
+        adapter.pending_compaction = Some(pending);
+        return AdapterOutput::default();
+    }
+    pending.selection = None;
+    if pending.compact_finished {
+        restore_or_wait(adapter, pending, AdapterOutput::default())
+    } else {
+        adapter.pending_compaction = Some(pending);
+        AdapterOutput::default()
+    }
+}
+
 pub(super) fn response(adapter: &mut PiAdapter, record: &RpcRecord) -> Option<AdapterOutput> {
     if adapter
         .pending_compaction
         .as_ref()
-        .is_none_or(|p| record.string("id") != Some(p.id.as_str()))
+        .is_none_or(|pending| record.string("id") != Some(pending.id.as_str()))
     {
         return None;
     }
     let mut pending = adapter.pending_compaction.take()?;
+    if pending.stage == Stage::Compact && pending.compact_finished {
+        adapter.pending_compaction = Some(pending);
+        return Some(AdapterOutput::default());
+    }
     let success = record.bool("success") == Some(true);
     let mut output = AdapterOutput::default();
     if !success {
@@ -199,7 +470,11 @@ pub(super) fn response(adapter: &mut PiAdapter, record: &RpcRecord) -> Option<Ad
                 adapter.pending_compaction = Some(pending);
                 return Some(output);
             }
-            Stage::Select | Stage::Compact => pending.stage = Stage::RestoreModel,
+            Stage::Select => pending.stage = Stage::RestoreModel,
+            Stage::Compact => {
+                pending.compact_finished = true;
+                return Some(restore_or_wait(adapter, pending, output));
+            }
         }
     } else {
         pending.stage = match pending.stage {
@@ -211,25 +486,36 @@ pub(super) fn response(adapter: &mut PiAdapter, record: &RpcRecord) -> Option<Ad
             }
             Stage::Snapshot => {
                 let data = record.field("data");
-                pending.original = data
-                    .and_then(|d| d.get("model"))
-                    .filter(|m| !m.is_null())
+                if data
+                    .and_then(|data| data.get("sessionId"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|session_id| session_id != pending.session_id)
+                {
+                    return Some(
+                        adapter.unsupported("Cannot compact a replaced conversation session"),
+                    );
+                }
+                let model = data
+                    .and_then(|data| data.get("model"))
+                    .filter(|model| !model.is_null())
                     .cloned();
-                pending.effort = data
-                    .and_then(|d| d.get("thinkingLevel"))
+                let effort = data
+                    .and_then(|data| data.get("thinkingLevel"))
                     .and_then(Value::as_str)
                     .map(str::to_owned);
-                if pending
-                    .original
-                    .as_ref()
-                    .and_then(|m| set_model(String::new(), m))
-                    .is_none()
-                    || pending.effort.is_none()
-                {
+                let Some(route) = model
+                    .zip(effort)
+                    .filter(|(model, _)| set_model(String::new(), model).is_some())
+                    .map(|(model, effort)| Route { model, effort })
+                else {
                     return Some(adapter.unsupported(
                         "Cannot compact with an override before the original model and thinking level are known",
                     ));
-                }
+                };
+                adapter.current_model = Some(route.model.clone());
+                adapter.thinking_level = Some(route.effort.clone());
+                pending.original = Some(route.clone());
+                pending.return_route = Some(route);
                 if pending.cancelled {
                     return Some(adapter.unsupported("Compaction cancelled"));
                 }
@@ -242,32 +528,29 @@ pub(super) fn response(adapter: &mut PiAdapter, record: &RpcRecord) -> Option<Ad
                     Stage::Compact
                 }
             }
-            Stage::Compact => Stage::RestoreModel,
-            Stage::RestoreModel => {
-                if pending.effort.is_some() {
-                    Stage::RestoreEffort
-                } else {
-                    Stage::Verify
-                }
+            Stage::Compact => {
+                pending.compact_finished = true;
+                return Some(restore_or_wait(adapter, pending, output));
             }
+            Stage::RestoreModel => Stage::RestoreEffort,
             Stage::RestoreEffort => Stage::Verify,
             Stage::Verify => {
                 let data = record.field("data");
-                let restored = data.and_then(|d| d.get("model"));
-                let route_matches =
-                    pending
-                        .original
-                        .as_ref()
-                        .zip(restored)
-                        .is_some_and(|(a, b)| {
-                            a.get("provider") == b.get("provider") && a.get("id") == b.get("id")
-                        });
-                let effort_matches = pending.effort.as_deref().is_none_or(|effort| {
-                    data.and_then(|d| d.get("thinkingLevel"))
-                        .and_then(Value::as_str)
-                        == Some(effort)
+                let restored = data.and_then(|data| data.get("model"));
+                let route = pending.return_route.as_ref().expect("return route");
+                let route_matches = restored.is_some_and(|restored| {
+                    route.model.get("provider") == restored.get("provider")
+                        && route.model.get("id") == restored.get("id")
                 });
-                if !route_matches || !effort_matches {
+                let effort_matches = data
+                    .and_then(|data| data.get("thinkingLevel"))
+                    .and_then(Value::as_str)
+                    == Some(route.effort.as_str());
+                let session_matches = data
+                    .and_then(|data| data.get("sessionId"))
+                    .and_then(Value::as_str)
+                    .is_none_or(|session_id| session_id == pending.session_id);
+                if !route_matches || !effort_matches || !session_matches {
                     pending.stage = Stage::Failed;
                     adapter.pending_compaction = Some(pending);
                     return Some(adapter.unsupported("Conversation model/effort restoration was not confirmed. Dependent work is held; restart pie to recover."));
@@ -289,26 +572,7 @@ pub(super) fn response(adapter: &mut PiAdapter, record: &RpcRecord) -> Option<Ad
             }
         };
     }
-    let id = adapter.request_id("compaction-step");
-    pending.id = id.clone();
-    let command = match pending.stage {
-        Stage::Snapshot | Stage::Verify => RpcCommand::GetState { id: Some(id) },
-        Stage::Select => set_model(id, &pending.target).expect("catalog model route"),
-        Stage::Compact => RpcCommand::Compact {
-            id: Some(id),
-            custom_instructions: pending.instructions.clone(),
-        },
-        Stage::RestoreModel => set_model(id, pending.original.as_ref().expect("original model"))
-            .expect("original route"),
-        Stage::RestoreEffort => RpcCommand::SetThinkingLevel {
-            id: Some(id),
-            level: pending.effort.clone().expect("original effort"),
-        },
-        Stage::Abort | Stage::Failed => unreachable!(),
-    };
-    adapter.pending_compaction = Some(pending);
-    output.commands.push(command);
-    Some(output)
+    Some(continue_transaction(adapter, pending, output))
 }
 
 pub(super) fn is_automatic(reason: Option<&str>) -> bool {

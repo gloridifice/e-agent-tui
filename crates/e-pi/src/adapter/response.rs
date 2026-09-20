@@ -56,20 +56,50 @@ pub(super) fn dispatch(adapter: &mut PiAdapter, mut record: RpcRecord) -> Adapte
         drain_deferred(adapter, &mut output);
         return output;
     }
+    let response_id = record.string("id").map(str::to_owned);
+    let response_command = record.string("command").map(str::to_owned);
+    let selection_response =
+        super::compaction::is_model_selection_response(adapter, response_id.as_deref());
+    if selection_response
+        && response_command.as_deref() == Some("get_state")
+        && record.bool("success") == Some(true)
+    {
+        let validation = super::compaction::validate_model_selection(
+            adapter,
+            response_id.as_deref().expect("selection response id"),
+            record.field("data"),
+        );
+        if let Err(error) = validation {
+            record.fields.insert("success".into(), Value::Bool(false));
+            record.fields.insert("error".into(), Value::String(error));
+        }
+    }
     let completed = adapter
         .configuration_request
         .clone()
-        .filter(|id| record.string("id") == Some(id.as_str()));
+        .filter(|id| response_id.as_deref() == Some(id.as_str()));
     let skill = adapter
         .pending_skill_prompt
         .as_ref()
         .is_some_and(|pending| {
-            record.string("id") == Some(pending.id.as_str())
-                && record.string("command") == Some("prompt")
+            response_id.as_deref() == Some(pending.id.as_str())
+                && response_command.as_deref() == Some("prompt")
         });
     let successful = record.bool("success") == Some(true);
     let failed = record.bool("success") == Some(false);
+    let confirmed_selection =
+        (selection_response && successful && response_command.as_deref() == Some("get_state"))
+            .then(|| record.field("data").cloned())
+            .flatten();
     let mut output = dispatch_response(adapter, record);
+    if selection_response && successful && response_command.as_deref() != Some("get_state") {
+        if let (Some(completed_id), Some(next_id)) = (
+            response_id.as_deref(),
+            adapter.configuration_request.clone(),
+        ) {
+            super::compaction::advance_model_selection(adapter, completed_id, next_id);
+        }
+    }
     if reload && successful {
         output
             .events
@@ -117,6 +147,17 @@ pub(super) fn dispatch(adapter: &mut PiAdapter, mut record: RpcRecord) -> Adapte
                 }));
         }
     }
+    if selection_response {
+        if let (Some(id), Some(data)) = (response_id.as_deref(), confirmed_selection.as_ref()) {
+            output.merge(super::compaction::confirm_model_selection(
+                adapter, id, data,
+            ));
+        } else if failed {
+            if let Some(id) = response_id.as_deref() {
+                output.merge(super::compaction::fail_model_selection(adapter, id));
+            }
+        }
+    }
     drain_deferred(adapter, &mut output);
     output
 }
@@ -147,16 +188,44 @@ fn finish_skill_prompt(adapter: &mut PiAdapter, successful: bool) -> AdapterOutp
     output
 }
 
-fn drain_deferred(adapter: &mut PiAdapter, output: &mut AdapterOutput) {
+fn model_control_index(adapter: &PiAdapter) -> Option<usize> {
+    if !super::compaction::controls_open(adapter) {
+        return None;
+    }
+    for (index, request) in adapter.deferred_requests.iter().enumerate() {
+        match request {
+            e_tui::AgentRequest::ModelGet | e_tui::AgentRequest::ModelSet { .. } => {
+                return Some(index)
+            }
+            e_tui::AgentRequest::Attach { .. }
+            | e_tui::AgentRequest::NewInput { .. }
+            | e_tui::AgentRequest::Command { .. } => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
+pub(super) fn drain_deferred(adapter: &mut PiAdapter, output: &mut AdapterOutput) {
     while adapter.configuration_request.is_none()
         && adapter.pending_queue.operation.is_none()
         && adapter.pending_skill_prompt.is_none()
-        && adapter.pending_compaction.is_none()
     {
-        let Some(request) = adapter.deferred_requests.pop_front() else {
-            break;
+        let request = if adapter.pending_compaction.is_some() {
+            let Some(index) = model_control_index(adapter) else {
+                break;
+            };
+            adapter
+                .deferred_requests
+                .remove(index)
+                .expect("deferred model control")
+        } else {
+            let Some(request) = adapter.deferred_requests.pop_front() else {
+                break;
+            };
+            request
         };
-        output.merge(adapter.request(request));
+        output.merge(super::request::route(adapter, request));
     }
 }
 
@@ -315,8 +384,12 @@ fn dispatch_response(adapter: &mut PiAdapter, record: RpcRecord) -> AdapterOutpu
             }
         }
         "set_model" => {
-            if let Some(model) = response.data {
-                adapter.current_model = Some(model);
+            let compaction_selection =
+                super::compaction::is_model_selection_response(adapter, response.id.as_deref());
+            if !compaction_selection {
+                if let Some(model) = response.data {
+                    adapter.current_model = Some(model);
+                }
             }
             if let Some(submission) = response
                 .id

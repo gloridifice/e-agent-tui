@@ -202,10 +202,16 @@ pub(super) fn route(adapter: &mut PiAdapter, request: AgentRequest) -> AdapterOu
         | AgentRequest::LoginProxyDelete { .. } => adapter.unsupported(
             "Manage Pi credentials with native `pi /login`; pie reuses Pi's auth.json and environment credentials",
         ),
-        AgentRequest::ModelGet => AdapterOutput {
-            commands: adapter.model_refresh_commands(),
-            events: Vec::new(),
-        },
+        AgentRequest::ModelGet => {
+            if super::compaction::controls_open(adapter) {
+                super::model::available_model_catalog(adapter)
+            } else {
+                AdapterOutput {
+                    commands: adapter.model_refresh_commands(),
+                    events: Vec::new(),
+                }
+            }
+        }
         AgentRequest::ModelSet {
             provider,
             model,
@@ -213,8 +219,16 @@ pub(super) fn route(adapter: &mut PiAdapter, request: AgentRequest) -> AdapterOu
         } => {
             let id = adapter.request_id("model");
             adapter.configuration_request = Some(id.clone());
-            adapter.pending_model_effort
-                .insert(id.clone(), reasoning_effort);
+            adapter
+                .pending_model_effort
+                .insert(id.clone(), reasoning_effort.clone());
+            super::compaction::begin_model_selection(
+                adapter,
+                id.clone(),
+                provider.clone(),
+                model.clone(),
+                reasoning_effort,
+            );
             AdapterOutput::command(RpcCommand::SetModel {
                 id: Some(id),
                 provider,

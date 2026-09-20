@@ -580,15 +580,22 @@ pub(super) fn apply_ordinary_key(
         return Vec::new();
     }
 
-    let (idle, catalogs) = {
+    let (idle, catalogs, input_width) = {
         let app = state.lock().unwrap();
         (
             app.is_new_conversation()
                 || (app.session.status == crate::SessionStatus::Idle && !app.has_active_command()),
             app.catalogs.clone(),
+            crate::input::layout::text_width(
+                crate::ui::input_bar_width(size.width, &app),
+                app.config.user_input_padding as u16,
+            ),
         )
     };
-    let action = ui.input.handle_key_with_catalog(&key, idle, &catalogs);
+    let model_hint = ui.input.model_hint(ui.config, &catalogs);
+    let action = ui
+        .input
+        .handle_key_with_layout(&key, idle, &catalogs, input_width, model_hint);
     if matches!(
         action,
         super::InputAction::Send(_) | super::InputAction::SendAfterTurn(_)

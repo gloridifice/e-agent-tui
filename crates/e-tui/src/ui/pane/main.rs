@@ -157,6 +157,7 @@ fn render_main_pane_with_cursor(
                 theme,
                 state.config.user_input_padding as u16,
                 input.model_hint(&state.config, &state.catalogs),
+                &state.catalogs,
             )
         };
         region::status::render_input_header(frame, chunks[6], state, theme);
@@ -249,6 +250,7 @@ fn render_main_pane_with_cursor(
             theme,
             state.config.user_input_padding as u16,
             input.model_hint(&state.config, &state.catalogs),
+            &state.catalogs,
         );
         region::status::render_input_header(frame, rect, state, theme);
         y = y.saturating_add(plan.bottom_rows);

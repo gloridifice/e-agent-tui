@@ -1,6 +1,7 @@
 use super::*;
-use crate::wrap::{wrap_text_chunks, WrapChunk};
+use crate::input::layout::{text_width, InputLayout};
 
+#[cfg(test)]
 pub(super) fn render_input(
     frame: &mut Frame,
     area: ratatui::layout::Rect,
@@ -8,6 +9,26 @@ pub(super) fn render_input(
     theme: &Theme,
     padding: u16,
     model_hint: Option<&str>,
+) -> Option<Position> {
+    render_input_with_catalog(
+        frame,
+        area,
+        input,
+        theme,
+        padding,
+        model_hint,
+        &crate::CatalogModel::default(),
+    )
+}
+
+pub(super) fn render_input_with_catalog(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    input: &InputState,
+    theme: &Theme,
+    padding: u16,
+    model_hint: Option<&str>,
+    catalogs: &crate::CatalogModel,
 ) -> Option<Position> {
     let bark = Style::default().fg(theme.input.hint.fg);
     render_ruled_chrome(frame, area, theme);
@@ -53,54 +74,13 @@ pub(super) fn render_input(
     }
 
     let (display, hint_range) = input.display_with_model_hint(model_hint);
-    // Wrap every display line at the inner width so long content stays
-    // inside the input box; each chunk remembers its source character range
-    // within `display.text`. Word wrapping may consume whitespace at a row
-    // break, so ranges can have gaps.
-    let wrap_w = (inner.width as usize).max(1);
-    let mut chunks: Vec<WrapChunk> = Vec::new();
-    let mut offset = 0usize;
-    for line in display.text.split('\n') {
-        if line.is_empty() {
-            chunks.push(WrapChunk {
-                text: String::new(),
-                start: offset,
-                end: offset,
-                byte_start: 0,
-                byte_end: 0,
-            });
-        } else {
-            for mut chunk in wrap_text_chunks(line, wrap_w) {
-                chunk.start += offset;
-                chunk.end += offset;
-                chunks.push(chunk);
-            }
-        }
-        offset += line.chars().count() + 1; // the newline itself
-    }
-    if chunks.is_empty() {
-        chunks.push(WrapChunk {
-            text: String::new(),
-            start: 0,
-            end: 0,
-            byte_start: 0,
-            byte_end: 0,
-        });
-    }
+    let wrap_w = text_width(area.width, padding);
+    let layout = InputLayout::new(&display, wrap_w);
+    let chunks = &layout.chunks;
+    let cursor_row = layout.cursor_row;
+    let command_range = input.command_name_range(catalogs);
     // Keep the cursor's wrapped row visible within the single-row composer.
     let total = chunks.len();
-    let mut cursor_row = chunks.len().saturating_sub(1);
-    for (i, chunk) in chunks.iter().enumerate() {
-        if display.cursor < chunk.start {
-            cursor_row = i.checked_sub(1).unwrap_or(0);
-            break;
-        }
-        if display.cursor < chunk.end || (display.cursor == chunk.end && i + 1 == chunks.len()) {
-            cursor_row = i;
-            break;
-        }
-        // Cursor exactly at a shared boundary: the next chunk owns it.
-    }
     let visible_rows = (inner.height as usize).max(1);
     let start = if total <= visible_rows {
         0
@@ -116,6 +96,8 @@ pub(super) fn render_input(
             theme.activity.label.style()
         } else if display.is_paste_char(index) {
             theme.input.placeholder.style()
+        } else if command_range.contains(&index) {
+            theme.input.text.style().fg(theme.code.r#type.fg)
         } else {
             theme.input.text.style()
         }
@@ -194,13 +176,7 @@ pub(super) fn render_input(
     // Place the terminal cursor into the input bar for IME-friendly input.
     // x = display width of the wrapped row up to the cursor. CJK glyphs
     // occupy two cells, so use Unicode width, not char count.
-    let chunk = &chunks[cursor_row];
-    let before: String = chunk
-        .text
-        .chars()
-        .take(display.cursor.saturating_sub(chunk.start))
-        .collect();
-    let col = UnicodeWidthStr::width(before.as_str()) as u16;
+    let col = layout.cursor_column(display.cursor) as u16;
     Some(Position::new(
         inner.x + col,
         inner.y + cursor_row.saturating_sub(start) as u16,

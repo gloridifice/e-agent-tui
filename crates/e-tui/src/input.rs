@@ -14,6 +14,7 @@ use crate::key_mapping::{
 use std::ops::Range;
 
 mod completion;
+pub(crate) mod layout;
 pub use completion::{match_efforts, match_models, match_new_modes, match_skills};
 
 #[cfg(test)]
@@ -630,6 +631,17 @@ impl InputState {
         idle: bool,
         catalogs: &CatalogModel,
     ) -> InputAction {
+        self.handle_key_with_layout(key, idle, catalogs, usize::MAX, None)
+    }
+
+    pub(crate) fn handle_key_with_layout(
+        &mut self,
+        key: &KeyEvent,
+        idle: bool,
+        catalogs: &CatalogModel,
+        width: usize,
+        model_hint: Option<&str>,
+    ) -> InputAction {
         let scope = self.key_scope(idle);
         let mapped = self.key_mapping.input(scope, key);
         if mapped == Command(Action::ClearOrQuit) {
@@ -919,13 +931,13 @@ impl InputState {
                 InputAction::None
             }
             Command(Action::MoveUp) => {
-                if !self.multiline || !self.cursor_up() {
+                if !self.move_vertical(true, width, model_hint) {
                     self.history_prev();
                 }
                 InputAction::None
             }
             Command(Action::MoveDown) => {
-                if !self.multiline || !self.cursor_down() {
+                if !self.move_vertical(false, width, model_hint) {
                     self.history_next();
                 }
                 InputAction::None
@@ -1335,52 +1347,52 @@ impl InputState {
         self.remove_range(final_start, end);
     }
 
-    /// Move to the previous visual input line while preserving the character
-    /// column where possible. Returns false at the first line so the caller
-    /// can recall the previous prompt from history.
-    fn cursor_up(&mut self) -> bool {
-        let display = self.display_text();
-        let byte = char_to_byte(&display.text, display.cursor);
-        let current_start = display.text[..byte]
-            .rfind('\n')
-            .map_or(0, |index| index + 1);
-        if current_start == 0 {
-            return false;
+    fn move_vertical(&mut self, up: bool, width: usize, model_hint: Option<&str>) -> bool {
+        let (display, hint_range) = self.display_with_model_hint(model_hint);
+        let layout = layout::InputLayout::new(&display, width);
+        let column = layout.cursor_column(display.cursor);
+        let original_cursor = self.cursor;
+        let mut row = layout.cursor_row;
+        loop {
+            row = if up {
+                let Some(previous) = row.checked_sub(1) else {
+                    return false;
+                };
+                previous
+            } else if row + 1 < layout.chunks.len() {
+                row + 1
+            } else {
+                return false;
+            };
+            let mut target = layout.cursor_at_column(row, column);
+            if let Some(range) = display
+                .paste_ranges
+                .iter()
+                .find(|range| range.contains(&target))
+            {
+                target = if !up && layout.row_for_cursor(range.start) <= layout.cursor_row {
+                    range.end
+                } else {
+                    range.start
+                };
+            }
+            let target = if target > hint_range.start {
+                target
+                    .saturating_sub(hint_range.len())
+                    .max(hint_range.start)
+            } else {
+                target
+            };
+            self.cursor = self.display_to_raw_cursor(target);
+            let (candidate, _) = self.display_with_model_hint(model_hint);
+            let candidate_row = layout.row_for_cursor(candidate.cursor);
+            if (up && candidate_row < layout.cursor_row)
+                || (!up && candidate_row > layout.cursor_row)
+            {
+                return true;
+            }
+            self.cursor = original_cursor;
         }
-        let column = display.text[current_start..byte].chars().count();
-        let previous_end = current_start - 1;
-        let previous_start = display.text[..previous_end]
-            .rfind('\n')
-            .map_or(0, |index| index + 1);
-        let previous_len = display.text[previous_start..previous_end].chars().count();
-        let target_column = column.min(previous_len);
-        let target = display.text[..previous_start].chars().count() + target_column;
-        self.cursor = self.display_to_raw_cursor(target);
-        true
-    }
-
-    /// Move to the next visual input line while preserving the character
-    /// column where possible. Returns false at the last line so the caller
-    /// can advance through prompt history or restore the draft.
-    fn cursor_down(&mut self) -> bool {
-        let display = self.display_text();
-        let byte = char_to_byte(&display.text, display.cursor);
-        let current_start = display.text[..byte]
-            .rfind('\n')
-            .map_or(0, |index| index + 1);
-        let Some(relative_end) = display.text[byte..].find('\n') else {
-            return false;
-        };
-        let column = display.text[current_start..byte].chars().count();
-        let next_start = byte + relative_end + 1;
-        let next_end = display.text[next_start..]
-            .find('\n')
-            .map_or(display.text.len(), |index| next_start + index);
-        let next_len = display.text[next_start..next_end].chars().count();
-        let target_column = column.min(next_len);
-        let target = display.text[..next_start].chars().count() + target_column;
-        self.cursor = self.display_to_raw_cursor(target);
-        true
     }
 
     fn prompt(&self) -> PromptInput {
@@ -1554,6 +1566,26 @@ impl InputState {
             .collect::<Vec<_>>();
         blocks.sort_by_key(|(start, _, _)| *start);
         blocks
+    }
+
+    pub(crate) fn command_name_range(&self, catalogs: &CatalogModel) -> Range<usize> {
+        let Some((name, _)) = crate::command_catalog::parse_command_line(&self.buf) else {
+            return 0..0;
+        };
+        let known = crate::command_catalog::builtin_command(name).is_some()
+            || catalogs
+                .integrated_commands
+                .iter()
+                .any(|command| command.name == name)
+            || name
+                .strip_prefix("skill:")
+                .is_some_and(|name| catalogs.skills.iter().any(|skill| skill.name == name));
+        let end = 1 + name.chars().count();
+        if known && !self.block_ranges().any(|(start, _)| start < end) {
+            0..end
+        } else {
+            0..0
+        }
     }
 
     pub fn model_hint<'a>(&self, config: &Config, catalogs: &'a CatalogModel) -> Option<&'a str> {

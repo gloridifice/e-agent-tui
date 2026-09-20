@@ -20,7 +20,9 @@ use crate::{
 };
 use crate::{
     catalog::resolve_model_reference,
-    command_catalog::{resolve_fixed_subcommand, CommandAction, NewMode},
+    command_catalog::{
+        parse_command_line as parse_line, resolve_fixed_subcommand, CommandAction, NewMode,
+    },
     i18n::{tr, tr_args, Language},
     input_page::InputPageSession,
     settings, ThemeFile,
@@ -60,13 +62,6 @@ pub struct LocalCommandContext<'a> {
     pub question_open: bool,
     pub approval_open: bool,
     pub state: &'a Arc<Mutex<RuntimeState>>,
-}
-
-fn parse_line(line: &str) -> Option<(&str, &str)> {
-    let body = line.strip_prefix('/')?;
-    let split = body.find(char::is_whitespace).unwrap_or(body.len());
-    let (name, raw_input) = body.split_at(split);
-    (!name.is_empty()).then_some((name, raw_input))
 }
 
 fn is_colon_skill_invocation(name: &str) -> bool {

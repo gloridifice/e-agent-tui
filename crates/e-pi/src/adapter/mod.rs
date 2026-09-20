@@ -225,7 +225,9 @@ impl PiAdapter {
                 }));
             }
             self.deferred_requests.push_back(request);
-            return AdapterOutput::default();
+            let mut output = AdapterOutput::default();
+            response::drain_deferred(self, &mut output);
+            return output;
         }
         request::route(self, request)
     }
@@ -286,6 +288,7 @@ impl PiAdapter {
             "tool_execution_start" => tool::tool_start(self, &record),
             "tool_execution_end" => tool::tool_end(self, &record),
             "compaction_start" => {
+                let controls_open = compaction::manual_started(self, record.string("reason"));
                 let id = self.request_id("compaction");
                 let automatic = compaction::is_automatic(record.string("reason"));
                 self.active_compaction_id = Some(id.clone());
@@ -295,14 +298,18 @@ impl PiAdapter {
                 } else {
                     compaction::active_model_name(self, record.string("reason"))
                 };
-                if automatic {
+                let mut output = if automatic {
                     self.timeline(TimelineFact::AutoCompactionStarted { id })
                 } else {
                     self.timeline(TimelineFact::CompactionStarted {
                         id,
                         model_name: self.active_compaction_model.clone(),
                     })
+                };
+                if controls_open {
+                    response::drain_deferred(self, &mut output);
                 }
+                output
             }
             "compaction_end" => {
                 let error = record

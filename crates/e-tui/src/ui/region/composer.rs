@@ -27,6 +27,15 @@ pub(crate) fn render(
     theme: &Theme,
     horizontal_padding: u16,
     model_hint: Option<&str>,
+    catalogs: &crate::CatalogModel,
 ) -> Option<Position> {
-    super::super::input::render_input(frame, area, input, theme, horizontal_padding, model_hint)
+    super::super::input::render_input_with_catalog(
+        frame,
+        area,
+        input,
+        theme,
+        horizontal_padding,
+        model_hint,
+        catalogs,
+    )
 }

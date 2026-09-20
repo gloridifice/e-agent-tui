@@ -87,9 +87,7 @@ pub(super) fn render_input(
             byte_end: 0,
         });
     }
-    // The visible window is exactly the text area height (the box grows with
-    // wrapped rows up to INPUT_MAX_ROWS); the cursor row is always kept in
-    // view when content overflows the window.
+    // Keep the cursor's wrapped row visible within the single-row composer.
     let total = chunks.len();
     let mut cursor_row = chunks.len().saturating_sub(1);
     for (i, chunk) in chunks.iter().enumerate() {

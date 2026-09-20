@@ -55,32 +55,15 @@ pub(crate) fn main_page_rect(
     Rect::new(x, main.y, width, main.height)
 }
 
-pub(crate) const INPUT_MAX_ROWS: usize = 5;
+pub(crate) const INPUT_MAX_ROWS: usize = 1;
 
 pub(crate) fn input_rows(
-    input: &InputState,
-    wrap_width: usize,
-    padding: usize,
-    model_hint: Option<&str>,
+    _input: &InputState,
+    _wrap_width: usize,
+    _padding: usize,
+    _model_hint: Option<&str>,
 ) -> usize {
-    let inner = wrap_width
-        .saturating_sub(padding.saturating_mul(2))
-        .saturating_sub(1)
-        .max(1);
-    let (display, _) = input.display_with_model_hint(model_hint);
-    display
-        .text
-        .split('\n')
-        .map(|line| {
-            if line.is_empty() {
-                1
-            } else {
-                crate::wrap::wrap_text(line, inner).len().max(1)
-            }
-        })
-        .sum::<usize>()
-        .max(1)
-        .min(INPUT_MAX_ROWS)
+    INPUT_MAX_ROWS
 }
 
 pub(crate) fn bottom_area_rows(

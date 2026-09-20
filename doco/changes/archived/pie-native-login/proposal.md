@@ -116,14 +116,15 @@ synchronization. User guidance will describe the supported commands and runtime
 compatibility requirements. Existing DSH wire and credential formats are not
 intended to change.
 
-Implementation planning is in [work/implement.md](work/implement.md); dependent
-work and verification are in [work/tasks.md](work/tasks.md). This proposal remains
-the scope and acceptance authority when those working files are removed.
+Implementation planning, dependent work, and verification were completed before
+archival. This proposal remains the scope and acceptance authority after working
+files are removed.
 
 ## Result
 
 Delivered for the approved narrowed scope. Validation used isolated fake credentials and did
-not authorize or perform a live provider login; see
-[the validation report](work/validation-report.md) for coverage limits and repository-level check
-failures. Unsupported later runtime provider registrations and non-exported Pi built-in extension
-factories remain documented limitations rather than delivered behavior.
+not authorize or perform a live provider login. It covered factory-time provider discovery,
+protected prompt flows, credential persistence, live runtime synchronization, cancellation,
+redaction, packaging, and the documented repository-level check failures. Unsupported later
+runtime provider registrations and non-exported Pi built-in extension factories remain
+limitations rather than delivered behavior.

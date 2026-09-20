@@ -159,6 +159,7 @@ fn render_main_pane_with_cursor(
                 input.model_hint(&state.config, &state.catalogs),
             )
         };
+        region::status::render_input_header(frame, chunks[6], state, theme);
         region::status::render(frame, chunks[8], state, scroll, theme);
         region::status::render_title(frame, chunks[9], state, theme);
         if !input_page_open {
@@ -249,6 +250,7 @@ fn render_main_pane_with_cursor(
             state.config.user_input_padding as u16,
             input.model_hint(&state.config, &state.catalogs),
         );
+        region::status::render_input_header(frame, rect, state, theme);
         y = y.saturating_add(plan.bottom_rows);
     }
     if y < end_y {

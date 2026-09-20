@@ -17,7 +17,7 @@ Give the provider-neutral completion policy one owner while keeping filesystem e
 
 Non-goals: deduplicating all adapter filesystem code; moving quick-link validation; adding a shared infrastructure crate; changing completion keys; recursive search; fuzzy ranking; fuzzy matching of parent path components; changing exact-directory auto-descent; changing Unicode normalization beyond the existing lowercase convention.
 
-This package records the approved implementation design. Completion and archive remain separate operations. See [implementation design](work/implement.md) and [tasks](work/tasks.md).
+This package records the approved implementation design. Completion and archive remain separate operations; implementation and verification were completed before archival.
 
 ## Result
 

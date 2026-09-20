@@ -31,13 +31,17 @@ fn format_tokens(count: u64) -> String {
     }
 }
 
-pub(super) fn render_status(
+pub(super) fn render_input_header(
     frame: &mut Frame,
     area: ratatui::layout::Rect,
     state: &TuiApp,
-    _scroll: &ScrollState,
     theme: &Theme,
 ) {
+    crate::ui::component::rule::render(frame, area, theme);
+    let available = usize::from(area.width.saturating_sub(6));
+    if available == 0 || area.height == 0 {
+        return;
+    }
     let dim = status::dim(theme);
     // The italic frontend label carries a left-to-right sine wave while the
     // agent is working and stays dim while idle.
@@ -102,25 +106,54 @@ pub(super) fn render_status(
             .model_color(theme, theme.input.status_hint.fg));
         left_spans.push(Span::styled(model.to_owned(), style));
     }
-    if let Some(rate) = (!drafting).then(|| state.cache_hit_rate()).flatten() {
-        left_spans.push(Span::styled(" ", dim));
-        left_spans.push(Span::styled(format!("CH{rate}%"), dim));
-    }
-    if let Some(status) = state.catalogs.effort_status() {
+    let effort = state.catalogs.effort_status().map(|status| {
         let label = status
             .label
             .unwrap_or_else(|| crate::i18n::tr(state.config.language, "status.effort_default"));
-        left_spans.push(Span::styled(" ", dim));
-        left_spans.push(Span::styled(
-            format!(
-                "{}:{label}",
-                crate::i18n::tr(state.config.language, "status.effort_prefix")
-            ),
+        Span::styled(
+            label,
             dim.fg(state
                 .render
                 .status_flashes
                 .effort_color(theme, theme.input.status_hint.fg)),
-        ));
+        )
+    });
+    // Reserve effort before clipping the route, leaving both rule ends visible.
+    let effort_width = effort.as_ref().map_or(0, |span| span.width() + 2);
+    let mut label = crate::wrap::ellipsize_line(
+        Line::from(left_spans),
+        available.saturating_sub(effort_width),
+    );
+    if let Some(effort) = effort {
+        if !label.spans.is_empty() {
+            label.push_span(Span::styled("  ", dim));
+        }
+        label.push_span(effort);
+    }
+    let label = crate::wrap::ellipsize_line(label, available);
+    let mut spans = vec![Span::styled(" ", dim)];
+    spans.extend(label.spans);
+    spans.push(Span::styled(" ", dim));
+    frame
+        .buffer_mut()
+        .set_line(area.x + 2, area.y, &Line::from(spans), area.width - 4);
+}
+
+pub(super) fn render_status(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    state: &TuiApp,
+    _scroll: &ScrollState,
+    theme: &Theme,
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let dim = status::dim(theme);
+    let drafting = state.session.new_conversation.is_some();
+    let mut metrics = Vec::new();
+    if let Some(rate) = (!drafting).then(|| state.cache_hit_rate()).flatten() {
+        metrics.push(format!("CH{rate}%"));
     }
     if let Some(context_window) = (!drafting)
         .then(|| state.catalogs.current_model_context_window())
@@ -134,17 +167,12 @@ pub(super) fn render_status(
                 .context_usage_percent(context_window)
                 .to_string()
         };
-        left_spans.push(Span::styled(" ", dim));
-        left_spans.push(Span::styled(
-            format!("{percent}%/{}", format_tokens(context_window)),
-            dim,
-        ));
+        metrics.push(format!("{percent}%/{}", format_tokens(context_window)));
     }
     if let Some(cost) = (!drafting).then_some(state.session.cost_usd).flatten() {
-        left_spans.push(Span::styled(" ", dim));
-        left_spans.push(Span::styled(format!("${cost:.2}"), dim));
+        metrics.push(format!("${cost:.2}"));
     }
-    let left = Line::from(left_spans);
+    let left = Line::from(Span::styled(metrics.join(" "), dim));
     let right_text = format!(
         "{} {}",
         state.config.key_mapping.label(

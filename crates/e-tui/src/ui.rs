@@ -29,7 +29,6 @@ use crate::{
     SessionStatus as AgentStatus,
 };
 mod accessories;
-/// Multiline input shows at most this many rows (D23).
 pub mod component;
 mod input;
 mod layout;
@@ -58,8 +57,7 @@ pub(crate) use layout::{bottom_area_rows, input_rows, INPUT_MAX_ROWS};
 
 /// Width of the input bar (the content page) for a terminal of `area_width`
 /// columns, mirroring the split/page policy of rendering. The runtime scroll
-/// path uses this so keyboard/mouse paging stays aligned with the rendered
-/// input bar height, which grows with wrapped rows.
+/// path uses the same width policy as the rendered composer.
 pub fn input_bar_width(area_width: u16, state: &TuiApp) -> u16 {
     let (main, reserve_collapsed_separator) = match screen::layout(
         ratatui::layout::Rect::new(0, 0, area_width, 0),

@@ -28,6 +28,8 @@
 - A bare interactive `/new` creates a frontend draft. Its first prompt or explicit skill atomically materializes the new session; old-session updates continue reducing but remain hidden from the draft.
 - New-session failure restores the draft input. Model/effort selection made during the draft applies to the materialized session.
 - Resume results MUST preserve stable identity through progressive updates. Native session reads remain adapter-owned, bounded, read-only, and outside UI locks.
+- Pi CLI resume by exact session ID MUST resolve an existing native session and its saved workspace before terminal setup, without opening a picker, creating a replacement, or forking. Missing or ambiguous IDs and conflicting session selectors MUST fail explicitly. Discovery honors the adapter's native session-directory overrides.
+- On TUI exit, `pie` MUST print a recovery command for the last attached saved session after terminal restoration. Unsaved sessions MUST NOT produce recovery commands; files outside native session discovery use an explicit file command instead of an undiscoverable ID.
 
 ## Execution history
 

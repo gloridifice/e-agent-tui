@@ -52,7 +52,7 @@ cargo build --release
 cargo build --release --features tracy
 ```
 
-`pie` accepts `--session <file>`, `--approve`, and `--no-approve`; use `pie --help` for the exact current interface. Both frontends share the [frontend configuration directory](../README.md#config); backend configuration and session state remain separate.
+`pie` accepts `--resume <session_id>` (`-r`) to reopen a saved session in its original workspace, `--session <file>`, `--approve`, and `--no-approve`; use `pie --help` for the exact current interface. Both frontends share the [frontend configuration directory](../README.md#config); backend configuration and session state remain separate.
 
 ## Dependencies
 

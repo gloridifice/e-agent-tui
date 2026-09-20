@@ -3,7 +3,7 @@
 use std::{
     collections::VecDeque,
     fs::File,
-    io::{Read, Seek, SeekFrom},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     time::SystemTime,
 };
@@ -49,6 +49,40 @@ pub fn project_session_root(cwd: &Path) -> PathBuf {
         .trim_start_matches(['/', '\\'])
         .replace(['/', '\\', ':'], "-");
     session_root().join(format!("--{safe}--"))
+}
+
+pub struct SavedSession {
+    pub id: String,
+    pub path: PathBuf,
+    pub cwd: PathBuf,
+}
+
+pub fn read_saved_session(path: &Path) -> Result<SavedSession, String> {
+    let file = File::open(path).map_err(|error| error.to_string())?;
+    let mut header = Vec::new();
+    BufReader::new(file.take((HEAD_BYTES + 1) as u64))
+        .read_until(b'\n', &mut header)
+        .map_err(|error| error.to_string())?;
+    if header.len() > HEAD_BYTES {
+        return Err("session header exceeds metadata budget".into());
+    }
+    let header: Value = serde_json::from_slice(&header).map_err(|error| error.to_string())?;
+    if header["type"].as_str() != Some("session") {
+        return Err("first record is not a Pi session header".into());
+    }
+    let id = header["id"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .ok_or("session header has no id")?;
+    let cwd = header["cwd"]
+        .as_str()
+        .filter(|cwd| !cwd.is_empty())
+        .ok_or("session header has no cwd")?;
+    Ok(SavedSession {
+        id: id.to_owned(),
+        path: std::path::absolute(path).map_err(|error| error.to_string())?,
+        cwd: PathBuf::from(cwd),
+    })
 }
 
 struct Candidate {
@@ -109,6 +143,34 @@ impl SessionIndex {
                 .then_with(|| a.path.cmp(&b.path))
         });
         index
+    }
+
+    pub fn resolve_id(mut self, id: &str) -> Result<SavedSession, String> {
+        let mut found: Option<SavedSession> = None;
+        for i in 0..self.candidates.len() {
+            let path = &self.candidates[i].path;
+            match read_saved_session(path) {
+                Ok(session) if session.id == id => {
+                    if let Some(previous) = found {
+                        return Err(format!(
+                            "Pi session ID `{id}` is ambiguous: {} and {}; use --session <file>",
+                            previous.path.display(),
+                            session.path.display()
+                        ));
+                    }
+                    found = Some(session);
+                }
+                Ok(_) => {}
+                Err(error) => self.diagnostic(format!("{}: {error}", path.display())),
+            }
+        }
+        found.ok_or_else(|| {
+            let mut message = format!("No saved Pi session found with ID `{id}`");
+            if !self.diagnostics.is_empty() {
+                message.push_str(&format!(": {}", self.diagnostics.join("; ")));
+            }
+            message
+        })
     }
 
     fn diagnostic(&mut self, message: String) {

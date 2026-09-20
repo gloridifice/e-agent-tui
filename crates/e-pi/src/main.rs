@@ -35,24 +35,40 @@ use e_tui::{
 #[derive(Debug, Clone)]
 struct Cli {
     launch: PiLaunchOptions,
+    resume: Option<String>,
 }
 
 fn help() -> &'static str {
-    "pie [--cwd <directory>] [--session <file>] [--approve|--no-approve] [--pi <executable>]\n\nRuns the e-tui frontend against the official `pi --mode rpc` runtime.\nProject trust follows native Pi behavior unless an explicit trust flag is supplied."
+    "pie [--cwd <directory>] [--session <file> | --resume <session_id>] [--approve|--no-approve] [--pi <executable>]\n\nRuns the e-tui frontend against the official `pi --mode rpc` runtime.\n  -r, --resume <session_id>  Resume a saved session by exact ID in its saved workspace.\nProject trust follows native Pi behavior unless an explicit trust flag is supplied.\nOn exit, prints a command to resume the current saved session."
 }
 
 fn parse_cli_from(mut args: impl Iterator<Item = String>) -> anyhow::Result<Cli> {
     let mut launch = PiLaunchOptions::for_cwd(std::env::current_dir()?);
+    let mut resume = None;
     while let Some(argument) = args.next() {
         match argument.as_str() {
             "--cwd" => {
                 launch.cwd = PathBuf::from(args.next().context("--cwd requires a directory")?)
             }
-            "--session" => {
-                launch.session = Some(
-                    args.next()
-                        .context("--session requires a Pi session file")?,
-                )
+            "--session" | "--resume" | "-r" => {
+                if launch.session.is_some() || resume.is_some() {
+                    bail!("specify only one session: --session <file> or --resume <session_id>");
+                }
+                let value = args
+                    .next()
+                    .filter(|value| !value.trim().is_empty() && !value.starts_with('-'))
+                    .with_context(|| {
+                        if argument == "--session" {
+                            "--session requires a Pi session file".to_owned()
+                        } else {
+                            format!("{argument} requires a Pi session ID")
+                        }
+                    })?;
+                if argument == "--session" {
+                    launch.session = Some(value);
+                } else {
+                    resume = Some(value);
+                }
             }
             "--approve" => launch.trust = ProjectTrust::Approve,
             "--no-approve" => launch.trust = ProjectTrust::Reject,
@@ -68,17 +84,51 @@ fn parse_cli_from(mut args: impl Iterator<Item = String>) -> anyhow::Result<Cli>
             option if option.starts_with('-') => {
                 bail!("unknown pie option `{option}`\n\n{}", help())
             }
-            session if launch.session.is_none() => launch.session = Some(session.to_owned()),
+            session if launch.session.is_none() && resume.is_none() => {
+                launch.session = Some(session.to_owned())
+            }
             extra => bail!("unexpected argument `{extra}`\n\n{}", help()),
         }
     }
-    Ok(Cli { launch })
+    Ok(Cli { launch, resume })
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let cli = parse_cli_from(std::env::args().skip(1))?;
-    run(cli.launch).await
+    let Cli { mut launch, resume } = parse_cli_from(std::env::args().skip(1))?;
+    if let Some(id) = resume {
+        let session = tokio::task::spawn_blocking(move || {
+            e_pi::session_index::SessionIndex::enumerate(&e_pi::session_index::session_root())
+                .resolve_id(&id)
+        })
+        .await
+        .context("resolve Pi session ID")?
+        .map_err(anyhow::Error::msg)?;
+        launch.cwd = session.cwd;
+        launch.session = Some(session.path.to_string_lossy().into_owned());
+    }
+    run(launch).await
+}
+
+fn resume_command(session_path: &str) -> Option<String> {
+    let session =
+        e_pi::session_index::read_saved_session(std::path::Path::new(session_path)).ok()?;
+    let root = std::path::absolute(e_pi::session_index::session_root()).ok()?;
+    if session.path.starts_with(root)
+        && session
+            .id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        && !session.id.starts_with('-')
+    {
+        return Some(format!("pie --resume {}", session.id));
+    }
+    let path = session.path.to_string_lossy();
+    #[cfg(windows)]
+    let quoted = path.replace('\'', "''");
+    #[cfg(not(windows))]
+    let quoted = path.replace('\'', "'\"'\"'");
+    Some(format!("pie --session '{quoted}'"))
 }
 
 struct PiRuntimePorts {
@@ -841,7 +891,13 @@ async fn run_frontend(
             let preview_work = state.preview.take_work_stats();
             drop(state);
             state_r.lock().unwrap().interaction = interaction;
-            let transaction = transaction?;
+            let transaction = match transaction {
+                Ok(transaction) => transaction,
+                Err(error) => {
+                    fatal = Some(error.to_string());
+                    break 'outer;
+                }
+            };
             committed_presentation.commit(
                 candidate_presentation.expect("render always produces presentation"),
                 &mut state_r.lock().unwrap().interaction.mouse_selection,
@@ -890,6 +946,10 @@ async fn run_frontend(
     auth.shutdown().await;
     process.shutdown().await;
     terminal.restore_terminal().ok();
+    let session_path = state_r.lock().unwrap().session.session_id.clone();
+    if let Some(command) = session_path.as_deref().and_then(resume_command) {
+        println!("Resume this session with:\n  {command}");
+    }
     if let Some(reason) = fatal {
         bail!("{reason}");
     }

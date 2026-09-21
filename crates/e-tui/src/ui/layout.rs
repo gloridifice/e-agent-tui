@@ -3,7 +3,7 @@ use ratatui::layout::Rect;
 use crate::{
     app::TuiApp,
     display::{allocate_accessories, AccessoryAllocation, InputAccessory, InputAccessoryKind},
-    input::InputState,
+    input::{layout::InputLayout, InputState},
     interaction::{
         ApprovalCard, PendingPrompt, PREVIEW_RIGHT_MARGIN_COLUMNS, PREVIEW_SEPARATOR_COLUMNS,
         PREVIEW_SEPARATOR_GAP_COLUMNS,
@@ -55,15 +55,22 @@ pub(crate) fn main_page_rect(
     Rect::new(x, main.y, width, main.height)
 }
 
-pub(crate) const INPUT_MAX_ROWS: usize = 1;
+pub(crate) const INPUT_MAX_ROWS: usize = 5;
 
 pub(crate) fn input_rows(
-    _input: &InputState,
-    _wrap_width: usize,
-    _padding: usize,
-    _model_hint: Option<&str>,
+    input: &InputState,
+    wrap_width: usize,
+    padding: usize,
+    model_hint: Option<&str>,
 ) -> usize {
-    INPUT_MAX_ROWS
+    let inner = wrap_width
+        .saturating_sub(padding.saturating_mul(2).saturating_add(1))
+        .max(1);
+    let (display, _) = input.display_with_model_hint(model_hint);
+    InputLayout::new(&display, inner)
+        .chunks
+        .len()
+        .clamp(1, INPUT_MAX_ROWS)
 }
 
 pub(crate) fn bottom_area_rows(

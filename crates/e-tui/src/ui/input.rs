@@ -79,7 +79,7 @@ pub(super) fn render_input_with_catalog(
     let chunks = &layout.chunks;
     let cursor_row = layout.cursor_row;
     let command_range = input.command_name_range(catalogs);
-    // Keep the cursor's wrapped row visible within the single-row composer.
+    // Keep the cursor's wrapped row visible when content exceeds the height cap.
     let total = chunks.len();
     let visible_rows = (inner.height as usize).max(1);
     let start = if total <= visible_rows {

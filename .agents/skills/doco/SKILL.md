@@ -3,7 +3,7 @@ name: doco
 description: Manage project documentation and doco changes. Use when migrating existing project documentation into doco; creating, executing, reviewing, completing, or archiving a doco change; or maintaining the project's current technical documents.
 ---
 <!-- doco:managed template=v1 -->
-<!-- doco:skill version=v3 -->
+<!-- doco:skill version=v4 -->
 
 # Doco
 
@@ -28,8 +28,14 @@ Do only the requested phase. Do not create a change for discussion alone.
 Resolve relative reference paths from this skill directory.
 
 Current architecture describes implemented boundaries, not future plans.
-Specs are approved precise contracts, not copies of internal code. Investigate
-code/spec disagreements; never rewrite a spec just to hide an implementation bug.
+Current specs in doco/specs/ are approved precise contracts, not copies of internal
+code. Full changes may optionally use work/specs/**/*.md for target contracts and
+acceptance scenarios; these are planned change requirements, not current facts.
+Read relevant work specs with the selected change's design and tasks. Synchronize
+only delivered, approved contracts into current specs before completion; archive
+and cancel delete work specs with the rest of work/.
+Investigate code/spec disagreements; never rewrite a spec just to hide an
+implementation bug.
 Keep only important durable rationale in decisions; label superseded decisions.
 Historical proposals and superseded decisions cannot override current contracts.
 Keep project document language consistent with the user or project convention.

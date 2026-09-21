@@ -3,7 +3,7 @@
 
 - [ ] 1.1 TODO: Implement the approved design
   - Design: [implementation](implement.md)
-  - Acceptance: TODO: Define observable completion conditions.
+  - Acceptance: TODO: Define observable completion conditions; link applicable specs/<capability>.md acceptance scenarios if work specs exist.
 
 - [ ] 2.1 TODO: Run overall verification and review current-document impact
   - Dependencies: 1.1

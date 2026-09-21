@@ -1,17 +1,19 @@
 <!-- doco:managed template=v1 -->
 # Archive or cancel
 
-Archive is not an implementation-history store. Full packages lose work/ and
-proposal-only packages never contain it; Git or normal delivery records must
-preserve implementation-level history.
+Archive is not an implementation-history store. Full packages lose work/, including
+optional work/specs/ target contracts, and proposal-only packages never contain it.
+Git or normal delivery records must preserve implementation-level history.
 
 Ordinary archive accepts completed changes only. Confirm the proposal stands on
-its own and retained files do not depend on work/. Current facts were synchronized
-at completion; do not overwrite current architecture/specs from an old design.
+its own and retained files do not depend on work/, including work-spec links.
+Current facts were synchronized at completion; do not overwrite current
+architecture/specs from old designs or work specs.
 
 Run `doco archive <id> --dry-run` to display the retained proposal, deleted work
-entries and destination. Only after explicit authorization use `doco archive <id>
---yes` (or confirm interactively). All work/ materials are deleted, including extra
+entries and destination. Only after explicit authorization use `doco archive <id>`.
+The compatibility `--yes` flag is optional; there is no additional confirmation
+prompt. All work/ materials are deleted, including work specs and extra
 research/logs. Unknown files outside work/ are a conflict, not silently deleted.
 Only proposal.md remains in archived/. No Git history or code is modified, and
 unrelated tmp HTML is not implicitly cleaned.

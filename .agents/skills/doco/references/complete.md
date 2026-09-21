@@ -6,6 +6,15 @@ source/contracts. Verify all in-scope tasks really completed, agreed acceptance
 has actual evidence, no unresolved blockers remain, and affected architecture,
 specs and durable decisions have been synchronized with delivered facts.
 
+For full changes with work/specs/, review each relevant requirement and acceptance
+scenario against actual implementation and task evidence. Resolve explicit blockers
+and contract disagreements. Merge delivered, approved long-term contracts into
+current doco/specs/ before completion, without copying unfinished plans or replacing
+unrelated current facts. Work specs remain change snapshots and will be deleted on
+archive; retained documents must not depend on them. Mechanical spec checks only
+cover nonempty bodies, placeholders, references and explicit blockers, not semantic
+completeness or actual acceptance.
+
 For proposal-only changes, review each proposal acceptance criterion directly.
 Before completion, Result must describe the delivered outcome and proposal.md must
 contain concise actual verification evidence. No task checkbox is implied or

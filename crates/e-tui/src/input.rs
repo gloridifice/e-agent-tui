@@ -2039,7 +2039,7 @@ mod tests {
         // Fuzzy subsequence (p-l-n inside "plan").
         assert_eq!(match_commands("pln"), vec!["/plan"]);
         // All prefix results come before everything else.
-        assert_eq!(match_commands("c"), vec!["/compact", "/econfig"]);
+        assert_eq!(match_commands("c"), vec!["/compact", "/copy", "/econfig"]);
     }
 
     #[test]

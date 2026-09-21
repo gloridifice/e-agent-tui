@@ -390,8 +390,11 @@ fn slash_copy_writes_the_latest_completed_assistant_markdown_source() {
 }
 
 #[test]
-fn history_opens_top50_directly_and_tab_cannot_switch_or_query() {
-    use crate::execution_history::{HistoryQueryKind, HistoryQueryResult};
+fn history_opens_top50_directly_and_tab_switches_without_query() {
+    use crate::{
+        execution_history::{HistoryQueryKind, HistoryQueryResult},
+        history_page::HistoryView,
+    };
 
     for command in ["/history", "/history show"] {
         let mut h = Harness::new("");
@@ -416,7 +419,12 @@ fn history_opens_top50_directly_and_tab_cannot_switch_or_query() {
         assert_eq!(request.watermark, None);
         assert!(h.state.lock().unwrap().history_page.is_some());
         h.interaction.input.restore_text("preserved draft".into());
-        assert!(h.press(KeyCode::Tab, KeyModifiers::NONE).is_empty());
+        let toggle = h.press(KeyCode::Tab, KeyModifiers::NONE);
+        assert!(matches!(toggle.as_slice(), [UiAction::RequestDraw(_)]));
+        assert_eq!(
+            h.state.lock().unwrap().history_page.as_ref().unwrap().view,
+            HistoryView::Timeline
+        );
         assert!(RuntimeController::apply_effect_result(
             EffectResult::HistoryQueried {
                 request: request.clone(),
@@ -437,7 +445,16 @@ fn history_opens_top50_directly_and_tab_cannot_switch_or_query() {
             h.state.lock().unwrap().history_page.as_ref().unwrap().state,
             crate::history_page::HistoryLoadState::Empty
         );
-        assert!(h.press(KeyCode::Tab, KeyModifiers::NONE).is_empty());
+        assert_eq!(
+            h.state.lock().unwrap().history_page.as_ref().unwrap().view,
+            HistoryView::Timeline
+        );
+        let toggle = h.press(KeyCode::Tab, KeyModifiers::NONE);
+        assert!(matches!(toggle.as_slice(), [UiAction::RequestDraw(_)]));
+        assert_eq!(
+            h.state.lock().unwrap().history_page.as_ref().unwrap().view,
+            HistoryView::Ranking
+        );
         let actions = h.press(KeyCode::PageDown, KeyModifiers::NONE);
         assert!(actions
             .iter()

@@ -257,7 +257,30 @@ pub(super) fn render_title(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{backend::TestBackend, buffer::Buffer, layout::Rect, Terminal};
+
+    fn render_header_and_status(state: &TuiApp, width: u16) -> Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(width, 2)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_input_header(frame, Rect::new(0, 0, width, 1), state, &Theme::ferra());
+                render_status(
+                    frame,
+                    Rect::new(0, 1, width, 1),
+                    state,
+                    &ScrollState::default(),
+                    &Theme::ferra(),
+                );
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn row_text(buffer: &Buffer, row: u16) -> String {
+        (buffer.area.x..buffer.area.right())
+            .map(|x| buffer[(x, row)].symbol().chars().next().unwrap_or(' '))
+            .collect()
+    }
 
     #[test]
     fn status_bar_shows_known_session_cost_but_not_the_retained_draft_cost() {
@@ -304,7 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn status_bar_shows_loading_until_session_attachment() {
+    fn input_header_shows_loading_until_session_attachment() {
         for frontend in [crate::FrontendKind::Dsh, crate::FrontendKind::Pi] {
             for (language, loading) in [
                 (crate::Language::English, "Loading…"),
@@ -313,36 +336,28 @@ mod tests {
                 let mut state = TuiApp::default();
                 state.frontend = frontend;
                 state.config.language = language;
-                let mut terminal = Terminal::new(TestBackend::new(80, 1)).unwrap();
                 for attached in [false, true] {
                     state.session.session_id = attached.then(|| "session".into());
-                    terminal
-                        .draw(|frame| {
-                            render_status(
-                                frame,
-                                frame.area(),
-                                &state,
-                                &ScrollState::default(),
-                                &Theme::ferra(),
-                            )
-                        })
-                        .unwrap();
-                    let buffer = terminal.backend().buffer();
-                    let line = (0..80).map(|x| buffer[(x, 0)].symbol()).collect::<String>();
+                    let buffer = render_header_and_status(&state, 80);
+                    let header = row_text(&buffer, 0);
+                    let status = row_text(&buffer, 1);
                     assert_eq!(
-                        line.replace(' ', "").contains(loading),
+                        header.replace(' ', "").contains(loading),
                         !attached,
-                        "status line: {line:?}"
+                        "input header: {header:?}"
                     );
-                    assert!(line.starts_with(&format!("e·{} ", frontend.label())));
-                    assert!(line.contains("Ctrl+H"), "help remains visible: {line:?}");
+                    assert!(
+                        header.contains(&format!("e·{}", frontend.label())),
+                        "input header: {header:?}"
+                    );
+                    assert!(status.contains("Ctrl+H"), "status line: {status:?}");
                 }
             }
         }
     }
 
     #[test]
-    fn temporary_model_status_is_italic_until_restoration() {
+    fn temporary_model_in_input_header_is_italic_until_restoration() {
         let mut state = TuiApp::default();
         state.session.provider = Some("p".into());
         state.session.model = Some("luna".into());
@@ -364,21 +379,9 @@ mod tests {
             if !temporary {
                 state.session.temporary_model = None;
             }
-            let mut terminal = Terminal::new(TestBackend::new(80, 1)).unwrap();
-            terminal
-                .draw(|frame| {
-                    render_status(
-                        frame,
-                        frame.area(),
-                        &state,
-                        &ScrollState::default(),
-                        &Theme::ferra(),
-                    )
-                })
-                .unwrap();
-            let buffer = terminal.backend().buffer();
-            let line = (0..80).map(|x| buffer[(x, 0)].symbol()).collect::<String>();
-            let start = line[..line.find("luna").unwrap()].chars().count() as u16;
+            let buffer = render_header_and_status(&state, 80);
+            let header = row_text(&buffer, 0);
+            let start = header[..header.find("luna").unwrap()].chars().count() as u16;
             for x in start..start + 4 {
                 assert_eq!(
                     buffer[(x, 0)].modifier.contains(Modifier::ITALIC),
@@ -422,7 +425,7 @@ mod tests {
     }
 
     #[test]
-    fn status_bar_renders_effort_and_context_after_the_model() {
+    fn input_header_renders_model_and_effort_while_status_renders_context() {
         let mut state = TuiApp::default();
         state.session.model = Some("gpt".into());
         state.session.last_usage_sample = Some((
@@ -459,50 +462,24 @@ mod tests {
             }],
         }];
 
-        let mut terminal = Terminal::new(TestBackend::new(80, 1)).unwrap();
-        terminal
-            .draw(|frame| {
-                render_status(
-                    frame,
-                    frame.area(),
-                    &state,
-                    &ScrollState::default(),
-                    &Theme::ferra(),
-                )
-            })
-            .unwrap();
+        let buffer = render_header_and_status(&state, 80);
+        let header = row_text(&buffer, 0);
+        let status = row_text(&buffer, 1);
+        let model_at = header.find("gpt").expect("model renders in input header");
+        let effort_at = header
+            .find("High")
+            .expect("effort renders after the model in input header");
+        assert!(effort_at > model_at, "input header route order: {header:?}");
+        assert!(status.contains("30%/276k"), "status metrics: {status:?}");
 
-        let buffer = terminal.backend().buffer();
-        let line = (0..80)
-            .map(|x| buffer[(x, 0)].symbol().chars().next().unwrap_or(' '))
-            .collect::<String>();
-        let model_at = line.find("gpt").expect("model renders");
-        let effort_at = line
-            .find("Effort:High")
-            .expect("effort renders after the model");
-        let context_at = line
-            .find("30%/276k")
-            .expect("context usage renders after effort");
-        assert!(
-            effort_at > model_at && context_at > effort_at,
-            "effort and context must follow the model entry: {line:?}"
-        );
         state.session.context_usage_unknown = true;
-        terminal
-            .draw(|frame| {
-                render_status(
-                    frame,
-                    frame.area(),
-                    &state,
-                    &ScrollState::default(),
-                    &Theme::ferra(),
-                )
-            })
-            .unwrap();
-        let buffer = terminal.backend().buffer();
-        let line = (0..80).map(|x| buffer[(x, 0)].symbol()).collect::<String>();
-        assert!(line.contains("?%/276k"), "post-compaction context: {line}");
-        assert!(!line.contains("30%"));
+        let buffer = render_header_and_status(&state, 80);
+        let status = row_text(&buffer, 1);
+        assert!(
+            status.contains("?%/276k"),
+            "post-compaction context: {status}"
+        );
+        assert!(!status.contains("30%"));
     }
 
     #[test]
@@ -534,57 +511,36 @@ mod tests {
             }],
         }];
 
-        let mut terminal = Terminal::new(TestBackend::new(80, 1)).unwrap();
-        terminal
-            .draw(|frame| {
-                render_status(
-                    frame,
-                    frame.area(),
-                    &state,
-                    &ScrollState::default(),
-                    &Theme::ferra(),
-                )
-            })
-            .unwrap();
-
-        let compact = (0..80)
-            .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
-            .collect::<String>()
+        let buffer = render_header_and_status(&state, 80);
+        let header = row_text(&buffer, 0)
             .chars()
             .filter(|character| !character.is_whitespace())
             .collect::<String>();
+        let status = row_text(&buffer, 1)
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+        assert!(header.contains("High"), "effort value changed: {header}");
         assert!(
-            compact.contains("推理:High"),
-            "effort value changed: {compact}"
-        );
-        assert!(
-            compact.contains("帮助"),
-            "help label is not localized: {compact}"
+            status.contains("帮助"),
+            "help label is not localized: {status}"
         );
     }
 
     #[test]
-    fn status_bar_uses_an_italic_frontend_indicator_and_flush_right_help() {
+    fn input_header_uses_an_italic_frontend_indicator_and_status_keeps_flush_right_help() {
         let state = TuiApp::default();
-        let mut terminal = Terminal::new(TestBackend::new(80, 1)).unwrap();
-        terminal
-            .draw(|frame| {
-                render_status(
-                    frame,
-                    frame.area(),
-                    &state,
-                    &ScrollState::default(),
-                    &Theme::ferra(),
-                )
-            })
-            .unwrap();
-
-        let buffer = terminal.backend().buffer();
-        for (x, symbol) in ["e", "·", "d", "s", "h"].into_iter().enumerate() {
-            assert_eq!(buffer[(x as u16, 0)].symbol(), symbol);
-            assert!(buffer[(x as u16, 0)].modifier.contains(Modifier::ITALIC));
+        let buffer = render_header_and_status(&state, 80);
+        let header = row_text(&buffer, 0);
+        let start = UnicodeWidthStr::width(
+            &header[..header.find("e·dsh").expect("frontend indicator renders")],
+        ) as u16;
+        for (offset, symbol) in ["e", "·", "d", "s", "h"].into_iter().enumerate() {
+            let x = start + offset as u16;
+            assert_eq!(buffer[(x, 0)].symbol(), symbol);
+            assert!(buffer[(x, 0)].modifier.contains(Modifier::ITALIC));
         }
-        assert_eq!(buffer[(79, 0)].symbol(), "p");
+        assert_eq!(buffer[(79, 1)].symbol(), "p");
     }
 
     #[test]
@@ -595,30 +551,19 @@ mod tests {
         state.config.default_mode = "pi".into();
         state.session.current_mode = Some("pi".into());
         state.session.model = Some("model".into());
-        let mut terminal = Terminal::new(TestBackend::new(40, 1)).unwrap();
-        terminal
-            .draw(|frame| {
-                render_status(
-                    frame,
-                    frame.area(),
-                    &state,
-                    &ScrollState::default(),
-                    &Theme::ferra(),
-                )
-            })
-            .unwrap();
-
-        let buffer = terminal.backend().buffer();
-        let line = (0..40).map(|x| buffer[(x, 0)].symbol()).collect::<String>();
-        assert!(line.starts_with("e·pi model"), "status line: {line:?}");
+        let buffer = render_header_and_status(&state, 40);
+        let header = row_text(&buffer, 0);
+        let start = UnicodeWidthStr::width(
+            &header[..header.find("e·pi model").expect("input route renders")],
+        ) as u16;
         assert!(
-            !line.contains("e·pi pi"),
-            "redundant mode remains: {line:?}"
+            !header.contains("e·pi pi"),
+            "redundant mode remains: {header:?}"
         );
-        for x in 0..4 {
+        for x in start..start + 4 {
             assert!(buffer[(x, 0)].modifier.contains(Modifier::ITALIC));
         }
-        assert!(!buffer[(5, 0)].modifier.contains(Modifier::ITALIC));
+        assert!(!buffer[(start + 5, 0)].modifier.contains(Modifier::ITALIC));
     }
 
     #[test]
@@ -648,7 +593,7 @@ mod tests {
     }
 
     #[test]
-    fn status_bar_hides_effort_when_the_route_has_no_reasoning() {
+    fn input_header_hides_effort_when_the_route_has_no_reasoning() {
         let mut state = TuiApp::default();
         state.session.model = Some("gpt".into());
         state.catalogs.current_model = Some(crate::agent::ModelSelection {
@@ -657,26 +602,12 @@ mod tests {
             reasoning_effort: None,
         });
 
-        let mut terminal = Terminal::new(TestBackend::new(80, 1)).unwrap();
-        terminal
-            .draw(|frame| {
-                render_status(
-                    frame,
-                    frame.area(),
-                    &state,
-                    &ScrollState::default(),
-                    &Theme::ferra(),
-                )
-            })
-            .unwrap();
-
-        let buffer = terminal.backend().buffer();
-        let line = (0..80)
-            .map(|x| buffer[(x, 0)].symbol().chars().next().unwrap_or(' '))
-            .collect::<String>();
+        let buffer = render_header_and_status(&state, 80);
+        let header = row_text(&buffer, 0);
+        assert!(header.contains("gpt"), "model missing: {header:?}");
         assert!(
-            !line.contains("Effort"),
-            "no effort placeholder when reasoning is absent: {line:?}"
+            !header.contains("High"),
+            "no effort value when reasoning is absent: {header:?}"
         );
     }
 }

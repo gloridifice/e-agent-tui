@@ -684,9 +684,9 @@ fn extracted_main_pane_preserves_status_spacing_and_hidden_cursor() {
     let main_row = |y| row(y).chars().take(48).collect::<String>();
     assert!(main_row(37).trim().is_empty());
     assert!(
-        main_row(38).contains("e·dsh standard"),
-        "status row: {:?}",
-        main_row(38)
+        main_row(34).contains("e·dsh standard"),
+        "input header: {:?}",
+        main_row(34)
     );
     assert!(row(38).contains("Ctrl+H Help"));
     assert!(main_row(39).contains("refactor bridge"));
@@ -1870,7 +1870,7 @@ fn long_tool_output_pins_information_and_shows_the_latest_tail() {
         .draw(|frame| render(frame, &mut state, &input, &mut scroll, &theme, overlays()))
         .unwrap();
     let buffer = terminal.backend().buffer();
-    assert_eq!(find_text(buffer, "bash").map(|(_, y)| y), Some(0));
+    assert!(find_text(buffer, "bash").is_none());
     assert!(find_text(buffer, "output-20").is_some());
     assert!(find_text(buffer, "output-01").is_none());
 }

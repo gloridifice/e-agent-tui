@@ -726,9 +726,17 @@ mod tests {
     }
 
     #[test]
-    fn history_scope_ignores_retired_toggle_and_keeps_navigation_overrides() {
+    fn history_scope_keeps_toggle_and_navigation_overrides() {
+        let conflict = KeyMapping::from_user_toml_for(
+            "[full_screen]\nmove_down='x'\n[history]\ntoggle_view='x'",
+            Platform::Other,
+        )
+        .unwrap_err();
+        assert!(conflict.contains("history.toggle_view"));
+        assert!(conflict.contains("full_screen.move_down"));
+
         let mapping = KeyMapping::from_user_toml_for(
-            "[full_screen]\nexit='nop'\nmove_down='x'\n[history]\ntoggle_view='x'",
+            "[full_screen]\nexit='nop'\nmove_down='x'\n[history]\ntoggle_view='tab'",
             Platform::Other,
         )
         .unwrap();
@@ -738,14 +746,14 @@ mod tests {
         );
         assert_eq!(
             mapping.resolve(Scope::History, &key(KeyCode::Tab, KeyModifiers::NONE)),
-            None
+            Some(Action::ToggleView)
         );
         assert_eq!(
             mapping.resolve(Scope::History, &key(KeyCode::Char('q'), KeyModifiers::NONE)),
             None
         );
         assert_eq!(mapping.label(Scope::History, Action::Exit), "—");
-        assert!(!mapping
+        assert!(mapping
             .entries()
             .any(|(_, action)| action.name() == "toggle_view"));
     }

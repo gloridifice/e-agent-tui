@@ -199,6 +199,7 @@ pub fn render_with_cursor_and_selection(
     };
     let presentation = Presentation::capture(frame.buffer_mut(), cursor, context, !resizing)
         .with_pane_separator(pane_separator);
+    selection::clear_non_copyable_markers(frame.buffer_mut());
     if !resizing
         && presentation
             .selection_frame()

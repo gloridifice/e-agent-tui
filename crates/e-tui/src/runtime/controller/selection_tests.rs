@@ -267,7 +267,7 @@ fn locate(buffer: &Buffer, needle: &str) -> Option<(u16, u16)> {
 }
 
 #[tokio::test]
-async fn inbound_link_validation_completion_renders_and_copies_the_tagged_url() {
+async fn inbound_link_validation_renders_tag_and_copies_without_suffix() {
     use crate::agent::{TimelineEvent, TimelineFact, TimelineRecord};
     let mut h = Harness::new();
     h.state.lock().unwrap().config.message_chars_per_second =
@@ -309,8 +309,21 @@ async fn inbound_link_validation_completion_renders_and_copies_the_tagged_url() 
     for result in execution.completed {
         RuntimeController::apply_effect_result(result, &h.state, h.now);
     }
+    assert_eq!(
+        h.state.lock().unwrap().link_copy.target('1').as_deref(),
+        Some("https://www.rust-lang.org/learn")
+    );
     h.render();
-    h.locate("https://www.rust-lang.org/learn~1");
+    let target = "https://www.rust-lang.org/learn";
+    let tagged = format!("{target}~1");
+    let (x, y) = h.locate(&tagged);
+    h.press((x, y));
+    let selection_copy = h.release((x + tagged.cell_width() - 1, y));
+    assert!(
+        matches!(selection_copy.as_slice(), [UiAction::WriteClipboard(text)] if text == target),
+        "wrong selection copy: {selection_copy:?}"
+    );
+
     h.route(TerminalRoute::Global(crate::key_mapping::Action::CopyLink));
     let copy = h.route(TerminalRoute::Ordinary(KeyEvent::new(
         KeyCode::Char('1'),

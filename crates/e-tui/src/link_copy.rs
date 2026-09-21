@@ -4,11 +4,14 @@ use std::collections::HashSet;
 
 use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use ratatui::{
-    style::Style,
+    style::{Modifier, Style},
     text::{Line, Span},
 };
 
 use crate::display::DisplayId;
+
+pub(crate) const NON_COPYABLE_MODIFIER: Modifier = Modifier::from_bits_retain(1 << 15);
+const _: () = assert!(Modifier::all().bits() & NON_COPYABLE_MODIFIER.bits() == 0);
 
 pub const TAGS: &str = "1234567890abcdefghijklmnopqrstuvwxyz";
 pub const MAX_CANDIDATES: usize = 256;
@@ -605,7 +608,10 @@ pub fn annotate(line: &mut Line<'static>, links: &[TaggedLink], style: Style) {
                     span.style,
                 ));
             }
-            spans.push(Span::styled(format!("~{tag}"), style));
+            spans.push(Span::styled(
+                format!("~{tag}"),
+                style.add_modifier(NON_COPYABLE_MODIFIER),
+            ));
             local = cut;
             suffixes.next();
         }

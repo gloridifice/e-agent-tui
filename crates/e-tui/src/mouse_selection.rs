@@ -9,6 +9,7 @@ struct Cell {
     symbol: String,
     owner: u16,
     width: u16,
+    copyable: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -50,6 +51,7 @@ impl SelectionFrame {
                         symbol: " ".into(),
                         owner: column,
                         width: 1,
+                        copyable: true,
                     })
                 })
                 .collect(),
@@ -97,7 +99,19 @@ impl SelectionFrame {
         self.viewport == (width, height)
     }
 
+    #[cfg(test)]
     pub(crate) fn put_glyph(&mut self, column: u16, row: u16, symbol: &str, width: u16) {
+        self.put_glyph_with_copyability(column, row, symbol, width, true);
+    }
+
+    pub(crate) fn put_glyph_with_copyability(
+        &mut self,
+        column: u16,
+        row: u16,
+        symbol: &str,
+        width: u16,
+        copyable: bool,
+    ) {
         if row >= self.viewport.1 || column >= self.viewport.0 {
             return;
         }
@@ -108,12 +122,14 @@ impl SelectionFrame {
             symbol: symbol.into(),
             owner: column,
             width,
+            copyable,
         };
         for cell in &mut cells[start + 1..start + usize::from(width)] {
             *cell = Cell {
                 symbol: String::new(),
                 owner: column,
                 width: 0,
+                copyable,
             };
         }
     }
@@ -165,7 +181,10 @@ impl SelectionFrame {
             .map(|range| {
                 let mut line = String::new();
                 for column in range.x..range.x + range.width {
-                    line.push_str(&self.cell(column, range.y).symbol);
+                    let cell = self.cell(column, range.y);
+                    if cell.copyable {
+                        line.push_str(&cell.symbol);
+                    }
                 }
                 line.truncate(line.trim_end_matches(' ').len());
                 line

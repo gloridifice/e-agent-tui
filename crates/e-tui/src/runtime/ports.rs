@@ -124,6 +124,30 @@ impl ScriptedUiActionPorts {
 
 #[cfg(any(test, feature = "test-support"))]
 impl UiActionPorts for ScriptedUiActionPorts {
+    fn validate_links(
+        &mut self,
+        request: &crate::link_copy::LinkValidationRequest,
+    ) -> impl Future<Output = Vec<crate::link_copy::CandidateGroupValidation>> + Send {
+        std::future::ready(
+            request
+                .groups
+                .iter()
+                .map(|group| crate::link_copy::CandidateGroupValidation {
+                    alternatives: group
+                        .alternatives
+                        .iter()
+                        .map(|candidate| match &candidate.kind {
+                            crate::link_copy::LinkTargetKind::Uri => {
+                                crate::link_copy::PathValidation::NotRequired
+                            }
+                            _ => crate::link_copy::PathValidation::Rejected,
+                        })
+                        .collect(),
+                })
+                .collect(),
+        )
+    }
+
     async fn complete_paths(
         &mut self,
         _request: &crate::path_completion::PathCompletionRequest,

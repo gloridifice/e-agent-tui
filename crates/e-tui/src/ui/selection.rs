@@ -15,6 +15,7 @@ use crate::{
     app::TuiApp,
     input_page::InputPageSession,
     interaction::ApprovalCard,
+    link_copy::NON_COPYABLE_MODIFIER,
     mouse_selection::{MouseSelection, SelectionFrame},
 };
 
@@ -64,8 +65,10 @@ impl Presentation {
             SelectionFrame::default()
         };
         selection_frame.set_context(context);
+        let mut saved = buffer.clone();
+        clear_non_copyable_markers(&mut saved);
         Self {
-            buffer: Some(Arc::new(buffer.clone())),
+            buffer: Some(Arc::new(saved)),
             selection_frame,
             cursor,
         }
@@ -121,12 +124,24 @@ fn collect(buffer: &Buffer) -> SelectionFrame {
             let cell = &buffer[(x, y)];
             let width = cell.cell_width().max(1).min(area.right() - x);
             if !cell.modifier.contains(Modifier::HIDDEN) {
-                frame.put_glyph(x, y, cell.symbol(), width);
+                frame.put_glyph_with_copyability(
+                    x,
+                    y,
+                    cell.symbol(),
+                    width,
+                    !cell.modifier.contains(NON_COPYABLE_MODIFIER),
+                );
             }
             x += width;
         }
     }
     frame
+}
+
+pub(crate) fn clear_non_copyable_markers(buffer: &mut Buffer) {
+    for cell in &mut buffer.content {
+        cell.modifier.remove(NON_COPYABLE_MODIFIER);
+    }
 }
 
 pub(crate) fn paint(frame: &SelectionFrame, selection: &MouseSelection, buffer: &mut Buffer) {
@@ -145,9 +160,12 @@ mod tests {
     use super::*;
     use crate::event::PointerEvent;
     use ratatui::{
+        backend::TestBackend,
         layout::Rect,
         style::{Color, Style},
+        text::Line,
         widgets::{Clear, Paragraph, Widget},
+        Terminal,
     };
 
     fn select(
@@ -206,6 +224,49 @@ mod tests {
             select(&frame, (0, 0), (13, 0)).1.as_deref(),
             Some("visible")
         );
+    }
+
+    #[test]
+    fn link_tags_stay_visible_but_are_omitted_from_selection_copy() {
+        let target = "https://example.com";
+        let mut line = Line::raw(format!("{target}, literal ~1"));
+        crate::link_copy::annotate(
+            &mut line,
+            &[crate::display::TaggedLink {
+                target: target.into(),
+                tag: '1',
+            }],
+            Style::default(),
+        );
+        let width = line.width() as u16;
+        let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
+        let mut captured = None;
+        terminal
+            .draw(|frame| {
+                Paragraph::new(line.clone()).render(frame.area(), frame.buffer_mut());
+                let mut selection_frame = collect(frame.buffer_mut());
+                selection_frame.set_epoch(1);
+                captured = Some(selection_frame);
+                clear_non_copyable_markers(frame.buffer_mut());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let rendered = (0..buffer.area.width)
+            .map(|x| buffer[(x, 0)].symbol())
+            .collect::<String>();
+        assert_eq!(rendered, format!("{target}~1, literal ~1"));
+
+        let selection_frame = captured.unwrap();
+        assert_eq!(
+            select(&selection_frame, (0, 0), (buffer.area.width - 1, 0)).1,
+            Some(format!("{target}, literal ~1"))
+        );
+
+        let marker_x = target.len() as u16;
+        assert!(!buffer[(marker_x, 0)]
+            .modifier
+            .contains(NON_COPYABLE_MODIFIER));
+        assert_eq!(buffer[(marker_x, 0)].symbol(), "~");
     }
 
     #[test]

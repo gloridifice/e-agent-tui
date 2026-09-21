@@ -115,6 +115,7 @@ pub struct PiAdapter {
     available_models: Vec<Value>,
     thinking_level: Option<String>,
     pending_new: HashMap<String, NewSubmission>,
+    pending_fork: Option<fork::Pending>,
     pending_model_effort: HashMap<String, Option<String>>,
     configuration_request: Option<String>,
     deferred_requests: std::collections::VecDeque<AgentRequest>,
@@ -163,6 +164,7 @@ impl PiAdapter {
             available_models: Vec::new(),
             thinking_level: None,
             pending_new: HashMap::new(),
+            pending_fork: None,
             pending_model_effort: HashMap::new(),
             configuration_request: None,
             deferred_requests: std::collections::VecDeque::new(),
@@ -184,6 +186,43 @@ impl PiAdapter {
     }
 
     pub fn request(&mut self, request: AgentRequest) -> AdapterOutput {
+        if self.pending_fork.is_some()
+            && matches!(
+                request,
+                AgentRequest::Input { .. }
+                    | AgentRequest::Steer { .. }
+                    | AgentRequest::ClearAsap
+                    | AgentRequest::Command { .. }
+                    | AgentRequest::NewInput { .. }
+                    | AgentRequest::ModelSet { .. }
+                    | AgentRequest::ModelGet
+                    | AgentRequest::Ping
+                    | AgentRequest::Attach { .. }
+            )
+        {
+            let message = "Wait for the fork/clone operation to finish";
+            return match request {
+                AgentRequest::Steer { .. } => queue::event(
+                    self,
+                    Some(e_tui::agent::AsapQueueOperation::Submit),
+                    Some(message.into()),
+                ),
+                AgentRequest::ClearAsap => queue::event(
+                    self,
+                    Some(e_tui::agent::AsapQueueOperation::Clear),
+                    Some(message.into()),
+                ),
+                _ => AdapterOutput::event(AgentEvent::Interaction(InteractionEvent::Error {
+                    code: if matches!(request, AgentRequest::Command { .. }) {
+                        "command-failed"
+                    } else {
+                        "input-failed"
+                    }
+                    .into(),
+                    message: message.into(),
+                })),
+            };
+        }
         if (self.configuration_request.is_some()
             || self.pending_queue.operation.is_some()
             || self.pending_skill_prompt.is_some()
@@ -379,7 +418,17 @@ impl PiAdapter {
     }
 
     fn commands_response(&mut self, data: Option<&Value>) -> AdapterOutput {
-        let mut commands = Vec::new();
+        let mut commands = [
+            ("fork", "Fork from a previous user message"),
+            ("clone", "Duplicate the current branch"),
+        ]
+        .into_iter()
+        .map(|(name, description)| CommandDescriptor {
+            name: name.into(),
+            description: description.into(),
+            input_hint: Some("[message]".into()),
+        })
+        .collect::<Vec<_>>();
         let mut skills = Vec::new();
         let mut auth_context = false;
         let mut auth_refresh = false;
@@ -393,6 +442,9 @@ impl PiAdapter {
             let Some(name) = command.get("name").and_then(Value::as_str) else {
                 continue;
             };
+            if matches!(name, "fork" | "clone") {
+                continue;
+            }
             if name == RELOAD_COMMAND {
                 self.reload_available = true;
                 continue;
@@ -522,6 +574,7 @@ mod content;
 #[cfg(test)]
 mod cost_tests;
 mod extension;
+mod fork;
 mod model;
 mod queue;
 #[cfg(test)]

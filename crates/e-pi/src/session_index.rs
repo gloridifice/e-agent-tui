@@ -11,7 +11,7 @@ use std::{
 use chrono::DateTime;
 use e_tui::{
     agent::SessionSummary,
-    resume::{ResumeBatch, ResumeRequest, MAX_RESUME_BATCH_SIZE},
+    resume::{session_tree, ResumeBatch, ResumeRequest, SessionParents, MAX_RESUME_BATCH_SIZE},
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -57,7 +57,7 @@ pub struct SavedSession {
     pub cwd: PathBuf,
 }
 
-pub fn read_saved_session(path: &Path) -> Result<SavedSession, String> {
+fn read_header(path: &Path) -> Result<Value, String> {
     let file = File::open(path).map_err(|error| error.to_string())?;
     let mut header = Vec::new();
     BufReader::new(file.take((HEAD_BYTES + 1) as u64))
@@ -70,6 +70,11 @@ pub fn read_saved_session(path: &Path) -> Result<SavedSession, String> {
     if header["type"].as_str() != Some("session") {
         return Err("first record is not a Pi session header".into());
     }
+    Ok(header)
+}
+
+pub fn read_saved_session(path: &Path) -> Result<SavedSession, String> {
+    let header = read_header(path)?;
     let id = header["id"]
         .as_str()
         .filter(|id| !id.is_empty())
@@ -93,6 +98,8 @@ struct Candidate {
 pub struct SessionIndex {
     candidates: Vec<Candidate>,
     diagnostics: Vec<String>,
+    parents: SessionParents,
+    ancestry_prepared: bool,
 }
 
 impl SessionIndex {
@@ -100,6 +107,8 @@ impl SessionIndex {
         let mut index = Self {
             candidates: Vec::new(),
             diagnostics: Vec::new(),
+            parents: Default::default(),
+            ancestry_prepared: false,
         };
         let mut pending = VecDeque::from([root.to_path_buf()]);
         while let Some(directory) = pending.pop_front() {
@@ -179,7 +188,73 @@ impl SessionIndex {
         }
     }
 
+    fn prepare_ancestry(&mut self) {
+        if self.ancestry_prepared {
+            return;
+        }
+        self.ancestry_prepared = true;
+        let paths: std::collections::HashMap<_, _> = self
+            .candidates
+            .iter()
+            .map(|candidate| {
+                (
+                    path_key(&candidate.path),
+                    candidate.path.to_string_lossy().into_owned(),
+                )
+            })
+            .collect();
+        for candidate in &self.candidates {
+            let parent = read_header(&candidate.path).ok().and_then(|header| {
+                header
+                    .get("parentSession")
+                    .and_then(Value::as_str)
+                    .filter(|parent| !parent.is_empty())
+                    .map(str::to_owned)
+            });
+            if let Some(parent) = parent {
+                let parent_path = Path::new(&parent);
+                let parent_path = if parent_path.is_absolute() {
+                    parent_path.to_path_buf()
+                } else {
+                    candidate
+                        .path
+                        .parent()
+                        .unwrap_or(Path::new("."))
+                        .join(parent_path)
+                };
+                let parent_id = paths
+                    .get(&path_key(&parent_path))
+                    .cloned()
+                    .unwrap_or(parent);
+                self.parents
+                    .insert(candidate.path.to_string_lossy().into_owned(), parent_id);
+            }
+        }
+        let ids: Vec<_> = self
+            .candidates
+            .iter()
+            .map(|candidate| candidate.path.to_string_lossy().into_owned())
+            .collect();
+        let order = session_tree(
+            &ids.iter().map(String::as_str).collect::<Vec<_>>(),
+            &self.parents,
+        );
+        let mut candidates: Vec<_> = std::mem::take(&mut self.candidates)
+            .into_iter()
+            .map(Some)
+            .collect();
+        self.candidates = order
+            .into_iter()
+            .map(|row| {
+                candidates[row.index]
+                    .take()
+                    .expect("unique session tree entry")
+            })
+            .collect();
+    }
+
     pub fn load(&mut self, request: ResumeRequest) -> ResumeBatch {
+        self.prepare_ancestry();
         let end = request
             .offset
             .saturating_add(request.limit.min(MAX_RESUME_BATCH_SIZE))
@@ -319,6 +394,16 @@ pub(crate) fn clean_title(value: &str) -> String {
     }
 }
 
+fn path_key(path: &Path) -> String {
+    let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let value = path.to_string_lossy().replace('\\', "/");
+    if cfg!(windows) {
+        value.to_lowercase()
+    } else {
+        value
+    }
+}
+
 fn same_path(left: &Path, right: &Path) -> bool {
     let left = left.to_string_lossy().replace('\\', "/");
     let right = right.to_string_lossy().replace('\\', "/");
@@ -338,6 +423,10 @@ pub struct SessionLoader {
 }
 
 impl SessionLoader {
+    pub fn parents(&self) -> Option<&SessionParents> {
+        self.cached.as_ref().map(|(_, _, index)| &index.parents)
+    }
+
     pub fn is_idle(&self) -> bool {
         self.task.is_none()
     }

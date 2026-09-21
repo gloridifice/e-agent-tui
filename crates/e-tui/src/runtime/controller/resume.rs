@@ -16,6 +16,14 @@ impl RuntimeController {
     }
 
     pub fn apply_resume_batch(batch: ResumeBatch, state: &Arc<Mutex<RuntimeState>>) -> bool {
+        Self::apply_resume_batch_with_parents(batch, &Default::default(), state)
+    }
+
+    pub fn apply_resume_batch_with_parents(
+        batch: ResumeBatch,
+        parents: &crate::resume::SessionParents,
+        state: &Arc<Mutex<RuntimeState>>,
+    ) -> bool {
         let mut app = state.lock().unwrap();
         let Some(workspace) = app.session.session_cwd.clone() else {
             return false;
@@ -26,6 +34,6 @@ impl RuntimeController {
         let InputPage::Resume(page) = &mut session.page else {
             return false;
         };
-        page.apply_batch(batch, &workspace)
+        page.apply_batch_with_parents(batch, &workspace, parents)
     }
 }

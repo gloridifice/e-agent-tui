@@ -27,6 +27,17 @@ pub enum RpcCommand {
         #[serde(skip_serializing_if = "Option::is_none")]
         id: Option<String>,
     },
+    GetForkMessages {
+        id: Option<String>,
+    },
+    Fork {
+        id: Option<String>,
+        #[serde(rename = "entryId")]
+        entry_id: String,
+    },
+    Clone {
+        id: Option<String>,
+    },
     GetState {
         #[serde(skip_serializing_if = "Option::is_none")]
         id: Option<String>,

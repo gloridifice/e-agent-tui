@@ -30,20 +30,20 @@ pub(super) fn render_resume_page(
         regions.header,
     );
 
-    let filtered = page.filtered_indices();
+    let filtered = page.tree_rows();
     viewport.ensure_visible(page.sel, regions.body.height as usize, filtered.len());
     let width = regions.body.width as usize;
     let mut rows = Vec::new();
     let now = SystemTime::now();
     let frame_time = Instant::now();
     page.age_refresh = None;
-    for (filtered_index, session_index) in filtered
+    for (filtered_index, row) in filtered
         .iter()
         .enumerate()
         .skip(viewport.start)
         .take(regions.body.height as usize)
     {
-        let session = &page.sessions[*session_index];
+        let session = &page.sessions[row.index];
         let focused = filtered_index == page.sel;
         let title = if session.title.is_empty() && page.titles_pending {
             crate::i18n::tr(language, "input_page.resume.title_loading")
@@ -52,6 +52,15 @@ pub(super) fn render_resume_page(
         } else {
             session.title.clone()
         };
+        let title = format!(
+            "{}{title}{}",
+            row.prefix,
+            if page.parents.contains_key(&session.id) {
+                " (fork)"
+            } else {
+                ""
+            }
+        );
         let age = session.modified_at.map(|modified| {
             let (label, refresh_in) = crate::resume::relative_age(modified, now);
             page.age_refresh = crate::reveal::earliest_deadline(

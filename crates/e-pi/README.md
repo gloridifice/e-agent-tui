@@ -23,6 +23,12 @@ pie --help
 
 See the [project README](https://github.com/gloridifice/e#quick-start-pi) for configuration and usage guidance.
 
+## Fork and clone
+
+Use `/fork` to select an earlier user message and create a separate session before it; the selected text is restored to the composer. `/clone` duplicates the current active branch with an empty composer. Both commands accept an optional message, sent only after the new session is ready, never after cancellation or failure.
+
+`/resume` shows derived sessions below their parents with tree connectors and a `(fork)` marker, including nested forks and clones. Search retains matching sessions and their available ancestors. These operations affect conversation history, not workspace files or Git branches.
+
 ## Herdr status
 
 When launched inside a Herdr pane, `pie` automatically reports idle, working, and waiting-for-input states as `pie`. No Pi plugin is required. Herdr decides whether a completed result appears as idle or unseen/done. Reporting is best-effort and does not affect the conversation if Herdr is unavailable.

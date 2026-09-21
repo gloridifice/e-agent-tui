@@ -7,6 +7,7 @@ use super::*;
 /// same rows enriched with titles.
 pub struct ResumePage {
     pub sessions: Vec<SessionSummary>,
+    pub parents: crate::resume::SessionParents,
     pub query: String,
     /// Selection index within [`Self::filtered_indices`].
     pub sel: usize,
@@ -20,6 +21,7 @@ impl ResumePage {
     pub fn loading() -> Self {
         Self {
             sessions: Vec::new(),
+            parents: Default::default(),
             query: String::new(),
             sel: 0,
             loading: true,
@@ -32,6 +34,7 @@ impl ResumePage {
     pub fn take_request(&mut self, workspace: &str) -> Option<crate::resume::ResumeRequest> {
         if self.paging.bind_workspace(workspace) {
             self.sessions.clear();
+            self.parents.clear();
             self.sel = 0;
             self.loading = true;
             self.age_refresh = None;
@@ -41,11 +44,33 @@ impl ResumePage {
     }
 
     pub fn apply_batch(&mut self, batch: crate::resume::ResumeBatch, workspace: &str) -> bool {
+        self.apply_batch_with_parents(batch, workspace, &Default::default())
+    }
+
+    pub fn apply_batch_with_parents(
+        &mut self,
+        batch: crate::resume::ResumeBatch,
+        workspace: &str,
+        parents: &crate::resume::SessionParents,
+    ) -> bool {
         if !self.paging.admit(&batch, workspace) {
             return false;
         }
+        let selected = self.selected_id().map(str::to_owned);
+        for session in &batch.sessions {
+            if let Some(parent) = parents.get(&session.id) {
+                self.parents.insert(session.id.clone(), parent.clone());
+            }
+        }
         self.sessions.extend(batch.sessions);
         self.loading = self.sessions.is_empty() && self.paging.has_more;
+        if let Some(selected) = selected {
+            self.sel = self
+                .filtered_indices()
+                .iter()
+                .position(|index| self.sessions[*index].id == selected)
+                .unwrap_or(0);
+        }
         true
     }
 
@@ -54,16 +79,48 @@ impl ResumePage {
     }
 
     pub fn filtered_indices(&self) -> Vec<usize> {
-        let query = self.query.to_lowercase();
-        self.sessions
+        self.tree_rows().into_iter().map(|row| row.index).collect()
+    }
+
+    pub fn tree_rows(&self) -> Vec<crate::resume::SessionTreeRow> {
+        let ids: Vec<_> = self
+            .sessions
             .iter()
-            .enumerate()
-            .filter(|(_, session)| {
-                query.is_empty()
-                    || session.title.to_lowercase().contains(&query)
+            .map(|session| session.id.as_str())
+            .collect();
+        let rows = crate::resume::session_tree(&ids, &self.parents);
+        if self.query.is_empty() {
+            return rows;
+        }
+        let query = self.query.to_lowercase();
+        let mut included: Vec<_> = self
+            .sessions
+            .iter()
+            .map(|session| {
+                session.title.to_lowercase().contains(&query)
                     || session.id.to_lowercase().contains(&query)
             })
-            .map(|(index, _)| index)
+            .collect();
+        for row in rows.iter().rev() {
+            if included[row.index] {
+                if let Some(parent) = row.parent {
+                    included[parent] = true;
+                }
+            }
+        }
+        let indices: Vec<_> = rows
+            .iter()
+            .filter(|row| included[row.index])
+            .map(|row| row.index)
+            .collect();
+        let ids: Vec<_> = indices.iter().map(|index| ids[*index]).collect();
+        crate::resume::session_tree(&ids, &self.parents)
+            .into_iter()
+            .map(|mut row| {
+                row.index = indices[row.index];
+                row.parent = row.parent.map(|parent| indices[parent]);
+                row
+            })
             .collect()
     }
 
@@ -78,6 +135,7 @@ impl ResumePage {
     pub fn apply_sessions(&mut self, sessions: Vec<SessionSummary>, titles_pending: bool) {
         let selected_id = self.selected_id().map(str::to_owned);
         self.sessions = sessions;
+        self.parents.clear();
         self.loading = false;
         self.titles_pending = titles_pending;
         self.paging.has_more = false;

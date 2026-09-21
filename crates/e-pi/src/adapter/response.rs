@@ -8,6 +8,10 @@ use serde_json::Value;
 use super::{model, session, AdapterOutput, NewSubmission, PendingReload, PiAdapter, ReloadStep};
 
 pub(super) fn dispatch(adapter: &mut PiAdapter, mut record: RpcRecord) -> AdapterOutput {
+    if let Some(mut output) = super::fork::response(adapter, &record) {
+        drain_deferred(adapter, &mut output);
+        return output;
+    }
     let reload = adapter
         .pending_reload
         .as_ref()
@@ -208,6 +212,7 @@ fn model_control_index(adapter: &PiAdapter) -> Option<usize> {
 
 pub(super) fn drain_deferred(adapter: &mut PiAdapter, output: &mut AdapterOutput) {
     while adapter.configuration_request.is_none()
+        && adapter.pending_fork.is_none()
         && adapter.pending_queue.operation.is_none()
         && adapter.pending_skill_prompt.is_none()
     {

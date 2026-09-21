@@ -578,7 +578,11 @@ async fn run_frontend(
                     }
                 }
                 batch = session_loader.next_batch() => {
-                    RuntimeController::apply_resume_batch(batch, &state_r);
+                    RuntimeController::apply_resume_batch_with_parents(
+                        batch,
+                        session_loader.parents().unwrap_or(&Default::default()),
+                        &state_r,
+                    );
                     // A rejected completion also frees the worker for a replacement page.
                     scheduler.request(DirtyReason::Content, Instant::now());
                 }

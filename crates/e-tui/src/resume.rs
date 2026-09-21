@@ -1,5 +1,8 @@
 //! Provider-neutral demand and completion values for incremental session discovery.
 
+mod tree;
+pub use tree::{session_tree, SessionParents, SessionTreeRow};
+
 use crate::agent::SessionSummary;
 use std::{
     sync::atomic::{AtomicU64, Ordering},

@@ -13,6 +13,9 @@ use super::{
 };
 
 fn command_line(adapter: &mut PiAdapter, line: String) -> AdapterOutput {
+    if let Some(output) = super::fork::command(adapter, &line) {
+        return output;
+    }
     let line = normalize_skill_line(line);
     let skill = line.starts_with("/skill:");
     if line.trim() == "/reload" {
@@ -144,6 +147,9 @@ pub(super) fn route(adapter: &mut PiAdapter, request: AgentRequest) -> AdapterOu
             }
         }
         AgentRequest::Interrupt => {
+            if let Some(output) = super::fork::interrupt(adapter) {
+                return output;
+            }
             super::compaction::interrupt(adapter);
             adapter.pending_skill_prompt = None;
             AdapterOutput::command(RpcCommand::Abort {
@@ -174,8 +180,17 @@ pub(super) fn route(adapter: &mut PiAdapter, request: AgentRequest) -> AdapterOu
         AgentRequest::AnswerQuestions {
             request_id,
             answers,
-        } => extension::answer_question(adapter, request_id, answers),
+        } => {
+            if let Some(output) = super::fork::answer(adapter, &request_id, &answers) {
+                output
+            } else {
+                extension::answer_question(adapter, request_id, answers)
+            }
+        }
         AgentRequest::CancelQuestions { request_id } => {
+            if let Some(output) = super::fork::cancel(adapter, &request_id) {
+                return output;
+            }
             if adapter.extension_ui.remove(&request_id).is_some() {
                 AdapterOutput::command(RpcCommand::ExtensionUiResponse {
                     id: request_id,

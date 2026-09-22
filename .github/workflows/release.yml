@@ -86,7 +86,7 @@ jobs:
           mkdir -p staging dist
           cp "target/$TARGET/release/dshe$EXE_EXTENSION" staging/
           cp "target/$TARGET/release/pie$EXE_EXTENSION" staging/
-          cp README.md LICENSE.md staging/
+          cp README.md LICENSE-MIT LICENSE-APACHE staging/
       - name: Package Linux archive
         if: runner.os == 'Linux'
         run: tar -czf "dist/e-$RELEASE_TAG-$TARGET.tar.gz" -C staging .

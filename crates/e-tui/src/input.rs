@@ -87,7 +87,8 @@ pub struct InputState {
 
 #[derive(Clone, Copy)]
 struct CommandCompletion {
-    /// Editable prefix boundary in characters; the suffix stays outside completion.
+    /// Editable range in characters; model marks and suffixes stay outside completion.
+    start: usize,
     end: usize,
     query_cursor: usize,
     filled: bool,
@@ -467,25 +468,30 @@ impl InputState {
     }
 
     fn command_prefix(&self) -> &str {
-        let end = self
+        let (start, end) = self
             .command_completion
-            .map_or(self.buf.len(), |completion| {
-                char_to_byte(&self.buf, completion.end)
+            .map_or((0, self.buf.len()), |completion| {
+                (
+                    char_to_byte(&self.buf, completion.start),
+                    char_to_byte(&self.buf, completion.end),
+                )
             });
-        &self.buf[..end]
+        &self.buf[start..end]
     }
 
     fn replace_command_prefix(&mut self, text: &str) {
-        let end = self.command_completion.map_or(self.cursor, |c| c.end);
-        if end > 0 {
-            self.remove_range(0, end);
+        let (start, end) = self
+            .command_completion
+            .map_or((0, self.cursor), |c| (c.start, c.end));
+        if end > start {
+            self.remove_range(start, end);
         }
         let count = text.chars().count();
-        self.shift_blocks_for_insert(0, count);
-        self.buf.insert_str(0, text);
-        self.cursor = count;
+        self.shift_blocks_for_insert(start, count);
+        self.buf.insert_str(char_to_byte(&self.buf, start), text);
+        self.cursor = start + count;
         if let Some(completion) = &mut self.command_completion {
-            completion.end = count;
+            completion.end = self.cursor;
         }
     }
 
@@ -1041,19 +1047,24 @@ impl InputState {
     }
 
     fn refresh_suggest_at_cursor(&mut self, catalogs: &CatalogModel) {
-        let active = self.command_completion;
+        let byte_start = crate::model_marks::prefix(&self.buf).map_or(0, |(_, offset)| offset);
+        let start = self.buf[..byte_start].chars().count();
+        let active = self.command_completion.filter(|c| c.start == start);
         let end = active.map_or(self.cursor, |c| c.end);
-        if self.cursor > end {
-            self.suggest = None;
-            return;
-        }
-        if !self.buf.starts_with('/')
-            || self.buf.starts_with("//")
+        let body = &self.buf[byte_start..];
+        if !body.starts_with('/')
+            || body.starts_with("//")
+            || self.cursor < start
             || self.block_ranges().any(|(start, _)| start < end)
             || self.buf[..char_to_byte(&self.buf, end)].contains('\n')
         {
             self.suggest = None;
             self.command_completion = None;
+            return;
+        }
+        self.command_completion = active;
+        if self.cursor > end {
+            self.suggest = None;
             return;
         }
         if let (Some(s), Some(completion)) = (&self.suggest, active) {
@@ -1068,6 +1079,7 @@ impl InputState {
             }
         }
         self.command_completion = Some(CommandCompletion {
+            start,
             end,
             query_cursor: self.cursor,
             filled: false,
@@ -1085,8 +1097,9 @@ impl InputState {
     /// Rebuild candidates for the active cursor query, or the entire buffer
     /// when no editable completion prefix has been established.
     fn refresh_suggest(&mut self, catalogs: &CatalogModel) {
-        let line = if self.command_completion.is_some() {
-            &self.buf[..char_to_byte(&self.buf, self.cursor)]
+        let line = if let Some(completion) = self.command_completion {
+            &self.buf
+                [char_to_byte(&self.buf, completion.start)..char_to_byte(&self.buf, self.cursor)]
         } else {
             &self.buf
         }

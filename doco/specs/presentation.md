@@ -32,6 +32,7 @@
 ## Screen and copy
 
 - Rendering layers point downward as Screen to Pane to Region to Component. Provider-specific rendering is forbidden.
+- Running Thinking indicator labels MUST use a single left-to-right highlight sweep followed by a dim pause, interpolating from the theme's activity-label tone to its activity-detail tone (Umber to Bark in Ferra). Settled labels and reasoning content MUST NOT receive this effect; spinner and count styling remain unchanged.
 - The composer and its replacement Input Pages show the frontend indicator, route, and reasoning-effort value in the top rule. Effort has no prefix and reserves width before route clipping; working animation, temporary-model italics, and model/effort selection feedback remain intact. Cache hit rate, context usage, cost, and help stay in the footer, with title and workspace below.
 - The composer grows and shrinks with explicit and wrapped lines up to its row cap, then keeps the cursor's wrapped row in view without changing multiline editing, atomic paste, or submission semantics. Input Pages retain their own height policy.
 - Recognized slash-command names in the composer use the theme's Blush-equivalent tone, including built-ins, exact runtime catalog names, and discovered `/skill:<name>` invocations. Arguments, unknown names, and ordinary text retain the normal input tone; placeholder and cursor styles take precedence.

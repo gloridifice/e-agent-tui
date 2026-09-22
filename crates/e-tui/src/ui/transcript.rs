@@ -1,6 +1,7 @@
 use super::*;
 use crate::wrap::wrap_text;
 use crate::{
+    display::ActivityState,
     reveal::{apply_reveal, RevealSignature},
     ui::component::{card, text, working},
     wrap::stable_wrap_prefix_graphemes,
@@ -18,10 +19,10 @@ const ACTIVITY_RIGHT_PAD: usize = 1;
 fn activity_row_parts(
     row: &ActivityRow,
     state: &TuiApp,
-    color_override: Option<Color>,
+    label_override: Option<Vec<Span<'static>>>,
 ) -> (Line<'static>, Option<Span<'static>>) {
     let theme = state.theme();
-    let color = working::activity_color(&theme, row, color_override);
+    let color = working::activity_color(&theme, row, None);
     let (label_style, detail_style) = match row.kind {
         ActivityKind::General => (theme.activity.label.style(), theme.activity.detail.style()),
         ActivityKind::Tool | ActivityKind::Skill => (
@@ -36,8 +37,12 @@ fn activity_row_parts(
             Style::default().fg(color),
         ),
         Span::styled(" ", detail_style),
-        Span::styled(row.label.clone(), label_style),
     ];
+    if let Some(label) = label_override {
+        spans.extend(label);
+    } else {
+        spans.push(Span::styled(row.label.clone(), label_style));
+    }
     if !row.summary.is_empty() {
         spans.push(Span::styled(" ", detail_style));
         if row.kind == ActivityKind::Skill {
@@ -110,11 +115,11 @@ fn activity_row_parts(
 fn fitted_activity_row_line(
     row: &ActivityRow,
     state: &TuiApp,
-    color_override: Option<Color>,
+    label_override: Option<Vec<Span<'static>>>,
     width: usize,
 ) -> Line<'static> {
     let width = width.saturating_sub(ACTIVITY_RIGHT_PAD);
-    let (prefix, metadata) = activity_row_parts(row, state, color_override);
+    let (prefix, metadata) = activity_row_parts(row, state, label_override);
     let Some(metadata) = metadata else {
         return truncate_activity_line(prefix, width);
     };
@@ -196,7 +201,15 @@ fn thinking_node_lines(
     if state.config.thinking_display_mode().shows_reasoning() && !node.content.is_empty() {
         reasoning_content_lines(&node.content, state, area_width)
     } else {
-        vec![fitted_activity_row_line(&node.row, state, None, area_width)]
+        let label = (node.row.state == ActivityState::Running).then(|| {
+            let elapsed = state
+                .session
+                .activity_epoch
+                .map(|epoch| epoch.elapsed())
+                .unwrap_or_default();
+            working::thinking_label_spans(&node.row.label, &state.theme(), elapsed)
+        });
+        vec![fitted_activity_row_line(&node.row, state, label, area_width)]
     }
 }
 

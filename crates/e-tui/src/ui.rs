@@ -1,8 +1,10 @@
 //! Ratatui rendering: status bar, transcript, and ruled input bar.
 
+#[cfg(test)]
+use ratatui::style::Color;
 use ratatui::{
     layout::{Constraint, Layout, Position},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Padding, Paragraph},
     Frame,

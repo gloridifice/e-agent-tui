@@ -49,6 +49,8 @@ pie
 
 Ctrl+C saves a text-only draft to input history before clearing it; press ↑ to recall it.
 
+Type `/` at the start of an existing draft to complete a command or its arguments without replacing the draft. Enter first confirms the completion; press Enter again to submit. Esc restores the typed prefix.
+
 Type `@` in the composer to browse project-relative paths. Use ↑/↓ to select, Tab or Enter to fill (directories continue browsing), and Esc to dismiss; Enter sends only after file completion closes. Paths containing spaces are quoted automatically.
 
 ## Prebuilt binaries

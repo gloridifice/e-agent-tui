@@ -81,7 +81,16 @@ pub struct InputState {
     pub skills: Vec<Skill>,
     /// Command or project-path suggestion popup, when open.
     pub suggest: Option<Suggestion>,
+    command_completion: Option<CommandCompletion>,
     path_request: Option<crate::path_completion::PathCompletionRequest>,
+}
+
+#[derive(Clone, Copy)]
+struct CommandCompletion {
+    /// Editable prefix boundary in characters; the suffix stays outside completion.
+    end: usize,
+    query_cursor: usize,
+    filled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -187,13 +196,13 @@ pub struct SearchState {
 }
 
 /// Suggestion popup state: the ranked rows for the typed query, the
-/// highlighted selection, and the raw query (kept for Esc restore while
-/// the user navigates and the buffer shows the filled command).
+/// highlighted selection, and the original editable prefix (kept for Esc
+/// restore while navigation fills candidates). File queries retain the buffer.
 #[derive(Clone)]
 pub struct Suggestion {
     pub query: String,
     pub sel: usize,
-    /// Ranked fill-in rows (what navigation fills and Enter sends):
+    /// Ranked fill-in rows (what navigation and acceptance fill):
     /// command lines like `/settings`, or `/new <mode-id>` lines.
     pub matches: Vec<String>,
     /// Per-row description column, parallel to `matches` (the command
@@ -259,6 +268,7 @@ impl InputState {
             #[cfg(test)]
             skills: Vec::new(),
             suggest: None,
+            command_completion: None,
             path_request: None,
         }
     }
@@ -320,6 +330,7 @@ impl InputState {
         {
             return false;
         }
+        self.command_completion = None;
         self.suggest = (!candidates.is_empty()).then(|| Suggestion {
             query: self.buf.clone(),
             sel: 0,
@@ -346,7 +357,7 @@ impl InputState {
             .and_then(|suggest| suggest.matches.get(suggest.sel))
             .cloned();
         self.suggest = None;
-        self.refresh_suggest(catalogs);
+        self.refresh_suggest_at_cursor(catalogs);
         if let Some(selected) = selected {
             if let Some(suggest) = self.suggest.as_mut() {
                 if let Some(index) = suggest.matches.iter().position(|line| line == &selected) {
@@ -391,6 +402,7 @@ impl InputState {
             self.paste_blocks.sort_by_key(|block| block.start);
         }
         self.suggest = None;
+        self.command_completion = None;
     }
 
     /// Insert one pending image as an atomic object at the cursor.
@@ -407,6 +419,7 @@ impl InputState {
         });
         self.image_blocks.sort_by_key(|block| block.start);
         self.suggest = None;
+        self.command_completion = None;
     }
 
     /// Replace the whole composer with ordinary text from an external state
@@ -417,6 +430,7 @@ impl InputState {
         self.paste_blocks.clear();
         self.image_blocks.clear();
         self.suggest = None;
+        self.command_completion = None;
     }
 
     /// Restore a complete prompt after deferred submission fails.
@@ -440,15 +454,55 @@ impl InputState {
         }
         self.cursor = self.buf.chars().count();
         self.suggest = None;
+        self.command_completion = None;
     }
 
-    /// Fill the buffer with a plain command line while the suggestion popup
-    /// stays open (popup navigation must not close itself).
-    fn fill_text(&mut self, text: String) {
-        self.buf = text;
-        self.cursor = self.buf.chars().count();
-        self.paste_blocks.clear();
-        self.image_blocks.clear();
+    fn retain_command_suffix(&mut self) {
+        if self
+            .command_completion
+            .is_some_and(|c| char_to_byte(&self.buf, c.end) == self.buf.len())
+        {
+            self.command_completion = None;
+        }
+    }
+
+    fn command_prefix(&self) -> &str {
+        let end = self
+            .command_completion
+            .map_or(self.buf.len(), |completion| {
+                char_to_byte(&self.buf, completion.end)
+            });
+        &self.buf[..end]
+    }
+
+    fn replace_command_prefix(&mut self, text: &str) {
+        let end = self.command_completion.map_or(self.cursor, |c| c.end);
+        if end > 0 {
+            self.remove_range(0, end);
+        }
+        let count = text.chars().count();
+        self.shift_blocks_for_insert(0, count);
+        self.buf.insert_str(0, text);
+        self.cursor = count;
+        if let Some(completion) = &mut self.command_completion {
+            completion.end = count;
+        }
+    }
+
+    fn fill_command(&mut self, mut text: String) {
+        let end = self.command_completion.map_or(self.cursor, |c| c.end);
+        if self
+            .buf
+            .chars()
+            .nth(end)
+            .is_some_and(|c| !c.is_whitespace())
+        {
+            text.push(' ');
+        }
+        self.replace_command_prefix(&text);
+        if let Some(completion) = &mut self.command_completion {
+            completion.filled = true;
+        }
     }
 }
 
@@ -763,9 +817,14 @@ impl InputState {
         if self.suggest.is_some() {
             match mapped {
                 Command(Action::Cancel) => {
-                    // Restore what was typed before the fill.
                     let query = self.suggest.take().map(|s| s.query).unwrap_or_default();
-                    self.restore_text(query);
+                    if let Some(completion) = self.command_completion {
+                        self.replace_command_prefix(&query);
+                        self.cursor = completion.query_cursor;
+                        self.retain_command_suffix();
+                    } else {
+                        self.restore_text(query);
+                    }
                     return InputAction::None;
                 }
                 Command(Action::Previous | Action::Next) => {
@@ -802,34 +861,33 @@ impl InputState {
                         }
                         // Recompute the popup for the recalled prompt, the
                         // same way plain Up/Down refreshes after each key.
-                        self.refresh_suggest(catalogs);
+                        self.refresh_suggest_at_cursor(catalogs);
                         return InputAction::None;
                     }
                     let cmd = {
                         let s = self.suggest.as_ref().unwrap();
                         s.matches[s.sel].to_string()
                     };
-                    // Auto-fill the selected command into the input bar.
-                    self.fill_text(cmd.clone());
+                    self.fill_command(cmd.clone());
                     if cmd == "/skill" {
-                        self.refresh_suggest(catalogs);
+                        self.refresh_suggest_at_cursor(catalogs);
                     }
                     return InputAction::None;
                 }
                 Command(Action::Complete) => {
                     // A partial buffer completes the highlighted row first;
                     // only a fully-typed row advances to the next candidate.
+                    let s = self.suggest.as_ref().unwrap();
+                    let filled = self.command_completion.is_some_and(|c| c.filled)
+                        || self.command_prefix() == s.matches[s.sel];
                     let s = self.suggest.as_mut().unwrap();
-                    let n = s.matches.len();
-                    let sel = s.sel;
-                    if self.buf == s.matches[sel] {
-                        s.sel = (sel + 1) % n;
+                    if filled {
+                        s.sel = (s.sel + 1) % s.matches.len();
                     }
                     let cmd = s.matches[s.sel].to_string();
-                    // Auto-fill the selected command into the input bar.
-                    self.fill_text(cmd.clone());
+                    self.fill_command(cmd.clone());
                     if cmd == "/skill" {
-                        self.refresh_suggest(catalogs);
+                        self.refresh_suggest_at_cursor(catalogs);
                     }
                     return InputAction::None;
                 }
@@ -839,10 +897,18 @@ impl InputState {
                         .take()
                         .map(|s| s.matches[s.sel].to_string())
                         .unwrap_or_default();
+                    let has_suffix = self
+                        .command_completion
+                        .is_some_and(|c| char_to_byte(&self.buf, c.end) < self.buf.len());
                     if !cmd.is_empty() {
-                        self.restore_text(cmd.clone());
+                        self.fill_command(cmd);
                     }
-                    return self.commit();
+                    self.retain_command_suffix();
+                    return if has_suffix {
+                        InputAction::None
+                    } else {
+                        self.commit()
+                    };
                 }
                 _ => {}
             }
@@ -867,20 +933,12 @@ impl InputState {
         let action = match mapped {
             Command(Action::Send | Action::SendAsap) => self.commit(),
             Command(Action::Complete) => {
-                // Open the suggestion popup and fill the first match —
-                // in either context: a slash-prefixed word (commands) or
-                // the `/new ` prefix (agent-preset modes).
-                let command_ctx = self.buf.starts_with('/') && !self.buf.contains([' ', '\n']);
-                let argument_ctx = completion_context(&self.buf)
-                    .is_some_and(|(_, query)| !query.contains([' ', '\n']));
-                if command_ctx || argument_ctx {
-                    self.refresh_suggest(catalogs);
-                    if let Some(s) = self.suggest.as_mut() {
-                        let cmd = s.matches[s.sel].clone();
-                        self.fill_text(cmd.clone());
-                        if cmd == "/skill" {
-                            self.refresh_suggest(catalogs);
-                        }
+                self.refresh_suggest_at_cursor(catalogs);
+                if let Some(s) = &self.suggest {
+                    let cmd = s.matches[s.sel].clone();
+                    self.fill_command(cmd.clone());
+                    if cmd == "/skill" {
+                        self.refresh_suggest_at_cursor(catalogs);
                     }
                 }
                 InputAction::None
@@ -955,7 +1013,7 @@ impl InputState {
             }
             _ => InputAction::None,
         };
-        self.refresh_suggest(catalogs);
+        self.refresh_suggest_at_cursor(catalogs);
         action
     }
 
@@ -982,37 +1040,63 @@ impl InputState {
             .collect()
     }
 
-    /// Recompute the suggestion popup from the buffer. A slash-prefixed word
-    /// lists commands; declared argument contexts list modes, models, efforts,
-    /// or user-invocable skills.
-    /// While the user navigates (the buffer equals one of the listed rows)
-    /// the list and its query stay pinned, so the highlight follows the
-    /// filled value and Esc can still restore the typed query.
-    fn refresh_suggest(&mut self, catalogs: &CatalogModel) {
-        if !self.paste_blocks.is_empty()
-            || !self.image_blocks.is_empty()
-            || self.buf.starts_with("//")
-        {
+    fn refresh_suggest_at_cursor(&mut self, catalogs: &CatalogModel) {
+        let active = self.command_completion;
+        let end = active.map_or(self.cursor, |c| c.end);
+        if self.cursor > end {
             self.suggest = None;
             return;
         }
-        if let Some(s) = &mut self.suggest {
-            let buf_matches = s.matches.iter().position(|m| *m == self.buf);
-            let entering_skill_roster = s.kind == SuggestionKind::Commands && self.buf == "/skill";
-            if !entering_skill_roster && (s.query == self.buf || buf_matches.is_some()) {
-                if let Some(pos) = buf_matches {
-                    s.sel = pos;
-                }
+        if !self.buf.starts_with('/')
+            || self.buf.starts_with("//")
+            || self.block_ranges().any(|(start, _)| start < end)
+            || self.buf[..char_to_byte(&self.buf, end)].contains('\n')
+        {
+            self.suggest = None;
+            self.command_completion = None;
+            return;
+        }
+        if let (Some(s), Some(completion)) = (&self.suggest, active) {
+            let prefix = self.command_prefix();
+            let entering_skill_roster = s.kind == SuggestionKind::Commands
+                && (prefix == "/skill" || (completion.filled && s.matches[s.sel] == "/skill"));
+            let unchanged_query = self.cursor == completion.query_cursor && s.query == prefix;
+            if !entering_skill_roster
+                && (unchanged_query || (completion.filled && self.cursor == completion.end))
+            {
                 return;
             }
         }
-        // Argument popup selected by the built-in command's declaration. It
-        // runs before command-name matching so exact `/skill` immediately
-        // transitions from the command catalog to the skill roster.
-        if let Some((command, query)) = completion_context(&self.buf) {
+        self.command_completion = Some(CommandCompletion {
+            end,
+            query_cursor: self.cursor,
+            filled: false,
+        });
+        self.refresh_suggest(catalogs);
+        if self.suggest.is_none() {
+            if active.is_none() {
+                self.command_completion = None;
+            } else {
+                self.retain_command_suffix();
+            }
+        }
+    }
+
+    /// Rebuild candidates for the active cursor query, or the entire buffer
+    /// when no editable completion prefix has been established.
+    fn refresh_suggest(&mut self, catalogs: &CatalogModel) {
+        let line = if self.command_completion.is_some() {
+            &self.buf[..char_to_byte(&self.buf, self.cursor)]
+        } else {
+            &self.buf
+        }
+        .to_owned();
+        // Exact `/skill` transitions directly to the skill roster.
+        if let Some((command, query)) = completion_context(&line) {
             if command.completion == CompletionKind::Model {
                 if let Some((reference, arguments)) = query.split_once(char::is_whitespace) {
-                    self.suggest = self.model_setting_suggestion(reference, arguments, catalogs);
+                    self.suggest =
+                        self.model_setting_suggestion(&line, reference, arguments, catalogs);
                     return;
                 }
             }
@@ -1040,7 +1124,7 @@ impl InputState {
                             .map(|subcommand| tr(self.language, subcommand.description_key))
                             .collect();
                         self.suggest = Some(Suggestion {
-                            query: self.buf.clone(),
+                            query: self.command_prefix().to_owned(),
                             sel: 0,
                             sources: vec![CommandSource::Builtin; matches.len()],
                             matches,
@@ -1064,7 +1148,7 @@ impl InputState {
                             .map(|mode| mode.name.clone().unwrap_or_else(|| mode.id.clone()))
                             .collect();
                         self.suggest = Some(Suggestion {
-                            query: self.buf.clone(),
+                            query: self.command_prefix().to_owned(),
                             sel: 0,
                             sources: vec![CommandSource::Builtin; matches.len()],
                             matches,
@@ -1080,7 +1164,7 @@ impl InputState {
                             .map(|name| format!("/compact {name}"))
                             .collect();
                         self.suggest = (!matches.is_empty()).then(|| Suggestion {
-                            query: self.buf.clone(),
+                            query: self.command_prefix().to_owned(),
                             sel: 0,
                             sources: vec![CommandSource::Builtin; matches.len()],
                             descriptions: vec![String::new(); matches.len()],
@@ -1121,7 +1205,7 @@ impl InputState {
                             })
                             .collect();
                         self.suggest = Some(Suggestion {
-                            query: self.buf.clone(),
+                            query: self.command_prefix().to_owned(),
                             sel: 0,
                             sources: vec![CommandSource::Builtin; matches.len()],
                             matches,
@@ -1144,7 +1228,7 @@ impl InputState {
                         let descriptions =
                             ranked.iter().map(|effort| effort.name.clone()).collect();
                         self.suggest = Some(Suggestion {
-                            query: self.buf.clone(),
+                            query: self.command_prefix().to_owned(),
                             sel: 0,
                             sources: vec![CommandSource::Builtin; matches.len()],
                             matches,
@@ -1168,7 +1252,7 @@ impl InputState {
                             .map(|skill| skill.description.clone())
                             .collect();
                         self.suggest = Some(Suggestion {
-                            query: self.buf.clone(),
+                            query: self.command_prefix().to_owned(),
                             sel: 0,
                             sources: vec![CommandSource::Builtin; matches.len()],
                             matches,
@@ -1182,15 +1266,15 @@ impl InputState {
             }
         }
         // Command-name popup: "/" or "/set…" without a space.
-        let slash = self.buf.starts_with('/') && !self.buf.contains([' ', '\n']);
+        let slash = line.starts_with('/') && !line.contains(char::is_whitespace);
         if slash {
-            let matched = match_command_catalog(&self.buf[1..], &catalogs.integrated_commands);
+            let matched = match_command_catalog(&line[1..], &catalogs.integrated_commands);
             if matched.is_empty() {
                 self.suggest = None;
                 return;
             }
             self.suggest = Some(Suggestion {
-                query: self.buf.clone(),
+                query: self.command_prefix().to_owned(),
                 sel: 0,
                 matches: matched
                     .iter()
@@ -1210,11 +1294,12 @@ impl InputState {
 
     fn model_setting_suggestion(
         &self,
+        line: &str,
         reference: &str,
         arguments: &str,
         catalogs: &CatalogModel,
     ) -> Option<Suggestion> {
-        if self.buf.contains('\n') {
+        if line.contains('\n') {
             return None;
         }
         let (_, model) =
@@ -1249,7 +1334,7 @@ impl InputState {
             )
         };
         (!matches.is_empty()).then(|| Suggestion {
-            query: self.buf.clone(),
+            query: self.command_prefix().to_owned(),
             sel: 0,
             sources: vec![CommandSource::Builtin; matches.len()],
             matches,
@@ -1263,6 +1348,12 @@ impl InputState {
         self.shift_blocks_for_insert(at, 1);
         self.buf.insert(char_to_byte(&self.buf, at), c);
         self.cursor += 1;
+        if let Some(completion) = &mut self.command_completion {
+            if at <= completion.end {
+                completion.end += 1;
+            }
+            completion.filled = false;
+        }
     }
 
     fn shift_blocks_for_insert(&mut self, at: usize, count: usize) {
@@ -1308,6 +1399,10 @@ impl InputState {
         remove_atomic_ranges(&mut self.paste_blocks, start, end, removed);
         remove_atomic_ranges(&mut self.image_blocks, start, end, removed);
         self.cursor = start;
+        if let Some(completion) = &mut self.command_completion {
+            completion.end -= end.min(completion.end).saturating_sub(start);
+            completion.filled = false;
+        }
     }
 
     /// Ctrl+Backspace / Ctrl+W / Alt+Backspace: delete the word before the cursor
@@ -1456,6 +1551,7 @@ impl InputState {
             })
             .collect::<Vec<_>>();
         self.suggest = None;
+        self.command_completion = None;
         if images.is_empty() {
             self.push_history(command_line.clone());
         }
@@ -1516,6 +1612,7 @@ impl InputState {
         }
         self.hist_idx = Some(idx);
         self.buf = self.history[idx].clone();
+        self.command_completion = None;
         self.cursor = self.buf.chars().count();
         self.paste_blocks.clear();
         self.image_blocks.clear();
@@ -1534,6 +1631,7 @@ impl InputState {
             self.paste_blocks = std::mem::take(&mut self.draft_paste_blocks);
             self.image_blocks = std::mem::take(&mut self.draft_image_blocks);
         }
+        self.command_completion = None;
         self.cursor = self.buf.chars().count();
     }
 
@@ -1541,6 +1639,7 @@ impl InputState {
         self.buf.clear();
         self.cursor = 0;
         self.suggest = None;
+        self.command_completion = None;
         self.paste_blocks.clear();
         self.image_blocks.clear();
     }

@@ -12,6 +12,8 @@ background_color = "#000000"
 # Behavior
 language = "en"
 remember_last_session = false
+# Additional recovery after Pi's native retries settle; ignored by DSH.
+error_auto_retry = true
 model_marks = []
 model_default_efforts = []
 default_mode = "standard"

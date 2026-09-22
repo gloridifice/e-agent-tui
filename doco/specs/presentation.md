@@ -6,6 +6,7 @@
 - `TimelineModel` MUST own the sole transcript store and projector. Production render paths MUST NOT add provider/event-specific top-level surfaces.
 - Surface replacement MUST remove the shadowed owner and insert the replacement at its original position. History prepend MUST NOT revive shadowed content or regress newer page state.
 - Unknown compatible events MAY render a bounded fallback; unknown raw payloads MUST NOT cross the adapter boundary.
+- Pi fallback recovery MUST update one correlated message-area activity with attempt count and a seconds-resolution countdown, then explicit running, success, cancellation, or exhausted/rejected status. Partial assistant output MUST NOT mark this activity successful. Countdown updates MUST NOT append rows or accumulate surface sequence ownership.
 
 ## Layout and cache
 

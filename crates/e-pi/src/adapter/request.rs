@@ -91,6 +91,12 @@ fn normalize_skill_line(line: String) -> String {
 }
 
 pub(super) fn route(adapter: &mut PiAdapter, request: AgentRequest) -> AdapterOutput {
+    let mut output = super::retry::before_request(adapter, &request);
+    output.merge(route_request(adapter, request));
+    output
+}
+
+fn route_request(adapter: &mut PiAdapter, request: AgentRequest) -> AdapterOutput {
     match request {
         AgentRequest::Input { prompt } => {
             let Some(text) = prompt.plain_text().map(str::to_owned) else {

@@ -17,6 +17,14 @@
 - Terminal setup, restoration, event routing, synchronized frame submission, and shared scheduling policy belong to `e-tui`; provider selection loops and external ports remain adapter-owned.
 - Authentication requests/events are provider-neutral in `e-tui`. `e-pi` MUST execute Pi authentication through public native APIs outside frontend locks and outside prompt queues/history; `e-tui` MUST NOT know Pi credential paths, token shapes, or OAuth endpoints. A committed Pi credential mutation MUST synchronize the affected provider in the live conversation runtime before reporting success; remote-catalog refresh is a separate best-effort result. Session replacement invalidates active authentication state and MUST report that invalidation as a terminal outcome for an in-flight flow. Recovery guidance in adapter messages MUST name an action the frontend actually performs.
 
+## Pi fallback recovery
+
+- When enabled, `e-pi` MUST recover any accepted assistant response ending in error, regardless of error category, only after Pi emits settled-run completion. Native retry and automatic compaction recovery MUST remain unchanged and run first.
+- Each consecutive failure sequence permits five additional attempts after 1, 5, 15, 30, and 30 minutes. A successful assistant response resets this budget. Recovery MUST use an explicit continuation prompt in the existing conversation, not replay the original task, tools, or commands.
+- Pending recovery MUST remain busy to the frontend, including same-session state refreshes, so after-turn queues and temporary model restoration do not run early. Retry dispatch MUST wait for pending adapter mutations to settle.
+- Interruption, disabling fallback recovery, superseding user input/commands, and session replacement MUST cancel pending recovery. Cancelled or stale results MUST NOT revive it. Tool errors, unrelated extension errors, rejected prompt admissions, and fatal child/transport failures MUST NOT trigger replay.
+- Retry policy and monotonic deadlines belong to `e-pi`; countdown wakeups exist only while recovery is pending. The frontend receives normalized progress, not Pi protocol details.
+
 ## Herdr status reporting
 
 - `e-pi` owns optional pane-local Herdr status reporting. It MUST remain disabled outside a Herdr-managed environment and MUST NOT introduce Herdr protocol or process effects into `e-tui`.

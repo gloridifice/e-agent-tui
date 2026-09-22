@@ -415,6 +415,19 @@ async fn run_frontend(
 
     'outer: loop {
         let _main_loop_zone = e_tui::tracy_zone!("main loop");
+        let retry_config = adapter.set_error_auto_retry(config.error_auto_retry);
+        if let Err(error) = route_output(
+            retry_config,
+            &rpc,
+            &mut pending_inbound,
+            &history,
+            &mut reported_history_error,
+        )
+        .await
+        {
+            fatal = Some(error);
+            break 'outer;
+        }
         if let Some(herdr) = herdr {
             let status = {
                 let state = state_r.lock().unwrap();
@@ -431,6 +444,7 @@ async fn run_frontend(
             Instant::now(),
         );
         let frame_deadline = scheduler.deadline();
+        let retry_deadline = adapter.retry_deadline();
         let (reveal_deadline, notice_deadline) = {
             let state = state_r.lock().unwrap();
             (
@@ -601,6 +615,14 @@ async fn run_frontend(
                             break 'outer;
                         }
                     }
+                }
+                _ = wait_for_deadline(retry_deadline) => {
+                    let output = adapter.tick_retry(Instant::now());
+                    if let Err(error) = route_output(output, &rpc, &mut pending_inbound, &history, &mut reported_history_error).await {
+                        fatal = Some(error);
+                        break 'outer;
+                    }
+                    first_inbound = pending_inbound.pop_front();
                 }
                 _ = wait_for_deadline(frame_deadline) => {}
                 _ = wait_for_deadline(notice_deadline) => {

@@ -128,6 +128,16 @@ pub enum TimelineFact {
         id: String,
         retry: u64,
     },
+    RetryFinished {
+        id: String,
+        outcome: LifecycleOutcome,
+        message: String,
+    },
+    RetryProgress {
+        id: String,
+        state: super::tool::ActivityState,
+        message: String,
+    },
     CommandStarted {
         id: String,
         name: String,
@@ -236,6 +246,8 @@ impl TimelineRecord {
                 | TimelineFact::TodoWrite { .. }
                 | TimelineFact::RetryScheduled { .. }
                 | TimelineFact::RetryStarted { .. }
+                | TimelineFact::RetryFinished { .. }
+                | TimelineFact::RetryProgress { .. }
                 | TimelineFact::CommandStarted { .. }
                 | TimelineFact::CommandFinished { .. }
                 | TimelineFact::SubagentStarted { .. }

@@ -8,7 +8,7 @@ use std::{
 use e_tui::{
     action::AgentRequest,
     agent::{
-        timeline::{TimelineFact, TimelineRecord},
+        timeline::{LifecycleOutcome, TimelineFact, TimelineRecord},
         AgentEvent, AgentStatus, CatalogEvent, CommandDescriptor, InteractionEvent, SessionEvent,
         Skill, TimelineEvent,
     },
@@ -91,6 +91,7 @@ pub struct PiAdapter {
     next_sequence: u64,
     current_turn: u64,
     is_streaming: bool,
+    retry: retry::RetryState,
     session_id: String,
     session_name: Option<String>,
     /// First-user-message fallback title, mirroring `session_index` so the
@@ -145,6 +146,7 @@ impl PiAdapter {
             next_sequence: 1,
             current_turn: 0,
             is_streaming: false,
+            retry: retry::RetryState::default(),
             session_id: "pi-starting".into(),
             session_name: None,
             derived_title: None,
@@ -278,17 +280,24 @@ impl PiAdapter {
             "agent_start" => {
                 self.pending_tool_result_messages.clear();
                 self.is_streaming = true;
-                AdapterOutput::event(AgentEvent::Session(SessionEvent::Status(
+                let mut output = retry::started(self);
+                output.events.push(AgentEvent::Session(SessionEvent::Status(
                     AgentStatus::Running,
-                )))
+                )));
+                output
             }
             "agent_settled" => {
                 self.pending_tool_result_messages.clear();
                 self.is_streaming = false;
-                let mut output = session::refresh_stats(self);
-                output
-                    .events
-                    .push(AgentEvent::Session(SessionEvent::Status(AgentStatus::Idle)));
+                let mut output = retry::settled(self, std::time::Instant::now());
+                output.merge(session::refresh_stats(self));
+                output.events.push(AgentEvent::Session(SessionEvent::Status(
+                    if self.retry.busy() {
+                        AgentStatus::Running
+                    } else {
+                        AgentStatus::Idle
+                    },
+                )));
                 output
             }
             "turn_start" => {
@@ -314,6 +323,9 @@ impl PiAdapter {
                     .field("message")
                     .map(|message| session::live_message(self, message))
                     .unwrap_or_default();
+                if let Some(message) = record.field("message") {
+                    output.merge(retry::message(self, message));
+                }
                 if record.field("message").is_some_and(|message| {
                     matches!(
                         message.get("role").and_then(Value::as_str),
@@ -389,10 +401,32 @@ impl PiAdapter {
                     .unwrap_or("Pi retry")
                     .to_owned(),
             }),
-            "auto_retry_end" => self.timeline(TimelineFact::RetryStarted {
-                id: "pi-auto-retry".into(),
-                retry: record.field("attempt").and_then(Value::as_u64).unwrap_or(1),
-            }),
+            "auto_retry_end" => {
+                let cancelled = record.string("finalError") == Some("Retry cancelled");
+                let success = record.bool("success") == Some(true);
+                let mut output = self.timeline(TimelineFact::RetryFinished {
+                    id: "pi-auto-retry".into(),
+                    outcome: if cancelled {
+                        LifecycleOutcome::Cancelled
+                    } else if success {
+                        LifecycleOutcome::Success
+                    } else {
+                        LifecycleOutcome::Failure
+                    },
+                    message: record
+                        .string("finalError")
+                        .unwrap_or(if success {
+                            "Pi retry succeeded"
+                        } else {
+                            "Pi retry failed"
+                        })
+                        .into(),
+                });
+                if cancelled {
+                    output.merge(retry::cancel(self, "Retry cancelled"));
+                }
+                output
+            }
             "extension_error" => {
                 // An unrelated extension failing while the catalog steps are
                 // outstanding must not turn the reload into a failure; its own
@@ -583,6 +617,7 @@ mod queue_tests;
 mod reload_tests;
 mod request;
 mod response;
+mod retry;
 mod session;
 mod tool;
 

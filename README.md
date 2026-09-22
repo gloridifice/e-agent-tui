@@ -80,6 +80,7 @@ cargo build --release --features tracy
 ## Features
 
 - **Model default effort:** Use `/model <model-id> set-default-effort <effort>` to save a default for future model selections without changing the current session's effort.
+- **Pi error recovery:** Additional retries with a live countdown are enabled by default. Toggle **Retry model errors** under `/settings` → **Behavior** (`error_auto_retry`); Pi's native retries are unchanged.
 - **Pi session forks:** Use `/fork [message]` to branch from a selected earlier prompt, or `/clone [message]` to duplicate the current branch. An optional message is sent only after the new session is ready. `/resume` groups derived sessions beneath their parents.
 - **Execution history:** Use `/history` to view slow operations and the usage timeline, or `/history copy` to copy execution metadata that may contain sensitive command arguments.
 - **Compaction model:** Use `/compact set-model` or `/compact unset-model` to configure a shared override for DSH compaction and Pi manual compaction.

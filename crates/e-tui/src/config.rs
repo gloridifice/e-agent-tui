@@ -339,6 +339,7 @@ pub struct Config {
     // Behavior
     pub language: Language,
     pub remember_last_session: bool,
+    pub error_auto_retry: bool,
     pub model_marks: crate::model_marks::ModelMarks,
     pub model_default_efforts: crate::model_defaults::ModelDefaultEfforts,
     /// Agent-preset mode for bare `/new` and the session a fresh TUI process

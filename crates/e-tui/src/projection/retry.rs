@@ -1,5 +1,5 @@
 use crate::{
-    agent::timeline::{TimelineFact, TimelineRecord},
+    agent::timeline::{LifecycleOutcome, TimelineFact, TimelineRecord},
     display::{ActivityRow, ActivityState, DisplayId},
 };
 
@@ -10,6 +10,35 @@ pub fn project(
     existing_summary: Option<String>,
 ) -> Option<(String, ActivityMutation)> {
     match &event.fact {
+        TimelineFact::RetryFinished {
+            id,
+            outcome,
+            message,
+        } => Some((
+            id.clone(),
+            ActivityMutation::Settle {
+                id: DisplayId::correlated("retry", id),
+                label: None,
+                state: match outcome {
+                    LifecycleOutcome::Success => ActivityState::Success,
+                    LifecycleOutcome::Failure => ActivityState::Failure,
+                    LifecycleOutcome::Cancelled => ActivityState::Cancelled,
+                },
+                summary: Some(message.clone()),
+            },
+        )),
+        TimelineFact::RetryProgress { id, state, message } => {
+            let mut row = ActivityRow::root(DisplayId::correlated("retry-progress", id), "retry");
+            row.state = match state {
+                crate::agent::tool::ActivityState::Waiting => ActivityState::Waiting,
+                crate::agent::tool::ActivityState::Running => ActivityState::Running,
+                crate::agent::tool::ActivityState::Success => ActivityState::Success,
+                crate::agent::tool::ActivityState::Failure => ActivityState::Failure,
+                crate::agent::tool::ActivityState::Cancelled => ActivityState::Cancelled,
+            };
+            row.summary = message.clone();
+            Some((id.clone(), ActivityMutation::Upsert(row)))
+        }
         TimelineFact::RetryScheduled {
             id: retry_id,
             retry,

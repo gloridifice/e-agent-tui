@@ -341,7 +341,11 @@ impl RuntimeState {
             .nodes()
             .iter()
             .filter_map(|node| match &node.item {
-                DisplayItem::Activity(row) if row.state.is_active() => Some(row.id.clone()),
+                DisplayItem::Activity(row)
+                    if row.state.is_active() && !row.id.0.starts_with("retry-progress:") =>
+                {
+                    Some(row.id.clone())
+                }
                 DisplayItem::Block(block) if block.streaming => Some(block.id.clone()),
                 DisplayItem::Thinking(node) if node.row.state.is_active() || node.streaming => {
                     Some(node.row.id.clone())
@@ -406,7 +410,9 @@ impl RuntimeState {
                             card.done_from = Some(breath_now);
                         }
                     }
-                    Msg::Activity(row) if row.state.is_active() => {
+                    Msg::Activity(row)
+                        if row.state.is_active() && !row.id.0.starts_with("retry-progress:") =>
+                    {
                         row.state = if cancelled {
                             ActivityState::Cancelled
                         } else {

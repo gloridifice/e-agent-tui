@@ -8,6 +8,9 @@ use serde_json::Value;
 use super::{model, session, AdapterOutput, NewSubmission, PendingReload, PiAdapter, ReloadStep};
 
 pub(super) fn dispatch(adapter: &mut PiAdapter, mut record: RpcRecord) -> AdapterOutput {
+    if let Some(output) = super::retry::response(adapter, &record) {
+        return output;
+    }
     if let Some(mut output) = super::fork::response(adapter, &record) {
         drain_deferred(adapter, &mut output);
         return output;

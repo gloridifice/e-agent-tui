@@ -58,7 +58,11 @@ pub(super) fn state_response(adapter: &mut PiAdapter, data: Option<&Value>) -> A
         .and_then(|model| model.get("id"))
         .and_then(Value::as_str)
         .map(str::to_owned);
-    let status = if adapter.is_streaming {
+    let switched = adapter.last_attached_session.as_deref() != Some(session_key.as_str());
+    if switched {
+        super::retry::reset(adapter);
+    }
+    let status = if adapter.is_streaming || adapter.retry.busy() {
         AgentStatus::Running
     } else {
         AgentStatus::Idle
@@ -68,7 +72,6 @@ pub(super) fn state_response(adapter: &mut PiAdapter, data: Option<&Value>) -> A
     // after `/model` or a ping) must not re-emit it, because the frontend
     // discards a pending `/new` draft on every `Attached` and would visibly
     // switch back to the retained session.
-    let switched = adapter.last_attached_session.as_deref() != Some(session_key.as_str());
     adapter.last_attached_session = Some(session_key.clone());
     let mut output = if switched {
         adapter.pending_stats_request = None;

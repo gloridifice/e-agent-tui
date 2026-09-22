@@ -17,6 +17,7 @@ Pi child <-------- JSONL stdio ------> crates/e-pi ──┘
 - `crates/e-tui` owns provider-neutral state, event projection, interaction, rendering, and runtime policy, including optional parent-child session ordering and resume presentation.
 - `crates/e-dsh` owns DSH wire conversion, WebSocket transport, launcher/setup, and external effects.
 - `crates/e-pi` owns Pi RPC DTOs, bounded JSONL framing, child lifecycle, native session discovery and ancestry normalization, native fork/clone orchestration, Pi-native authentication integration, and external effects. Authentication uses an embedded public-API companion extension for runtime context/refresh and a lazily started SDK helper for native provider interactions; Pi remains the credential and OAuth owner. The companion also exposes native resource reload; the adapter refreshes catalogs only after that operation settles.
+- `e-pi` owns configurable fallback error recovery after native Pi settlement, including retry budgets, cancellation, and countdown deadlines; `e-tui` only projects normalized retry progress.
 - `e-pi` also owns optional Herdr status reporting through a bounded background CLI worker. It observes runtime and interaction state without changing Pi extensions or claiming native session-restore authority.
 - Both adapters depend on `e-tui`; they never depend on each other. Provider payloads do not cross adapter boundaries.
 - Runners execute owned frontend effects only after releasing UI state guards. Shared scheduling and input policy remain in `e-tui`.

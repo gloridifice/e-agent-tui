@@ -248,6 +248,19 @@ pub static ITEMS: &[ItemDef] = &[
         },
     },
     ItemDef {
+        category: 1,
+        key: "error_auto_retry",
+        label: "settings.item.error_auto_retry.label",
+        desc: "settings.item.error_auto_retry.desc",
+        kind: ItemKind::Choice {
+            options: BOOL_OPTIONS,
+        },
+        get: |c| bool_value(c.error_auto_retry),
+        apply: |c, v| {
+            c.error_auto_retry = v == "on";
+        },
+    },
+    ItemDef {
         category: 2,
         key: "show_tool_duration",
         label: "settings.item.show_tool_duration.label",

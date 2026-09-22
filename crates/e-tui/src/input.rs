@@ -646,6 +646,10 @@ impl InputState {
         let mapped = self.key_mapping.input(scope, key);
         if mapped == Command(Action::ClearOrQuit) {
             if !self.buf.is_empty() {
+                if self.image_blocks.is_empty() {
+                    self.push_history(self.buf.clone());
+                }
+                self.hist_idx = None;
                 self.clear();
                 self.search = None;
                 self.multiline = false;
@@ -1453,10 +1457,7 @@ impl InputState {
             .collect::<Vec<_>>();
         self.suggest = None;
         if images.is_empty() {
-            self.history.push(command_line.clone());
-            if self.history.len() > self.history_limit {
-                self.history.remove(0);
-            }
+            self.push_history(command_line.clone());
         }
         self.hist_idx = None;
         self.buf.clear();
@@ -1490,6 +1491,13 @@ impl InputState {
             self.draft_image_blocks.clear();
         }
         InputAction::ToggleMultiline
+    }
+
+    fn push_history(&mut self, text: String) {
+        self.history.push(text);
+        if self.history.len() > self.history_limit {
+            self.history.remove(0);
+        }
     }
 
     fn history_prev(&mut self) {

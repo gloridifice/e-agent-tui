@@ -20,7 +20,8 @@
 
 - Semantic transcript and Preview content MUST remain complete; reveal progress is presentation-only.
 - Replay/history and copy operations MUST use complete semantic source. Plain-color mode may disable interpolation but MUST preserve pacing behavior.
-- Preview selection, scroll, layout cache, and reveal progress are independent of transcript state. Stale async results MUST be rejected by target identity and revision.
+- Preview selection, scroll, layout cache, and reveal progress are independent of transcript state. Stale async results MUST be rejected by target identity and revision, including cache admission after selection changes or session clearing.
+- Inline Preview content MUST bypass the content cache. Deferred Preview caches MUST be bounded by bytes and entry count, retain at most the latest cached revision per key, and evict least-recently-used entries. Content exceeding the cache budget MUST remain complete and displayable without caching.
 - Tool Preview MUST use provider-neutral seeds. File mutation previews use event-supplied fragments; the frontend MUST NOT read files or compute missing diffs.
 
 ## Execution-history timeline

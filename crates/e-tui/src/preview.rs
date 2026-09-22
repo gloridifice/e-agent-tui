@@ -1,6 +1,7 @@
 //! Shared normal/Reading Preview target, cache, and race reconciliation.
 
 use std::{
+    cell::Cell,
     collections::{HashMap, HashSet},
     time::Instant,
 };
@@ -78,6 +79,51 @@ pub enum PreviewContent {
     Tool(ToolPreview),
     /// Structured mutation fragments rendered as linear removed/added rows.
     Hunks(Vec<MutationHunk>),
+}
+
+impl PreviewContent {
+    fn heap_bytes(&self) -> usize {
+        let optional = |value: &Option<String>| value.as_ref().map_or(0, String::capacity);
+        match self {
+            Self::Link { label, url } => optional(label) + url.capacity(),
+            Self::Diff { path, source } => optional(path) + source.capacity(),
+            Self::Lines { path, lines, .. } => path.capacity() + string_list_bytes(lines),
+            Self::SearchResult { query, matches } => query.capacity() + string_list_bytes(matches),
+            Self::Command(source)
+            | Self::Path(source)
+            | Self::Markdown(source)
+            | Self::Reasoning(source)
+            | Self::MutedMarkdown(source)
+            | Self::PlainText(source) => source.capacity(),
+            Self::Tool(tool) => {
+                let primary = match &tool.primary {
+                    ToolPreviewPrimary::Location { path, .. } => path.capacity(),
+                    ToolPreviewPrimary::Command { command, .. } => command.capacity(),
+                    ToolPreviewPrimary::Search { query, path } => query.capacity() + optional(path),
+                    ToolPreviewPrimary::Json { source, .. } => source.capacity(),
+                };
+                let secondary = match &tool.secondary {
+                    Some(ToolPreviewSecondary::Terminal { output, .. }) => output.capacity(),
+                    None => 0,
+                };
+                tool.name.capacity() + primary + secondary
+            }
+            Self::Hunks(hunks) => {
+                hunks.capacity() * std::mem::size_of::<MutationHunk>()
+                    + hunks
+                        .iter()
+                        .map(|hunk| {
+                            optional(&hunk.path) + optional(&hunk.old) + optional(&hunk.new)
+                        })
+                        .sum::<usize>()
+            }
+        }
+    }
+}
+
+fn string_list_bytes(values: &Vec<String>) -> usize {
+    values.capacity() * std::mem::size_of::<String>()
+        + values.iter().map(String::capacity).sum::<usize>()
 }
 
 /// A 1-based inclusive line window. `end: None` is open-ended (through EOF).
@@ -219,9 +265,21 @@ impl Default for PreviewState {
     }
 }
 
+const PREVIEW_CACHE_MAX_BYTES: usize = 8 * 1024 * 1024;
+const PREVIEW_CACHE_MAX_ENTRIES: usize = 64;
+
+#[derive(Debug)]
+struct PreviewCacheEntry {
+    revision: PreviewRevision,
+    result: Result<PreviewContent, String>,
+    bytes: usize,
+    last_used: Cell<Instant>,
+}
+
 #[derive(Debug, Default)]
 pub struct PreviewCache {
-    values: HashMap<(PreviewKey, PreviewRevision), Result<PreviewContent, String>>,
+    values: HashMap<PreviewKey, PreviewCacheEntry>,
+    bytes: usize,
 }
 
 impl PreviewCache {
@@ -230,7 +288,21 @@ impl PreviewCache {
         key: &PreviewKey,
         revision: PreviewRevision,
     ) -> Option<&Result<PreviewContent, String>> {
-        self.values.get(&(key.clone(), revision))
+        let entry = self
+            .values
+            .get(key)
+            .filter(|entry| entry.revision == revision)?;
+        entry.last_used.set(Instant::now());
+        Some(&entry.result)
+    }
+
+    fn entry_bytes(key: &PreviewKey, result: &Result<PreviewContent, String>) -> usize {
+        std::mem::size_of::<(PreviewKey, PreviewCacheEntry)>()
+            + key.0.capacity()
+            + match result {
+                Ok(content) => content.heap_bytes(),
+                Err(error) => error.capacity(),
+            }
     }
 
     pub fn insert(
@@ -239,11 +311,47 @@ impl PreviewCache {
         revision: PreviewRevision,
         result: Result<PreviewContent, String>,
     ) {
-        self.values.insert((key, revision), result);
+        if self
+            .values
+            .get(&key)
+            .is_some_and(|entry| entry.revision > revision)
+        {
+            return;
+        }
+        self.invalidate(&key);
+        let bytes = Self::entry_bytes(&key, &result);
+        if bytes > PREVIEW_CACHE_MAX_BYTES {
+            return;
+        }
+        while self.bytes + bytes > PREVIEW_CACHE_MAX_BYTES
+            || self.values.len() >= PREVIEW_CACHE_MAX_ENTRIES
+        {
+            let Some(oldest) = self
+                .values
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_used.get())
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            self.invalidate(&oldest);
+        }
+        self.bytes += bytes;
+        self.values.insert(
+            key,
+            PreviewCacheEntry {
+                revision,
+                result,
+                bytes,
+                last_used: Cell::new(Instant::now()),
+            },
+        );
     }
 
     pub fn invalidate(&mut self, key: &PreviewKey) {
-        self.values.retain(|(candidate, _), _| candidate != key);
+        if let Some(entry) = self.values.remove(key) {
+            self.bytes -= entry.bytes;
+        }
     }
 }
 
@@ -368,9 +476,10 @@ impl PreviewPaneState {
             self.reveal = None;
         }
         self.reveal_intent = reveal_intent;
-        if target_changed {
-            self.invalidate_layout();
+        if !target_changed {
+            return None;
         }
+        self.invalidate_layout();
         self.target = target;
         let Some(target) = self.target.as_ref() else {
             self.state = PreviewState::Empty;
@@ -378,16 +487,16 @@ impl PreviewPaneState {
         };
         let key = target.reference.key().clone();
         let revision = target.reference.revision();
+        if let PreviewRef::Inline { content, .. } = &target.reference {
+            self.cache.invalidate(&key);
+            self.state = PreviewState::Ready(content.clone());
+            return None;
+        }
         if let Some(cached) = self.cache.get(&key, revision) {
             self.state = match cached {
                 Ok(content) => PreviewState::Ready(content.clone()),
                 Err(error) => PreviewState::Error(error.clone()),
             };
-            return None;
-        }
-        if let PreviewRef::Inline { content, .. } = &target.reference {
-            self.cache.insert(key, revision, Ok(content.clone()));
-            self.state = PreviewState::Ready(content.clone());
             return None;
         }
 
@@ -415,8 +524,7 @@ impl PreviewPaneState {
         self.seen_targets.clear();
     }
 
-    /// Cache every bounded completion, but update visible state only when all
-    /// race tokens still match the current loading target.
+    /// Only the current request may populate the cache or visible state.
     pub fn complete(
         &mut self,
         request_id: PreviewRequestId,
@@ -424,7 +532,6 @@ impl PreviewPaneState {
         revision: PreviewRevision,
         result: Result<PreviewContent, String>,
     ) -> bool {
-        self.cache.insert(key.clone(), revision, result.clone());
         let visible = matches!(
             &self.state,
             PreviewState::Loading {
@@ -435,14 +542,21 @@ impl PreviewPaneState {
                 && *current_key == key
                 && *current_revision == revision
         );
-        if visible {
-            self.work.patches = self.work.patches.saturating_add(1);
-            self.state = match result {
-                Ok(content) => PreviewState::Ready(content),
-                Err(error) => PreviewState::Error(error),
-            };
+        if !visible {
+            return false;
         }
-        visible
+        if PreviewCache::entry_bytes(&key, &result) <= PREVIEW_CACHE_MAX_BYTES {
+            self.cache.insert(key, revision, result.clone());
+        } else {
+            self.cache.invalidate(&key);
+        }
+        self.work.patches = self.work.patches.saturating_add(1);
+        self.invalidate_layout();
+        self.state = match result {
+            Ok(content) => PreviewState::Ready(content),
+            Err(error) => PreviewState::Error(error),
+        };
+        true
     }
 
     pub fn reveal_deadline(&self) -> Option<Instant> {
@@ -598,10 +712,11 @@ mod tests {
         let current = pane.select(Some(deferred("a", "a", 2))).unwrap();
         assert!(!pane.complete(
             old.request_id,
-            old.key,
+            old.key.clone(),
             old.revision,
             Ok(PreviewContent::PlainText("old".into())),
         ));
+        assert!(pane.cache.get(&old.key, old.revision).is_none());
         pane.policy = PreviewPolicy::FollowReadingCursor;
         assert!(pane.complete(
             current.request_id,
@@ -611,7 +726,16 @@ mod tests {
         ));
         assert_eq!(pane.state, PreviewState::Error("bounded error".into()));
         pane.policy = PreviewPolicy::FollowLatestBlock;
-        assert!(pane.select(Some(deferred("a", "a", 1))).is_none());
+        let reloaded = pane
+            .select(Some(deferred("a", "a", 1)))
+            .expect("discarded revision must be resolved again");
+        assert_ne!(reloaded.request_id, old.request_id);
+        assert!(pane.complete(
+            reloaded.request_id,
+            reloaded.key,
+            reloaded.revision,
+            Ok(PreviewContent::PlainText("old".into())),
+        ));
         assert_eq!(
             pane.state,
             PreviewState::Ready(PreviewContent::PlainText("old".into()))

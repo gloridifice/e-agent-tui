@@ -266,7 +266,7 @@ mod tests {
         agent::InteractionEvent,
         display::DisplayId,
         input::InputState,
-        preview::{PreviewContent, PreviewLayoutKey, PreviewRef, PreviewTarget},
+        preview::{PreviewContent, PreviewLayoutKey, PreviewRef, PreviewState, PreviewTarget},
         render::RenderOptions,
         reveal::LineRevealTrack,
         Language,
@@ -511,6 +511,10 @@ mod tests {
         assert!(app.render.markdown_layout.lines(&markdown_id).is_some());
         assert!(app.preview.cached_layout(&layout_key).is_none());
         assert_eq!(app.preview.target.as_ref().unwrap().id, "preview-owner");
+        assert_eq!(
+            app.preview.state,
+            PreviewState::Ready(PreviewContent::PlainText("semantic preview".into()))
+        );
         assert!(app
             .preview
             .cache
@@ -518,7 +522,7 @@ mod tests {
                 &crate::PreviewKey("preview-owner".into()),
                 crate::PreviewRevision(1),
             )
-            .is_some());
+            .is_none());
         assert_eq!(
             app.preview.reveal.as_ref().map(LineRevealTrack::revealed),
             Some(revealed)

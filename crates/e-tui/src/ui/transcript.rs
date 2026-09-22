@@ -209,7 +209,9 @@ fn thinking_node_lines(
                 .unwrap_or_default();
             working::thinking_label_spans(&node.row.label, &state.theme(), elapsed)
         });
-        vec![fitted_activity_row_line(&node.row, state, label, area_width)]
+        vec![fitted_activity_row_line(
+            &node.row, state, label, area_width,
+        )]
     }
 }
 

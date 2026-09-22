@@ -603,7 +603,7 @@ dependencies = [
 
 [[package]]
 name = "e-dsh"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "arboard",
@@ -631,7 +631,7 @@ dependencies = [
 
 [[package]]
 name = "e-pi"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "arboard",
@@ -652,7 +652,7 @@ dependencies = [
 
 [[package]]
 name = "e-tui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "crossterm",
  "futures-util",

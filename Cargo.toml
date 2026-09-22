@@ -14,7 +14,7 @@ resolver = "2"
 [workspace.package]
 version = "0.1.1"
 edition = "2021"
-license = "MIT"
+license = "MIT or Apache-2.0"
 repository = "https://github.com/gloridifice/e"
 homepage = "https://github.com/gloridifice/e"
 
@@ -26,7 +26,11 @@ allow-branch = ["master"]
 shared-version = true
 dependent-version = "upgrade"
 consolidate-commits = true
-pre-release-hook = ["node", "../../tools/prepare-crate-release.mjs", "{{crate_name}}"]
+pre-release-hook = [
+    "node",
+    "../../tools/prepare-crate-release.mjs",
+    "{{crate_name}}",
+]
 pre-release-commit-message = "chore(release): v{{version}}"
 tag = true
 tag-name = "v{{version}}"

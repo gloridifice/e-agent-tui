@@ -926,6 +926,9 @@ impl RuntimeState {
                 existing.surface_seq = Some(seq);
             }
             self.transcript.touch(&row_id);
+            if let Some(index) = self.transcript.position(&row_id) {
+                self.render.transcript_cache.mark_message_dirty(index);
+            }
         } else {
             self.insert_transcript_item(DisplayItem::Activity(row.clone()), surface_seq, None);
         }

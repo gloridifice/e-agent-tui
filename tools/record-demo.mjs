@@ -13,7 +13,7 @@ const digest = data => createHash('sha256').update(data).digest('hex');
 const routeShown = (text, model) => text.split('\n').some(line => line.includes('e·pi ') && [model.name, model.id].some(name => line.toLowerCase().includes(name.toLowerCase())));
 const limits = { calls: 4, generationMs: 180_000, totalMs: 15 * 60_000 };
 const instructionGapMs = 1_000;
-const characterDelayMs = 100;
+const characterDelayMs = 0;
 const sample = 'pub fn double(n: i32) -> i32 { n * 2 }\n';
 
 function usage() {

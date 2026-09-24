@@ -28,7 +28,7 @@ The native catalog query `pi --list-models deepseek` returned only `codemaker/de
 
 ## 2. Overall approach
 
-The driver runs outside the frontend: it starts a real release `pie` in `tui-test`, records five chapters (working/tool Preview, Reading, saved effort, model mark and temporary route, fork/resume), and uses FFmpeg to concatenate them without cutting or speeding up content. It types commands and prompts character by character with at least 100 ms between characters, holds the completed input for one second before Enter, and spaces menu/navigation keys by one second. No renderer, adapter, or provider protocol is changed. Live generation is used; replay is not part of this version.
+The driver runs outside the frontend: it starts a real release `pie` in `tui-test`, records five chapters (working/tool Preview, Reading, saved effort, model mark and temporary route, fork/resume), and uses FFmpeg to concatenate them without cutting or speeding up content. It types commands and prompts character by character with no added inter-character delay, holds the completed input for one second before Enter, and spaces menu/navigation keys by one second. No renderer, adapter, or provider protocol is changed. Live generation is used; replay is not part of this version.
 
 ## 3. APIs and data model
 
@@ -38,7 +38,7 @@ The driver verifies typed composer text before Enter, reads native session JSONL
 
 ## 4. Algorithms and rules
 
-The driver preflights routes and a supported effort, runs at most four model calls per attempt with a three-minute deadline per call and no automatic retry, and checks application state before each chapter transition. The scenario currently makes two model requests. A no-argument fork restores the selected prompt to the composer; the driver waits for that draft, clears it, then opens resume. Each typed character has at least a 100 ms pause before the next, and the completed line has a one-second hold before Enter. Menu/navigation keys are spaced by one second, while model output remains at its native speed.
+The driver preflights routes and a supported effort, runs at most four model calls per attempt with a three-minute deadline per call and no automatic retry, and checks application state before each chapter transition. The scenario currently makes two model requests. A no-argument fork restores the selected prompt to the composer; the driver waits for that draft, clears it, then opens resume. Each typed character is sent as its own keystroke call with no added pause (about 80 ms of round-trip latency in practice), and the completed line has a one-second hold before Enter. Menu/navigation keys are spaced by one second, while model output remains at its native speed.
 
 The exporter validates playable chapter video and reports the final duration, then concatenates chapters at normal speed. It does not guess idle intervals from spinner redraws. A preview longer than 90 seconds is allowed for pacing review and flagged in the JSON sidecar; verified wait-only trimming and renewed duration enforcement remain deferred.
 
@@ -48,6 +48,6 @@ The exercised setup uses the release binary, 120×36 cells, 30 FPS, a short read
 
 ## 6. Verification and documentation impact
 
-The earlier one-second instruction-gap preview produced a 66.37-second 2556×1712 H.264 MP4 at 30 FPS and was sampled across all five scenes. After switching prompts and commands to 100 ms character-by-character input, the driver produced a 103.2-second preview with no timing cuts; per the user's request, that artifact is reserved for user visual acceptance rather than assistant inspection. Native route restoration and fork ancestry are still enforced by application-state checks during the run. The JSON sidecar reports both pacing values, duration, and no edits. `node --check`, catalog-only preflight, `ffprobe` when inspection is requested, `git diff --check`, and `doco check` are the scoped checks; no tests were added or modified.
+The earlier one-second instruction-gap preview produced a 66.37-second 2556×1712 H.264 MP4 at 30 FPS and was sampled across all five scenes. After switching prompts and commands to character-by-character input, the driver produced a 103.2-second preview with no timing cuts; the inter-character delay was later relaxed to zero without re-recording, so that artifact reflects the 100 ms pacing. Per the user's request, artifacts are reserved for user visual acceptance rather than assistant inspection. Native route restoration and fork ancestry are still enforced by application-state checks during the run. The JSON sidecar reports both pacing values, duration, and no edits. `node --check`, catalog-only preflight, `ffprobe` when inspection is requested, `git diff --check`, and `doco check` are the scoped checks; no tests were added or modified.
 
 No current architecture or specification boundary changed. The supported workflow is documented in [the demo recording guide](../../../../../readme/demo-recording.md). A reproducible under-90-second export for slow model responses remains open and must be addressed before completing this change.

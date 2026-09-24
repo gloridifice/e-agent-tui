@@ -14,7 +14,8 @@
 - Wrapping MUST preserve UAX #14 break opportunities, keep glued punctuation from starting rows, and fall back to grapheme splitting only for over-wide atoms.
 - Structural changes may rebuild layout. Streaming and paced reveal MUST splice only the affected suffix; spinner frames MUST patch active ranges. Reading and Preview navigation MUST NOT flatten or rebuild transcript semantics.
 - Markdown inline styling MUST consume parser events, not reparse flattened text. Tables, lists, quotes, code blocks, and provenance MUST share width-aware layout rules.
-- Markdown tables and code blocks, including rendered Mermaid diagrams, MUST retain every row regardless of block length; presentation MUST NOT replace middle rows with a collapsed head/tail window.
+- Shared Markdown layout MUST retain every table and code-block row, including rendered Mermaid diagrams, regardless of block length. Individual blocks MUST NOT collapse their middle rows; only enclosing user-message folding may hide those rows in the message pane.
+- Sent user messages, including history and attachment-bearing prompts, MUST render through the shared Markdown renderer while retaining their user-card shell and ordinary-text tone. After width-aware wrapping, bodies longer than 20 display rows MUST show their first 10 rows, one `...(<n> lines)` row where `n` counts hidden display rows, and their last 10 rows. The shell and optional header are excluded from the count; Markdown structural rows participate. Resizing MUST recompute the window, and a marker wider than the body MUST be clipped to one row. Folding MUST remain active in Reading mode; full Markdown is available through existing Preview selection, not an inline expand action. The composer, sent payload, stored source, and whole-message copy MUST remain unchanged.
 
 ## Reveal and Preview
 

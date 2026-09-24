@@ -133,7 +133,10 @@ impl ReadingDocument {
                     blocks.push(plain_block(
                         card.id.clone(),
                         card.unit,
-                        if matches!(card.role, crate::display::CardRole::User) {
+                        if matches!(
+                            card.role,
+                            crate::display::CardRole::User | crate::display::CardRole::Attachment
+                        ) {
                             ReadingBlockKind::User
                         } else {
                             ReadingBlockKind::Custom
@@ -293,10 +296,10 @@ fn plain_block(
         .get(&owner)
         .cloned()
         .unwrap_or_else(|| {
-            let content = if kind == ReadingBlockKind::Reasoning {
-                PreviewContent::Reasoning(source.clone())
-            } else {
-                PreviewContent::PlainText(source.clone())
+            let content = match kind {
+                ReadingBlockKind::Reasoning => PreviewContent::Reasoning(source.clone()),
+                ReadingBlockKind::User => PreviewContent::Markdown(source.clone()),
+                _ => PreviewContent::PlainText(source.clone()),
             };
             PreviewRef::Inline {
                 key: PreviewKey(format!("source:{}", id.0)),

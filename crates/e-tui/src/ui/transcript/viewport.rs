@@ -15,6 +15,18 @@ pub(super) fn render_transcript_impl(
     let screen_height = area.height as usize;
     let width = area.width as usize;
     if let Some(draft) = state.session.new_conversation.as_ref() {
+        if let Some(card) = draft
+            .pending_card
+            .as_ref()
+            .filter(|card| matches!(card.role, CardRole::User | CardRole::Attachment))
+        {
+            let (_, content_width) = crate::transcript_layout::user_message_geometry(card, width);
+            let options = crate::render::transcript_options(&state.config, content_width);
+            state
+                .render
+                .markdown_layout
+                .materialize_card(card, theme, &options);
+        }
         let bottom_rows = bottom_rows.min(screen_height);
         let bottom_y = if bottom_rows == 0 {
             screen_height

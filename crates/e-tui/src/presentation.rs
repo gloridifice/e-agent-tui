@@ -2,7 +2,7 @@
 
 use crate::{
     app::TuiApp,
-    display::{DisplayItem, TranscriptFormat},
+    display::{CardRole, DisplayItem, TranscriptFormat},
     render::RenderOptions,
 };
 
@@ -53,5 +53,24 @@ pub fn materialize_transcript(state: &mut TuiApp) {
             }
             state.transcript.touch(&id);
         }
+    }
+
+    render_options.link_tags.clear();
+    for node in state.timeline.transcript.nodes() {
+        let DisplayItem::Card(card) = &node.item else {
+            continue;
+        };
+        if !matches!(card.role, CardRole::User | CardRole::Attachment) {
+            continue;
+        }
+        let (_, width) = crate::transcript_layout::user_message_geometry(
+            card,
+            state.render.transcript_cache.width,
+        );
+        render_options.content_width = Some(width);
+        state
+            .render
+            .markdown_layout
+            .materialize_card(card, &theme, &render_options);
     }
 }

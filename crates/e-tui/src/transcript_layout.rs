@@ -10,7 +10,7 @@ use ratatui::text::Line;
 
 use crate::{
     config::Theme,
-    display::DisplayId,
+    display::{CardRole, ContentCard, DisplayId},
     render::{render_markdown, RenderLine, RenderOptions},
 };
 
@@ -68,6 +68,50 @@ impl MarkdownLayoutRegistry {
         &self.entries.get(id).expect("entry was materialized").lines
     }
 
+    pub(crate) fn materialize_card(
+        &mut self,
+        card: &ContentCard,
+        theme: &Theme,
+        options: &RenderOptions,
+    ) {
+        let unit = card.unit.unwrap_or_default();
+        if self.entries.get(&card.id).is_some_and(|entry| {
+            entry.source == card.content
+                && entry.content_width == options.content_width
+                && entry.unit_start == unit
+        }) {
+            return;
+        }
+        let mut card_theme = *theme;
+        card_theme.markdown.text = if card.role == CardRole::User {
+            theme.input.text
+        } else {
+            theme.card.attachment
+        };
+        let mut lines = render_markdown(
+            &card.content,
+            &card_theme,
+            &mut 0,
+            options,
+            &mut HashMap::new(),
+        );
+        for line in &mut lines {
+            line.unit = unit;
+            line.raw_line = None;
+            line.atomic = true;
+        }
+        self.entries.insert(
+            card.id.clone(),
+            MarkdownLayoutEntry {
+                source: card.content.clone(),
+                content_width: options.content_width,
+                link_tags: Vec::new(),
+                unit_start: unit,
+                lines,
+            },
+        );
+    }
+
     pub fn lines(&self, id: &DisplayId) -> Option<&[RenderLine]> {
         self.entries.get(id).map(|entry| entry.lines.as_slice())
     }
@@ -106,6 +150,20 @@ impl MarkdownLayoutRegistry {
     pub fn clear(&mut self) {
         self.entries.clear();
     }
+}
+
+pub(crate) fn user_message_geometry(card: &ContentCard, width: usize) -> (usize, usize) {
+    let width = width.max(1);
+    let padding = card.horizontal_padding.min(width);
+    let ruled = card.role == CardRole::User;
+    let gutter = padding.saturating_add(usize::from(ruled)).min(width - 1);
+    let right_padding = if ruled {
+        padding.min(width - gutter - 1)
+    } else {
+        0
+    };
+    let content_width = width - gutter - right_padding;
+    (gutter, content_width)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -13,6 +13,7 @@ use unicode_segmentation::UnicodeSegmentation;
 /// overflowing. Skill invocations use their own compact identity row.
 const MAX_INJECTION_DISPLAY_LINES: usize = 2;
 const ACTIVITY_RIGHT_PAD: usize = 1;
+const USER_MESSAGE_EDGE_ROWS: usize = 10;
 
 /// First-seen-ordered per-file counts over full paths.
 /// `foo.rs x2, bar.rs` — the `xN` suffix appears only for repeats.
@@ -215,14 +216,59 @@ fn thinking_node_lines(
     }
 }
 
+fn user_markdown_lines(card: &ContentCard, state: &TuiApp, width: usize) -> Vec<Line<'static>> {
+    let theme = state.theme();
+    let mut rows = if let Some(layout) = state.render.markdown_layout.lines(&card.id) {
+        layout
+            .iter()
+            .flat_map(|render_line| {
+                wrap_line(render_line.line.clone(), width)
+                    .into_iter()
+                    .map(|mut line| {
+                        if render_line.fill {
+                            let style = theme.markdown.code_block_bg.style();
+                            line = line.patch_style(style);
+                            line.push_span(Span::styled(
+                                " ".repeat(width.saturating_sub(line.width())),
+                                style,
+                            ));
+                        }
+                        line
+                    })
+            })
+            .collect::<Vec<_>>()
+    } else {
+        card.content
+            .lines()
+            .flat_map(|line| {
+                wrap_line(
+                    Line::styled(line.to_owned(), theme.input.text.style()),
+                    width,
+                )
+            })
+            .collect()
+    };
+    let kept = 2 * USER_MESSAGE_EDGE_ROWS;
+    if rows.len() > kept {
+        let hidden = rows.len() - kept;
+        let marker = crate::wrap::clip_line(
+            Line::styled(
+                format!("...({hidden} lines)"),
+                theme.surface.muted_text.style(),
+            ),
+            width,
+        );
+        rows.splice(
+            USER_MESSAGE_EDGE_ROWS..rows.len() - USER_MESSAGE_EDGE_ROWS,
+            [marker],
+        );
+    }
+    rows
+}
+
 fn user_message_lines(card: &ContentCard, state: &TuiApp, area_width: usize) -> Vec<Line<'static>> {
     let theme = state.theme();
-    let padding = card.horizontal_padding.min(area_width);
-    let gutter = padding.saturating_add(1).min(area_width);
-    let avail = area_width
-        .saturating_sub(gutter)
-        .saturating_sub(padding)
-        .max(1);
+    let (gutter, avail) = crate::transcript_layout::user_message_geometry(card, area_width);
     let text_style = theme.input.text.style();
     let content_row = |content: String, bold: bool| {
         Line::from(vec![
@@ -242,15 +288,13 @@ fn user_message_lines(card: &ContentCard, state: &TuiApp, area_width: usize) -> 
     if let Some(header) = &card.header {
         out.push(content_row(header.clone(), true));
     }
-    for line in card.content.lines() {
-        let chunks = if line.is_empty() {
-            vec![String::new()]
-        } else {
-            wrap_text(line, avail)
-        };
-        for chunk in chunks {
-            out.push(content_row(chunk, false));
-        }
+    for line in user_markdown_lines(card, state, avail) {
+        let mut spans = vec![Span::raw(" ".repeat(gutter))];
+        spans.extend(line.spans.into_iter().map(|span| {
+            let style = line.style.patch(span.style);
+            span.style(style)
+        }));
+        out.push(Line::from(spans));
     }
     out.push(super::input::ruled_line(area_width, &theme));
     out
@@ -267,8 +311,12 @@ fn content_card_lines(card: &ContentCard, state: &TuiApp, area_width: usize) -> 
         return context_injection_lines(card, state, area_width);
     }
     let theme = state.theme();
-    let gutter = card.horizontal_padding.min(area_width);
-    let avail = area_width.saturating_sub(gutter).max(1);
+    let (gutter, avail) = if card.role == CardRole::Attachment {
+        crate::transcript_layout::user_message_geometry(card, area_width)
+    } else {
+        let gutter = card.horizontal_padding.min(area_width);
+        (gutter, area_width.saturating_sub(gutter).max(1))
+    };
     let style = card::shell_style(&theme, card.role);
     let fg = style.fg;
     let bg = style.bg.unwrap_or(theme.bg_soft);
@@ -278,11 +326,13 @@ fn content_card_lines(card: &ContentCard, state: &TuiApp, area_width: usize) -> 
             Style::default().fg(fg).bg(bg),
         ))
     };
-    let content_row = |content: String| {
-        let mut row = Line::from(vec![
-            Span::styled(" ".repeat(gutter), Style::default().fg(fg).bg(bg)),
-            Span::styled(content, Style::default().fg(fg).bg(bg)),
-        ]);
+    let content_row = |content: Line<'static>| {
+        let shell = Style::default().fg(fg).bg(bg);
+        let mut row = Line::from(vec![Span::styled(" ".repeat(gutter), shell)]);
+        row.spans.extend(content.spans.into_iter().map(|span| {
+            let style = shell.patch(content.style).patch(span.style);
+            span.style(style)
+        }));
         let used = row.width();
         if used < area_width {
             row.push_span(Span::styled(
@@ -311,14 +361,22 @@ fn content_card_lines(card: &ContentCard, state: &TuiApp, area_width: usize) -> 
         out.push(row);
     }
 
-    for line in card.content.lines() {
-        let chunks = if line.is_empty() {
-            vec![String::new()]
-        } else {
-            wrap_text(line, avail)
-        };
-        for chunk in chunks {
-            out.push(content_row(chunk));
+    if card.role == CardRole::Attachment {
+        out.extend(
+            user_markdown_lines(card, state, avail)
+                .into_iter()
+                .map(content_row),
+        );
+    } else {
+        for line in card.content.lines() {
+            let chunks = if line.is_empty() {
+                vec![String::new()]
+            } else {
+                wrap_text(line, avail)
+            };
+            for chunk in chunks {
+                out.push(content_row(Line::from(chunk)));
+            }
         }
     }
     out.push(fill_row());

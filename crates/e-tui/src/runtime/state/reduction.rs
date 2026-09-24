@@ -400,6 +400,7 @@ impl RuntimeState {
                 .position(|node| node.id() == &id)?;
             if let Some(node) = self.transcript.remove(position) {
                 if let DisplayItem::Card(card) = node.item {
+                    self.render.markdown_layout.remove(&card.id);
                     if let Some(unit) = card.unit {
                         self.render.units.remove(&unit);
                     }

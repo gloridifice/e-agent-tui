@@ -387,8 +387,8 @@ impl TuiApp {
     /// Keep normal-mode Preview on the newest eligible canonical display
     /// owner. Reading mode has a cursor-owned policy and is never stolen by
     /// live appends. History prepend preserves the newest identity.
-    /// Assistant Markdown, plain system/error output, and user-owned cards are
-    /// already complete in the main pane and are never followed automatically.
+    /// Assistant Markdown, plain system/error output, and user-owned cards
+    /// require explicit Reading selection and are never followed automatically.
     /// The merged Thinking node previews its reasoning content while anything
     /// has streamed in (an empty, still-running indicator carries nothing worth
     /// previewing); reasoning always previews even when the main transcript

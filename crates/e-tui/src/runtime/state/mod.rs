@@ -286,8 +286,12 @@ impl RuntimeState {
         }
     }
 
+    pub fn is_compacting(&self) -> bool {
+        self.session.active_compaction.is_some()
+    }
+
     pub fn is_agent_idle(&self) -> bool {
-        self.session.status == AgentStatus::Idle && !self.session.working
+        self.session.status == AgentStatus::Idle && !self.session.working && !self.is_compacting()
     }
 
     pub fn is_fully_idle(&self) -> bool {
@@ -482,6 +486,7 @@ impl RuntimeState {
         self.session.history_exhausted = false;
         self.session.working = false;
         self.session.active_commands = 0;
+        self.session.active_compaction = None;
         self.session.activity_epoch = None;
         // The title belongs to the session being left (welcome sets the
         // new one right after the switch).

@@ -1143,6 +1143,21 @@ impl RuntimeState {
                     self.apply_activity_mutation(mutation);
                 }
                 WorkflowProjection::Compaction { key, mutation } => {
+                    if !self.replaying {
+                        match &event.fact {
+                            TimelineFact::CompactionStarted { id, .. }
+                            | TimelineFact::AutoCompactionStarted { id } => {
+                                self.session.active_compaction = Some(id.clone());
+                            }
+                            TimelineFact::CompactionFinished { id, .. }
+                            | TimelineFact::AutoCompactionFinished { id, .. }
+                                if self.session.active_compaction.as_ref() == Some(id) =>
+                            {
+                                self.session.active_compaction = None;
+                            }
+                            _ => {}
+                        }
+                    }
                     if matches!(
                         event.fact,
                         TimelineFact::CompactionFinished { error: None, .. }

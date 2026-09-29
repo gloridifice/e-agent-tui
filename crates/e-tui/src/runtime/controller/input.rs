@@ -102,7 +102,15 @@ pub(super) fn apply_input_action(
     match action {
         InputAction::None | InputAction::ToggleMultiline => {}
         InputAction::Send(prompt) => {
-            submit_prompt(prompt, PromptDelivery::Asap, state, queue, &mut outcome)
+            let delivery = {
+                let app = state.lock().unwrap();
+                if !app.is_new_conversation() && app.is_compacting() {
+                    PromptDelivery::AfterTurn
+                } else {
+                    PromptDelivery::Asap
+                }
+            };
+            submit_prompt(prompt, delivery, state, queue, &mut outcome)
         }
         InputAction::SendAfterTurn(prompt) => submit_prompt(
             prompt,

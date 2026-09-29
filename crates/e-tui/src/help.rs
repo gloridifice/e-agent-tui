@@ -160,6 +160,7 @@ pub(crate) fn markdown(config: &crate::Config) -> String {
         "help.path_completion",
         "help.model_marks",
         "help.model_prefix",
+        "help.compaction_queue",
         "help.link_copy",
         "help.mouse_copy",
         "help.mouse_resize",

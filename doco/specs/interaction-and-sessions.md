@@ -21,6 +21,7 @@
 ## Prompt queues
 
 - Pending prompts preserve FIFO within ASAP and after-turn classes; ASAP candidates have dispatch/display priority.
+- Ordinary prompts submitted during live manual or automatic compaction MUST default to after-turn delivery, including remapped ASAP sends and model-marked prompts. Compaction MUST count as non-idle; these prompts remain queued until the current run and active commands settle, with existing model-restoration barriers preserved. Compaction completion alone MUST NOT release them while the run continues. History replay MUST NOT change live compaction state; session replacement clears it. New-session drafts, slash commands, and previously queued prompts retain their existing semantics.
 - Admission and clear operations MUST be serialized per session. Their results MUST carry authoritative queue state and session identity; stale-session results MUST be ignored.
 - Cancel removes ASAP candidates before after-turn candidates. A clear barrier prevents repeated cancellation and holds newer submissions until acknowledgment.
 - Failed admission remains visible without automatic retry. Failed clear preserves the backend snapshot and reports an error.

@@ -584,7 +584,9 @@ pub(super) fn apply_ordinary_key(
         let app = state.lock().unwrap();
         (
             app.is_new_conversation()
-                || (app.session.status == crate::SessionStatus::Idle && !app.has_active_command()),
+                || (app.session.status == crate::SessionStatus::Idle
+                    && !app.has_active_command()
+                    && !app.is_compacting()),
             app.catalogs.clone(),
             crate::input::layout::text_width(
                 crate::ui::input_bar_width(size.width, &app),

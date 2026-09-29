@@ -317,6 +317,7 @@ input.link_copy_hint: "Press the character after ~ to copy its link/path · Esc 
 help.link_copy: "Link copy: use the entry binding, then 1–9, 0, a–z. Esc cancels; only the latest completed answer is tagged."
 help.model_marks: "/model: Shift+letter marks/unmarks; letter selects. Mapped letters are reserved."
 help.model_prefix: "//<mark> prompt: temporary model (italic status); steering keeps it, after-turn restores."
+help.compaction_queue: "During compaction, ordinary sends (including ASAP) queue as ○ after-turn prompts. They wait for the current run to finish, not just compaction."
 model_prefix.invalid: "Use //<saved model letter> followed by a space and a prompt; the model must be available."
 model_prefix.empty: "Add a prompt or image after the model mark."
 model_prefix.loading: "Wait for the current model selection before using a temporary model."

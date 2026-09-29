@@ -1,0 +1,520 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#242225">
+  <meta name="description" content="e is a concise, attention-friendly terminal UI for coding agents. A lightweight frontend for Pi and DeepSeek Harness, without changing either runtime.">
+  <title>e — A little less UI. A lot more focus.</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #242225;
+      --fg: #e9e2de;
+      --muted: #ad9fa4;
+      --line: #453d42;
+      --peach: #fecdb2;
+      --night: #2b292d;
+      --ash: #383539;
+      --bark: #6f5d63;
+      --umber: #4d424b;
+      --coral: #ffa07a;
+      --honey: #f5d76e;
+      --mist: #d1d1e0;
+      --sage: #b1b695;
+      --serif: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+      --mono: "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--serif); -webkit-font-smoothing: antialiased; }
+    a { color: inherit; text-decoration: none; }
+    button, input { font: inherit; }
+    button { cursor: pointer; color: inherit; touch-action: manipulation; }
+    button:disabled { opacity: .4; cursor: default; }
+    button:focus-visible, a:focus-visible, input:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--peach); outline-offset: 5px; }
+    [hidden] { display: none !important; }
+    ::selection { background: var(--peach); color: var(--bg); }
+    .wrap { width: min(1120px, calc(100% - 96px)); margin: auto; }
+    .skip-link { position: fixed; top: -100px; left: 20px; z-index: 10; padding: 12px; background: var(--peach); color: var(--bg); }
+    .skip-link:focus { top: 12px; }
+    .site-header { height: 105px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
+    .logo { font: italic 60px/.8 Georgia, serif; color: var(--peach); padding-right: 6px; }
+    .source-link { font-size: 14px; color: var(--muted); }
+    .source-link:hover { color: var(--peach); }
+    .hero { display: grid; grid-template-columns: 1.6fr 1fr; align-items: end; gap: 70px; padding: 63px 0 49px; }
+    h1 { font-size: clamp(48px, 5.4vw, 76px); line-height: 1.08; letter-spacing: -.045em; font-weight: 400; margin: 0; }
+    h1 em { color: var(--peach); font-weight: 400; }
+    .intro { padding-bottom: 3px; }
+    .intro p { max-width: 320px; font-size: 17px; line-height: 1.65; color: var(--muted); margin: 0 0 22px; }
+    .install-button { display: inline-flex; align-items: center; justify-content: center; gap: 35px; padding: 11px 21px; min-height: 44px; background: var(--peach); color: var(--bg); border: 1px solid var(--peach); border-radius: 3px; font-size: 15px; transition: background .2s; }
+    .install-button:hover { background: #ffddc9; }
+    .install-button span { font-family: var(--mono); }
+
+    .demo { min-width: 0; }
+    .demo-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 13px; }
+    .runtime-switch { display: flex; gap: 21px; }
+    .runtime-switch button { padding: 5px 1px; background: none; border: 0; border-bottom: 1px solid transparent; color: var(--muted); font-size: 15px; }
+    .runtime-switch button[aria-pressed="true"] { color: var(--peach); border-color: var(--peach); }
+    .playback { display: flex; gap: 20px; }
+    .playback button { border: 0; background: none; color: var(--muted); font-size: 13px; padding: 5px 0; }
+    .playback button:not(:disabled):hover { color: var(--peach); }
+    .terminal { --row: 20px; background: var(--night); border: 1px solid #66545d; border-radius: 7px; overflow: hidden; color: var(--mist); font: 12px/var(--row) var(--mono); }
+    .terminal button:focus-visible, .terminal input:focus-visible, .terminal [tabindex]:focus-visible { outline-offset: -2px; }
+    .window-bar { height: 40px; display: flex; align-items: center; padding: 0 18px; gap: 22px; border-bottom: 1px solid #ffffff09; font-size: 10px; color: var(--bark); }
+    .window-dots { display: flex; gap: 6px; }
+    .window-dots i { width: 7px; height: 7px; border-radius: 50%; background: #78646c; }
+    .window-dots i:nth-child(2) { background: #91846b; }
+    .window-dots i:nth-child(3) { background: #80866b; }
+    .window-command { margin-left: auto; }
+    .terminal-body { --split: 64%; display: grid; grid-template-columns: minmax(0, var(--split)) 1ch minmax(0, 1fr); height: 460px; }
+    .conversation { min-width: 0; display: flex; flex-direction: column; overflow: hidden; padding: 0 1ch; }
+    .transcript { flex: 1; min-height: 0; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--bark) transparent; }
+    .tui-rule { height: var(--row); background: linear-gradient(to right, var(--umber) 0 2ch, var(--bark) 2ch calc(100% - 2ch), var(--umber) calc(100% - 2ch)) center / 100% 1px no-repeat; }
+    .user-message { margin-bottom: var(--row); }
+    .user-message p { margin: 0; padding: 0 2ch; overflow-wrap: anywhere; }
+    .thinking { display: flex; gap: 1ch; padding-left: 2ch; color: var(--umber); height: var(--row); }
+    .spinner { width: 1ch; flex-shrink: 0; }
+    .is-thinking .spinner { color: var(--honey); }
+    .is-thinking #thinking-label { background: linear-gradient(90deg, var(--umber) 30%, var(--bark) 50%, var(--umber) 70%); background-size: 300% 100%; background-clip: text; -webkit-background-clip: text; color: transparent; animation: thinking-sweep 1.8s linear infinite; }
+    .activity-list { display: block; }
+    .activity { display: flex; align-items: baseline; gap: 0; width: 100%; height: var(--row); padding: 0 1ch 0 2ch; color: var(--umber); background: none; border: 0; text-align: left; font: inherit; }
+    .tool-indicator { flex-shrink: 0; margin-right: 1ch; }
+    .tool-name { color: var(--bark); margin-right: 1ch; }
+    .tool-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tool-detail { color: var(--bark); white-space: pre; }
+    .answer { margin-top: var(--row); }
+    .answer p { font: inherit; margin: 0; }
+    .answer .answer-title { color: var(--peach); font-weight: 600; margin-bottom: var(--row); }
+    .answer code { font-family: inherit; color: #f6b6c9; }
+    .build-result { margin-top: var(--row) !important; }
+    .build-result span { color: var(--sage); }
+    .composer { flex-shrink: 0; }
+    .model-line { display: flex; align-items: center; height: var(--row); white-space: nowrap; color: var(--bark); }
+    .model-label { display: inline-flex; align-items: baseline; gap: 1ch; min-width: 0; max-width: calc(100% - 6ch); padding: 0 1ch; margin-left: 2ch; background: var(--night); }
+    #frontend { font-style: italic; flex-shrink: 0; }
+    .is-working #frontend { animation: frontend-wave 1.8s ease-in-out infinite; }
+    .is-paused #frontend, .is-paused #thinking-label { animation-play-state: paused; }
+    #model-name { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+    .effort, #mode { flex-shrink: 0; }
+    #prompt-form { display: flex; align-items: center; gap: 1ch; height: var(--row); margin: 0; }
+    .prompt-mark { color: var(--bark); width: 1ch; flex-shrink: 0; }
+    .editor { position: relative; flex: 1; min-width: 0; height: var(--row); overflow: hidden; }
+    #prompt-input { position: absolute; inset: 0; z-index: 1; width: 100%; padding: 0; border: 0; background: transparent; color: transparent; caret-color: transparent; font: inherit; }
+    .input-display { position: absolute; inset: 0 auto 0 0; white-space: pre; pointer-events: none; }
+    #input-cursor { color: var(--night); background: var(--mist); }
+    #input-cursor.empty { background: none; color: var(--mist); }
+    .terminal-status, .terminal-title { display: flex; justify-content: space-between; gap: 2ch; color: var(--bark); height: var(--row); white-space: nowrap; }
+    .terminal-status { margin-top: var(--row); }
+    .terminal-status > span:first-child, .terminal-title > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .terminal-title > span:last-child { flex-shrink: 0; }
+    .help-hint { background: none; padding: 0; border: 0; color: inherit; font: inherit; }
+    .pane-separator { position: relative; cursor: col-resize; touch-action: none; z-index: 1; }
+    .pane-separator::before { content: "│\A│\A│"; position: absolute; top: 50%; transform: translateY(-50%); white-space: pre; color: var(--bark); }
+    .pane-separator::after { content: ""; position: absolute; inset: 0 -4px; }
+    .preview { min-width: 0; min-height: 0; display: flex; flex-direction: column; justify-content: center; padding: 0 1ch; overflow: hidden; }
+    .preview-content { max-height: 100%; overflow: auto; scrollbar-width: thin; scrollbar-color: var(--bark) transparent; }
+    .preview-content p { margin: 0; }
+    .preview-meta { color: var(--bark); overflow-wrap: anywhere; }
+    .preview-tool { color: var(--umber); }
+    .preview-path { color: var(--mist); overflow-wrap: anywhere; }
+    .preview-gap { height: var(--row); }
+    .code-line { display: flex; white-space: pre; min-width: 0; font: inherit; }
+    .code-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .line-no { width: 5ch; flex-shrink: 0; text-align: right; padding-right: 1ch; color: var(--bark); user-select: none; }
+    .diff-gutter { flex-shrink: 0; width: 2ch; }
+    .diff-divider { flex-shrink: 0; width: 2ch; color: var(--umber); }
+    .kw, .fn { color: var(--coral); }
+    .str { color: var(--sage); }
+    .ty { color: var(--peach); }
+    .code-line.add { background: #373a38; }
+    .code-line.remove { background: #413036; }
+    .add .line-no, .add .diff-gutter { color: var(--sage); }
+    .remove .line-no, .remove .diff-gutter { color: #e06b75; }
+    .shell-output { color: var(--bark); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .shell-command { color: var(--mist); }
+    .shell-command .shell-prompt { color: var(--coral); }
+    .shell-command .executable { color: var(--peach); }
+    .shell-output .success { color: var(--sage); }
+    .demo-caption { display: flex; justify-content: space-between; gap: 25px; font-size: 12px; line-height: 1.6; color: var(--muted); margin: 13px 0 0; }
+    .preview-hint { white-space: nowrap; }
+    .site-footer { display: flex; justify-content: space-between; gap: 25px; padding: 30px 0; margin-top: 44px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+    .site-footer a:hover { color: var(--peach); }
+
+    dialog { position: fixed; margin: auto; width: min(535px, calc(100% - 32px)); max-height: calc(100dvh - 40px); overflow-y: auto; padding: 29px; background: var(--bg); color: var(--fg); border: 1px solid var(--bark); border-radius: 7px; }
+    dialog::backdrop { background: #171518c7; backdrop-filter: blur(6px); }
+    .dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .dialog-header h2 { font-weight: 400; font-size: 32px; letter-spacing: -.03em; margin: 0; }
+    .dialog-header button { border: 0; background: none; font-size: 26px; color: var(--muted); padding: 3px 7px; }
+    .dialog-description { color: var(--muted); font-size: 15px; line-height: 1.7; margin: 12px 0 24px; }
+    .setup-tabs { display: flex; gap: 25px; border-bottom: 1px solid var(--line); }
+    .setup-tabs button { background: none; color: var(--muted); border: 0; border-bottom: 1px solid transparent; padding: 10px 0; font-size: 15px; }
+    .setup-tabs button[aria-pressed="true"] { color: var(--peach); border-bottom-color: var(--peach); }
+    .prerequisites, .install-note { color: var(--muted); font-size: 13px; line-height: 1.75; }
+    .prerequisites { margin: 20px 0 12px; }
+    .install-code { position: relative; background: var(--night); border: 1px solid var(--line); padding: 40px 16px 15px; border-radius: 3px; }
+    .install-code pre { font: 11px/2.2 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--peach); margin: 0; }
+    .install-code button { position: absolute; top: 9px; right: 12px; border: 0; background: none; color: var(--muted); font-size: 12px; padding: 4px; }
+    .copy-status { color: var(--peach); font-size: 12px; line-height: 1.6; }
+    .dialog-links { display: flex; justify-content: space-between; gap: 20px; font-size: 13px; margin: 24px 0 19px; }
+    .dialog-links a:hover { color: var(--peach); }
+    .platform-note { color: var(--muted); font-size: 12px; line-height: 1.8; padding-top: 16px; border-top: 1px solid var(--line); margin-bottom: 0; }
+    .demo-help { color: var(--muted); font-size: 14px; line-height: 1.8; }
+    .demo-help dt { color: var(--peach); margin-top: 14px; }
+    .demo-help dd { margin: 0; }
+    @keyframes thinking-sweep { 0% { background-position: 150% 0; } 89%, 100% { background-position: -50% 0; } }
+    @keyframes frontend-wave { 0%, 100% { color: var(--honey); } 50% { color: var(--coral); } }
+
+    @media (max-width: 1100px) {
+      .wrap { width: calc(100% - 64px); }
+      .hero { gap: 40px; grid-template-columns: 1.5fr 1fr; }
+      h1 { font-size: 61px; }
+      .intro p { font-size: 16px; }
+      .terminal { font-size: 11px; }
+    }
+    @media (max-width: 800px) {
+      .wrap { width: calc(100% - 40px); }
+      .site-header { height: 83px; }
+      .logo { font-size: 51px; }
+      .hero { display: block; padding: 38px 0 30px; }
+      h1 { font-size: clamp(45px, 8vw, 66px); line-height: 1.12; }
+      .intro { margin-top: 22px; }
+      .intro p { font-size: 16px; max-width: 430px; margin-bottom: 19px; }
+      .install-button { font-size: 14px; padding: 10px 19px; }
+      .terminal-body { display: block; height: auto; }
+      .terminal { font-size: 11px; --row: 20px; }
+      .conversation { height: 440px; }
+      .pane-separator { display: none; }
+      .preview { display: none; }
+      .terminal-title > span:first-child { max-width: 12ch; }
+      .demo-caption { display: block; font-size: 11px; max-width: 370px; }
+      .preview-hint { display: none; }
+      .site-footer { font-size: 12px; margin-top: 31px; padding: 23px 0; }
+      dialog { padding: 23px; }
+      .dialog-header h2 { font-size: 29px; }
+      .dialog-links { font-size: 12px; }
+    }
+    @media (max-width: 370px) {
+      .wrap { width: calc(100% - 32px); }
+      h1 { font-size: 40px; }
+      .site-footer { font-size: 11px; gap: 16px; }
+      .dialog-links { flex-direction: column; gap: 12px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <div class="wrap">
+    <header class="site-header">
+      <a class="logo" href="#" aria-label="e home">e</a>
+      <a class="source-link" href="https://github.com/gloridifice/e" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
+    </header>
+    <main id="main">
+      <section class="hero">
+        <h1>A little less UI.<br><em>A lot more focus.</em></h1>
+        <div class="intro">
+          <p>A concise terminal UI for Pi and DeepSeek Harness. Your agent stays the same. The interface gets out of the way.</p>
+          <button class="install-button" type="button" id="open-setup">Get started <span aria-hidden="true">→</span></button>
+        </div>
+      </section>
+      <section class="demo" id="experience" aria-label="Scripted terminal demonstration">
+        <div class="demo-toolbar">
+          <div class="runtime-switch" role="group" aria-label="Example agent runtime">
+            <button type="button" data-runtime="pi" aria-pressed="true">Pi</button>
+            <button type="button" data-runtime="dsh" aria-pressed="false">DSH</button>
+          </div>
+          <div class="playback">
+            <button type="button" id="pause" aria-label="Pause demo">Pause</button>
+            <button type="button" id="replay" aria-label="Replay demo">↻ Replay</button>
+          </div>
+        </div>
+        <div class="terminal">
+          <div class="window-bar">
+            <div class="window-dots" aria-hidden="true"><i></i><i></i><i></i></div>
+            <span>hello-world</span><span class="window-command" id="executable">pie</span>
+          </div>
+          <div class="terminal-body">
+            <div class="conversation">
+              <div class="transcript" id="transcript">
+                <div class="user-message"><div class="tui-rule" aria-hidden="true"></div><p id="user-prompt">Handle blank names in the greeting function.</p><div class="tui-rule" aria-hidden="true"></div></div>
+                <div class="thinking"><span class="spinner" id="spinner">⠋</span><span id="thinking-label">Thinking...</span></div>
+                <div class="activity-list" aria-label="Tool activity; select a tool to view its output">
+                  <button class="activity" type="button" data-tool="read" data-step="1" aria-pressed="false" aria-controls="preview-content" hidden><span class="tool-indicator">•</span><span class="tool-name">read</span><span class="tool-path">src/greeting.rs</span><span class="tool-detail"> · 0.1s</span></button>
+                  <button class="activity" type="button" data-tool="edit" data-step="2" aria-pressed="false" aria-controls="preview-content" hidden><span class="tool-indicator">•</span><span class="tool-name">edit</span><span class="tool-path">src/greeting.rs</span><span class="tool-detail"> · 0.2s</span></button>
+                  <button class="activity" type="button" data-tool="bash" data-step="3" aria-pressed="false" aria-controls="preview-content" hidden><span class="tool-indicator">•</span><span class="tool-name">bash</span><span class="tool-path">cargo check</span><span class="tool-detail"> · 0.4s</span></button>
+                </div>
+                <div class="answer" data-step="4" hidden>
+                  <p class="answer-title">Small change. Friendlier greeting.</p>
+                  <p>Blank names now fall back to <code>world</code>.<br>Leading and trailing whitespace is trimmed.</p>
+                  <p class="build-result"><span>✓</span> <code>cargo check</code> passes.</p>
+                </div>
+              </div>
+              <div class="composer">
+                <div class="model-line tui-rule"><span class="model-label"><span id="frontend">e·pi</span><span id="mode" hidden>standard</span><span id="model-name">claude-sonnet-4-6</span><span class="effort" id="effort">high</span></span></div>
+                <form id="prompt-form">
+                  <label class="prompt-mark" for="prompt-input">❯</label>
+                  <div class="editor">
+                    <div class="input-display" aria-hidden="true"><span id="input-before"></span><span id="input-cursor" class="empty">█</span><span id="input-after"></span></div>
+                    <input id="prompt-input" aria-label="Demo prompt: type and press Enter to replay the same sample task" aria-describedby="demo-note" autocomplete="off" spellcheck="false" maxlength="240" enterkeyhint="send">
+                  </div>
+                </form>
+                <div class="tui-rule" aria-hidden="true"></div>
+                <div class="terminal-status"><span id="session-metrics">CH82% 1%/200k $0.00</span><button class="help-hint" type="button" id="open-help" aria-label="Help for this browser demo">Ctrl+H Help</button></div>
+                <div class="terminal-title"><span>Greeting fallback</span><span>~/hello-world</span></div>
+              </div>
+            </div>
+            <div class="pane-separator" role="separator" aria-label="Resize Preview pane" aria-orientation="vertical" aria-valuemin="35" aria-valuemax="70" aria-valuenow="64" tabindex="0"></div>
+            <aside class="preview" aria-label="Current tool preview"><div class="preview-content" id="preview-content"></div></aside>
+          </div>
+        </div>
+        <p class="demo-caption"><span id="demo-note">A scripted sample, not a live agent. Nothing leaves your browser.</span><span class="preview-hint">Select a tool to inspect it ↗</span></p>
+      </section>
+    </main>
+    <footer class="site-footer">
+      <span>For Pi &amp; DeepSeek Harness.</span>
+      <a href="https://github.com/gloridifice/e#development" target="_blank" rel="noopener noreferrer">Still early. Issues welcome.</a>
+    </footer>
+  </div>
+
+  <dialog id="setup-dialog" aria-labelledby="setup-title">
+    <div class="dialog-header"><h2 id="setup-title">A quieter place to work.</h2><button type="button" id="close-setup" aria-label="Close installation instructions">×</button></div>
+    <p class="dialog-description">Choose your runtime. Open e in your project.</p>
+    <div class="setup-tabs" role="group" aria-label="Installation runtime"><button type="button" data-install-runtime="pi" aria-pressed="true">Pi</button><button type="button" data-install-runtime="dsh" aria-pressed="false">DeepSeek Harness</button></div>
+    <p class="prerequisites">Requires Git, Node.js with npm, and Rust with Cargo.</p>
+    <div class="install-code"><pre id="install-command"></pre><button type="button" id="copy-install" aria-label="Copy installation commands">Copy</button></div>
+    <p class="copy-status" id="copy-status" role="status" hidden></p>
+    <p class="install-note" id="install-note"></p>
+    <div class="dialog-links"><a href="https://github.com/gloridifice/e/releases" target="_blank" rel="noopener noreferrer">Prebuilt binaries ↗</a><a id="install-docs" href="https://github.com/gloridifice/e#quick-start-pi" target="_blank" rel="noopener noreferrer">Full setup guide ↗</a></div>
+    <p class="platform-note">Windows and PowerShell are the primary supported environment. Prebuilt binaries are available for Windows x64 and Linux x64; Rust is not required for these downloads. Agent runtime prerequisites still apply.</p>
+  </dialog>
+  <dialog id="help-dialog" aria-labelledby="help-title">
+    <div class="dialog-header"><h2 id="help-title">Demo controls</h2><button type="button" id="close-help" aria-label="Close demo help">×</button></div>
+    <dl class="demo-help"><dt>Replay / Pause</dt><dd>Watch a scripted read → edit → check workflow.</dd><dt>Tool rows</dt><dd>Select a tool to view its output. On wide screens, drag the divider to resize Preview.</dd><dt>Composer</dt><dd>Type and press Enter. Every prompt replays the same sample; no model or shell is connected.</dd><dt>Pi / DSH</dt><dd>Switch the example runtime and its installation instructions.</dd></dl>
+  </dialog>
+  <noscript><p style="padding:20px;text-align:center">Enable JavaScript for the demo, or <a href="https://github.com/gloridifice/e#quick-start-pi" style="text-decoration:underline">read the setup guide</a>.</p></noscript>
+
+  <script>
+    (() => {
+      'use strict';
+      const $ = selector => document.querySelector(selector);
+      const all = selector => [...document.querySelectorAll(selector)];
+      const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const demo = $('.demo');
+      const defaultPrompt = 'Handle blank names in the greeting function.';
+      const source = [
+        '<span class="kw">pub fn</span> greet(name: &amp;<span class="ty">str</span>) -&gt; <span class="ty">String</span> {',
+        '    format!(<span class="str">"Hello, {}!"</span>, name)',
+        '}'
+      ];
+      const patch = [
+        [' ', source[0]],
+        ['−', source[1]],
+        ['+', '    <span class="kw">let</span> name = name.trim();'],
+        ['+', '    <span class="kw">let</span> name = <span class="kw">if</span> name.is_empty() {'],
+        ['+', '        <span class="str">"world"</span>'],
+        ['+', '    } <span class="kw">else</span> { name };'],
+        ['+', ''],
+        ['+', '    format!(<span class="str">"Hello, {name}!"</span>)'],
+        [' ', '}']
+      ];
+      const installCommands = {
+        pi: 'npm install --global @earendil-works/pi-coding-agent\ncargo install e-pi\npie',
+        dsh: 'npm install -g pnpm\nnpm install -g @deepseek-ai/dsh\ncargo install e-dsh\ndshe setup\ndshe'
+      };
+      let stage = 0;
+      let timer = null;
+      let paused = false;
+      let runtime = 'pi';
+
+      function preview(tool) {
+        all('[data-tool]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.tool === tool)));
+        // Only static sample markup enters this preview. Prompts use textContent.
+        if (tool === 'read') {
+          $('#preview-content').innerHTML = '<p class="preview-tool">read</p><p class="preview-path">src/greeting.rs</p><div class="preview-gap"></div>' + source.map((line, index) => '<div class="code-line"><span class="line-no">' + (index + 1) + '</span><span class="code-text">' + line + '</span></div>').join('');
+        } else if (tool === 'edit') {
+          let oldLine = 1, newLine = 1;
+          $('#preview-content').innerHTML = '<p class="preview-meta">src/greeting.rs</p>' + patch.map(([sign, line]) => {
+            const kind = sign === '+' ? 'add' : sign === '−' ? 'remove' : 'context';
+            const number = sign === '−' ? oldLine : newLine;
+            if (sign !== '+') oldLine++;
+            if (sign !== '−') newLine++;
+            return '<div class="code-line ' + kind + '"><span class="diff-gutter">▌</span><span class="line-no">' + number + '</span><span class="diff-divider">│ </span><span class="code-text">' + (line || ' ') + '</span></div>';
+          }).join('');
+        } else {
+          $('#preview-content').innerHTML = '<p class="preview-tool">bash</p><p class="shell-command"><span class="shell-prompt">$ </span><span class="executable">cargo</span> check</p><p class="preview-meta">4 lines, 0.4s</p><div class="preview-gap"></div><div class="shell-output"><p>    <span class="success">Checking</span> hello-world v0.1.0</p><p>    <span class="success">Finished</span> dev profile</p><p>    [unoptimized + debuginfo]</p><p>    target(s) in 0.4s</p></div>';
+        }
+        $('#preview-content').scrollTop = 0;
+      }
+
+      function render() {
+        all('[data-step]').forEach(element => { element.hidden = Number(element.dataset.step) > stage; });
+        demo.classList.toggle('is-thinking', stage === 0);
+        demo.classList.toggle('is-working', stage < 4);
+        demo.classList.toggle('is-paused', paused);
+        $('#spinner').textContent = stage === 0 ? '⠋' : '•';
+        $('#thinking-label').textContent = 'Thinking...';
+        $('#session-metrics').textContent = 'CH82% ' + [1, 2, 3, 4, 4][stage] + '%/' + (runtime === 'pi' ? '200k' : '128k') + (stage < 2 ? ' $0.00' : ' $0.01');
+        $('#pause').disabled = stage === 4;
+        $('#pause').textContent = paused ? 'Play' : 'Pause';
+        $('#pause').setAttribute('aria-label', paused ? 'Play demo' : 'Pause demo');
+        const transcript = $('#transcript');
+        transcript.scrollTop = transcript.scrollHeight;
+      }
+
+      function schedule() {
+        clearTimeout(timer);
+        if (paused || stage === 4 || document.hidden) return;
+        timer = setTimeout(() => {
+          stage++;
+          if (stage < 4) preview(stage === 1 ? 'read' : stage === 2 ? 'edit' : 'bash');
+          render();
+          schedule();
+        }, [1300, 1400, 1500, 1500][stage]);
+      }
+
+      function restart(prompt = defaultPrompt) {
+        clearTimeout(timer);
+        stage = 0;
+        paused = false;
+        $('#user-prompt').textContent = prompt;
+        preview('read');
+        render();
+        schedule();
+      }
+
+      $('#replay').addEventListener('click', () => restart($('#user-prompt').textContent));
+      $('#pause').addEventListener('click', () => {
+        paused = !paused;
+        render();
+        schedule();
+      });
+      all('[data-tool]').forEach(button => button.addEventListener('click', () => preview(button.dataset.tool)));
+      $('#prompt-form').addEventListener('submit', event => {
+        event.preventDefault();
+        const input = $('#prompt-input');
+        restart(input.value.trim() || defaultPrompt);
+        input.value = '';
+        syncCursor();
+        $('#demo-note').textContent = 'Replaying the same sample task with your prompt. No model is connected.';
+      });
+
+      const promptInput = $('#prompt-input');
+      const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+      function syncCursor() {
+        const value = promptInput.value;
+        const cursor = promptInput.selectionStart ?? value.length;
+        const cell = [...segmenter.segment(value)].find(part => part.index <= cursor && part.index + part.segment.length > cursor);
+        const offset = cell?.index ?? cursor;
+        $('#input-before').textContent = value.slice(0, offset);
+        $('#input-cursor').textContent = cell?.segment ?? '█';
+        $('#input-cursor').classList.toggle('empty', !cell);
+        $('#input-after').textContent = value.slice(offset + (cell?.segment.length ?? 0));
+        $('.input-display').style.transform = 'translateX(' + -promptInput.scrollLeft + 'px)';
+      }
+      ['input', 'select', 'click', 'keyup', 'scroll', 'focus'].forEach(event => promptInput.addEventListener(event, syncCursor));
+      document.addEventListener('selectionchange', () => { if (document.activeElement === promptInput) syncCursor(); });
+
+      function updateInstall(value) {
+        all('[data-install-runtime]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.installRuntime === value)));
+        $('#install-command').textContent = installCommands[value];
+        $('#install-note').textContent = value === 'pi'
+          ? 'pie launches the official Pi RPC runtime and reuses your native models, credentials, extensions, and sessions.'
+          : 'dshe starts its dedicated DSH service automatically. Use /login for your API key or proxy, then /model to choose a model.';
+        $('#install-docs').href = 'https://github.com/gloridifice/e#quick-start-' + value;
+        $('#copy-install').textContent = 'Copy';
+        $('#copy-status').hidden = true;
+      }
+
+      all('[data-runtime]').forEach(button => button.addEventListener('click', () => {
+        runtime = button.dataset.runtime;
+        all('[data-runtime]').forEach(item => item.setAttribute('aria-pressed', String(item === button)));
+        $('#executable').textContent = runtime === 'pi' ? 'pie' : 'dshe';
+        $('#frontend').textContent = 'e·' + runtime;
+        $('#model-name').textContent = runtime === 'pi' ? 'claude-sonnet-4-6' : 'deepseek-chat';
+        $('#mode').hidden = runtime === 'pi';
+        $('#effort').textContent = runtime === 'pi' ? 'high' : 'off';
+        render();
+      }));
+      all('[data-install-runtime]').forEach(button => button.addEventListener('click', () => updateInstall(button.dataset.installRuntime)));
+
+      const setup = $('#setup-dialog');
+      $('#open-setup').addEventListener('click', () => { updateInstall(runtime); setup.showModal(); });
+      $('#close-setup').addEventListener('click', () => setup.close());
+      const help = $('#help-dialog');
+      $('#open-help').addEventListener('click', () => help.showModal());
+      $('#close-help').addEventListener('click', () => help.close());
+      $('.terminal').addEventListener('keydown', event => {
+        if (event.ctrlKey && event.key.toLowerCase() === 'h') {
+          event.preventDefault();
+          help.showModal();
+        }
+      });
+      [setup, help].forEach(dialog => dialog.addEventListener('click', event => {
+        const rect = dialog.getBoundingClientRect();
+        if (event.target === dialog && (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom)) dialog.close();
+      }));
+      $('#copy-install').addEventListener('click', async () => {
+        const status = $('#copy-status');
+        try {
+          await navigator.clipboard.writeText($('#install-command').textContent);
+          $('#copy-install').textContent = 'Copied ✓';
+          status.textContent = 'Installation commands copied.';
+        } catch {
+          const range = document.createRange();
+          range.selectNodeContents($('#install-command'));
+          const selection = window.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+          status.textContent = 'Clipboard unavailable. Commands selected — press Ctrl+C or ⌘C.';
+        }
+        status.hidden = false;
+      });
+
+      const separator = $('.pane-separator');
+      const terminalBody = $('.terminal-body');
+      function resizeSplit(value) {
+        const percent = Math.round(Math.max(35, Math.min(70, value)));
+        terminalBody.style.setProperty('--split', percent + '%');
+        separator.setAttribute('aria-valuenow', String(percent));
+      }
+      separator.addEventListener('pointerdown', event => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        separator.setPointerCapture(event.pointerId);
+      });
+      separator.addEventListener('pointermove', event => {
+        if (!separator.hasPointerCapture(event.pointerId)) return;
+        const rect = terminalBody.getBoundingClientRect();
+        resizeSplit((event.clientX - rect.left) / rect.width * 100);
+      });
+      separator.addEventListener('pointerup', event => {
+        if (separator.hasPointerCapture(event.pointerId)) separator.releasePointerCapture(event.pointerId);
+      });
+      separator.addEventListener('keydown', event => {
+        if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+        event.preventDefault();
+        const current = $('.conversation').getBoundingClientRect().width / terminalBody.getBoundingClientRect().width * 100;
+        resizeSplit(current + (event.key === 'ArrowLeft' ? -2 : 2));
+      });
+      document.addEventListener('visibilitychange', () => { if (document.hidden) clearTimeout(timer); else schedule(); });
+      const spinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+      let spinnerFrame = 0;
+      if (!reducedMotion) setInterval(() => {
+        if (stage === 0 && !paused && !document.hidden) $('#spinner').textContent = spinnerFrames[spinnerFrame++ % spinnerFrames.length];
+      }, 80);
+      updateInstall('pi');
+      if (reducedMotion) {
+        stage = 4;
+        preview('bash');
+        render();
+      } else {
+        restart();
+      }
+    })();
+  </script>
+</body>
+</html>

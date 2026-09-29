@@ -146,11 +146,18 @@ pub fn render(
     let visible_lines = visible_lines
         .into_iter()
         .map(|(source_index, line)| {
-            let line = if nowrap_from.is_some_and(|start| source_index >= start) {
+            let mut line = if nowrap_from.is_some_and(|start| source_index >= start) {
                 clip_line(line, inner_width)
             } else {
                 line
             };
+            // Row backgrounds fill the pane, but padding is not reveal source.
+            if line.style.bg.is_some() {
+                let padding = inner_width.saturating_sub(line.width());
+                if padding > 0 {
+                    line.push_span(Span::styled(" ".repeat(padding), line.style));
+                }
+            }
             (source_index, line)
         })
         .collect::<Vec<_>>();

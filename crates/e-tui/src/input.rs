@@ -525,7 +525,11 @@ pub enum InputAction {
         images: Vec<PromptImage>,
         original: PromptInput,
     },
-    /// Interrupt the agent (Ctrl+C while running).
+    Shell {
+        command: String,
+        original: PromptInput,
+    },
+    /// Interrupt the active local command or agent.
     Interrupt,
     /// Quit the TUI (Ctrl+C while idle).
     Quit,
@@ -1602,7 +1606,12 @@ impl InputState {
         if self.multiline {
             self.multiline = false;
         }
-        if command_line.starts_with('/') && !command_line.starts_with("//") {
+        if let Some(command) = command_line.strip_prefix('!') {
+            InputAction::Shell {
+                command: command.to_owned(),
+                original: prompt,
+            }
+        } else if command_line.starts_with('/') && !command_line.starts_with("//") {
             InputAction::Command {
                 line: command_line,
                 images,

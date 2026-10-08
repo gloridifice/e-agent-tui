@@ -29,6 +29,8 @@ use crate::{
     theme::Theme,
 };
 
+mod shell;
+
 pub const BREATH_CYCLE_MS: u128 = 1600;
 pub const ACTIVITY_SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 pub const SETTLE_TRANSITION_MS: u128 = 500;
@@ -255,6 +257,7 @@ pub struct TuiApp {
     pub frontend: FrontendKind,
     pub config: Config,
     pub session: SessionModel,
+    pub shell: crate::shell::ShellState,
     pub link_copy: crate::link_copy::LinkCopyState,
     pub timeline: TimelineModel,
     pub catalogs: CatalogModel,
@@ -409,7 +412,11 @@ impl TuiApp {
             .nodes()
             .iter()
             .rev()
-            .find(|node| is_normal_preview_eligible(&node.item))
+            .find(|node| {
+                is_normal_preview_eligible(&node.item)
+                    && (self.session.new_conversation.is_none()
+                        || self.shell.draft_ids.contains(node.id()))
+            })
             .map(|node| (node.id().clone(), node.revision(), node.item.clone()));
         let Some((id, node_revision, item)) = candidate else {
             self.select_preview(None);
@@ -443,7 +450,11 @@ impl TuiApp {
                     ),
                     DisplayItem::Thinking(node) => PreviewContent::Reasoning(node.copy_source),
                     DisplayItem::Composite { detail, .. } => {
-                        PreviewContent::PlainText(detail.copy_source)
+                        if detail.role == CardRole::Terminal {
+                            PreviewContent::Terminal(detail.copy_source)
+                        } else {
+                            PreviewContent::PlainText(detail.copy_source)
+                        }
                     }
                 };
                 PreviewRef::Inline {
@@ -475,7 +486,7 @@ impl TuiApp {
     /// reconcile path must hold the pane empty while a draft is pending.
     /// Returns `true` when the draft page forced the pane empty.
     fn hold_draft_preview_empty(&mut self) -> bool {
-        if self.session.new_conversation.is_some() {
+        if self.session.new_conversation.is_some() && self.shell.draft_ids.is_empty() {
             self.select_preview(None);
             return true;
         }
@@ -561,6 +572,11 @@ impl TuiApp {
 
     pub fn rebuild_reading_model(&mut self) {
         self.reading_document = ReadingDocument::derive(&self.timeline, &self.render, &self.config);
+        if self.session.new_conversation.is_some() {
+            self.reading_document
+                .blocks
+                .retain(|block| self.shell.draft_ids.contains(&block.owner));
+        }
         self.reading_layout =
             ReadingLayout::derive(&self.timeline, &self.render, &self.reading_document);
         if self
@@ -620,6 +636,7 @@ impl TuiApp {
         scroll: &mut ScrollState,
         viewport_height: usize,
     ) -> bool {
+        let previous = self.reading_terminal_owner().cloned();
         let moved = self
             .reading
             .as_mut()
@@ -627,6 +644,7 @@ impl TuiApp {
         if moved {
             self.sync_reading_preview();
             self.keep_reading_visible(scroll, viewport_height);
+            self.refresh_terminal_reading_geometry(previous, scroll, viewport_height);
         }
         moved
     }
@@ -647,12 +665,14 @@ impl TuiApp {
         scroll: &mut ScrollState,
         viewport_height: usize,
     ) -> bool {
+        let previous = self.reading_terminal_owner().cloned();
         let moved = self.reading.as_mut().is_some_and(|reading| {
             reading.move_item(direction, &self.reading_document, &self.reading_layout)
         });
         if moved {
             self.sync_reading_preview();
             self.keep_reading_visible(scroll, viewport_height);
+            self.refresh_terminal_reading_geometry(previous, scroll, viewport_height);
         }
         moved
     }

@@ -1,6 +1,6 @@
 //! Safe two-tone ANSI SGR mapping for command output preview.
 //!
-//! Parses already-bounded tool output through the `vte` terminal parser and
+//! Parses tool and local terminal output through the `vte` terminal parser and
 //! emits inert Ratatui spans: explicitly colored runs map to the `colored`
 //! style, uncolored runs to the `plain` style, and SGR bold/italic modifiers
 //! are preserved. Every other terminal effect (backgrounds, cursor movement,
@@ -131,6 +131,18 @@ pub fn terminal_lines(output: &str, colored: Style, plain: Style) -> Vec<Line<'s
     // Flush a final unterminated line.
     performer.lines.push(performer.line.finish_line());
     performer.lines
+}
+
+pub fn output_lines(output: &str, colored: Style, plain: Style) -> Vec<Line<'static>> {
+    let normalized = output
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .replace('\t', "    ");
+    terminal_lines(
+        normalized.strip_suffix('\n').unwrap_or(&normalized),
+        colored,
+        plain,
+    )
 }
 
 #[cfg(test)]

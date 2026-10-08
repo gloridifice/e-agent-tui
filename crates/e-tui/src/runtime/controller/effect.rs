@@ -54,6 +54,9 @@ pub(super) fn apply_effect_result(
     now: Instant,
 ) -> bool {
     match result {
+        EffectResult::ShellFinished { id, result } => {
+            state.lock().unwrap().finish_shell(id, result)
+        }
         EffectResult::LinksValidated {
             request,
             validations,

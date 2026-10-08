@@ -22,6 +22,10 @@ pub trait AgentRequestPort {
 }
 
 pub trait UiActionPorts {
+    fn start_shell(&mut self, _request: crate::shell::ShellRequest) -> Result<(), String> {
+        Err("Local shell commands are unavailable".into())
+    }
+    fn cancel_shell(&mut self, _id: &crate::display::DisplayId) {}
     fn validate_links(
         &mut self,
         request: &crate::link_copy::LinkValidationRequest,

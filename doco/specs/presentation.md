@@ -6,6 +6,7 @@
 - `TimelineModel` MUST own the sole transcript store and projector. Production render paths MUST NOT add provider/event-specific top-level surfaces.
 - Surface replacement MUST remove the shadowed owner and insert the replacement at its original position. History prepend MUST NOT revive shadowed content or regress newer page state.
 - Unknown compatible events MAY render a bounded fallback; unknown raw payloads MUST NOT cross the adapter boundary.
+- Local shell commands MUST own one canonical activity/detail composite with command/status and complete terminal output. They MUST NOT create agent messages or provider-specific top-level surfaces.
 - Explicit skill submissions MUST show a compact `[skill] <name>` identity row followed by the existing user-message block when an accompanying message is present, both before backend echo and during live/history projection. Skill instructions remain available through copy and Preview; they MUST NOT replace or hide the accompanying message.
 - Pi fallback recovery MUST update one correlated message-area activity with attempt count and a seconds-resolution countdown, then explicit running, success, cancellation, or exhausted/rejected status. Partial assistant output MUST NOT mark this activity successful. Countdown updates MUST NOT append rows or accumulate surface sequence ownership.
 
@@ -18,6 +19,8 @@
 - Shared Markdown layout MUST retain every table and code-block row, including rendered Mermaid diagrams, regardless of block length. Individual blocks MUST NOT collapse their middle rows; only enclosing user-message folding may hide those rows in the message pane.
 - Sent user messages, including history and attachment-bearing prompts, MUST render through the shared Markdown renderer while retaining their user-card shell and ordinary-text tone. After width-aware wrapping, bodies longer than 20 display rows MUST show their first 10 rows, one `...(<n> lines)` row where `n` counts hidden display rows, and their last 10 rows. The shell and optional header are excluded from the count; Markdown structural rows participate. Resizing MUST recompute the window, and a marker wider than the body MUST be clipped to one row. Folding MUST remain active in Reading mode; full Markdown is available through existing Preview selection, not an inline expand action. The composer, sent payload, stored source, and whole-message copy MUST remain unchanged.
 
+- Local terminal output MUST use safe ANSI-to-span rendering, not Markdown interpretation. Ordinary messages MUST show at most five width-wrapped output rows, excluding command/status and a hidden-row hint. Reading MUST expand only the focused terminal composite; moving focus away or exiting Reading restores folding. Complete output and whole-block copy MUST remain unchanged by folding and resizing.
+
 ## Reveal and Preview
 
 - Semantic transcript and Preview content MUST remain complete; reveal progress is presentation-only.
@@ -25,6 +28,7 @@
 - Preview selection, scroll, layout cache, and reveal progress are independent of transcript state. Stale async results MUST be rejected by target identity and revision, including cache admission after selection changes or session clearing.
 - Inline Preview content MUST bypass the content cache. Deferred Preview caches MUST be bounded by bytes and entry count, retain at most the latest cached revision per key, and evict least-recently-used entries. Content exceeding the cache budget MUST remain complete and displayable without caching.
 - Tool Preview MUST use provider-neutral seeds. File mutation previews use event-supplied fragments; the frontend MUST NOT read files or compute missing diffs.
+- Terminal Preview MUST retain complete inline output, without a five-row limit or deferred file-read cap. Draft-local terminal messages MUST remain in the canonical transcript and MAY be previewed/read without exposing any previous-session node.
 
 ## Execution-history timeline
 

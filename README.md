@@ -49,6 +49,8 @@ pie
 
 Home/End moves to the start/end of the current input line, including wrapped lines. Ctrl+C saves a text-only draft to input history before clearing it; press ↑ to recall it.
 
+Start input with `!` to run a local shell command, for example `!cat README.md`. Both frontends run it in the current workspace without sending it or its output to the model. Messages show at most five output rows; Preview and the focused Reading message show the full output. Use Ctrl+R to enter Reading, PageUp/PageDown to scroll a focused terminal message, and Esc to stop a running command. Commands are noninteractive, run with your permissions, and are not saved in agent session history. Windows uses PowerShell; Unix uses `$SHELL` or `sh`.
+
 During compaction, Enter queues ordinary messages for after the current run finishes (`○`), even if compaction finishes earlier. This applies to both frontends.
 
 Type `/` at the start of an existing draft to complete a command or its arguments without replacing the draft. Enter first confirms the completion; press Enter again to submit. Esc restores the typed prefix.

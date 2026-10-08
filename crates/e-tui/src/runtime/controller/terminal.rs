@@ -173,6 +173,9 @@ pub(super) fn apply_terminal_route(
             let page = matches!(route, TerminalRoute::TranscriptPage { .. });
             let before = {
                 let mut app = state.lock().unwrap();
+                if app.reading_terminal_owner().is_some() {
+                    app.clear_reading_layout_anchor();
+                }
                 let height = transcript_view_height(
                     size,
                     &app,
@@ -507,6 +510,16 @@ pub(super) fn apply_reading_key(
                 1
             };
             let mut app = state.lock().unwrap();
+            if steps > 1 && app.reading_terminal_owner().is_some() {
+                app.clear_reading_layout_anchor();
+                scroll_page(
+                    ui.scroll,
+                    viewport_height,
+                    app.render.transcript_cache.layout.total_rows(),
+                    up,
+                );
+                return app.take_actions();
+            }
             for _ in 0..steps {
                 let in_items = app
                     .reading
@@ -566,6 +579,7 @@ pub(super) fn apply_ordinary_key(
         .resolve(ui.input.key_scope(false), &key)
         == Some(Action::CancelOrInterrupt)
         && !ui.queue.is_empty()
+        && state.lock().unwrap().shell.active.is_none()
     {
         if ui.queue.has_asap() {
             ui.queue.cancel_asap();
@@ -583,10 +597,11 @@ pub(super) fn apply_ordinary_key(
     let (idle, catalogs, input_width) = {
         let app = state.lock().unwrap();
         (
-            app.is_new_conversation()
-                || (app.session.status == crate::SessionStatus::Idle
-                    && !app.has_active_command()
-                    && !app.is_compacting()),
+            app.shell.active.is_none()
+                && (app.is_new_conversation()
+                    || (app.session.status == crate::SessionStatus::Idle
+                        && !app.has_active_command()
+                        && !app.is_compacting())),
             app.catalogs.clone(),
             crate::input::layout::text_width(
                 crate::ui::input_bar_width(size.width, &app),
@@ -600,7 +615,9 @@ pub(super) fn apply_ordinary_key(
         .handle_key_with_layout(&key, idle, &catalogs, input_width, model_hint);
     if matches!(
         action,
-        super::InputAction::Send(_) | super::InputAction::SendAfterTurn(_)
+        super::InputAction::Send(_)
+            | super::InputAction::SendAfterTurn(_)
+            | super::InputAction::Shell { .. }
     ) {
         *ui.scroll = ScrollState::default();
         ui.mouse_selection.clear();
@@ -782,5 +799,6 @@ pub(super) fn apply_ordinary_key(
             outcome.effects.push(UiAction::Quit);
         }
     }
+    outcome.effects.extend(state.lock().unwrap().take_actions());
     outcome.effects
 }

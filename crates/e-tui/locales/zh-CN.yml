@@ -180,6 +180,13 @@ controller.runtime_error: "运行时错误 %{code}：%{message}"
 controller.new_failed: "创建新对话失败：%{message}"
 terminal.no_readable_content: "没有可阅读的内容"
 terminal.command_no_images: "此命令不接受图片"
+shell.empty: "请在 ! 后输入终端命令"
+shell.busy: "请等待本地终端命令完成，或先将其取消"
+shell.cancelled: "已取消"
+shell.failed: "失败"
+shell.error: "终端命令失败：%{error}"
+shell.folded: "  … 另 %{count} 个显示行 · 阅读 / 预览查看完整输出"
+shell.no_output: "  （无输出）"
 help.table.key: "按键"
 help.table.action: "操作"
 help.section.global: "全局"
@@ -269,6 +276,10 @@ help.body: |
   以下按键来自当前生效的配置。`—` 表示未绑定。
   `osmain` 在 macOS 上表示 Command，在 Windows/Linux 上表示 Ctrl。
   终端截获的快捷键需要调整终端设置或重新绑定。
+  输入以 `!` 开头可运行本地非交互终端命令，例如 `!cat README.md`。
+  输出最多显示五行；预览和阅读模式中聚焦的消息保留完整输出。
+  快速移动会滚动聚焦的终端消息，而不是切换到其他消息。
+  取消操作优先停止本地命令，再中断模型；本地输出不会发送给模型。
 overlay.help.title: "帮助 — e"
 input_page.login.title: "登录"
 input_page.login.providers_title: "API key · 选择提供商"

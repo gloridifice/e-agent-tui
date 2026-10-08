@@ -133,9 +133,16 @@ fn resume_command(session_path: &str) -> Option<String> {
 
 struct PiRuntimePorts {
     history: Arc<std::sync::Mutex<e_pi::execution_history_store::HistoryRecorder>>,
+    shell: e_pi::shell::ShellRunner,
 }
 
 impl UiActionPorts for PiRuntimePorts {
+    fn start_shell(&mut self, request: e_tui::shell::ShellRequest) -> Result<(), String> {
+        self.shell.start(request)
+    }
+    fn cancel_shell(&mut self, id: &e_tui::display::DisplayId) {
+        self.shell.cancel(id);
+    }
     async fn validate_links(
         &mut self,
         request: &e_tui::link_copy::LinkValidationRequest,
@@ -399,6 +406,7 @@ async fn run_frontend(
     let mut events = ProductionTerminalEvents::new();
     let mut runtime_ports = PiRuntimePorts {
         history: Arc::clone(&history),
+        shell: Default::default(),
     };
     let mut scheduler = FrameScheduler::new(runtime_ports.now());
     let mut committed_presentation = e_tui::ui::Presentation::default();
@@ -464,6 +472,11 @@ async fn run_frontend(
             first_inbound = Some(event);
         } else {
             tokio::select! {
+                result = runtime_ports.shell.next() => {
+                    if RuntimeController::apply_effect_result(result, &state_r, Instant::now()) {
+                        scheduler.request(DirtyReason::Content, Instant::now());
+                    }
+                }
                 maybe = process.recv() => {
                     match maybe {
                         Some(PiProcessEvent::Record(record)) => {
@@ -965,6 +978,7 @@ async fn run_frontend(
         }
     }
 
+    runtime_ports.shell.shutdown().await;
     let history_shutdown = history.lock().unwrap().shutdown();
     if let Err(error) = history_shutdown {
         eprintln!("{error}");

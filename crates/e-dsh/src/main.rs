@@ -345,6 +345,11 @@ async fn run(
             reveal_deadline,
         ));
         tokio::select! {
+            result = runtime_ports.shell.next() => {
+                if RuntimeController::apply_effect_result(result, &state_r, Instant::now()) {
+                    scheduler.request(DirtyReason::Content, Instant::now());
+                }
+            }
             maybe = bridge_io.inbound.recv() => {
                 let Some(msg) = maybe else {
                     fatal = Some("bridge disconnected".into());
@@ -728,6 +733,7 @@ async fn run(
         }
     }
 
+    runtime_ports.shell.shutdown().await;
     let history_shutdown = history.lock().unwrap().shutdown();
     if let Err(error) = history_shutdown {
         eprintln!("{error}");

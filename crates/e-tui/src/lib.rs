@@ -50,6 +50,7 @@ pub mod resume;
 pub mod reveal;
 pub mod runtime;
 pub mod settings;
+pub mod shell;
 pub mod syntax;
 pub mod theme;
 pub mod transcript_layout;

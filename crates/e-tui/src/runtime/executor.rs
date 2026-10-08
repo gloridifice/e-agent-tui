@@ -31,6 +31,19 @@ pub async fn execute_ui_actions(
     let mut execution = EffectExecution::default();
     for action in actions {
         match action {
+            UiAction::StartShell(request) => {
+                let id = request.id.clone();
+                if let Err(error) = ports.start_shell(request) {
+                    execution.completed.push(EffectResult::ShellFinished {
+                        id,
+                        result: crate::shell::ShellResult {
+                            error: Some(error),
+                            ..Default::default()
+                        },
+                    });
+                }
+            }
+            UiAction::CancelShell(id) => ports.cancel_shell(&id),
             UiAction::ValidateLinks(request) => {
                 let validations = ports.validate_links(&request).await;
                 execution.completed.push(EffectResult::LinksValidated {

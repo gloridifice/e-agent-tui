@@ -14,7 +14,12 @@ pub(super) fn render_transcript_impl(
 ) -> usize {
     let screen_height = area.height as usize;
     let width = area.width as usize;
-    if let Some(draft) = state.session.new_conversation.as_ref() {
+    if let Some(draft) = state
+        .session
+        .new_conversation
+        .as_ref()
+        .filter(|draft| state.shell.draft_ids.is_empty() || draft.pending_input.is_some())
+    {
         let cards: Vec<_> = draft
             .pending_card
             .iter()

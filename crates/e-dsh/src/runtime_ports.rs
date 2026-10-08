@@ -45,13 +45,17 @@ impl BridgeTransportPort for mpsc::Sender<ClientMessage> {
 
 pub struct ProductionRuntimePorts {
     history: std::sync::Arc<std::sync::Mutex<crate::execution_history_store::HistoryRecorder>>,
+    pub shell: crate::shell::ShellRunner,
 }
 
 impl ProductionRuntimePorts {
     pub fn with_history(
         history: std::sync::Arc<std::sync::Mutex<crate::execution_history_store::HistoryRecorder>>,
     ) -> Self {
-        Self { history }
+        Self {
+            history,
+            shell: Default::default(),
+        }
     }
 }
 
@@ -64,6 +68,12 @@ impl Default for ProductionRuntimePorts {
 }
 
 impl UiActionPorts for ProductionRuntimePorts {
+    fn start_shell(&mut self, request: e_tui::shell::ShellRequest) -> Result<(), String> {
+        self.shell.start(request)
+    }
+    fn cancel_shell(&mut self, id: &e_tui::display::DisplayId) {
+        self.shell.cancel(id);
+    }
     async fn validate_links(
         &mut self,
         request: &e_tui::link_copy::LinkValidationRequest,

@@ -76,6 +76,8 @@ impl RuntimeState {
     }
 
     pub fn begin_new_conversation(&mut self, mode: impl Into<String>) {
+        self.clear_shell();
+        self.render.transcript_cache.invalidate();
         self.session.new_conversation = Some(NewConversationDraft {
             mode: mode.into(),
             pending_input: None,

@@ -17,3 +17,4 @@ pub mod path_completion;
 pub mod process;
 pub mod protocol;
 pub mod session_index;
+pub mod shell;

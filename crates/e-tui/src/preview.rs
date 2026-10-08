@@ -75,6 +75,8 @@ pub enum PreviewContent {
     /// content is never mislabeled as model thinking in the model.
     MutedMarkdown(String),
     PlainText(String),
+    /// Complete local terminal output, rendered without executing ANSI controls.
+    Terminal(String),
     /// Structured tool presentation: name, typed primary, optional secondary.
     Tool(ToolPreview),
     /// Structured mutation fragments rendered as linear removed/added rows.
@@ -94,7 +96,8 @@ impl PreviewContent {
             | Self::Markdown(source)
             | Self::Reasoning(source)
             | Self::MutedMarkdown(source)
-            | Self::PlainText(source) => source.capacity(),
+            | Self::PlainText(source)
+            | Self::Terminal(source) => source.capacity(),
             Self::Tool(tool) => {
                 let primary = match &tool.primary {
                     ToolPreviewPrimary::Location { path, .. } => path.capacity(),

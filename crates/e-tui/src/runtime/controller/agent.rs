@@ -142,7 +142,35 @@ pub(super) fn apply_session(
                 let mut app = state.lock().unwrap();
                 let switched = app.session.session_id.as_deref() != Some(attached.id.as_str());
                 if switched {
+                    let initial = app.session.session_id.is_none();
+                    let shells: Vec<_> = app
+                        .transcript
+                        .nodes()
+                        .iter()
+                        .filter(|node| {
+                            initial
+                                && matches!(&node.item,
+                            crate::display::DisplayItem::Composite { detail, .. }
+                                if detail.role == crate::display::CardRole::Terminal)
+                        })
+                        .map(|node| node.item.clone())
+                        .collect();
+                    let active = if initial {
+                        app.shell.active.take()
+                    } else {
+                        None
+                    };
                     app.reset_transcript();
+                    app.shell.active = active;
+                    for item in shells {
+                        if let crate::display::DisplayItem::Composite { detail, .. } = &item {
+                            if let Some(unit) = detail.unit {
+                                app.render.units.insert(unit, detail.copy_source.clone());
+                                app.render.next_unit = app.render.next_unit.max(unit + 1);
+                            }
+                        }
+                        app.transcript.append(item, None);
+                    }
                     app.history_page = None;
                     app.interaction.question = None;
                 }

@@ -21,6 +21,7 @@ Pi child <-------- JSONL stdio ------> crates/e-pi ──┘
 - `e-pi` also owns optional Herdr status reporting through a bounded background CLI worker. It observes runtime and interaction state without changing Pi extensions or claiming native session-restore authority.
 - Both adapters depend on `e-tui`; they never depend on each other. Provider payloads do not cross adapter boundaries.
 - Runners execute owned frontend effects only after releasing UI state guards. Shared scheduling and input policy remain in `e-tui`.
+- Local `!` commands use provider-neutral admission/composite presentation in `e-tui`; each adapter owns noninteractive shell execution, temporary output capture, cancellation and background completion. Their complete output remains frontend-ephemeral and never enters native agent prompts/history.
 
 See [runtime and adapter contracts](specs/runtime-and-adapters.md), [interaction and session contracts](specs/interaction-and-sessions.md), and [presentation contracts](specs/presentation.md).
 

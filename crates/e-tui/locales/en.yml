@@ -180,6 +180,13 @@ controller.runtime_error: "Runtime error %{code}: %{message}"
 controller.new_failed: "New conversation failed: %{message}"
 terminal.no_readable_content: "There is no readable content"
 terminal.command_no_images: "This command does not accept images"
+shell.empty: "Enter a shell command after !"
+shell.busy: "Wait for the local shell command to finish, or interrupt it first"
+shell.cancelled: "cancelled"
+shell.failed: "failed"
+shell.error: "Shell command failed: %{error}"
+shell.folded: "  … %{count} more rows · Reading / Preview shows complete output"
+shell.no_output: "  (no output)"
 help.table.key: "Key"
 help.table.action: "Action"
 help.section.global: "Global"
@@ -269,6 +276,10 @@ help.body: |
   The bindings below come from the active configuration. `—` means unbound.
   `osmain` means Command on macOS and Ctrl on Windows/Linux.
   Shortcuts intercepted by the terminal require terminal configuration or remapping.
+  Start input with `!` to run a local, noninteractive shell command (for example `!cat README.md`).
+  Output is folded to five display rows; Preview and the focused Reading message retain all output.
+  Fast movement scrolls a focused terminal message instead of selecting another block.
+  The cancel action stops the local command before interrupting the agent. Local output is not sent to the model.
 overlay.help.title: "Help — e"
 input_page.login.title: "Login"
 input_page.login.providers_title: "API key · Choose provider"

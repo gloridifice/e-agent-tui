@@ -173,6 +173,19 @@ impl ReadingDocument {
                         timeline,
                     ));
                 }
+                DisplayItem::Composite { activity, detail }
+                    if detail.role == crate::display::CardRole::Terminal =>
+                {
+                    let mut block =
+                        tool_block(activity.id.clone(), detail.copy_source.clone(), timeline);
+                    block.copy.atomic = true;
+                    block.preview = PreviewRef::Inline {
+                        key: PreviewKey(format!("shell:{}", activity.id.0)),
+                        revision: PreviewRevision(node.revision()),
+                        content: PreviewContent::Terminal(detail.copy_source.clone()),
+                    };
+                    blocks.push(block);
+                }
                 DisplayItem::Composite { activity, detail } => {
                     blocks.push(tool_block(
                         activity.id.clone(),

@@ -301,6 +301,9 @@ fn user_message_lines(card: &ContentCard, state: &TuiApp, area_width: usize) -> 
 }
 
 fn content_card_lines(card: &ContentCard, state: &TuiApp, area_width: usize) -> Vec<Line<'static>> {
+    if card.role == CardRole::Terminal {
+        return terminal_output_lines(card, state, area_width);
+    }
     if card.role == CardRole::User {
         return user_message_lines(card, state, area_width);
     }
@@ -381,6 +384,68 @@ fn content_card_lines(card: &ContentCard, state: &TuiApp, area_width: usize) -> 
     }
     out.push(fill_row());
     out
+}
+
+fn terminal_output_lines(card: &ContentCard, state: &TuiApp, width: usize) -> Vec<Line<'static>> {
+    let theme = state.theme();
+    let expanded = state.reading_terminal_owner() == Some(&card.id);
+    if card.content.is_empty() {
+        return if state.shell.active.as_ref() == Some(&card.id) {
+            Vec::new()
+        } else {
+            vec![crate::wrap::clip_line(
+                Line::styled(
+                    crate::i18n::tr(state.config.language, "shell.no_output"),
+                    theme.surface.muted_text.style(),
+                ),
+                width,
+            )]
+        };
+    }
+    let gutter = width.saturating_sub(1).min(4);
+    let output = crate::ui::component::ansi::output_lines(
+        &card.content,
+        theme.code.string.style(),
+        theme.surface.primary_text.style(),
+    );
+    let mut output: Vec<_> = output
+        .into_iter()
+        .flat_map(|line| wrap_line(line, width.saturating_sub(gutter).max(1)))
+        .collect();
+    let hidden = if expanded {
+        0
+    } else {
+        output.len().saturating_sub(5)
+    };
+    if !expanded {
+        output.truncate(5);
+    }
+    let prefix = crate::wrap::clip_text("  │ ", gutter);
+    let mut rows: Vec<_> = output
+        .into_iter()
+        .map(|line| {
+            let mut spans = vec![Span::styled(prefix.clone(), theme.separator.line.style())];
+            spans.extend(line.spans.into_iter().map(|span| {
+                let style = line.style.patch(span.style);
+                span.style(style)
+            }));
+            Line::from(spans)
+        })
+        .collect();
+    if hidden > 0 {
+        rows.push(crate::wrap::clip_line(
+            Line::styled(
+                crate::i18n::tr_args(
+                    state.config.language,
+                    "shell.folded",
+                    &[("count", hidden.to_string())],
+                ),
+                theme.surface.muted_text.style(),
+            ),
+            width,
+        ));
+    }
+    rows
 }
 
 fn skill_invocation_lines(card: &ContentCard, state: &TuiApp) -> Vec<Line<'static>> {
@@ -607,7 +672,55 @@ fn display_item_lines(item: &DisplayItem, state: &TuiApp, area_width: usize) -> 
         DisplayItem::Card(card) => content_card_lines(card, state, area_width),
         DisplayItem::Thinking(node) => thinking_node_lines(node, state, area_width),
         DisplayItem::Composite { activity, detail } => {
-            let mut lines = vec![fitted_activity_row_line(activity, state, None, area_width)];
+            let label = (detail.role == CardRole::Terminal).then(|| {
+                let theme = state.theme();
+                let mut spans = vec![Span::styled("!", theme.input.status_accent.style())];
+                let command = activity.label.strip_prefix('!').unwrap_or(&activity.label);
+                for line in crate::ui::component::command::highlight(
+                    command,
+                    crate::ui::component::command::CommandColors {
+                        executable: theme.code.function.fg,
+                        argument: theme.surface.primary_text.fg,
+                        operator: theme.code.keyword.fg,
+                    },
+                ) {
+                    if spans.len() > 1 {
+                        spans.push(Span::raw(" "));
+                    }
+                    spans.extend(line.spans);
+                }
+                spans
+            });
+            let header = if detail.role == CardRole::Terminal {
+                let theme = state.theme();
+                let (_, metadata) = activity_row_parts(activity, state, None);
+                let mut tail = Line::default();
+                if !activity.summary.is_empty() {
+                    tail.push_span(Span::styled(
+                        format!(" {}", activity.summary),
+                        Style::default().fg(working::activity_color(&theme, activity, None)),
+                    ));
+                }
+                if let Some(metadata) = metadata {
+                    tail.push_span(metadata);
+                }
+                let mut row = activity.clone();
+                row.summary.clear();
+                row.output_lines = None;
+                row.duration_ms = None;
+                row.live_duration_since = None;
+                if tail.width() >= area_width {
+                    truncate_activity_line(tail, area_width.saturating_sub(1))
+                } else {
+                    let mut line =
+                        fitted_activity_row_line(&row, state, label, area_width - tail.width());
+                    line.spans.extend(tail.spans);
+                    line
+                }
+            } else {
+                fitted_activity_row_line(activity, state, label, area_width)
+            };
+            let mut lines = vec![header];
             lines.extend(content_card_lines(detail, state, area_width));
             lines
         }
@@ -619,6 +732,9 @@ fn is_activity_item(item: &DisplayItem) -> bool {
 }
 
 fn is_hidden_item(item: &DisplayItem, state: &TuiApp) -> bool {
+    if state.session.new_conversation.is_some() && !state.shell.draft_ids.contains(item.id()) {
+        return true;
+    }
     matches!(
         item,
         DisplayItem::Block(block)
@@ -699,7 +815,7 @@ fn next_presented_item_is_activity(
 /// to build the transcript cache. The shared row contract and wrapping rules
 /// live in `transcript_layout`; this renderer supplies message presentation.
 pub fn provenance_layout_rows(state: &TuiApp) -> Vec<ProvenanceLayoutRow> {
-    if state.session.new_conversation.is_some() {
+    if state.session.new_conversation.is_some() && state.shell.draft_ids.is_empty() {
         return Vec::new();
     }
     let mut rows = Vec::new();
@@ -760,6 +876,7 @@ pub fn provenance_layout_rows(state: &TuiApp) -> Vec<ProvenanceLayoutRow> {
                 DisplayItem::Composite { detail, .. } => {
                     if let Some((activity, detail_lines)) = layout_lines.split_first() {
                         global_row += wrapped_rows(activity, width);
+                        let start = rows.len();
                         append_unit_rows(
                             &mut rows,
                             &mut global_row,
@@ -767,6 +884,12 @@ pub fn provenance_layout_rows(state: &TuiApp) -> Vec<ProvenanceLayoutRow> {
                             detail_lines,
                             width,
                         );
+                        if detail.role == CardRole::Terminal {
+                            for row in &mut rows[start..] {
+                                row.atomic = true;
+                                row.raw_line = None;
+                            }
+                        }
                     }
                 }
                 DisplayItem::Activity(_) => {

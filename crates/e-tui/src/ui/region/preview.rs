@@ -309,6 +309,11 @@ fn content_lines(
             .iter()
             .flat_map(|hunk| hunk_lines(hunk, theme, width, language))
             .collect(),
+        PreviewContent::Terminal(text) => ansi::output_lines(
+            text,
+            theme.code.string.style(),
+            theme.surface.primary_text.style(),
+        ),
         PreviewContent::PlainText(text) => text
             .lines()
             .map(|line| Line::styled(line.to_owned(), theme.surface.primary_text.style()))

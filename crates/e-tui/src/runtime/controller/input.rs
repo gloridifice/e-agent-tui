@@ -130,7 +130,38 @@ pub(super) fn apply_input_action(
                 original,
             })
         }
+        InputAction::Shell { command, original } => {
+            let mut app = state.lock().unwrap();
+            let error = if original.has_images() {
+                Some("terminal.command_no_images")
+            } else if command.trim().is_empty() {
+                Some("shell.empty")
+            } else if app.shell.active.is_some() {
+                Some("shell.busy")
+            } else {
+                None
+            };
+            if let Some(error) = error {
+                let message = tr(app.config.language, error);
+                let drafting = app.is_new_conversation();
+                app.push_error_message(message);
+                if drafting {
+                    if let Some(id) = app.transcript.nodes().last().map(|node| node.id().clone()) {
+                        app.shell.draft_ids.insert(id);
+                    }
+                }
+                outcome.restore_prompt = Some(original);
+            } else {
+                outcome
+                    .effects
+                    .push(UiAction::StartShell(app.start_shell(command)));
+            }
+        }
         InputAction::Interrupt => {
+            if let Some(id) = state.lock().unwrap().shell.active.clone() {
+                outcome.effects.push(UiAction::CancelShell(id));
+                return outcome;
+            }
             queue.clear();
             state.lock().unwrap().pending_submissions.clear();
             outcome.effects.push(agent_action(AgentRequest::Interrupt));

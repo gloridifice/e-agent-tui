@@ -8,6 +8,7 @@ pub fn shell_style(theme: &Theme, role: CardRole) -> ThemeStyle {
         CardRole::User => theme.card.user,
         CardRole::Skill | CardRole::Context => theme.card.context,
         CardRole::Detail => theme.card.detail,
+        CardRole::Terminal => theme.surface.primary_text,
         CardRole::Attachment => theme.card.attachment,
     }
 }

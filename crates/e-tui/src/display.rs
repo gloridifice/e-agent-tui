@@ -138,6 +138,7 @@ pub enum CardRole {
     Context,
     Detail,
     Attachment,
+    Terminal,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

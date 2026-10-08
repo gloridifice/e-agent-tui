@@ -63,18 +63,14 @@ pub(super) fn prompt_command(
     streaming_behavior: Option<StreamingBehavior>,
 ) -> AdapterOutput {
     let mut message = normalize_skill_line(line);
-    if let Some(skill) = message.strip_prefix("/skill:") {
-        if let Some(split) = skill.find(char::is_whitespace).filter(|split| *split > 0) {
-            let split = "/skill:".len() + split;
-            let text = message[split..].trim_start();
-            if !text.is_empty() {
-                adapter.pending_skill_prompt = Some(super::PendingSkillPrompt {
-                    id: id.clone(),
-                    session_id: adapter.session_id.clone(),
-                    trailing_text: Some(text.to_owned()),
-                });
-            }
-            message.truncate(split);
+    let prompt = e_tui::PromptInput::text(message.clone());
+    if let Some((name, text)) = prompt.skill_invocation() {
+        message = format!("/skill:{name}");
+        if !text.is_empty() {
+            message.push(' ');
+            message.push_str(text);
+            session::note_first_user_title(adapter, text);
+            adapter.pending_skill_prompt = Some(super::PendingSkillPrompt { id: id.clone() });
         }
     }
     AdapterOutput::command(RpcCommand::Prompt {

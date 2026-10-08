@@ -518,10 +518,18 @@ pub(super) fn apply_agent_error(
         app.finish_command_execution();
         let pending = std::mem::take(&mut app.pending_submissions);
         let pending_count = pending.len();
-        app.pending_submissions = pending.into_iter().filter(|id| {
-            !app.transcript.get(id).is_some_and(|node| matches!(&node.item,
+        let skill_ids: Vec<_> = pending.iter().filter(|id| {
+            app.transcript.get(id).is_some_and(|node| matches!(&node.item,
                 crate::display::DisplayItem::Card(card) if card.role == crate::display::CardRole::Skill))
-        }).collect();
+        }).cloned().collect();
+        app.pending_submissions = pending
+            .into_iter()
+            .filter(|id| {
+                !skill_ids
+                    .iter()
+                    .any(|skill_id| id == skill_id || id.0 == format!("{}:message", skill_id.0))
+            })
+            .collect();
         if pending_count > 0
             && app.pending_submissions.is_empty()
             && app.session.status == crate::SessionStatus::Idle

@@ -60,9 +60,6 @@ struct NewSubmission {
 
 struct PendingSkillPrompt {
     id: String,
-    session_id: String,
-    /// None keeps the ordering barrier until the trailing prompt is acknowledged.
-    trailing_text: Option<String>,
 }
 
 /// Outstanding `/reload` step. Only the companion prompt can report that the
@@ -720,8 +717,10 @@ mod tests {
             [
                 AgentEvent::Catalog(CatalogEvent::Commands(commands)),
                 AgentEvent::Catalog(CatalogEvent::Skills(skills)),
-            ] if commands.len() == 1
-                && commands[0].name == "review"
+            ] if commands.len() == 3
+                && commands[0].name == "fork"
+                && commands[1].name == "clone"
+                && commands[2].name == "review"
                 && skills.len() == 1
                 && skills[0].name == "code-review"
         ));
@@ -739,7 +738,10 @@ mod tests {
         assert!(matches!(
             output.events.as_slice(),
             [AgentEvent::Catalog(CatalogEvent::Commands(commands)), _]
-                if commands.len() == 1 && commands[0].name == "logout"
+                if commands.len() == 3
+                    && commands[0].name == "fork"
+                    && commands[1].name == "clone"
+                    && commands[2].name == "logout"
         ));
         assert!(matches!(
             output.commands.as_slice(),
@@ -764,6 +766,20 @@ mod tests {
                     && source.summary.as_deref() == Some("code-review")
                     && source.producer.as_deref() == Some("pi")
         ));
+    }
+    #[test]
+    fn skill_echo_uses_the_final_closing_tag_for_its_companion_message() {
+        let text = "<skill name=\"review\" location=\"SKILL.md\">\nExample:\n</skill>\n\nKeep reading.\n</skill>\n\nCheck this file";
+        let facts = super::content::user_facts(&serde_json::json!({ "content": text }));
+        assert_eq!(facts.len(), 2);
+        assert!(
+            matches!(&facts[0], TimelineFact::UserMessage { text, source_kind: Some(kind), .. }
+            if kind == "skill-invocation" && text.ends_with("Keep reading.\n</skill>"))
+        );
+        assert!(
+            matches!(&facts[1], TimelineFact::UserMessage { text, source_kind: Some(kind), .. }
+            if kind == "user" && text == "Check this file")
+        );
     }
 
     #[test]
@@ -934,7 +950,7 @@ mod tests {
     }
 
     #[test]
-    fn skill_trailing_prompt_waits_for_admission_in_existing_and_new_sessions() {
+    fn skill_and_message_submit_together_in_existing_and_new_sessions() {
         for drafting in [false, true] {
             for prefix in ["/skill:review", "/skill review"] {
                 let mut adapter = PiAdapter::new(".", "sessions");
@@ -970,41 +986,27 @@ mod tests {
                         _ => None,
                     })
                     .collect();
-                assert_eq!(prompts, ["/skill:review"]);
+                let expected = format!("/skill:review {text}");
+                assert_eq!(prompts, [expected.as_str()]);
                 assert!(adapter
                     .request(AgentRequest::Attach {
                         session_id: "later".into()
                     })
                     .commands
                     .is_empty());
-                let body = reply_first(&mut adapter, &skill, Value::Null);
-                let prompts: Vec<_> = body
+                let admitted = reply_first(&mut adapter, &skill, Value::Null);
+                assert!(!admitted
                     .commands
                     .iter()
-                    .filter_map(|command| match command {
-                        RpcCommand::Prompt {
-                            message,
-                            streaming_behavior,
-                            ..
-                        } => Some((message.as_str(), *streaming_behavior)),
-                        _ => None,
-                    })
-                    .collect();
-                assert_eq!(prompts, [(text, Some(StreamingBehavior::Steer))]);
-                assert!(!body
-                    .commands
-                    .iter()
-                    .any(|command| { matches!(command, RpcCommand::SwitchSession { .. }) }));
-                let tail = body
-                    .commands
-                    .iter()
-                    .find(|command| matches!(command, RpcCommand::Prompt { .. }))
-                    .unwrap()
-                    .clone();
-                let later = reply_first(&mut adapter, &AdapterOutput::command(tail), Value::Null);
-                assert!(matches!(later.commands.as_slice(),
-                    [RpcCommand::SwitchSession { session_path, .. }] if session_path == "later"
-                ));
+                    .any(|command| matches!(command, RpcCommand::Prompt { .. })));
+                assert_eq!(
+                    admitted
+                        .commands
+                        .iter()
+                        .filter(|command| matches!(command, RpcCommand::SwitchSession { session_path, .. } if session_path == "later"))
+                        .count(),
+                    1
+                );
                 assert!(adapter.pending_skill_prompt.is_none());
             }
         }

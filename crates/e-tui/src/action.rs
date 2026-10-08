@@ -68,11 +68,20 @@ impl PromptInput {
     }
 
     pub fn skill_name(&self) -> Option<&str> {
-        let text = self.plain_text()?.trim();
-        let name = text
+        self.skill_invocation().map(|(name, _)| name)
+    }
+
+    pub fn skill_invocation(&self) -> Option<(&str, &str)> {
+        let text = self.plain_text()?.trim_start();
+        let invocation = text
             .strip_prefix("/skill:")
-            .or_else(|| text.strip_prefix("/skill "))?;
-        name.split_whitespace().next()
+            .or_else(|| text.strip_prefix("/skill "))?
+            .trim_start();
+        let split = invocation
+            .find(char::is_whitespace)
+            .unwrap_or(invocation.len());
+        let name = &invocation[..split];
+        (!name.is_empty()).then(|| (name, invocation[split..].trim_start()))
     }
 
     pub fn display_text(&self) -> String {

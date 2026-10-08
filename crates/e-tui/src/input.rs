@@ -991,11 +991,11 @@ impl InputState {
                 InputAction::None
             }
             Command(Action::MoveStart) => {
-                self.cursor = 0;
+                self.move_row_boundary(false, width, model_hint);
                 InputAction::None
             }
             Command(Action::MoveEnd) => {
-                self.cursor = self.buf.chars().count();
+                self.move_row_boundary(true, width, model_hint);
                 InputAction::None
             }
             Command(Action::MoveUp) => {
@@ -1457,6 +1457,29 @@ impl InputState {
         let leading_barrier = self.preceding_block_end(unit_start);
         let final_start = back_over_whitespace(&chars, unit_start, leading_barrier);
         self.remove_range(final_start, end);
+    }
+
+    fn move_row_boundary(&mut self, end: bool, width: usize, model_hint: Option<&str>) {
+        let (display, hint_range) = self.display_with_model_hint(model_hint);
+        let layout = layout::InputLayout::new(&display, width);
+        let mut target = if end {
+            layout.cursor_at_column(layout.cursor_row, usize::MAX)
+        } else {
+            layout.chunks[layout.cursor_row].start
+        };
+        if let Some(range) = display
+            .paste_ranges
+            .iter()
+            .find(|range| range.contains(&target))
+        {
+            target = if end { range.end } else { range.start };
+        }
+        if target > hint_range.start {
+            target = target
+                .saturating_sub(hint_range.len())
+                .max(hint_range.start);
+        }
+        self.cursor = self.display_to_raw_cursor(target);
     }
 
     fn move_vertical(&mut self, up: bool, width: usize, model_hint: Option<&str>) -> bool {

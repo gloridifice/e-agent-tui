@@ -362,6 +362,23 @@ impl RuntimeState {
         }
     }
 
+    fn remove_submission_card(&mut self, id: &DisplayId) -> Option<usize> {
+        let position = self
+            .transcript
+            .nodes()
+            .iter()
+            .position(|node| node.id() == id)?;
+        if let Some(node) = self.transcript.remove(position) {
+            if let DisplayItem::Card(card) = node.item {
+                self.render.markdown_layout.remove(&card.id);
+                if let Some(unit) = card.unit {
+                    self.render.units.remove(&unit);
+                }
+            }
+        }
+        Some(position)
+    }
+
     pub(super) fn append_assistant_item(&mut self, event: &TimelineRecord, mut item: DisplayItem) {
         match &mut item {
             DisplayItem::Block(block) if block.unit.is_none() => {
@@ -383,6 +400,9 @@ impl RuntimeState {
                 self.transcript.get(id).is_some_and(|node| {
                     matches!(&node.item, DisplayItem::Card(pending)
                         if (pending.role == card.role && pending.content == card.content)
+                            || (pending.role == CardRole::User && card.role == CardRole::User
+                                && pending.id.0.ends_with(":message")
+                                && pending.content.trim() == card.content.trim())
                             || (pending.role == CardRole::Attachment && card.role == CardRole::Attachment)
                             || (pending.role == CardRole::Skill && card.role == CardRole::User
                                 && pending.copy_source == card.content))
@@ -393,20 +413,16 @@ impl RuntimeState {
         };
         let echoed_position = echoed.and_then(|index| {
             let id = self.pending_submissions.remove(index);
-            let position = self
-                .transcript
-                .nodes()
-                .iter()
-                .position(|node| node.id() == &id)?;
-            if let Some(node) = self.transcript.remove(position) {
-                if let DisplayItem::Card(card) = node.item {
-                    self.render.markdown_layout.remove(&card.id);
-                    if let Some(unit) = card.unit {
-                        self.render.units.remove(&unit);
-                    }
-                }
+            let raw_skill_echo = matches!(&item, DisplayItem::Card(card) if card.role == CardRole::User)
+                && self.transcript.get(&id).is_some_and(|node| {
+                    matches!(&node.item, DisplayItem::Card(card) if card.role == CardRole::Skill)
+                });
+            if raw_skill_echo {
+                let message_id = DisplayId(format!("{}:message", id.0));
+                self.pending_submissions.retain(|id| id != &message_id);
+                self.remove_submission_card(&message_id);
             }
-            Some(position)
+            self.remove_submission_card(&id)
         });
         let preferred = echoed_position.or_else(|| {
             matches!(&item, DisplayItem::Card(card)

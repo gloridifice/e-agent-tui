@@ -3,22 +3,71 @@
 use e_tui::agent::timeline::{ContentBlock, MessageSource, TimelineFact, TokenUsage};
 use serde_json::Value;
 
-pub(super) fn pi_skill_name(text: &str) -> Option<&str> {
+fn pi_skill_parts(text: &str) -> Option<(&str, &str, &str)> {
     let rest = text.strip_prefix("<skill name=\"")?;
     let (name, rest) = rest.split_once("\" location=\"")?;
     let (location, rest) = rest.split_once("\">\n")?;
+    if name.is_empty() || location.is_empty() {
+        return None;
+    }
     let (_, suffix) = rest.rsplit_once("\n</skill>")?;
-    if name.is_empty()
-        || location.is_empty()
-        || !(suffix.is_empty()
-            || suffix
-                .strip_prefix("\n\n")
-                .is_some_and(|arguments| !arguments.is_empty()))
+    if !(suffix.is_empty()
+        || suffix
+            .strip_prefix("\n\n")
+            .is_some_and(|arguments| !arguments.is_empty()))
     {
         return None;
     }
-    Some(name)
+    let instructions = &text[..text.len() - suffix.len()];
+    Some((
+        name,
+        instructions,
+        suffix.strip_prefix("\n\n").unwrap_or(""),
+    ))
 }
+
+pub(super) fn pi_skill_name(text: &str) -> Option<&str> {
+    pi_skill_parts(text).map(|(name, _, _)| name)
+}
+
+pub(super) fn user_facts(message: &Value) -> Vec<TimelineFact> {
+    let fact = user_fact(message);
+    let TimelineFact::UserMessage { text, .. } = &fact else {
+        return vec![fact];
+    };
+    let Some((_, instructions, prompt)) =
+        pi_skill_parts(text).filter(|(_, _, prompt)| !prompt.is_empty())
+    else {
+        return vec![fact];
+    };
+    let instructions = instructions.to_owned();
+    let prompt = prompt.to_owned();
+    let mut skill = fact;
+    let mut prompt_content = vec![ContentBlock::Text(prompt.clone())];
+    if let TimelineFact::UserMessage { text, content, .. } = &mut skill {
+        *text = instructions.clone();
+        prompt_content.extend(
+            std::mem::take(content)
+                .into_iter()
+                .filter(|block| !matches!(block, ContentBlock::Text(_))),
+        );
+        *content = vec![ContentBlock::Text(instructions)];
+    }
+    vec![
+        skill,
+        TimelineFact::UserMessage {
+            text: prompt.clone(),
+            source_kind: Some("user".into()),
+            content: prompt_content,
+            source: MessageSource {
+                kind: Some("user".into()),
+                producer: Some("pi".into()),
+                ..Default::default()
+            },
+        },
+    ]
+}
+
 pub(super) fn user_fact(message: &Value) -> TimelineFact {
     let value = message.get("content").unwrap_or(&Value::Null);
     let text = content_text(value);

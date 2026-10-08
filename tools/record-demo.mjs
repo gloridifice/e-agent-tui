@@ -2,7 +2,8 @@
 // Record a disposable pie session. Run from the repository root on Windows.
 import { spawn, execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { copyFile, mkdtemp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -275,9 +276,16 @@ async function exportVideo(scenes, output, dir) {
   await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', list, '-an', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-r', '30', staged], 120_000);
   const finalDuration = await duration(staged);
   if (finalDuration > 90) console.warn(`Video is ${finalDuration.toFixed(1)}s; the 90-second target is deferred for this pacing review.`);
+  const metadata = path.join(dir, 'finished.json');
+  await writeFile(metadata, JSON.stringify({ duration: finalDuration, instructionGapSeconds: instructionGapMs / 1_000, characterDelayMs, over90Seconds: finalDuration > 90, models: scenes[0].models, editedWaits: edits, timingIsNotLivePerformance: true }, null, 2) + '\n');
   await mkdir(path.dirname(output), { recursive: true });
-  await rename(staged, output);
-  await writeFile(`${output}.json`, JSON.stringify({ duration: finalDuration, instructionGapSeconds: instructionGapMs / 1_000, characterDelayMs, over90Seconds: finalDuration > 90, models: scenes[0].models, editedWaits: edits, timingIsNotLivePerformance: true }, null, 2) + '\n');
+  await copyFile(staged, output, constants.COPYFILE_EXCL);
+  try {
+    await copyFile(metadata, `${output}.json`, constants.COPYFILE_EXCL);
+  } catch (error) {
+    await rm(output, { force: true });
+    throw error;
+  }
   return { duration: finalDuration, edits };
 }
 
@@ -338,8 +346,8 @@ async function main() {
     await terminal.call('run', '--cols', '120', '--rows', '36', '--cwd', workspace, '--env', `PI_CODING_AGENT_SESSION_DIR=${root}`, '--', args.pie, '--cwd', workspace, '--session', path.join(root, 'demo.jsonl'), '--approve');
     await terminal.wait(text => text.includes('e·pi') && text.includes('❯'), 'pie composer', 25_000);
     await terminal.keys('Ctrl+L');
-    await terminal.wait(text => text.includes(comparison.name), 'model catalog', 25_000);
-    await terminal.keys('Escape');
+    await terminal.wait(text => /❯\s*\/model\b/.test(text) && /[●○] [^\n│]+│\s*[●○] /.test(text), 'loaded model catalog', 25_000);
+    await terminal.closePage();
     await terminal.line(`/model ${compare}`);
     await terminal.wait(text => routeShown(text, comparison), 'comparison route');
 

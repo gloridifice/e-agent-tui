@@ -14,7 +14,7 @@ use crate::{
 };
 
 use super::{
-    content::{assistant_fact, content_parts, content_text, usage_cost_usd_nanos, user_fact},
+    content::{assistant_fact, content_parts, content_text, usage_cost_usd_nanos, user_facts},
     tool, AdapterOutput, PiAdapter,
 };
 
@@ -194,7 +194,10 @@ pub(super) fn live_message(adapter: &mut PiAdapter, message: &Value) -> AdapterO
                 adapter,
                 &content_text(message.get("content").unwrap_or(&Value::Null)),
             );
-            let mut output = adapter.timeline(user_fact(message));
+            let mut output = AdapterOutput::default();
+            for fact in user_facts(message) {
+                output.merge(adapter.timeline(fact));
+            }
             output.events.extend(title_events(adapter));
             output
         }
@@ -230,7 +233,10 @@ pub(super) fn snapshot_message(
     turn: Option<u64>,
 ) -> Vec<TimelineRecord> {
     match message.get("role").and_then(Value::as_str) {
-        Some("user") => vec![adapter.record_fact(user_fact(message))],
+        Some("user") => user_facts(message)
+            .into_iter()
+            .map(|fact| adapter.record_fact(fact))
+            .collect(),
         Some("assistant") => {
             let mut records = vec![adapter.record_fact(assistant_fact(message, turn, Some(0)))];
             let tool_state = match message.get("stopReason").and_then(Value::as_str) {

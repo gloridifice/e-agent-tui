@@ -385,7 +385,7 @@ fn content_card_lines(card: &ContentCard, state: &TuiApp, area_width: usize) -> 
 
 fn skill_invocation_lines(card: &ContentCard, state: &TuiApp) -> Vec<Line<'static>> {
     vec![Line::from(skill_identity_spans(
-        "[Skill]",
+        "[skill]",
         &card.content,
         state,
     ))]

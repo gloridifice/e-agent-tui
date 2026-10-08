@@ -39,11 +39,31 @@ impl RuntimeState {
         }
     }
 
+    pub(crate) fn submission_message_card(
+        prompt: &crate::PromptInput,
+        skill_card: &crate::display::ContentCard,
+    ) -> Option<crate::display::ContentCard> {
+        let (_, message) = prompt.skill_invocation()?;
+        if message.is_empty() {
+            return None;
+        }
+        let mut card = skill_card.clone();
+        card.id = crate::display::DisplayId(format!("{}:message", card.id.0));
+        card.content = message.to_owned();
+        card.copy_source = message.to_owned();
+        card.role = crate::display::CardRole::User;
+        card.unit = None;
+        Some(card)
+    }
+
     pub fn admit_submission(&mut self, prompt: &crate::PromptInput, start_work: bool) {
-        let mut card = self.submission_card(prompt);
-        card.unit = Some(self.allocate_copy_unit(&card.copy_source));
-        self.pending_submissions.push(card.id.clone());
-        self.insert_transcript_item(DisplayItem::Card(card), None, None);
+        let card = self.submission_card(prompt);
+        let message_card = Self::submission_message_card(prompt, &card);
+        for mut card in std::iter::once(card).chain(message_card) {
+            card.unit = Some(self.allocate_copy_unit(&card.copy_source));
+            self.pending_submissions.push(card.id.clone());
+            self.insert_transcript_item(DisplayItem::Card(card), None, None);
+        }
         self.refresh_link_copy();
         self.projector.tool_family.close_group();
         self.render.transcript_cache.invalidate();

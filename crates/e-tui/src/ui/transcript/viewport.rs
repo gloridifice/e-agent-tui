@@ -15,17 +15,27 @@ pub(super) fn render_transcript_impl(
     let screen_height = area.height as usize;
     let width = area.width as usize;
     if let Some(draft) = state.session.new_conversation.as_ref() {
-        if let Some(card) = draft
+        let cards: Vec<_> = draft
             .pending_card
-            .as_ref()
-            .filter(|card| matches!(card.role, CardRole::User | CardRole::Attachment))
-        {
-            let (_, content_width) = crate::transcript_layout::user_message_geometry(card, width);
-            let options = crate::render::transcript_options(&state.config, content_width);
-            state
-                .render
-                .markdown_layout
-                .materialize_card(card, theme, &options);
+            .iter()
+            .cloned()
+            .flat_map(|card| {
+                let message = draft.pending_input.as_ref().and_then(|prompt| {
+                    crate::runtime::RuntimeState::submission_message_card(prompt, &card)
+                });
+                std::iter::once(card).chain(message)
+            })
+            .collect();
+        for card in &cards {
+            if matches!(card.role, CardRole::User | CardRole::Attachment) {
+                let (_, content_width) =
+                    crate::transcript_layout::user_message_geometry(card, width);
+                let options = crate::render::transcript_options(&state.config, content_width);
+                state
+                    .render
+                    .markdown_layout
+                    .materialize_card(card, theme, &options);
+            }
         }
         let bottom_rows = bottom_rows.min(screen_height);
         let bottom_y = if bottom_rows == 0 {
@@ -33,11 +43,10 @@ pub(super) fn render_transcript_impl(
         } else {
             screen_height.saturating_sub(bottom_rows).max(1)
         };
-        let mut display = draft
-            .pending_card
-            .as_ref()
-            .map(|card| display_item_lines(&DisplayItem::Card(card.clone()), state, width))
-            .unwrap_or_default();
+        let mut display: Vec<_> = cards
+            .into_iter()
+            .flat_map(|card| display_item_lines(&DisplayItem::Card(card), state, width))
+            .collect();
         if let Some(notice) = &draft.notice {
             display.push(Line::from(Span::styled(
                 notice.clone(),

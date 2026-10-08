@@ -1180,7 +1180,7 @@ fn skill_invocation_renders_compact_identity_and_keeps_full_copy_source() {
         .iter()
         .map(|cell| cell.symbol())
         .collect::<String>();
-    assert!(rendered.contains("[Skill] code-review"));
+    assert!(rendered.contains("[skill] code-review"));
     assert!(!rendered.contains("expanded skill instructions"));
     assert_eq!(state.render.units.get(&7), Some(&source));
 }

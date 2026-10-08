@@ -117,7 +117,7 @@ pub(super) fn dispatch(adapter: &mut PiAdapter, mut record: RpcRecord) -> Adapte
             }));
     }
     if skill {
-        output.merge(finish_skill_prompt(adapter, successful));
+        adapter.pending_skill_prompt = None;
     }
     if completed.is_some() && adapter.configuration_request == completed {
         adapter.configuration_request = None;
@@ -166,32 +166,6 @@ pub(super) fn dispatch(adapter: &mut PiAdapter, mut record: RpcRecord) -> Adapte
         }
     }
     drain_deferred(adapter, &mut output);
-    output
-}
-
-fn finish_skill_prompt(adapter: &mut PiAdapter, successful: bool) -> AdapterOutput {
-    let Some(pending) = adapter.pending_skill_prompt.take() else {
-        return AdapterOutput::default();
-    };
-    if !successful || pending.session_id != adapter.session_id {
-        return AdapterOutput::default();
-    }
-    let Some(text) = pending.trailing_text else {
-        return AdapterOutput::default();
-    };
-    let id = adapter.request_id("prompt");
-    session::note_first_user_title(adapter, &text);
-    adapter.pending_skill_prompt = Some(super::PendingSkillPrompt {
-        id: id.clone(),
-        session_id: pending.session_id,
-        trailing_text: None,
-    });
-    let mut output = AdapterOutput::command(RpcCommand::Prompt {
-        id: Some(id),
-        message: text,
-        streaming_behavior: Some(crate::protocol::StreamingBehavior::Steer),
-    });
-    output.events.extend(session::title_events(adapter));
     output
 }
 

@@ -47,7 +47,7 @@ pie
 
 `pie` launches the official `pi --mode rpc` runtime and reuses Pi's native models, credentials, extensions, resources, and session files. Inside `pie`, use `/login [provider]` for Pi's native API-key, OAuth, browser, device-code, and multi-step setup flows, and `/logout` to remove a stored credential. Use `pie --resume <session_id>` (or `pie -r <session_id>`) to reopen a saved session, or `pie --session <session.jsonl>` for a file. On exit, `pie` prints a command to resume the current saved session; `pie --approve` or `pie --no-approve` explicitly overrides Pi's native project-trust behavior. Run `pie --help` for all launch options.
 
-Ctrl+C saves a text-only draft to input history before clearing it; press ↑ to recall it.
+Home/End moves to the start/end of the current input line, including wrapped lines. Ctrl+C saves a text-only draft to input history before clearing it; press ↑ to recall it.
 
 During compaction, Enter queues ordinary messages for after the current run finishes (`○`), even if compaction finishes earlier. This applies to both frontends.
 

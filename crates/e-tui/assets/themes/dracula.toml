@@ -6,7 +6,8 @@ name = "dracula"
 night = "#282a36"
 ash = "#343746"
 umber = "#44475a"
-bark = "#6272a4"
+bark = "#586691"
+comment = "#6272a4"
 mist = "#f8f8f2"
 sage = "#50fa7b"
 blush = "#8be9fd"
@@ -14,8 +15,9 @@ coral = "#bd93f9"
 rose = "#ff79c6"
 ember = "#ff5555"
 honey = "#f1fa8c"
-added_bg = "#29433b"
-removed_bg = "#492f3c"
+orange = "#ffb86c"
+added_bg = "#2d453f"
+removed_bg = "#4a313b"
 
 [semantics.surface]
 base = { fg = "mist", bg = "night" }
@@ -27,17 +29,17 @@ muted_text = { fg = "bark" }
 [semantics.markdown]
 text = { fg = "mist" }
 heading1 = { fg = "coral", bold = true }
-heading2 = { fg = "blush", bold = true }
-heading3 = { fg = "sage", bold = true }
-heading4 = { fg = "rose", italic = true }
-heading5 = { fg = "blush" }
+heading2 = { fg = "rose", bold = true }
+heading3 = { fg = "blush", bold = true }
+heading4 = { fg = "sage", italic = true }
+heading5 = { fg = "coral" }
 heading6 = { fg = "bark" }
 emphasis = { fg = "mist", italic = true }
-strong = { fg = "blush" }
+strong = { fg = "orange" }
 strikethrough = { fg = "mist" }
-inline_code = { fg = "rose" }
-link_text = { fg = "coral", bold = true }
-link_url = { fg = "coral", underline = true }
+inline_code = { fg = "sage" }
+link_text = { fg = "blush", bold = true }
+link_url = { fg = "blush", underline = true }
 image = { fg = "blush", italic = true }
 quote_marker = { fg = "bark" }
 rule = { fg = "bark" }
@@ -84,14 +86,14 @@ mermaid_title = { fg = "bark", bold = true }
 
 [semantics.code]
 text = { fg = "mist" }
-comment = { fg = "bark" }
-keyword = { fg = "coral" }
+comment = { fg = "comment" }
+keyword = { fg = "rose" }
 type = { fg = "blush" }
-function = { fg = "coral" }
-string = { fg = "sage" }
-constant = { fg = "rose" }
-attribute = { fg = "rose", italic = true }
-escape = { fg = "coral" }
+function = { fg = "sage" }
+string = { fg = "honey" }
+constant = { fg = "coral" }
+attribute = { fg = "sage", italic = true }
+escape = { fg = "rose" }
 invalid = { fg = "mist" }
 meta = { fg = "bark" }
 
@@ -130,7 +132,7 @@ cancelled = { fg = "honey" }
 
 [semantics.log]
 info = { fg = "bark" }
-warning = { fg = "honey" }
+warning = { fg = "orange" }
 error = { fg = "ember" }
 
 [semantics.activity]
@@ -181,7 +183,7 @@ bar_text = { fg = "night" }
 [semantics.history.operation]
 model = { fg = "bark" }
 read = { fg = "sage" }
-edit = { fg = "coral" }
+edit = { fg = "orange" }
 bash = { fg = "blush" }
 search = { fg = "rose" }
 other = { fg = "bark" }

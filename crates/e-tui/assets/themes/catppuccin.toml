@@ -6,7 +6,8 @@ name = "catppuccin"
 night = "#1e1e2e"
 ash = "#313244"
 umber = "#45475a"
-bark = "#7f849c"
+bark = "#585b70"
+overlay = "#9399b2"
 mist = "#cdd6f4"
 sage = "#a6e3a1"
 blush = "#f5e0dc"
@@ -14,8 +15,14 @@ coral = "#cba6f7"
 rose = "#f5c2e7"
 ember = "#f38ba8"
 honey = "#f9e2af"
-added_bg = "#2b3b36"
-removed_bg = "#442d3c"
+maroon = "#eba0ac"
+peach = "#fab387"
+teal = "#94e2d5"
+sapphire = "#74c7ec"
+blue = "#89b4fa"
+lavender = "#b4befe"
+added_bg = "#30383d"
+removed_bg = "#402f42"
 
 [semantics.surface]
 base = { fg = "mist", bg = "night" }
@@ -26,18 +33,18 @@ muted_text = { fg = "bark" }
 
 [semantics.markdown]
 text = { fg = "mist" }
-heading1 = { fg = "coral", bold = true }
-heading2 = { fg = "blush", bold = true }
-heading3 = { fg = "sage", bold = true }
-heading4 = { fg = "rose", italic = true }
-heading5 = { fg = "blush" }
-heading6 = { fg = "bark" }
+heading1 = { fg = "ember", bold = true }
+heading2 = { fg = "peach", bold = true }
+heading3 = { fg = "honey", bold = true }
+heading4 = { fg = "sage", italic = true }
+heading5 = { fg = "sapphire" }
+heading6 = { fg = "lavender" }
 emphasis = { fg = "mist", italic = true }
-strong = { fg = "blush" }
+strong = { fg = "maroon" }
 strikethrough = { fg = "mist" }
-inline_code = { fg = "rose" }
-link_text = { fg = "coral", bold = true }
-link_url = { fg = "coral", underline = true }
+inline_code = { fg = "teal" }
+link_text = { fg = "blue", bold = true }
+link_url = { fg = "blue", underline = true }
 image = { fg = "blush", italic = true }
 quote_marker = { fg = "bark" }
 rule = { fg = "bark" }
@@ -84,14 +91,14 @@ mermaid_title = { fg = "bark", bold = true }
 
 [semantics.code]
 text = { fg = "mist" }
-comment = { fg = "bark" }
+comment = { fg = "overlay", italic = true }
 keyword = { fg = "coral" }
-type = { fg = "blush" }
-function = { fg = "coral" }
+type = { fg = "honey" }
+function = { fg = "blue" }
 string = { fg = "sage" }
-constant = { fg = "rose" }
-attribute = { fg = "rose", italic = true }
-escape = { fg = "coral" }
+constant = { fg = "peach" }
+attribute = { fg = "honey", italic = true }
+escape = { fg = "rose" }
 invalid = { fg = "mist" }
 meta = { fg = "bark" }
 
@@ -112,7 +119,7 @@ meta = { fg = "umber" }
 background = { fg = "mist", bg = "ash" }
 text = { fg = "mist" }
 prompt = { fg = "coral" }
-cursor = { fg = "night", bg = "mist" }
+cursor = { fg = "night", bg = "blush" }
 hint = { fg = "bark" }
 placeholder = { fg = "rose", bold = true }
 selection = { fg = "night", bg = "mist" }
@@ -182,8 +189,8 @@ bar_text = { fg = "night" }
 model = { fg = "bark" }
 read = { fg = "sage" }
 edit = { fg = "coral" }
-bash = { fg = "blush" }
-search = { fg = "rose" }
+bash = { fg = "peach" }
+search = { fg = "blue" }
 other = { fg = "bark" }
 
 [semantics.history.duration]

@@ -3,19 +3,22 @@ name = "rider-dark"
 # The palette is intentionally open-ended. Add any named colors here and
 # reference them from the fixed semantic roles below.
 [colors]
-night = "#2b2b2b"
-ash = "#313335"
-umber = "#43454a"
-bark = "#808080"
-mist = "#a9b7c6"
-sage = "#6a8759"
-blush = "#ffc66d"
-coral = "#cc7832"
-rose = "#9876aa"
-ember = "#ff6b68"
-honey = "#bbb529"
-added_bg = "#304536"
-removed_bg = "#4b3035"
+night = "#262626"
+ash = "#323232"
+umber = "#474747"
+bark = "#646464"
+mist = "#bdbdbd"
+sage = "#85c46c"
+blush = "#c9a26d"
+coral = "#6c95eb"
+rose = "#ed94c0"
+ember = "#ff5647"
+honey = "#e8bf6a"
+purple = "#c191ff"
+teal = "#39cc9b"
+cyan = "#66c3cc"
+added_bg = "#323b2f"
+removed_bg = "#492e2b"
 
 [semantics.surface]
 base = { fg = "mist", bg = "night" }
@@ -27,15 +30,15 @@ muted_text = { fg = "bark" }
 [semantics.markdown]
 text = { fg = "mist" }
 heading1 = { fg = "coral", bold = true }
-heading2 = { fg = "blush", bold = true }
-heading3 = { fg = "sage", bold = true }
-heading4 = { fg = "rose", italic = true }
-heading5 = { fg = "blush" }
+heading2 = { fg = "purple", bold = true }
+heading3 = { fg = "teal", bold = true }
+heading4 = { fg = "cyan", italic = true }
+heading5 = { fg = "purple" }
 heading6 = { fg = "bark" }
 emphasis = { fg = "mist", italic = true }
 strong = { fg = "blush" }
 strikethrough = { fg = "mist" }
-inline_code = { fg = "rose" }
+inline_code = { fg = "cyan" }
 link_text = { fg = "coral", bold = true }
 link_url = { fg = "coral", underline = true }
 image = { fg = "blush", italic = true }
@@ -84,14 +87,14 @@ mermaid_title = { fg = "bark", bold = true }
 
 [semantics.code]
 text = { fg = "mist" }
-comment = { fg = "bark" }
+comment = { fg = "sage" }
 keyword = { fg = "coral" }
-type = { fg = "blush" }
-function = { fg = "coral" }
-string = { fg = "sage" }
+type = { fg = "purple" }
+function = { fg = "teal" }
+string = { fg = "blush" }
 constant = { fg = "rose" }
-attribute = { fg = "rose", italic = true }
-escape = { fg = "coral" }
+attribute = { fg = "purple" }
+escape = { fg = "rose" }
 invalid = { fg = "mist" }
 meta = { fg = "bark" }
 
@@ -182,8 +185,8 @@ bar_text = { fg = "night" }
 model = { fg = "bark" }
 read = { fg = "sage" }
 edit = { fg = "coral" }
-bash = { fg = "blush" }
-search = { fg = "rose" }
+bash = { fg = "teal" }
+search = { fg = "purple" }
 other = { fg = "bark" }
 
 [semantics.history.duration]

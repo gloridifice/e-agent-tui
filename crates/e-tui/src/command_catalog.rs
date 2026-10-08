@@ -178,13 +178,6 @@ pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
         Compact
     ),
     command!(
-        "goal",
-        "command.goal.description",
-        Some("command.goal.hint"),
-        None,
-        Forward
-    ),
-    command!(
         "plan",
         "command.plan.description",
         Some("command.plan.hint"),

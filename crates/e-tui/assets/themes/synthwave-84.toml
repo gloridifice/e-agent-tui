@@ -4,18 +4,20 @@ name = "synthwave-84"
 # reference them from the fixed semantic roles below.
 [colors]
 night = "#262335"
-ash = "#2a2139"
-umber = "#463465"
-bark = "#848bbd"
-mist = "#ffffff"
+ash = "#34294f"
+umber = "#4b3e6b"
+bark = "#5f6287"
+haze = "#848bbd"
+mist = "#f0ecfa"
 sage = "#72f1b8"
-blush = "#fede5d"
+blush = "#ff8b39"
 coral = "#ff7edb"
 rose = "#36f9f6"
 ember = "#fe4450"
 honey = "#fede5d"
-added_bg = "#29413e"
-removed_bg = "#492c43"
+salmon = "#f97e72"
+added_bg = "#303e46"
+removed_bg = "#492839"
 
 [semantics.surface]
 base = { fg = "mist", bg = "night" }
@@ -27,17 +29,17 @@ muted_text = { fg = "bark" }
 [semantics.markdown]
 text = { fg = "mist" }
 heading1 = { fg = "coral", bold = true }
-heading2 = { fg = "blush", bold = true }
-heading3 = { fg = "sage", bold = true }
-heading4 = { fg = "rose", italic = true }
+heading2 = { fg = "rose", bold = true }
+heading3 = { fg = "honey", bold = true }
+heading4 = { fg = "sage", italic = true }
 heading5 = { fg = "blush" }
 heading6 = { fg = "bark" }
 emphasis = { fg = "mist", italic = true }
-strong = { fg = "blush" }
+strong = { fg = "honey" }
 strikethrough = { fg = "mist" }
-inline_code = { fg = "rose" }
-link_text = { fg = "coral", bold = true }
-link_url = { fg = "coral", underline = true }
+inline_code = { fg = "salmon" }
+link_text = { fg = "rose", bold = true }
+link_url = { fg = "rose", underline = true }
 image = { fg = "blush", italic = true }
 quote_marker = { fg = "bark" }
 rule = { fg = "bark" }
@@ -84,14 +86,14 @@ mermaid_title = { fg = "bark", bold = true }
 
 [semantics.code]
 text = { fg = "mist" }
-comment = { fg = "bark" }
-keyword = { fg = "coral" }
-type = { fg = "blush" }
-function = { fg = "coral" }
-string = { fg = "sage" }
-constant = { fg = "rose" }
-attribute = { fg = "rose", italic = true }
-escape = { fg = "coral" }
+comment = { fg = "haze", italic = true }
+keyword = { fg = "honey" }
+type = { fg = "coral" }
+function = { fg = "rose" }
+string = { fg = "blush" }
+constant = { fg = "salmon" }
+attribute = { fg = "sage", italic = true }
+escape = { fg = "salmon" }
 invalid = { fg = "mist" }
 meta = { fg = "bark" }
 

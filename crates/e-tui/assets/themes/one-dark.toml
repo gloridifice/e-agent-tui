@@ -4,18 +4,19 @@ name = "one-dark"
 # reference them from the fixed semantic roles below.
 [colors]
 night = "#282c34"
-ash = "#2c313c"
+ash = "#31363f"
 umber = "#3e4451"
 bark = "#5c6370"
 mist = "#abb2bf"
 sage = "#98c379"
-blush = "#e5c07b"
-coral = "#c678dd"
-rose = "#61afef"
+blush = "#d19a66"
+coral = "#61afef"
+rose = "#c678dd"
 ember = "#e06c75"
 honey = "#e5c07b"
-added_bg = "#303e36"
-removed_bg = "#443039"
+cyan = "#56b6c2"
+added_bg = "#37403d"
+removed_bg = "#45363e"
 
 [semantics.surface]
 base = { fg = "mist", bg = "night" }
@@ -26,16 +27,16 @@ muted_text = { fg = "bark" }
 
 [semantics.markdown]
 text = { fg = "mist" }
-heading1 = { fg = "coral", bold = true }
+heading1 = { fg = "ember", bold = true }
 heading2 = { fg = "blush", bold = true }
-heading3 = { fg = "sage", bold = true }
-heading4 = { fg = "rose", italic = true }
-heading5 = { fg = "blush" }
+heading3 = { fg = "honey", bold = true }
+heading4 = { fg = "sage", italic = true }
+heading5 = { fg = "cyan" }
 heading6 = { fg = "bark" }
 emphasis = { fg = "mist", italic = true }
 strong = { fg = "blush" }
 strikethrough = { fg = "mist" }
-inline_code = { fg = "rose" }
+inline_code = { fg = "sage" }
 link_text = { fg = "coral", bold = true }
 link_url = { fg = "coral", underline = true }
 image = { fg = "blush", italic = true }
@@ -84,14 +85,14 @@ mermaid_title = { fg = "bark", bold = true }
 
 [semantics.code]
 text = { fg = "mist" }
-comment = { fg = "bark" }
-keyword = { fg = "coral" }
-type = { fg = "blush" }
+comment = { fg = "bark", italic = true }
+keyword = { fg = "rose" }
+type = { fg = "honey" }
 function = { fg = "coral" }
 string = { fg = "sage" }
-constant = { fg = "rose" }
-attribute = { fg = "rose", italic = true }
-escape = { fg = "coral" }
+constant = { fg = "blush" }
+attribute = { fg = "blush", italic = true }
+escape = { fg = "cyan" }
 invalid = { fg = "mist" }
 meta = { fg = "bark" }
 
@@ -114,7 +115,7 @@ text = { fg = "mist" }
 prompt = { fg = "coral" }
 cursor = { fg = "night", bg = "mist" }
 hint = { fg = "bark" }
-placeholder = { fg = "rose", bold = true }
+placeholder = { fg = "cyan", bold = true }
 selection = { fg = "night", bg = "mist" }
 status = { fg = "mist" }
 status_hint = { fg = "bark" }
@@ -183,7 +184,7 @@ model = { fg = "bark" }
 read = { fg = "sage" }
 edit = { fg = "coral" }
 bash = { fg = "blush" }
-search = { fg = "rose" }
+search = { fg = "cyan" }
 other = { fg = "bark" }
 
 [semantics.history.duration]

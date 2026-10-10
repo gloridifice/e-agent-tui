@@ -182,10 +182,10 @@ terminal.no_readable_content: "There is no readable content"
 terminal.command_no_images: "This command does not accept images"
 shell.empty: "Enter a shell command after !"
 shell.busy: "Wait for the local shell command to finish, or interrupt it first"
+shell.running: "running"
 shell.cancelled: "cancelled"
 shell.failed: "failed"
 shell.error: "Shell command failed: %{error}"
-shell.folded: "  … %{count} more rows · Reading / Preview shows complete output"
 shell.no_output: "  (no output)"
 help.table.key: "Key"
 help.table.action: "Action"
@@ -272,12 +272,24 @@ key.action.next_option: "Next option"
 key.action.toggle_option: "Select / toggle"
 key.action.allow: "Allow"
 key.action.deny: "Deny"
+key.action.open_mcp: "MCP menu"
+key.action.search: "Filter"
+key.action.inspect: "Details"
+key.action.edit_exposure: "Exposure"
+key.action.toggle_enabled: "Enable/disable"
+key.action.login: "Sign in"
+key.action.logout: "Sign out"
+key.action.reconnect: "Reconnect"
+key.action.refresh: "Refresh"
+key.action.open_link: "Open authorization link"
+mcp.title: "MCP manager"
 help.body: |
   The bindings below come from the active configuration. `—` means unbound.
   `osmain` means Command on macOS and Ctrl on Windows/Linux.
   Shortcuts intercepted by the terminal require terminal configuration or remapping.
-  Start input with `!` to run a local, noninteractive shell command (for example `!cat README.md`).
-  Output is folded to five display rows; Preview and the focused Reading message retain all output.
+  Start input with `!` to run a local, noninteractive shell command (for example `! cat README.md`).
+  Running commands stay on the bottom row. Finished commands show the last 64 display rows, then fold on a new message or agent completion.
+  Reading and Preview show retained output: at most 256 KiB / 2000 lines per command, discarding oldest lines first.
   Fast movement scrolls a focused terminal message instead of selecting another block.
   The cancel action stops the local command before interrupting the agent. Local output is not sent to the model.
 overlay.help.title: "Help — e"

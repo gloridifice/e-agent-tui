@@ -299,6 +299,9 @@ impl RuntimeState {
     ) {
         match &event.fact {
             TimelineFact::UserMessage { .. } => {
+                if !self.replaying {
+                    self.fold_shell_output();
+                }
                 self.projector.tool_family.close_group();
                 self.render.transcript_cache.invalidate();
                 if self.session.status == AgentStatus::Idle && self.pending_submissions.is_empty() {
@@ -1270,6 +1273,9 @@ impl RuntimeState {
                     .get_or_insert_with(std::time::Instant::now);
             }
             LifecycleProjection::TurnEnd { cancelled, outcome } => {
+                if !self.replaying {
+                    self.fold_shell_output();
+                }
                 self.settle_turn(host_event_time(event), cancelled);
                 if let Some(mut item) = outcome {
                     if let DisplayItem::Block(block) = &mut item {

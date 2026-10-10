@@ -143,6 +143,7 @@ pub(crate) fn markdown(config: &crate::Config) -> String {
             (Scope::PageQuestion, Some("help.context.question")),
             (Scope::PageQuestionEdit, Some("help.context.question_edit")),
             (Scope::Approval, Some("help.context.approval")),
+            (Scope::Mcp, Some("mcp.title")),
         ],
     );
     append_group(

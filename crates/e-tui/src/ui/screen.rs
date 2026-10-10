@@ -248,6 +248,12 @@ pub(super) fn render_with_cursor(
     overlays: RenderOverlays<'_>,
 ) -> Option<Position> {
     let pane_resize = overlays.pane_resize;
+    if state.mcp.is_some() {
+        frame.render_widget(
+            Block::default().style(theme.surface.base.style()),
+            frame.area(),
+        );
+    }
     if pane_resize.is_active() {
         return render_resize_placeholder(
             frame,
@@ -336,8 +342,13 @@ pub(super) fn render_with_cursor(
             paint_separator(frame, frame.area(), column, theme, false);
         }
     }
+    if let Some(menu) = &mut state.mcp {
+        super::mcp::render(frame, menu, &state.config, theme, state.mcp_reload_required);
+    }
     if help_visible {
         overlay::render_help_modal(frame, &state.config, theme, help_scroll);
+        None
+    } else if state.mcp.is_some() {
         None
     } else {
         cursor

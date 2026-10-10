@@ -41,6 +41,9 @@ pub(super) fn answer_question(
 }
 
 pub(super) fn request(adapter: &mut PiAdapter, record: RpcRecord) -> AdapterOutput {
+    if let Some(output) = super::mcp::ui(adapter, &record) {
+        return output;
+    }
     let request = match extension_ui_request(&record) {
         Ok(request) => request,
         Err(error) => return adapter.protocol_error(error.to_string()),

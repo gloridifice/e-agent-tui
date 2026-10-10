@@ -44,11 +44,14 @@ impl AuthAssets {
         let helper = directory.path().join("pie-auth-helper.mjs");
         std::fs::write(&companion, include_bytes!("auth_companion.mjs"))?;
         std::fs::write(&helper, include_bytes!("auth_helper.mjs"))?;
+        let mcp = directory.path().join("pie-mcp-companion.mjs");
+        std::fs::write(&mcp, include_bytes!("mcp_companion.mjs"))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&companion, std::fs::Permissions::from_mode(0o600))?;
             std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o600))?;
+            std::fs::set_permissions(&mcp, std::fs::Permissions::from_mode(0o600))?;
         }
         Ok(Self {
             _directory: directory,

@@ -389,18 +389,19 @@ fn content_card_lines(card: &ContentCard, state: &TuiApp, area_width: usize) -> 
 fn terminal_output_lines(card: &ContentCard, state: &TuiApp, width: usize) -> Vec<Line<'static>> {
     let theme = state.theme();
     let expanded = state.reading_terminal_owner() == Some(&card.id);
+    if state.shell.active.as_ref() == Some(&card.id)
+        || (!expanded && !state.shell.unfolded.contains(&card.id))
+    {
+        return Vec::new();
+    }
     if card.content.is_empty() {
-        return if state.shell.active.as_ref() == Some(&card.id) {
-            Vec::new()
-        } else {
-            vec![crate::wrap::clip_line(
-                Line::styled(
-                    crate::i18n::tr(state.config.language, "shell.no_output"),
-                    theme.surface.muted_text.style(),
-                ),
-                width,
-            )]
-        };
+        return vec![crate::wrap::clip_line(
+            Line::styled(
+                crate::i18n::tr(state.config.language, "shell.no_output"),
+                theme.surface.muted_text.style(),
+            ),
+            width,
+        )];
     }
     let gutter = width.saturating_sub(1).min(4);
     let output = crate::ui::component::ansi::output_lines(
@@ -412,16 +413,14 @@ fn terminal_output_lines(card: &ContentCard, state: &TuiApp, width: usize) -> Ve
         .into_iter()
         .flat_map(|line| wrap_line(line, width.saturating_sub(gutter).max(1)))
         .collect();
-    let hidden = if expanded {
-        0
-    } else {
-        output.len().saturating_sub(5)
-    };
     if !expanded {
-        output.truncate(5);
+        let hidden = output
+            .len()
+            .saturating_sub(crate::shell::OUTPUT_DISPLAY_ROWS);
+        output.drain(..hidden);
     }
     let prefix = crate::wrap::clip_text("  │ ", gutter);
-    let mut rows: Vec<_> = output
+    output
         .into_iter()
         .map(|line| {
             let mut spans = vec![Span::styled(prefix.clone(), theme.separator.line.style())];
@@ -431,21 +430,7 @@ fn terminal_output_lines(card: &ContentCard, state: &TuiApp, width: usize) -> Ve
             }));
             Line::from(spans)
         })
-        .collect();
-    if hidden > 0 {
-        rows.push(crate::wrap::clip_line(
-            Line::styled(
-                crate::i18n::tr_args(
-                    state.config.language,
-                    "shell.folded",
-                    &[("count", hidden.to_string())],
-                ),
-                theme.surface.muted_text.style(),
-            ),
-            width,
-        ));
-    }
-    rows
+        .collect()
 }
 
 fn skill_invocation_lines(card: &ContentCard, state: &TuiApp) -> Vec<Line<'static>> {
@@ -674,14 +659,14 @@ fn display_item_lines(item: &DisplayItem, state: &TuiApp, area_width: usize) -> 
         DisplayItem::Composite { activity, detail } => {
             let label = (detail.role == CardRole::Terminal).then(|| {
                 let theme = state.theme();
-                let mut spans = vec![Span::styled("!", theme.input.status_accent.style())];
+                let mut spans = vec![Span::styled("!", Style::default().fg(theme.coral))];
                 let command = activity.label.strip_prefix('!').unwrap_or(&activity.label);
                 for line in crate::ui::component::command::highlight(
                     command,
                     crate::ui::component::command::CommandColors {
-                        executable: theme.code.function.fg,
+                        executable: theme.coral,
                         argument: theme.surface.primary_text.fg,
-                        operator: theme.code.keyword.fg,
+                        operator: theme.surface.muted_text.fg,
                     },
                 ) {
                     if spans.len() > 1 {
@@ -732,6 +717,9 @@ fn is_activity_item(item: &DisplayItem) -> bool {
 }
 
 fn is_hidden_item(item: &DisplayItem, state: &TuiApp) -> bool {
+    if state.shell.active.as_ref() == Some(item.id()) {
+        return true;
+    }
     if state.session.new_conversation.is_some() && !state.shell.draft_ids.contains(item.id()) {
         return true;
     }

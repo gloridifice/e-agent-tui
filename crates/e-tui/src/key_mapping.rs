@@ -18,10 +18,12 @@ pub enum Action {
     ChooseModel,
     ChooseEffort,
     OpenSettings,
+    OpenMcp,
     ResumeSession,
     TogglePreview,
     ToggleView,
     CopyLink,
+    OpenLink,
     PageUp,
     PageDown,
     NewLine,
@@ -65,6 +67,14 @@ pub enum Action {
     ToggleOption,
     Allow,
     Deny,
+    Search,
+    Inspect,
+    EditExposure,
+    ToggleEnabled,
+    Login,
+    Logout,
+    Reconnect,
+    Refresh,
 }
 
 impl Action {
@@ -98,10 +108,11 @@ pub enum Scope {
     PageQuestionEdit,
     Approval,
     Help,
+    Mcp,
 }
 
 impl Scope {
-    pub const ALL: [Self; 19] = [
+    pub const ALL: [Self; 20] = [
         Self::Global,
         Self::Message,
         Self::MessageIdle,
@@ -121,6 +132,7 @@ impl Scope {
         Self::PageQuestionEdit,
         Self::Approval,
         Self::Help,
+        Self::Mcp,
     ];
 
     pub fn name(self) -> &'static str {
@@ -144,6 +156,7 @@ impl Scope {
             Self::PageQuestionEdit => "page.question.edit",
             Self::Approval => "approval",
             Self::Help => "help",
+            Self::Mcp => "mcp",
         }
     }
 }
@@ -511,6 +524,7 @@ impl KeyMapping {
                 | Scope::FullScreen
                 | Scope::History
                 | Scope::Help
+                | Scope::Mcp
         ) && matches!(action, Action::PageUp | Action::PageDown))
     }
 

@@ -94,6 +94,7 @@ pub(super) fn route(adapter: &mut PiAdapter, request: AgentRequest) -> AdapterOu
 
 fn route_request(adapter: &mut PiAdapter, request: AgentRequest) -> AdapterOutput {
     match request {
+        AgentRequest::Mcp(request) => super::mcp::request(adapter, request),
         AgentRequest::Input { prompt } => {
             let Some(text) = prompt.plain_text().map(str::to_owned) else {
                 return adapter.unsupported("Pi image prompts must be pasted as temporary file paths");

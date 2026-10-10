@@ -4,6 +4,8 @@ import {
   VERSION,
 } from "@earendil-works/pi-coding-agent";
 
+import registerMcpControls from "./pie-mcp-companion.mjs";
+
 const STATUS_KEY = "pie-native-auth-v1";
 const CONTEXT_COMMAND = "__pie_native_auth_context_v1";
 const REFRESH_COMMAND = "__pie_native_auth_refresh_v1";
@@ -17,6 +19,7 @@ function refreshFailed(result) {
 }
 
 export default function registerPieNativeAuth(pi) {
+  registerMcpControls(pi);
   pi.registerCommand("__pie_reload_v1", {
     description: "Internal pie resource reload",
     handler: async (_args, ctx) => {

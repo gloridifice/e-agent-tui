@@ -57,6 +57,7 @@ impl RuntimeState {
     }
 
     pub fn admit_submission(&mut self, prompt: &crate::PromptInput, start_work: bool) {
+        self.fold_shell_output();
         let card = self.submission_card(prompt);
         let message_card = Self::submission_message_card(prompt, &card);
         for mut card in std::iter::once(card).chain(message_card) {

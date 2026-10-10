@@ -24,6 +24,12 @@
 - Pi credentials remain in Pi's native store and environment resolution. Rust MUST NOT read or write `auth.json`, persist tokens in shared frontend config/history, or retry a credential mutation automatically after an uncertain or partial outcome.
 - Async results MUST carry enough generation, draft, target, and workspace identity to reject stale completion.
 
+## Native MCP configuration
+
+- Pi MCP settings remain in Pi's user configuration and trusted project configuration, not shared frontend config. The adapter MUST respect native project trust and the winning configuration source; extension-defined servers are read-only.
+- Saving MUST confirm an enabled/exposure patch against the inspected file revision, preserve unrelated fields and server definitions, and atomically replace only the owning configuration file. Invalid, conflicting, oversized, or non-regular configuration MUST fail closed rather than be overwritten.
+- Inspection metadata MUST exclude commands, environment values, headers, credential contents, and raw configuration. MCP tool identities are supplied by native metadata rather than reverse-parsed from underscore-separated names.
+
 ## Execution history
 
 - Each adapter stores append-only JSONL under its frontend-specific config cache and registers workspace identity through bounded locking and atomic replacement.

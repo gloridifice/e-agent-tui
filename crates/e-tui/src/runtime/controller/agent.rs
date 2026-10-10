@@ -15,6 +15,22 @@ pub(super) fn apply_agent(
     use crate::agent::{InteractionEvent, TimelineEvent};
 
     match event {
+        AgentEvent::Mcp(event) => {
+            let mut app = state.lock().unwrap();
+            match event {
+                crate::mcp::McpEvent::Available(available) => app.mcp_available = available,
+                crate::mcp::McpEvent::Saved { message } => app.push_system_message(message),
+                crate::mcp::McpEvent::ReloadRequired(required) => {
+                    app.mcp_reload_required = required
+                }
+                event => {
+                    if let Some(menu) = &mut app.mcp {
+                        menu.apply(event);
+                    }
+                }
+            }
+            vec![UiAction::RequestDraw(DrawPriority::Interactive)]
+        }
         AgentEvent::Timeline(TimelineEvent::Snapshot { records, truncated }) => {
             let _zone = crate::tracy_zone!("snapshot apply");
             let mut app = state.lock().unwrap();
@@ -160,8 +176,14 @@ pub(super) fn apply_session(
                     } else {
                         None
                     };
+                    let unfolded = if initial {
+                        std::mem::take(&mut app.shell.unfolded)
+                    } else {
+                        Default::default()
+                    };
                     app.reset_transcript();
                     app.shell.active = active;
+                    app.shell.unfolded = unfolded;
                     for item in shells {
                         if let crate::display::DisplayItem::Composite { detail, .. } = &item {
                             if let Some(unit) = detail.unit {
@@ -172,6 +194,9 @@ pub(super) fn apply_session(
                         app.transcript.append(item, None);
                     }
                     app.history_page = None;
+                    app.mcp = None;
+                    app.mcp_available = false;
+                    app.mcp_reload_required = false;
                     app.interaction.question = None;
                 }
                 app.render.status_flashes = Default::default();
@@ -374,7 +399,11 @@ pub(super) fn apply_interaction(
         InteractionEvent::Approval {
             id, label, reason, ..
         } => {
-            state.lock().unwrap().history_page = None;
+            {
+                let mut app = state.lock().unwrap();
+                app.history_page = None;
+                app.mcp = None;
+            }
             *ui.approval = Some(ApprovalCard {
                 id,
                 tool_name: label,
@@ -386,7 +415,11 @@ pub(super) fn apply_interaction(
             session_id,
             questions,
         } => {
-            state.lock().unwrap().history_page = None;
+            {
+                let mut app = state.lock().unwrap();
+                app.history_page = None;
+                app.mcp = None;
+            }
             *ui.question = Some(request_id.clone());
             *ui.input_page = Some(InputPageSession::question(QuestionBatch::new(
                 request_id, session_id, questions,

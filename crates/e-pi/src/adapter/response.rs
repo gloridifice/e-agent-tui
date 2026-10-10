@@ -11,6 +11,9 @@ pub(super) fn dispatch(adapter: &mut PiAdapter, mut record: RpcRecord) -> Adapte
     if let Some(output) = super::retry::response(adapter, &record) {
         return output;
     }
+    if let Some(output) = super::mcp::response(adapter, &record) {
+        return output;
+    }
     if let Some(mut output) = super::fork::response(adapter, &record) {
         drain_deferred(adapter, &mut output);
         return output;
@@ -164,6 +167,9 @@ pub(super) fn dispatch(adapter: &mut PiAdapter, mut record: RpcRecord) -> Adapte
                 output.merge(super::compaction::fail_model_selection(adapter, id));
             }
         }
+    }
+    if reload {
+        output.merge(super::mcp::reload_finished(adapter, successful));
     }
     drain_deferred(adapter, &mut output);
     output

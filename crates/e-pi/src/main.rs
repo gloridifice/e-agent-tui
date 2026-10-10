@@ -452,7 +452,8 @@ async fn run_frontend(
             Instant::now(),
         );
         let frame_deadline = scheduler.deadline();
-        let retry_deadline = adapter.retry_deadline();
+        let retry_deadline =
+            e_tui::reveal::earliest_deadline(adapter.retry_deadline(), adapter.mcp_deadline());
         let (reveal_deadline, notice_deadline) = {
             let state = state_r.lock().unwrap();
             (
@@ -635,6 +636,11 @@ async fn run_frontend(
                         fatal = Some(error);
                         break 'outer;
                     }
+                    let output = adapter.tick_mcp(Instant::now());
+                    if let Err(error) = route_output(output, &rpc, &mut pending_inbound, &history, &mut reported_history_error).await {
+                        fatal = Some(error);
+                        break 'outer;
+                    }
                     first_inbound = pending_inbound.pop_front();
                 }
                 _ = wait_for_deadline(frame_deadline) => {}
@@ -750,7 +756,12 @@ async fn run_frontend(
                     history_view_open: state.history_page.is_some(),
                 }
             };
-            let route = route_terminal_event(event, focus, &config.key_mapping);
+            let mcp_open = state_r.lock().unwrap().mcp.is_some();
+            let route = if mcp_open {
+                e_tui::runtime::input::route_modal_terminal_event(event, focus, &config.key_mapping)
+            } else {
+                route_terminal_event(event, focus, &config.key_mapping)
+            };
             let terminal_size = terminal.size();
             let terminal_height = terminal_size.as_ref().map(|s| s.height).unwrap_or(40);
             let terminal_width = terminal_size.as_ref().map(|s| s.width).unwrap_or(120);

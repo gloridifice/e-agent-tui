@@ -6,6 +6,7 @@ enter_read_mode = "osmain-r"
 choose_model = "osmain-l"
 choose_effort = "osmain-e"
 open_settings = "osmain-,"
+open_mcp = "f6"
 resume_session = "osmain-n"
 toggle_preview = "osmain-p"
 copy_link = "ctrl-y"
@@ -135,3 +136,22 @@ deny = ["n", "shift-n", "esc"]
 # Help inherits movement and paging from [full_screen].
 [help]
 close = ["esc", "q", "osmain-h"]
+
+[mcp]
+move_up = ["up", "k"]
+move_down = ["down", "j"]
+move_up_fast = "pageup"
+move_down_fast = "pagedown"
+confirm = "enter"
+back = "esc"
+close = "q"
+search = "/"
+inspect = "p"
+edit_exposure = "e"
+toggle_enabled = "d"
+login = "l"
+logout = "o"
+reconnect = "r"
+refresh = "f5"
+open_link = "ctrl-o"
+copy_link = "ctrl-shift-y"

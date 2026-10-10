@@ -417,6 +417,24 @@ impl VtInputParser {
                 self.push_key(KeyCode::PageDown, modifiers);
                 true
             }
+            "11" | "12" | "13" | "14" | "15" | "17" | "18" | "19" | "20" | "21" | "23" | "24" => {
+                let key = match number {
+                    "11" => 1,
+                    "12" => 2,
+                    "13" => 3,
+                    "14" => 4,
+                    "15" => 5,
+                    "17" => 6,
+                    "18" => 7,
+                    "19" => 8,
+                    "20" => 9,
+                    "21" => 10,
+                    "23" => 11,
+                    _ => 12,
+                };
+                self.push_key(KeyCode::F(key), modifiers);
+                true
+            }
             // xterm modifyOtherKeys: ESC[27;<mod>;<code>~
             "27" if parts.len() >= 3 => {
                 let code = parts[2].parse::<u32>().ok();
@@ -554,6 +572,7 @@ impl VtInputParser {
             b'H' => Some(KeyCode::Home),
             b'F' => Some(KeyCode::End),
             b'M' => Some(KeyCode::Enter),
+            b'P' | b'Q' | b'R' | b'S' => Some(KeyCode::F(code - b'P' + 1)),
             _ => None,
         };
         if let Some(code) = key {

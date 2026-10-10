@@ -43,6 +43,28 @@ fn route_terminal_event(event: Event, focus: TerminalFocus) -> TerminalRoute {
     route_terminal_event_with_mapping(event, focus, &KeyMapping::default())
 }
 
+pub fn route_modal_terminal_event(
+    event: Event,
+    focus: TerminalFocus,
+    mapping: &KeyMapping,
+) -> TerminalRoute {
+    if !focus.help_visible {
+        if let Event::Key(key) = &event {
+            if key.kind == KeyEventKind::Release {
+                return TerminalRoute::Ignore;
+            }
+            if mapping.resolve(Scope::Global, key) == Some(Action::PrintHelp) {
+                return TerminalRoute::OpenHelp;
+            }
+            return TerminalRoute::InputPage(*key);
+        }
+        if let Event::Paste(text) = event {
+            return TerminalRoute::Paste { text };
+        }
+    }
+    route_terminal_event_with_mapping(event, focus, mapping)
+}
+
 pub fn route_terminal_event_with_mapping(
     event: Event,
     focus: TerminalFocus,

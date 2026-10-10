@@ -190,6 +190,7 @@ impl RuntimeController {
             && !*ui.help_visible
             && app.reading.is_none()
             && app.history_page.is_none()
+            && app.mcp.is_none()
         {
             if let Some(request) = ui
                 .input

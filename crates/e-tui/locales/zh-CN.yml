@@ -182,10 +182,10 @@ terminal.no_readable_content: "没有可阅读的内容"
 terminal.command_no_images: "此命令不接受图片"
 shell.empty: "请在 ! 后输入终端命令"
 shell.busy: "请等待本地终端命令完成，或先将其取消"
+shell.running: "运行中"
 shell.cancelled: "已取消"
 shell.failed: "失败"
 shell.error: "终端命令失败：%{error}"
-shell.folded: "  … 另 %{count} 个显示行 · 阅读 / 预览查看完整输出"
 shell.no_output: "  （无输出）"
 help.table.key: "按键"
 help.table.action: "操作"
@@ -272,12 +272,24 @@ key.action.next_option: "下一选项"
 key.action.toggle_option: "选择／切换"
 key.action.allow: "允许"
 key.action.deny: "拒绝"
+key.action.open_mcp: "MCP 菜单"
+key.action.search: "筛选"
+key.action.inspect: "详情"
+key.action.edit_exposure: "曝光策略"
+key.action.toggle_enabled: "启停"
+key.action.login: "登录"
+key.action.logout: "登出"
+key.action.reconnect: "重连"
+key.action.refresh: "刷新"
+key.action.open_link: "打开授权链接"
+mcp.title: "MCP 管理"
 help.body: |
   以下按键来自当前生效的配置。`—` 表示未绑定。
   `osmain` 在 macOS 上表示 Command，在 Windows/Linux 上表示 Ctrl。
   终端截获的快捷键需要调整终端设置或重新绑定。
-  输入以 `!` 开头可运行本地非交互终端命令，例如 `!cat README.md`。
-  输出最多显示五行；预览和阅读模式中聚焦的消息保留完整输出。
+  输入以 `!` 开头可运行本地非交互终端命令，例如 `! cat README.md`。
+  运行中的命令贴附底部；结束后显示末尾 64 个显示行，发送新消息或智能体结束后折叠。
+  阅读和预览可查看保留的输出：每条命令最多 256 KiB / 2000 行，超出时丢弃最早的行。
   快速移动会滚动聚焦的终端消息，而不是切换到其他消息。
   取消操作优先停止本地命令，再中断模型；本地输出不会发送给模型。
 overlay.help.title: "帮助 — e"

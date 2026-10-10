@@ -100,6 +100,14 @@ pub(super) fn apply_effect_result(
             {
                 return false;
             }
+            if let Some(menu) = &mut app.mcp {
+                return match content {
+                    ClipboardPaste::Text(text) => {
+                        menu.paste(&crate::input::normalize_paste_text(&text))
+                    }
+                    ClipboardPaste::Image(_) => false,
+                };
+            }
             let interaction = &mut app.interaction;
             match content {
                 ClipboardPaste::Text(text) => {

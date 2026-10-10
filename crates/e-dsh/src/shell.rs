@@ -2,7 +2,7 @@
 
 use e_tui::{
     display::DisplayId,
-    shell::{ShellRequest, ShellResult},
+    shell::{bound_output, ShellRequest, ShellResult, OUTPUT_CACHE_BYTES},
     EffectResult,
 };
 use std::{
@@ -135,17 +135,32 @@ async fn run(
         }
     }
     .map_err(|error| format!("wait for shell: {error}"))?;
-    let output = tokio::task::spawn_blocking(move || {
-        file.seek(SeekFrom::Start(0))?;
+    let (output, output_truncated) = tokio::task::spawn_blocking(move || {
+        let offset = file
+            .metadata()?
+            .len()
+            .saturating_sub(OUTPUT_CACHE_BYTES as u64);
+        file.seek(SeekFrom::Start(offset.saturating_sub(1)))?;
         let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)?;
-        Ok::<_, std::io::Error>(String::from_utf8_lossy(&bytes).into_owned())
+        file.take(OUTPUT_CACHE_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)?;
+        if offset > 0 {
+            let start = bytes
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map_or(bytes.len(), |i| i + 1);
+            bytes.drain(..start);
+        }
+        let mut output = String::from_utf8_lossy(&bytes).into_owned();
+        let truncated = bound_output(&mut output) || offset > 0;
+        Ok::<_, std::io::Error>((output, truncated))
     })
     .await
     .map_err(|error| error.to_string())?
     .map_err(|error| format!("read shell output: {error}"))?;
     Ok(ShellResult {
         output,
+        output_truncated,
         exit_code: status.code(),
         cancelled,
         ..Default::default()

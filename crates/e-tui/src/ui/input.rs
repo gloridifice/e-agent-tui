@@ -32,6 +32,14 @@ pub(super) fn render_input_with_catalog(
 ) -> Option<Position> {
     let bark = Style::default().fg(theme.input.hint.fg);
     render_ruled_chrome(frame, area, theme);
+    if input.is_shell_command() && area.width > 4 && area.height > 1 {
+        frame.buffer_mut().set_line(
+            area.x + 2,
+            area.bottom() - 1,
+            &Line::styled(" command ", theme.input.status_hint.style()),
+            area.width - 4,
+        );
+    }
     let horizontal = padding.saturating_mul(2).saturating_add(1);
     let inner = ratatui::layout::Rect::new(
         area.x.saturating_add(padding).saturating_add(1),
@@ -79,6 +87,18 @@ pub(super) fn render_input_with_catalog(
     let chunks = &layout.chunks;
     let cursor_row = layout.cursor_row;
     let command_range = input.command_name_range(catalogs);
+    let shell_styles = display.text.strip_prefix('!').map(|command| {
+        let mut styles = vec![theme.input.text.style().fg(theme.coral)];
+        styles.extend(crate::ui::component::command::character_styles(
+            command,
+            crate::ui::component::command::CommandColors {
+                executable: theme.coral,
+                argument: theme.surface.primary_text.fg,
+                operator: theme.surface.muted_text.fg,
+            },
+        ));
+        styles
+    });
     // Keep the cursor's wrapped row visible when content exceeds the height cap.
     let total = chunks.len();
     let visible_rows = (inner.height as usize).max(1);
@@ -96,6 +116,8 @@ pub(super) fn render_input_with_catalog(
             theme.activity.label.style()
         } else if display.is_paste_char(index) {
             theme.input.placeholder.style()
+        } else if let Some(style) = shell_styles.as_ref().and_then(|styles| styles.get(index)) {
+            *style
         } else if command_range.contains(&index) {
             theme.input.text.style().fg(theme.code.r#type.fg)
         } else {

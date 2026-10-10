@@ -69,6 +69,13 @@ pub fn highlight(source: &str, colors: CommandColors) -> Vec<Line<'static>> {
     lines
 }
 
+pub fn character_styles(source: &str, colors: CommandColors) -> Vec<Style> {
+    tokens(source)
+        .into_iter()
+        .flat_map(|token| std::iter::repeat_n(colors.style(token.role), token.text.chars().count()))
+        .collect()
+}
+
 fn operator(source: &str) -> Option<(usize, bool)> {
     for redirect in ["&>>", "&>"] {
         if source.starts_with(redirect) {

@@ -40,7 +40,8 @@ fn submit_prompt(
         }
     };
     let defer_new = {
-        let app = state.lock().unwrap();
+        let mut app = state.lock().unwrap();
+        app.fold_shell_output();
         app.is_new_conversation() && app.session.temporary_model.is_some()
     };
     if target.is_some() || defer_new {

@@ -17,6 +17,65 @@ pub(super) fn apply_terminal_route(
     selection_frame: &SelectionFrame,
     ui: &mut TerminalUiState<'_>,
 ) -> Vec<UiAction> {
+    if !*ui.help_visible && !matches!(route, TerminalRoute::OpenHelp) {
+        let mut app = state.lock().unwrap();
+        if let Some(menu) = &mut app.mcp {
+            ui.mouse_selection.clear();
+            ui.pane_resize.cancel();
+            let (close, effects) = match route {
+                TerminalRoute::Paste { text } => {
+                    menu.paste(&text);
+                    (false, vec![])
+                }
+                TerminalRoute::ReadClipboard if menu.editor.is_some() => {
+                    (false, vec![UiAction::ReadClipboard])
+                }
+                TerminalRoute::Ordinary(key)
+                | TerminalRoute::InputPage(key)
+                | TerminalRoute::Reading(key)
+                | TerminalRoute::History(key)
+                | TerminalRoute::Approval(key) => {
+                    let input = if matches!(menu.view, crate::mcp::McpView::Login)
+                        && matches!(
+                            ui.config
+                                .key_mapping
+                                .resolve(crate::key_mapping::Scope::Mcp, &key),
+                            Some(Action::OpenLink | Action::CopyLink)
+                        ) {
+                        ui.config
+                            .key_mapping
+                            .input(crate::key_mapping::Scope::Mcp, &key)
+                    } else {
+                        ui.config.key_mapping.input(menu.key_scope(), &key)
+                    };
+                    if input == crate::key_mapping::MappedKey::Command(Action::Paste) {
+                        (false, vec![UiAction::ReadClipboard])
+                    } else {
+                        menu.handle_input(input)
+                    }
+                }
+                TerminalRoute::TranscriptPage { up } if menu.editor.is_none() => {
+                    menu.handle_input(crate::key_mapping::MappedKey::Command(if up {
+                        Action::MoveUpFast
+                    } else {
+                        Action::MoveDownFast
+                    }))
+                }
+                TerminalRoute::Pointer(PointerEvent::Wheel { up, .. }) if menu.editor.is_none() => {
+                    menu.handle_input(crate::key_mapping::MappedKey::Command(if up {
+                        Action::MoveUp
+                    } else {
+                        Action::MoveDown
+                    }))
+                }
+                _ => (false, vec![]),
+            };
+            if close {
+                app.mcp = None;
+            }
+            return effects;
+        }
+    }
     {
         let mut app = state.lock().unwrap();
         let armed = app.link_copy.armed;
@@ -377,6 +436,17 @@ pub(super) fn apply_terminal_route(
                 Action::ResumeSession => {
                     *ui.input_page = Some(InputPageSession::resume());
                     effects.push(agent_action(AgentRequest::ListSessions));
+                }
+                Action::OpenMcp => {
+                    let mut app = state.lock().unwrap();
+                    if app.mcp_available {
+                        app.next_mcp_page_id += 1;
+                        let (menu, request) = crate::mcp::McpState::open(app.next_mcp_page_id);
+                        app.mcp = Some(menu);
+                        app.reading = None;
+                        app.history_page = None;
+                        effects.push(agent_action(request));
+                    }
                 }
                 Action::OpenSettings => {
                     *ui.input_page =

@@ -166,6 +166,40 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
         return outcome;
     }
     let is_pi = context.state.lock().unwrap().frontend == crate::FrontendKind::Pi;
+    let mcp_available = context.state.lock().unwrap().mcp_available;
+    if name == "mcp" && mcp_available {
+        let parts = raw_input.split_whitespace().collect::<Vec<_>>();
+        let action = match parts.as_slice() {
+            [] => None,
+            ["login", server] => Some(((*server).to_owned(), crate::mcp::McpOperation::Login)),
+            ["logout", server] => Some(((*server).to_owned(), crate::mcp::McpOperation::Logout)),
+            ["reconnect", server] => {
+                Some(((*server).to_owned(), crate::mcp::McpOperation::Reconnect))
+            }
+            _ => {
+                push_error(
+                    context.state,
+                    "Usage: /mcp [login|logout|reconnect <server>]",
+                );
+                return outcome;
+            }
+        };
+        let request = {
+            let mut app = context.state.lock().unwrap();
+            app.next_mcp_page_id += 1;
+            let (menu, request) = if let Some((server, operation)) = action {
+                crate::mcp::McpState::open_action(app.next_mcp_page_id, server, operation)
+            } else {
+                crate::mcp::McpState::open(app.next_mcp_page_id)
+            };
+            app.mcp = Some(menu);
+            app.reading = None;
+            app.history_page = None;
+            request
+        };
+        outcome.outbound.push(request);
+        return outcome;
+    }
     if name == "logout" && is_pi {
         if !raw_input.trim().is_empty() {
             push_error(context.state, "Usage: /logout");

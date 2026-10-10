@@ -14,6 +14,7 @@ impl TuiApp {
             self.shell.draft_ids.insert(id.clone());
         }
         let mut activity = ActivityRow::tool(id.clone(), format!("!{command}"));
+        activity.summary = tr(self.config.language, "shell.running");
         activity.live_duration_since = Some(Instant::now());
         activity.output_lines = Some(0);
         let unit = self.render.next_unit;
@@ -70,7 +71,6 @@ impl TuiApp {
         };
         activity.duration_ms = Some(result.duration_ms);
         activity.live_duration_since = None;
-        activity.output_lines = Some(result.output.lines().count());
         detail.content = result.output;
         if let Some(error) = result.error {
             if !detail.content.is_empty() && !detail.content.ends_with('\n') {
@@ -82,13 +82,17 @@ impl TuiApp {
                 &[("error", error)],
             ));
         }
+        activity.output_lines_truncated =
+            crate::shell::bound_output(&mut detail.content) || result.output_truncated;
+        activity.output_lines = Some(detail.content.lines().count());
         detail.copy_source = detail.content.clone();
         if let Some(unit) = detail.unit {
             self.render.units.insert(unit, detail.copy_source.clone());
         }
         self.timeline
             .transcript
-            .replace(&id, DisplayItem::Composite { activity, detail }, None);
+            .append(DisplayItem::Composite { activity, detail }, None);
+        self.shell.unfolded.insert(id);
         self.render.transcript_cache.invalidate();
         self.rebuild_reading_model();
         if self.reading.is_some() {
@@ -99,11 +103,19 @@ impl TuiApp {
         true
     }
 
+    pub(crate) fn fold_shell_output(&mut self) {
+        if !self.shell.unfolded.is_empty() {
+            self.shell.unfolded.clear();
+            self.render.transcript_cache.invalidate();
+        }
+    }
+
     pub(crate) fn clear_shell(&mut self) {
         if let Some(id) = self.shell.active.take() {
             self.pending_actions.push(UiAction::CancelShell(id));
         }
         self.shell.draft_ids.clear();
+        self.shell.unfolded.clear();
     }
 
     pub fn reading_terminal_owner(&self) -> Option<&DisplayId> {

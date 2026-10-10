@@ -34,6 +34,7 @@ mod accessories;
 pub mod component;
 mod input;
 mod layout;
+mod mcp;
 mod overlay;
 mod pages;
 pub mod pane;
@@ -199,8 +200,13 @@ pub fn render_with_cursor_and_selection(
             _ => None,
         }
     };
-    let presentation = Presentation::capture(frame.buffer_mut(), cursor, context, !resizing)
-        .with_pane_separator(pane_separator);
+    let presentation = Presentation::capture(
+        frame.buffer_mut(),
+        cursor,
+        context,
+        !resizing && state.mcp.is_none(),
+    )
+    .with_pane_separator(pane_separator);
     selection::clear_non_copyable_markers(frame.buffer_mut());
     if !resizing
         && presentation

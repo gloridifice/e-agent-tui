@@ -104,6 +104,7 @@ pub struct PiAdapter {
     compaction_model_path: Option<std::path::PathBuf>,
     reload_available: bool,
     pending_reload: Option<PendingReload>,
+    mcp: mcp::McpAdapter,
     pending_compaction: Option<compaction::Pending>,
     active_compaction_model: Option<String>,
     active_compaction_id: Option<String>,
@@ -154,6 +155,7 @@ impl PiAdapter {
             compaction_model_path: None,
             reload_available: false,
             pending_reload: None,
+            mcp: mcp::McpAdapter::default(),
             pending_compaction: None,
             active_compaction_model: None,
             active_compaction_id: None,
@@ -178,6 +180,14 @@ impl PiAdapter {
     pub fn with_compaction_model_path(mut self, path: std::path::PathBuf) -> Self {
         self.compaction_model_path = Some(path);
         self
+    }
+
+    pub fn mcp_deadline(&self) -> Option<std::time::Instant> {
+        mcp::deadline(self)
+    }
+
+    pub fn tick_mcp(&mut self, now: std::time::Instant) -> AdapterOutput {
+        mcp::tick(self, now)
     }
 
     pub fn startup_commands(&mut self) -> Vec<RpcCommand> {
@@ -463,6 +473,9 @@ impl PiAdapter {
         let mut skills = Vec::new();
         let mut auth_context = false;
         let mut auth_refresh = false;
+        let mut mcp_get = false;
+        let mut mcp_save = false;
+        let mut native_mcp = false;
         self.reload_available = false;
         for command in data
             .and_then(|data| data.get("commands"))
@@ -473,6 +486,24 @@ impl PiAdapter {
             let Some(name) = command.get("name").and_then(Value::as_str) else {
                 continue;
             };
+            if name == mcp::GET {
+                mcp_get = true;
+                continue;
+            }
+            if name == mcp::SAVE {
+                mcp_save = true;
+                continue;
+            }
+            if name == mcp::OPEN {
+                continue;
+            }
+            if name == "mcp" {
+                native_mcp = command
+                    .get("sourceInfo")
+                    .and_then(|info| info.get("path"))
+                    .and_then(Value::as_str)
+                    == Some("builtin:mcp");
+            }
             if matches!(name, "fork" | "clone") {
                 continue;
             }
@@ -521,6 +552,13 @@ impl PiAdapter {
                 AgentEvent::Catalog(CatalogEvent::Skills(skills)),
             ],
         };
+        let available = native_mcp && mcp_get && mcp_save && self.reload_available;
+        if self.mcp.available != available {
+            self.mcp.available = available;
+            output
+                .events
+                .push(AgentEvent::Mcp(e_tui::mcp::McpEvent::Available(available)));
+        }
         if auth_companion {
             output.commands.push(RpcCommand::Prompt {
                 id: Some(self.request_id("auth-context")),
@@ -606,6 +644,7 @@ mod content;
 mod cost_tests;
 mod extension;
 mod fork;
+mod mcp;
 mod model;
 mod queue;
 #[cfg(test)]

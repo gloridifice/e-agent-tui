@@ -162,6 +162,7 @@ pub enum AgentRequest {
         before_sequence: u64,
         limit: usize,
     },
+    Mcp(crate::mcp::McpRequest),
     LoginGet,
     AuthGet {
         provider_ref: Option<String>,
@@ -254,6 +255,7 @@ impl std::fmt::Debug for AgentRequest {
                 .field("before_sequence", before_sequence)
                 .field("limit", limit)
                 .finish(),
+            Self::Mcp(request) => formatter.debug_tuple("Mcp").field(request).finish(),
             Self::LoginGet => formatter.write_str("LoginGet"),
             Self::AuthGet {
                 provider_ref,

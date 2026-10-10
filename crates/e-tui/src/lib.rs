@@ -31,6 +31,7 @@ pub mod interaction;
 pub mod key_mapping;
 pub mod link_copy;
 pub mod login;
+pub mod mcp;
 pub mod mermaid;
 pub mod model_defaults;
 pub mod model_marks;

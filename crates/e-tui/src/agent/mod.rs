@@ -325,6 +325,7 @@ pub enum DeadlineEvent {
 
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
+    Mcp(crate::mcp::McpEvent),
     Session(SessionEvent),
     Timeline(TimelineEvent),
     Catalog(CatalogEvent),

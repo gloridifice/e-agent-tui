@@ -1720,6 +1720,10 @@ impl InputState {
         blocks
     }
 
+    pub(crate) fn is_shell_command(&self) -> bool {
+        self.buf.starts_with('!')
+    }
+
     pub(crate) fn command_name_range(&self, catalogs: &CatalogModel) -> Range<usize> {
         let Some((name, _)) = crate::command_catalog::parse_command_line(&self.buf) else {
             return 0..0;

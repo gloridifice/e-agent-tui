@@ -86,22 +86,30 @@ pub(super) fn render_transcript_impl(
     let bottom_rows = bottom_rows.min(screen_height);
     let follow = scroll.follow;
     let show_hint = !follow && scroll.offset == 0;
-    // Where the bottom stack starts on screen. When following, it is pinned at
-    // the screen bottom. When scrolled back, it moves down/off-screen according
-    // to the transcript offset.
+    let attached = state.shell.active.as_ref().and_then(|id| {
+        let node = state.transcript.get(id)?;
+        if state.session.new_conversation.is_some() && !state.shell.draft_ids.contains(id) {
+            return None;
+        }
+        display_item_lines(&node.item, state, width)
+            .into_iter()
+            .next()
+    });
+    // The running command owns a viewport row, not a second transcript node.
+    let attached_rows = usize::from(attached.is_some());
     let bottom_y = if bottom_rows == 0 {
         screen_height
     } else if follow {
         screen_height.saturating_sub(bottom_rows).max(1)
     } else {
-        len.saturating_sub(scroll.offset).min(screen_height)
+        len.saturating_sub(scroll.offset)
+            .saturating_add(attached_rows)
+            .min(screen_height)
     };
-    let mut available = bottom_y;
-    if show_hint {
-        available = available.saturating_sub(1).max(1);
-    }
+    let content_height = bottom_y.saturating_sub(attached_rows);
+    let available = content_height.saturating_sub(usize::from(show_hint));
     let start = if follow {
-        len.saturating_sub(bottom_y)
+        len.saturating_sub(content_height)
     } else {
         scroll.offset.min(len.saturating_sub(1))
     };
@@ -173,9 +181,15 @@ pub(super) fn render_transcript_impl(
     }
     // In combined mode the bottom stack owns the rows below `bottom_y`, so the
     // transcript/hint paragraph must never paint into that area.
-    display.truncate(bottom_y);
+    display.truncate(content_height);
     let paragraph = Paragraph::new(Text::from(display)).style(Style::default().fg(theme.fg));
     frame.render_widget(paragraph, area);
+    if let Some(line) = attached.filter(|_| bottom_y > 0) {
+        frame.render_widget(
+            Paragraph::new(line),
+            ratatui::layout::Rect::new(area.x, area.y + bottom_y as u16 - 1, area.width, 1),
+        );
+    }
     if area.x > 0 {
         let rail_x = area.x - 1;
         let buffer = frame.buffer_mut();

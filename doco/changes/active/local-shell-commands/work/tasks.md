@@ -29,6 +29,28 @@
   Native agent-completion scenarios passed with the normal release build; the
   pre-existing debug-build assertion remains outside this change.
 
+## Follow-up: shell-name label
+
+- [x] 4.1 Replace the command-mode bottom-rule label with the adapter-selected
+  shell name, using the same executable selection for display and execution.
+  Acceptance: both frontends show `powershell` on Windows and the selected shell's
+  name on Unix; existing label tone, placement and command-mode activation remain.
+- [x] 4.2 Run scoped build/render checks and a Windows terminal smoke check.
+  Dependencies: 4.1
+  Acceptance: report actual results and unrun platforms; do not change tests or
+  complete/archive this change.
+
+Verification:
+- Both adapter checks and debug binary builds passed. Scoped rustfmt checks and
+  `git diff --check` passed; no tests were added or modified.
+- Existing input rendering tests passed (3). Existing main-pane tests passed
+  (54), skipping the previously documented baseline failure
+  `pending_submissions_render_before_any_agent_echo`.
+- Windows `pie` terminal checks passed: bare/spaced `!` and a 32-column pane
+  show `powershell` in the unchanged label tone; ordinary input hides the label.
+  `$PSVersionTable.PSEdition` returned `Core` with exit 0. All created terminal
+  sessions were closed. Unix and live DSH were not exercised.
+
 ## Follow-up verification
 
 - `cargo check --workspace`, both adapter binary builds, `cargo fmt --all --check`

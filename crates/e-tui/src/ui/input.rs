@@ -32,14 +32,6 @@ pub(super) fn render_input_with_catalog(
 ) -> Option<Position> {
     let bark = Style::default().fg(theme.input.hint.fg);
     render_ruled_chrome(frame, area, theme);
-    if input.is_shell_command() && area.width > 4 && area.height > 1 {
-        frame.buffer_mut().set_line(
-            area.x + 2,
-            area.bottom() - 1,
-            &Line::styled(" command ", theme.input.status_hint.style()),
-            area.width - 4,
-        );
-    }
     let horizontal = padding.saturating_mul(2).saturating_add(1);
     let inner = ratatui::layout::Rect::new(
         area.x.saturating_add(padding).saturating_add(1),

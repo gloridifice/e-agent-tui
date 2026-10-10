@@ -408,6 +408,8 @@ async fn run_frontend(
         history: Arc::clone(&history),
         shell: Default::default(),
     };
+    let shell_name = runtime_ports.shell.name();
+    state_r.lock().unwrap().shell.name = shell_name;
     let mut scheduler = FrameScheduler::new(runtime_ports.now());
     let mut committed_presentation = e_tui::ui::Presentation::default();
     let mut spinner_deadline: Option<Instant> = None;

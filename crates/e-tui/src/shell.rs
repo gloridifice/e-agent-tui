@@ -50,6 +50,7 @@ pub struct ShellResult {
 
 #[derive(Debug, Default)]
 pub struct ShellState {
+    pub name: String,
     pub active: Option<DisplayId>,
     pub draft_ids: HashSet<DisplayId>,
     pub unfolded: HashSet<DisplayId>,

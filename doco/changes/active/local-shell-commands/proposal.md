@@ -10,8 +10,8 @@ The standalone Ferra shell-output prototype was approved.
 - Both `pie` and `dshe` execute the text after the initial `!` in the current
   workspace, accepting any number of spaces after `!`. Shell submissions do not
   enter model prompts or prompt queues. Command-mode input uses Preview command
-  highlighting with Coral instead of Blush, a Coral `!`, and a `command` label
-  in the bottom input rule using the model-name tone.
+  highlighting with Coral instead of Blush, a Coral `!`, and the selected shell's
+  name in the bottom input rule using the model-name tone.
 - Commands run asynchronously with noninteractive stdin. Capture shared stdout
   and stderr, retain a bounded tail, report exit/failure/cancellation, and allow interruption through the
   existing cancel action. Reject empty commands and image attachments locally.

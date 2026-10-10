@@ -305,6 +305,8 @@ async fn run(
         e_dsh::execution_history_store::HistoryRecorder::new("e-dsh"),
     ));
     let mut runtime_ports = ProductionRuntimePorts::with_history(Arc::clone(&history));
+    let shell_name = runtime_ports.shell.name();
+    state_r.lock().unwrap().shell.name = shell_name;
     let mut scheduler = FrameScheduler::new(runtime_ports.now());
     let mut committed_presentation = e_tui::ui::Presentation::default();
     let mut spinner_deadline: Option<Instant> = None;

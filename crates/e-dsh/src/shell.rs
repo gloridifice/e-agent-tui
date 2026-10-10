@@ -6,7 +6,9 @@ use e_tui::{
     EffectResult,
 };
 use std::{
+    ffi::OsString,
     io::{Read, Seek, SeekFrom},
+    path::Path,
     process::Stdio,
     time::{Duration, Instant},
 };
@@ -22,21 +24,42 @@ struct Running {
     task: JoinHandle<ShellResult>,
 }
 
-#[derive(Default)]
 pub struct ShellRunner {
+    program: OsString,
     running: Option<Running>,
 }
 
+impl Default for ShellRunner {
+    fn default() -> Self {
+        Self {
+            program: shell_program(),
+            running: None,
+        }
+    }
+}
+
 impl ShellRunner {
+    pub fn name(&self) -> String {
+        let name = Path::new(&self.program)
+            .file_stem()
+            .unwrap_or(&self.program)
+            .to_string_lossy();
+        match name.as_ref() {
+            "pwsh" | "powershell" => "powershell".into(),
+            _ => name.into_owned(),
+        }
+    }
+
     pub fn start(&mut self, request: ShellRequest) -> Result<(), String> {
         if self.running.is_some() {
             return Err("A local shell command is still stopping".into());
         }
         let (cancel, receiver) = oneshot::channel();
         let id = request.id.clone();
+        let program = self.program.clone();
         let task = tokio::spawn(async move {
             let started = Instant::now();
-            let mut result = match run(request, receiver).await {
+            let mut result = match run(program, request, receiver).await {
                 Ok(result) => result,
                 Err(error) => ShellResult {
                     error: Some(error),
@@ -100,12 +123,13 @@ impl Drop for ShellRunner {
 }
 
 async fn run(
+    program: OsString,
     request: ShellRequest,
     mut cancel: oneshot::Receiver<()>,
 ) -> Result<ShellResult, String> {
     let mut file =
         tempfile::tempfile().map_err(|error| format!("capture shell output: {error}"))?;
-    let mut command = shell_command(&request.command);
+    let mut command = shell_command(program, &request.command);
     if let Some(cwd) = request.cwd {
         command.current_dir(cwd);
     }
@@ -167,29 +191,36 @@ async fn run(
     })
 }
 
-fn shell_command(source: &str) -> Command {
+fn shell_program() -> OsString {
     #[cfg(windows)]
     {
-        let shell = if std::env::var_os("PATH").is_some_and(|path| {
+        if std::env::var_os("PATH").is_some_and(|path| {
             std::env::split_paths(&path).any(|directory| directory.join("pwsh.exe").is_file())
         }) {
             "pwsh.exe"
         } else {
             "powershell.exe"
-        };
-        let mut command = Command::new(shell);
+        }
+        .into()
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("SHELL").unwrap_or_else(|| "sh".into())
+    }
+}
+
+fn shell_command(program: OsString, source: &str) -> Command {
+    let mut command = Command::new(program);
+    #[cfg(windows)]
+    {
         command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"]);
         command.arg(format!(
             "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); $OutputEncoding = [Console]::OutputEncoding; & {{ {source}\n}}; $ok = $?; if ($null -ne $LASTEXITCODE) {{ exit $LASTEXITCODE }}; if (-not $ok) {{ exit 1 }}"
         ));
-        command
     }
     #[cfg(not(windows))]
-    {
-        let mut command = Command::new(std::env::var_os("SHELL").unwrap_or_else(|| "sh".into()));
-        command.arg("-c").arg(source);
-        command
-    }
+    command.arg("-c").arg(source);
+    command
 }
 
 async fn terminate(child: &mut Child) {

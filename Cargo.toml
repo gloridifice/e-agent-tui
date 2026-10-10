@@ -12,14 +12,14 @@ exclude = ["crates/e-dsh/vendor"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 license = "MIT or Apache-2.0"
 repository = "https://github.com/gloridifice/e"
 homepage = "https://github.com/gloridifice/e"
 
 [workspace.dependencies]
-e-tui = { version = "=0.1.1", path = "crates/e-tui" }
+e-tui = { version = "=0.1.2", path = "crates/e-tui" }
 
 [workspace.metadata.release]
 allow-branch = ["master"]

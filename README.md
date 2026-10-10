@@ -47,18 +47,6 @@ pie
 
 `pie` launches the official `pi --mode rpc` runtime and reuses Pi's native models, credentials, extensions, resources, and session files. Inside `pie`, use `/login [provider]` for Pi's native API-key, OAuth, browser, device-code, and multi-step setup flows, and `/logout` to remove a stored credential. Use `pie --resume <session_id>` (or `pie -r <session_id>`) to reopen a saved session, or `pie --session <session.jsonl>` for a file. On exit, `pie` prints a command to resume the current saved session; `pie --approve` or `pie --no-approve` explicitly overrides Pi's native project-trust behavior. Run `pie --help` for all launch options.
 
-With Pi's native MCP support, use `/mcp` or F6 to open the MCP manager. `q` closes it (and remains text in editors). Enabled/exposure changes require confirmation: idle saves reload automatically; saves during a run only show a `/reload` reminder. Reload also refreshes other Pi resources, not just MCP.
-
-Home/End moves to the start/end of the current input line, including wrapped lines. Ctrl+C saves a text-only draft to input history before clearing it; press ↑ to recall it.
-
-Start input with `!` to run a local shell command, for example `! cat README.md`; spaces after `!` are optional. Both frontends run it in the current workspace without sending it or its output to the model. Running commands stay on the bottom message row. Finished commands show the last 64 output rows, then fold when you send a message or the agent finishes. Reading and Preview show retained output (up to 256 KiB / 2000 lines per command, oldest lines discarded first). Use Ctrl+R to enter Reading, PageUp/PageDown to scroll a focused terminal message, and Esc to stop a running command. Commands are noninteractive, run with your permissions, and are not saved in agent session history. Windows uses PowerShell; Unix uses `$SHELL` or `sh`.
-
-During compaction, Enter queues ordinary messages for after the current run finishes (`○`), even if compaction finishes earlier. This applies to both frontends.
-
-Type `/` at the start of an existing draft to complete a command or its arguments without replacing the draft. Enter first confirms the completion; press Enter again to submit. Esc restores the typed prefix.
-
-Type `@` in the composer to browse project-relative paths. Use ↑/↓ to select, Tab or Enter to fill (directories continue browsing), and Esc to dismiss; Enter sends only after file completion closes. Paths containing spaces are quoted automatically.
-
 ## Prebuilt binaries
 
 Download the Windows x64 ZIP or Linux x64 tarball from [GitHub Releases](https://github.com/gloridifice/e/releases). Each archive includes `dshe` and `pie`; extract them into a directory on `PATH`. `SHA256SUMS` provides archive checksums. Rust/Cargo is not needed for these downloads, but the runtime prerequisites above still apply; run `dshe setup` before using DSH.
@@ -89,6 +77,12 @@ cargo build --release --features tracy
 
 ## Features
 
+- **Pi MCP manager:** Use `/mcp` or F6; `q` closes browsing but stays text in editors. Enabled/exposure changes require confirmation. Idle saves reload automatically; saves during a run only show a `/reload` reminder. Reload refreshes other Pi resources too.
+- **Input navigation and history:** Home/End moves to the start/end of the current input row, including wrapped rows. Ctrl+C saves a text-only draft to input history before clearing it; ↑ recalls it.
+- **Local shell commands:** Run `! <command>` in either frontend's workspace without sending input/output to the model or saving it in agent history. Commands are noninteractive and run with your permissions. Ctrl+R opens Reading; PageUp/PageDown scroll focused output, and Esc stops a running command. Reading and Preview show retained output; finished commands fold after a message or agent completion.
+- **Compaction queue:** In either frontend, Enter during compaction queues ordinary messages (`○`) until the current run finishes, not merely until compaction ends.
+- **Command completion:** Prefix an existing draft with `/` to complete commands or arguments without replacing it. Enter confirms, Enter again submits, and Esc restores the typed prefix.
+- **Path completion:** Type `@` to browse project-relative paths. ↑/↓ selects, Tab/Enter fills (directories continue browsing), and Esc dismisses. Paths with spaces are quoted; Enter sends only after completion closes.
 - **Model default effort:** Use `/model <model-id> set-default-effort <effort>` to save a default for future model selections without changing the current session's effort.
 - **Pi error recovery:** Additional retries with a live countdown are enabled by default. Toggle **Retry model errors** under `/settings` → **Behavior** (`error_auto_retry`); Pi's native retries are unchanged.
 - **Pi session forks:** Use `/fork [message]` to branch from a selected earlier prompt, or `/clone [message]` to duplicate the current branch. An optional message is sent only after the new session is ready. `/resume` groups derived sessions beneath their parents.

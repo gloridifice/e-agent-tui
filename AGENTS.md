@@ -30,8 +30,8 @@ Changes under `bridge/` also require the deployment lifecycle in [DSH integratio
 - Follow the owning subsystem's boundaries and keep each fact in one authoritative location.
 - Documentation is not an implementation mirror. No documentation change is normal for internal refactors, private renames, derivable details, and bug fixes that restore an existing contract.
 - Update documentation only for a documented public workflow/interface, architecture boundary/invariant, persistent format or cross-boundary ABI, or benchmark methodology. Full policy: [doco/README.md](doco/README.md).
-- Keep `README.md` concise and user-facing; do not add implementation detail there.
-- When changing user-visible interaction keys, update the `e-tui` help overlay and the README quick reference when applicable.
+- Do not update `README.md` without explicit user permission. Keep it concise and user-facing; do not add implementation detail there.
+- When changing user-visible interaction keys, update the `e-tui` help overlay; update the README quick reference only when applicable and explicitly authorized by the user.
 - Keep comments minimal; do not add comments that merely restate code.
 - Follow [development guidance](readme/development.md) for dependency ownership and repository commands.
 

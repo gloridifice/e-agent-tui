@@ -1,8 +1,8 @@
 # AGENTS.md
 
-Project guidance for coding agents. Human-facing documentation starts at [README.md](README.md); current architecture and contract ownership live in [doco/README.md](doco/README.md); operational guides live in [readme/](readme/README.md).
+Project guidance for coding agents. Human-facing documentation starts at [README.md](README.md); all detailed project documentation, including architecture, contracts, and guides, is maintained under [doco/](doco/README.md). `readme/` contains only README assets and translations.
 
-> All project documentation is maintained in English. Do not add non-English prose to this file, `doco/`, or `readme/`.
+> Maintain this file, root and crate READMEs, and `doco/` documents in English. README translations under `readme/README.<locale>.md` use their target languages.
 
 ## Project map
 
@@ -23,7 +23,7 @@ Start from [current architecture](doco/architecture.md). Before changing a subsy
 - Config, themes, key mapping, and execution history: [configuration and storage](doco/specs/configuration-and-storage.md).
 - Bridge composition, lifecycle, framing, and trimming: [DSH bridge](doco/specs/dsh-bridge.md).
 
-Changes under `bridge/` also require the deployment lifecycle in [DSH integration](readme/dsh-integration.md). Exact fields, defaults, registries, and capacities come from source, tests, schema, generated output, or `--help`, not prose summaries.
+Changes under `bridge/` also require the deployment lifecycle in [DSH integration](doco/guides/dsh-integration.md). Exact fields, defaults, registries, and capacities come from source, tests, schema, generated output, or `--help`, not prose summaries.
 
 ## Working policy
 
@@ -33,7 +33,8 @@ Changes under `bridge/` also require the deployment lifecycle in [DSH integratio
 - Do not update `README.md` without explicit user permission. Keep it concise and user-facing; do not add implementation detail there.
 - When changing user-visible interaction keys, update the `e-tui` help overlay; update the README quick reference only when applicable and explicitly authorized by the user.
 - Keep comments minimal; do not add comments that merely restate code.
-- Follow [development guidance](readme/development.md) for dependency ownership and repository commands.
+- Follow [development guidance](doco/guides/development.md) for dependency ownership and repository commands.
+- Maintain detailed documentation only in `doco/`. Keep root and crate READMEs concise, and delete obsolete documents instead of preserving history or archive trees; Git retains prior versions.
 
 ## Change policy
 
@@ -49,14 +50,11 @@ Do not invent or weaken requirements to satisfy validation or accommodate a bug.
 Synchronize delivered contract and architecture changes into current Doco documents
 and run relevant checks before reporting completion; explicitly report deferrals.
 
-`openspec/` is deprecated, frozen historical material, including its former specs,
-changes, schemas, and integrations. Do not create, execute, validate, or archive
-new work with OpenSpec. Consult it only when historical context is explicitly
-needed; it is not a current specification source.
+OpenSpec is retired and removed. Do not recreate its tree or use its workflows.
 
 ## Validation
 
-Choose validation proportionally to the change and read [readme/testing.md](readme/testing.md) before broad checks.
+Choose validation proportionally to the change and read [doco/guides/testing.md](doco/guides/testing.md) before broad checks.
 
 - Add tests only for real risk or regression prevention, not formal coverage.
 - Prefer scoped Rust tests. Do not run `cargo test --lib` or `cargo test` by default; trivial changes may need no tests.
@@ -65,10 +63,10 @@ Choose validation proportionally to the change and read [readme/testing.md](read
 
 ## Task guides
 
-- Build, install, dependency, debug, and performance entry points: [readme/development.md](readme/development.md)
-- Test and validation policy: [readme/testing.md](readme/testing.md)
-- DSH profiles, setup, bridge deployment, and upgrades: [readme/dsh-integration.md](readme/dsh-integration.md)
-- Operational diagnosis: [readme/troubleshooting.md](readme/troubleshooting.md)
+- Build, install, dependency, debug, and performance entry points: [doco/guides/development.md](doco/guides/development.md)
+- Test and validation policy, including terminal compatibility: [doco/guides/testing.md](doco/guides/testing.md)
+- DSH profiles, setup, bridge deployment, and upgrades: [doco/guides/dsh-integration.md](doco/guides/dsh-integration.md)
+- Operational diagnosis: [doco/guides/troubleshooting.md](doco/guides/troubleshooting.md)
 
 ## Testing
 

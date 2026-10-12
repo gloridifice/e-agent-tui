@@ -103,7 +103,7 @@ You can run `/econfig` in `e` to open or show the config path of your device.
 - `key_mapping.toml`: Key mapping overrides.
 - `themes/`: custom theme folder.
 
-- **Key mapping:** Customize `key_mapping.toml` using the [key mapping guide](readme/key-mapping.md) and [default bindings](crates/e-tui/assets/default_key_mapping.toml).
+- **Key mapping:** Customize `key_mapping.toml` using the [key mapping guide](doco/guides/key-mapping.md) and [default bindings](crates/e-tui/assets/default_key_mapping.toml).
 - **Themes:** Use `/theme` to switch themes or add custom TOML files under `themes/`, following the [bundled examples](crates/e-tui/assets/themes/).
 
 Use `/reload` to reload configuration, themes, and backend resources; replacing DSH plugin code still requires a service restart.
@@ -135,4 +135,4 @@ cargo build --release
 dshe setup
 ```
 
-See the [doco index](doco/README.md) for current architecture and contracts, the [readme index](readme/README.md) for operational guides, and the [generated wire reference](doco/specs/wire-protocol.md) for WebSocket framing. The canonical wire source is [`bridge/protocol-contract.json`](bridge/protocol-contract.json).
+See the [doco index](doco/README.md) for current architecture, contracts, and guides, and the [generated wire reference](doco/specs/wire-protocol.md) for WebSocket framing. The canonical wire source is [`bridge/protocol-contract.json`](bridge/protocol-contract.json).

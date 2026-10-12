@@ -23,7 +23,7 @@ A Windows-first five-scene recording workflow and paced preview have been exerci
   - Dependencies: 2.2
   - Design: [verification and documentation](implement.md#6-verification-and-documentation-impact).
   - Acceptance: Check encoding and actual duration, sample all five scenes for readability, verify timing disclosure and synthetic-workspace privacy, and document the public workflow. Do not treat this preview as resolution of the deferred duration target.
-  - Verification: `ffprobe` reported H.264/yuv420p, 2556×1712, 30 FPS, 66.37 seconds. Sampled scene frames include tool activity, Reading, `medium` menu annotation, model mark/route restoration, and the resume family tree. The sidecar reports a one-second gap and no cuts; the operational guide is linked from [the readme index](../../../../../readme/README.md).
+  - Verification: `ffprobe` reported H.264/yuv420p, 2556×1712, 30 FPS, 66.37 seconds. Sampled scene frames include tool activity, Reading, `medium` menu annotation, model mark/route restoration, and the resume family tree. The sidecar reports a one-second gap and no cuts; the operational guide is linked from [the Doco guide index](../../../../README.md#guides).
 
 - [ ] 4.1 Revisit the 90-second target after pacing review
   - Blocked: the user explicitly deferred strict 90-second enforcement for this pacing pass.

@@ -43,6 +43,6 @@ See [configuration and storage contracts](specs/configuration-and-storage.md).
 
 ## Repository operations
 
-Generation and verification entry points live in `tools/`. Build, deployment, testing, troubleshooting, key mapping, and performance procedures live in `readme/`; they are operational guidance rather than architecture or requirement stores.
+Generation and verification entry points live in `tools/`. Build, deployment, testing, troubleshooting, key mapping, performance, and demo-recording procedures live in `doco/guides/`; they explain workflows without duplicating architecture or contracts.
 
-Doco owns current architecture, contracts, durable decisions, and change packages. Document ownership is defined by [ADR-0001](decisions/0001-document-ownership.md).
+Doco owns all detailed project documentation and managed change packages, with one [documentation index](README.md). `readme/` contains only README assets and translations; obsolete documents are deleted rather than archived in the working tree. Document ownership is defined by [ADR-0001](decisions/0001-document-ownership.md).

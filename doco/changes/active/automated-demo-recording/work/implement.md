@@ -10,7 +10,7 @@ Existing entry points:
 
 - [crates/e-pi/src/main.rs](../../../../../crates/e-pi/src/main.rs) accepts `--pi <executable>`; [`process.rs`](../../../../../crates/e-pi/src/process.rs) owns JSONL child-process transport. These are existing capabilities, not an approved replay or observation API for this workflow.
 - [crates/e-tui/src/runtime/command.rs](../../../../../crates/e-tui/src/runtime/command.rs) implements `set-default-effort`. Supported levels come from the selected model's catalog entry.
-- [readme/key-mapping.md](../../../../../readme/key-mapping.md) describes model letter marks and Reading navigation. Default Reading entry is Ctrl+R on Windows; Shift+letter assigns a model mark. Effective mappings must be checked rather than assumed.
+- [key mapping guide](../../../../guides/key-mapping.md) describes model letter marks and Reading navigation. Default Reading entry is Ctrl+R on Windows; Shift+letter assigns a model mark. Effective mappings must be checked rather than assumed.
 - [crates/e-pi/src/config.rs](../../../../../crates/e-pi/src/config.rs) owns shared frontend configuration and resume-state paths. Changing cwd alone does not isolate these stores.
 - [crates/e-dsh/examples/input_probe.rs](../../../../../crates/e-dsh/examples/input_probe.rs) exercises the shared Windows raw-input path.
 
@@ -50,4 +50,4 @@ The exercised setup uses the release binary, 120×36 cells, 30 FPS, a short read
 
 The earlier one-second instruction-gap preview produced a 66.37-second 2556×1712 H.264 MP4 at 30 FPS and was sampled across all five scenes. After switching prompts and commands to character-by-character input, the driver produced a 103.2-second preview with no timing cuts; the inter-character delay was later relaxed to zero without re-recording, so that artifact reflects the 100 ms pacing. Per the user's request, artifacts are reserved for user visual acceptance rather than assistant inspection. Native route restoration and fork ancestry are still enforced by application-state checks during the run. The JSON sidecar reports both pacing values, duration, and no edits. `node --check`, catalog-only preflight, `ffprobe` when inspection is requested, `git diff --check`, and `doco check` are the scoped checks; no tests were added or modified.
 
-No current architecture or specification boundary changed. The supported workflow is documented in [the demo recording guide](../../../../../readme/demo-recording.md). A reproducible under-90-second export for slow model responses remains open and must be addressed before completing this change.
+No current architecture or specification boundary changed. The supported workflow is documented in [the demo recording guide](../../../../guides/demo-recording.md). A reproducible under-90-second export for slow model responses remains open and must be addressed before completing this change.

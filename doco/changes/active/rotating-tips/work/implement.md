@@ -30,10 +30,9 @@ Current source entry points:
   [e-pi/main.rs](../../../../../crates/e-pi/src/main.rs) construct runtime state
   before sharing it behind a guard. These are the registration entry points.
 
-No production Tips module, registry, API or timer exists. There are relevant
-uncommitted prompt-macro changes in e-tui and e-pi, including the `macro`
-bottom-rule label. Do not overwrite or include them in this change. Recheck that
-baseline before implementation; held macro Tips depend on its accepted delivery.
+At execution start, no production Tips module, registry, API or timer exists.
+The working tree contains only the user's catalog edits. The composer currently
+has a shell label but no macro label; held macro Tips remain excluded.
 
 The reviewed [Python prototype](prototype/tips.py) is mock-only. It preserves the
 approved placement and one-space label separator. It does not implement the
@@ -71,7 +70,8 @@ Use the existing composer region, not a new provider/event-specific surface.
 
 ## 3. APIs and data model
 
-The following is the retained review sketch, not a shipped or final Rust API:
+The public registration model has this shape; exact types and validation are
+owned by crates/e-tui/src/tips.rs:
 
 ```rust
 pub struct TipDefinition {
@@ -94,6 +94,7 @@ pub enum TipSegment {
 pub enum TipRequirement {
     Command(String),
     Capability(String),
+    Prerequisite(TipPrerequisite),
 }
 
 impl TipRegistry {
@@ -114,7 +115,7 @@ app.tips.register_tips(e_dsh::tips::definitions())?;
 app.tips.register_tips(e_pi::tips::definitions())?;
 ```
 
-All Tip types, `app.tips`, and the adapter `tips` modules are planned additions.
+Tip types, `app.tips`, and the adapter `tips` modules are delivered additions.
 The API must own its definitions, accept batches and validate atomically. Reject
 empty or duplicate IDs, duplicate locales, empty bodies, multiline text and
 nonprinting control content with typed owned errors. A rejected batch must not
@@ -130,7 +131,7 @@ Locale lookup follows frontend language. A missing translation omits the tip;
 do not expose raw translation keys or silently substitute another language.
 The Chinese catalog's backticks denote Bark segments, not rendered Markdown.
 
-### Availability review still required
+### Availability decisions
 
 `Command` checks normalized commands. `Capability` represents explicit normalized
 availability, not a backend enum. Registration alone does not establish that a
@@ -138,16 +139,28 @@ feature is usable. Reuse current facts for completed answers, queues, local
 shell work, quick-link tags, model marks, model efforts and MCP availability.
 Do not create a second catalog or duplicate lifecycle state.
 
-The exact capability keys, representation of shared prerequisites and adapter
-update API have not been approved. Resolve them in task 1.1 before adding the
-registry: document the source of every catalog prerequisite and how updates,
-reload and session replacement invalidate it. A command named `mcp` alone must
-not enable native-manager advice; `login` alone must not imply native auth or
-DSH proxy support.
+Use typed shared prerequisites for completed answers, admission barriers,
+queues, local shell work, skills, selectable models/efforts, usable letter marks,
+validated quick-link tags, attached sessions, selectable new modes, user messages,
+native MCP availability and enabled fallback recovery. Read them directly from
+their existing owners on each presentation reconciliation; do not cache a second
+catalog. Command requirements read the builtin and normalized command catalogs.
+
+Opaque capability keys cover adapter-owned support: `history`, `proxy-management`,
+`compaction-routing`, `native-auth`, `session-ancestry`, `saved-session` and
+`native-compaction`. Adapters set booleans through the public registry API before
+shared reconciliation. DSH supplies its implemented history/proxy/compaction
+support. Pi supplies history/ancestry/compaction support, saved status from native
+get_state's sessionFile, and native authentication from a live helper matching
+the native session plus the current logout command. Native MCP reads the existing
+mcp_available fact, never a command-name heuristic. Capabilities reset on session
+replacement and are republished by their owners; definitions survive. Reload
+changes commands, effective bindings and catalogs in place, so eligibility is
+recomputed without stale copies.
 
 ## 4. Algorithms and rules
 
-These implementation choices are proposed, subject to the review gate:
+Selected implementation rules:
 
 1. Validate and append common then adapter definitions in stable declaration
    order. All requirements on a candidate must be satisfied.
@@ -163,9 +176,9 @@ These implementation choices are proposed, subject to the review gate:
 5. Reserve existing bottom-rule labels before allocating Tips width. Keep the
    label/content separator at one ASCII space. Clip complete graphemes with one
    trailing ellipsis, or suppress the tip if the remaining width is not useful.
-6. The prototype's six visible seconds and 24-cell minimum Tips budget are the
-   proposed initial constants. Finalize them in task 1.1; no persistent config
-   fields are proposed for this first delivery.
+6. Retain six visible seconds and a 24-cell minimum Tips content budget. The
+   approved `show_tips` preference controls presentation; no interval/width or
+   rotation-state settings are added.
 7. Pause the remaining reading time when hidden, start a fresh interval on a new
    work period, and advance at most one candidate per due tick. A disappeared
    prerequisite invalidates its selected candidate without showing stale advice.
@@ -188,11 +201,25 @@ text and Bark keywords; exactly one space after `Tips`; periodic working-only
 presentation; lowest priority; a public e-tui registration boundary for each
 adapter's private content; and Chinese content review first.
 
-Pending before implementation: the selected catalog and English translations,
-final API/prerequisite representation and capability update semantics, the exact
-working/visibility predicate, and initial interval/width constants. This package
-is active for review, not ready for unreviewed production execution. Task 1.1
-must record these decisions rather than letting an implementer guess them.
+Execution authorized after the user's Chinese catalog revision: deliver its
+22 shared, 3 dshe and 8 pie candidates with English equivalents; exclude both
+held macro candidates. Retain six visible seconds and a 24-cell minimum budget.
+Use owned, atomic registration with semantic segments and typed prerequisites
+plus opaque capabilities as described above.
+
+Live work is current session working/running or live compaction, excluding a
+new-session draft. Hide for approvals/questions, Input Pages, Help, MCP, Reading,
+History, Preview-only layout, pane resizing, insufficient composer geometry,
+disabled Settings or no eligible candidates. Held mouse selection suspends live
+updates and reading time while retaining its committed snapshot. Compute the
+bottom-rule width once in shared layout policy outside drawing, and reuse that
+budget in rendering and time accounting. Preserve remaining time while hidden;
+new work and re-enabling after disable start a fresh interval.
+
+The additional requested `show_tips` boolean defaults to true in embedded TOML,
+appears in Settings Display in both languages, persists using existing adapter
+config effects and applies live after editing or reload. It does not persist
+selection, timing or catalog state.
 
 Local discretion after approval: private module names, helpers and allocation
 optimizations that preserve the target contract. No authority to complete or
@@ -210,8 +237,6 @@ Use scoped build/lint and existing checks plus manual TUI inspection. Do not add
 or modify tests without a separate user request. Read the project's testing
 guide before choosing broad checks.
 
-This preparation changes no current contracts. On delivered integration, update
-current architecture for common/private ownership, presentation for border
-placement and styling, and runtime/adapter contracts for registration and timing.
-Update configuration/storage only if an approved persistent setting or format
-is actually added. No README changes are authorized.
+The delivered integration synchronizes current architecture for common/private
+ownership, presentation for border placement and styling, runtime/adapter
+contracts for registration and timing, and configuration/storage for `show_tips`. No README changes are authorized.

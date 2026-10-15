@@ -1,7 +1,7 @@
 # Tips catalog — zh-CN draft
 
-Status: Candidate UI strings for rotating-tips review; not a current contract
-or a production catalog.
+Status: User-reviewed Chinese UI strings. Production semantic definitions and
+English translations belong to the owning crates' Tips modules.
 
 Chinese strings below are proposed localized UI content. Backticks mark Bark
 keywords, not visible Markdown. Ordinary text uses Umber. Render `Tips` followed
@@ -12,14 +12,11 @@ Shortcut examples use Windows defaults. Production must resolve each shortcut
 from the effective key mapping; disabled bindings make the corresponding tip
 ineligible. Commands requiring idle admission explicitly say so in the content.
 
-Ownership: 24 shared candidates, 3 dshe candidates, 8 pie candidates. Candidates
+Ownership: 22 shared candidates, 3 dshe candidates, 8 pie candidates. Candidates
 with unavailable prerequisites are omitted, not replaced with advice for another
 backend. These counts do not imply an initial release commitment.
 
 ## Shared — registered by e-tui
-
-1. **shared.help**
-   按 `Ctrl+H` 查看当前快捷键帮助。
 
 2. **shared.reading-copy**
    按 `Ctrl+R` 进入阅读模式，用 `y` 复制当前内容块。
@@ -53,9 +50,6 @@ backend. These counts do not imply an initial release commitment.
     输入 `/history copy-10`，复制耗时最长的十项操作。
     Eligibility: an attached session has execution-history support.
 
-11. **shared.command-completion**
-    输入 `/` 查找命令，用 `Tab` 补全，`Esc` 取消候选。
-
 12. **shared.path-completion**
     输入 `@` 补全路径；文件名支持子串匹配，用 `Tab` 接受候选。
 
@@ -76,7 +70,7 @@ backend. These counts do not imply an initial release commitment.
     Eligibility: model selection is available; reserved binding chords cannot be marks.
 
 17. **shared.temporary-model**
-    用 `//字母 消息` 临时选择已标记模型，任务结束后恢复原模型。
+    用 `//<模型标记> 消息` 临时选择已标记模型，任务结束后恢复原模型。
     Eligibility: at least one effective mark resolves to an available model.
 
 18. **shared.model-default-effort**
@@ -84,7 +78,7 @@ backend. These counts do not imply an initial release commitment.
     Eligibility: at least one available model exposes selectable efforts.
 
 19. **shared.link-copy**
-    按 `Ctrl+Y`，再按回复中的标记字符，复制对应链接或路径。
+    按 `Ctrl+Y`，再按标记字符，复制带有 ~n 的链接或路径。
     Eligibility: the latest completed answer has active validated quick-link tags.
 
 20. **shared.mouse-copy**
@@ -157,16 +151,17 @@ These are shared candidates, not backend-private tips. Enable only after the
 in-progress prompt-macro workflow is accepted for delivery.
 
 1. **shared.prompt-macro**
-   用 `/prompt-macro 名称 提示词` 定义宏，输入精确名称即可执行。
+   用 `/prompt-macro 名称 提示词` 定义短语，下次只要输入短语即可发送完整内容。
 
 2. **shared.prompt-macro-route**
-   提示词宏可指定 `--model` 和 `--effort`，执行后恢复原模型和强度。
+   短语可指定 `--model` 和 `--effort`，执行后恢复原模型和强度。
 
 ## Registration proposal
 
 See [implement.md](implement.md) for the proposed public registration boundary,
 localized styled segments, prerequisites and rotation.
-No registry or production integration has been implemented in this phase.
+The authorized implementation registers these 33 selected definitions with
+English equivalents. Both held macro candidates remain excluded.
 
 ## Content verification sources
 

@@ -7,16 +7,17 @@ This is the target for a working-only Tips decoration in the existing composer
 bottom rule and a provider-neutral content-registration boundary. It does not
 change advertised commands, prompt admission, native history or storage.
 
-Current [presentation](../../../../../specs/presentation.md) preserves shell and
-macro border labels, grapheme-safe layout and semantic copy. Current
+Current [presentation](../../../../../specs/presentation.md) preserves shell
+border labels, grapheme-safe layout and semantic copy. Current
 [runtime contracts](../../../../../specs/runtime-and-adapters.md) require shared
 deadline-driven policy and adapter-owned native effects. Current
 [key-mapping rules](../../../../../specs/configuration-and-storage.md#key-mappings-and-themes)
 require hints to use resolved bindings. Those contracts remain in force.
 
-Tips are planned composer decoration, not normalized agent events. No
-production Tips behavior exists yet. The [implementation design](../implement.md)
-identifies choices that still require review before execution.
+Tips are composer decoration, not normalized agent events. Execution was
+authorized after catalog review, including a persistent Settings toggle. The
+[implementation design](../implement.md) records the selected API, eligibility,
+visibility and timing decisions; tasks track delivery and verification.
 
 ## Requirements
 
@@ -37,6 +38,10 @@ identifies choices that still require review before execution.
 
 ### Visibility and rotation
 
+- A default-on `show_tips` Display setting MUST enable or disable Tips through
+  the existing Settings/config workflow in both languages and frontends. Changes
+  and reload MUST apply live. Disabling MUST remove presentation and its deadline;
+  re-enabling MUST start a fresh interval. Only this preference is persistent.
 - Tips MUST be eligible only during live agent work with an ordinary composer
   visible. Idle, blocking decisions, replacement Input Pages and full-screen or
   modal views MUST hide them.
@@ -64,8 +69,8 @@ identifies choices that still require review before execution.
   exclude the corresponding tip.
 - A private ID namespace or command name alone MUST NOT establish capability.
   Availability MUST come from normalized state supplied by its current owner.
-- Chinese strings in [the catalog](../catalog.zh-CN.md) are candidates, not a
-  fixed release quota. Held macro candidates MUST remain disabled until their
+- The user-reviewed Chinese strings in [the catalog](../catalog.zh-CN.md) define
+  the selected content, with English equivalents. Held macro candidates MUST remain disabled until their
   advertised workflow is accepted for delivery.
 
 ## Boundaries, errors and compatibility
@@ -132,5 +137,4 @@ resumes through existing frame admission.
 
 After delivery, synchronize approved facts into current architecture,
 presentation, and runtime/adapter contracts. This preparation does not update
-those documents. Config/storage changes are needed only if implementation adds
-an approved persistent setting or format. Do not modify README files.
+those documents. Config/storage must document the approved persistent `show_tips` preference. Do not modify README files.

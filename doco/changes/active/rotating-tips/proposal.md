@@ -19,11 +19,11 @@ with shared definitions initialized once and a public registration interface
 for e-dsh and e-pi to append their own definitions. Both executables must use the
 same styling, eligibility, layout and rotation policy.
 
-The initial content draft contains 24 shared Chinese candidates, 3 dshe-only
+The user-reviewed content draft contains 22 shared Chinese candidates, 3 dshe-only
 candidates and 8 pie-only candidates. Two additional prompt-macro candidates
-remain held until that workflow is accepted. These are review candidates, not
-an obligation to enable every item. English translations and the final catalog
-must be reviewed before production integration.
+remain held until that workflow is accepted. The selected delivery includes
+all 33 revised non-held candidates with English equivalents reviewed against
+the current workflows during execution.
 
 Acceptance:
 
@@ -35,7 +35,7 @@ Acceptance:
 - Tips have the lowest presentation priority. Existing rule labels retain their
   width and position; Tips clip on complete graphemes or disappear when too
   little width remains. Tips never wrap or add composer height.
-- Visible tips rotate periodically. The proposed interval is six visible
+- Visible tips rotate periodically. The interval is six visible
   seconds; hidden time does not consume reading time, and idle has no Tips
   wakeup. Timing remains deadline-driven shared policy.
 - Each executable registers only its own additional definitions. The shared
@@ -46,20 +46,24 @@ Acceptance:
   history, prompt admission or whole-message copy. Visual selection keeps its
   committed snapshot unchanged.
 
-Intended contract changes concern composer presentation, the public registry
-boundary and shared scheduling. Synchronize current architecture and specs only
+Contract changes concern composer presentation, the public registry boundary,
+shared scheduling and the `show_tips` preference. Synchronize current architecture and specs only
 after those changes are implemented and approved.
 
 Non-goals: implementing the advertised commands, changing backend behavior,
 persisting rotation state, user-authored Tips, telemetry, new interaction keys,
-README changes, or completing the separate prompt-macro work. New or modified
-tests require separate user authorization.
+README changes, or completing the separate prompt-macro work. A default-on
+`show_tips` setting in Settings controls presentation and persists through the
+existing frontend config workflow; disabling it removes the Tips deadline.
+New or modified tests require separate user authorization.
 
-This request records the current catalog, design and runnable mock prototype as
-an active full change. It does not authorize production implementation,
-completion or archive. The registration data model and availability updates
-still need review before implementation begins.
+The user authorized execution after revising the Chinese catalog and requested
+a Settings toggle. Implementation decisions are recorded in work/implement.md.
+Execution does not authorize completion or archive.
 
 ## Result
 
-Pending — not completed.
+Implementation delivered, including the Settings toggle and revised bilingual
+catalog. Scoped checks and isolated visual inspection are recorded in work/tasks.md;
+full live acceptance follow-ups remain open. The change remains active and has not
+been completed or archived.

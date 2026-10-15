@@ -315,7 +315,7 @@ async fn inbound_link_validation_renders_tag_and_copies_without_suffix() {
     );
     h.render();
     let target = "https://www.rust-lang.org/learn";
-    let tagged = format!("{target}~1");
+    let tagged = format!("{target} ~1");
     let (x, y) = h.locate(&tagged);
     h.press((x, y));
     let selection_copy = h.release((x + tagged.cell_width() - 1, y));

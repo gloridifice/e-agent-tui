@@ -269,7 +269,7 @@ mod tests {
         let rendered = (0..buffer.area.width)
             .map(|x| buffer[(x, 0)].symbol())
             .collect::<String>();
-        assert_eq!(rendered, format!("{target}~1, literal ~1"));
+        assert_eq!(rendered, format!("{target} ~1, literal ~1"));
 
         let selection_frame = captured.unwrap();
         assert_eq!(
@@ -277,7 +277,7 @@ mod tests {
             Some(format!("{target}, literal ~1"))
         );
 
-        let marker_x = target.len() as u16;
+        let marker_x = target.len() as u16 + 1;
         assert!(!buffer[(marker_x, 0)]
             .modifier
             .contains(NON_COPYABLE_MODIFIER));

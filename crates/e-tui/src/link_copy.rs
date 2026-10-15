@@ -609,7 +609,7 @@ pub fn annotate(line: &mut Line<'static>, links: &[TaggedLink], style: Style) {
                 ));
             }
             spans.push(Span::styled(
-                format!("~{tag}"),
+                format!(" ~{tag}"),
                 style.add_modifier(NON_COPYABLE_MODIFIER),
             ));
             local = cut;
@@ -688,7 +688,7 @@ mod tests {
             annotate(&mut line, &links, Style::default());
             assert_eq!(
                 line.to_string(),
-                format!("◦ {label}：{target}~{}", link.tag)
+                format!("◦ {label}：{target} ~{}", link.tag)
             );
         }
     }
@@ -920,7 +920,7 @@ mod tests {
         for wrapper in wrappers {
             assert!(line
                 .to_string()
-                .contains(&format!("src/main.rs~1{wrapper}")));
+                .contains(&format!("src/main.rs ~1{wrapper}")));
         }
 
         let mut line = Line::raw("path（note） path");
@@ -938,7 +938,7 @@ mod tests {
             ],
             Style::default(),
         );
-        assert_eq!(line.to_string(), "path（note）~2 path~1");
+        assert_eq!(line.to_string(), "path（note） ~2 path ~1");
     }
 
     #[test]
@@ -1025,7 +1025,7 @@ mod tests {
                 .iter()
                 .map(|span| span.content.as_ref())
                 .collect::<String>(),
-            "see src/main~1 and src/mainly"
+            "see src/main ~1 and src/mainly"
         );
     }
 }

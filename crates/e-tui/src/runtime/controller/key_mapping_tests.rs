@@ -310,7 +310,7 @@ fn quick_links_latest_message_validation_and_source_layout_are_stale_safe() {
         assert!(rows
             .iter()
             .flat_map(|row| row.line.spans.iter())
-            .any(|span| span.content == "~1"));
+            .any(|span| span.content == " ~1"));
         assert!(app
             .render
             .units

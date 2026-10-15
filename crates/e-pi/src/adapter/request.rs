@@ -2,7 +2,7 @@
 
 use e_tui::{
     action::AgentRequest,
-    agent::{AgentEvent, TimelineEvent},
+    agent::{AgentEvent, InteractionEvent, TimelineEvent},
 };
 
 use crate::protocol::{ExtensionUiResponse, RpcCommand, StreamingBehavior};
@@ -12,7 +12,14 @@ use super::{
     ReloadStep,
 };
 
-fn command_line(adapter: &mut PiAdapter, line: String) -> AdapterOutput {
+fn admission_limit(code: &str) -> AdapterOutput {
+    AdapterOutput::event(AgentEvent::Interaction(InteractionEvent::Error {
+        code: code.into(),
+        message: "Wait for outstanding prompt admissions to settle".into(),
+    }))
+}
+
+fn command_line(adapter: &mut PiAdapter, line: String, record_id: Option<u64>) -> AdapterOutput {
     if let Some(output) = super::fork::command(adapter, &line) {
         return output;
     }
@@ -53,6 +60,7 @@ fn command_line(adapter: &mut PiAdapter, line: String) -> AdapterOutput {
         id,
         line,
         (skill && adapter.is_streaming).then_some(StreamingBehavior::Steer),
+        record_id,
     )
 }
 
@@ -61,9 +69,24 @@ pub(super) fn prompt_command(
     id: String,
     line: String,
     streaming_behavior: Option<StreamingBehavior>,
+    record_id: Option<u64>,
 ) -> AdapterOutput {
     let mut message = normalize_skill_line(line);
     let prompt = e_tui::PromptInput::text(message.clone());
+    let counted = id.starts_with("pie-command-") && prompt.skill_invocation().is_none();
+    if adapter.pending_prompt_admissions.len() + adapter.pending_command_states.len()
+        >= super::MAX_PENDING_PROMPT_ADMISSIONS
+    {
+        adapter.pending_command_prompt = None;
+        let code = if counted {
+            "command-failed"
+        } else if prompt.skill_invocation().is_some() {
+            "skill-failed"
+        } else {
+            "input-failed"
+        };
+        return admission_limit(code);
+    }
     if let Some((name, text)) = prompt.skill_invocation() {
         message = format!("/skill:{name}");
         if !text.is_empty() {
@@ -73,11 +96,25 @@ pub(super) fn prompt_command(
             adapter.pending_skill_prompt = Some(super::PendingSkillPrompt { id: id.clone() });
         }
     }
-    AdapterOutput::command(RpcCommand::Prompt {
+    adapter.pending_prompt_admissions.insert(
+        id.clone(),
+        super::PendingPromptAdmission {
+            session_id: adapter.session_id.clone(),
+            counted,
+        },
+    );
+    let dispatched = AgentEvent::Interaction(InteractionEvent::PromptDispatched {
+        record_id,
+        request_id: id.clone(),
+        session_id: super::queue::session_key(adapter),
+    });
+    let mut output = AdapterOutput::command(RpcCommand::Prompt {
         id: Some(id),
         message,
         streaming_behavior,
-    })
+    });
+    output.events.push(dispatched);
+    output
 }
 
 fn normalize_skill_line(line: String) -> String {
@@ -87,13 +124,22 @@ fn normalize_skill_line(line: String) -> String {
 }
 
 pub(super) fn route(adapter: &mut PiAdapter, request: AgentRequest) -> AdapterOutput {
+    let (request, record_id) = match request {
+        AgentRequest::Record { record_id, request } => (*request, Some(record_id)),
+        request => (request, None),
+    };
     let mut output = super::retry::before_request(adapter, &request);
-    output.merge(route_request(adapter, request));
+    output.merge(route_request(adapter, request, record_id));
     output
 }
 
-fn route_request(adapter: &mut PiAdapter, request: AgentRequest) -> AdapterOutput {
+fn route_request(
+    adapter: &mut PiAdapter,
+    request: AgentRequest,
+    record_id: Option<u64>,
+) -> AdapterOutput {
     match request {
+        AgentRequest::Record { .. } => adapter.protocol_error("Nested Record submission".into()),
         AgentRequest::Mcp(request) => super::mcp::request(adapter, request),
         AgentRequest::Input { prompt } => {
             let Some(text) = prompt.plain_text().map(str::to_owned) else {
@@ -103,11 +149,20 @@ fn route_request(adapter: &mut PiAdapter, request: AgentRequest) -> AdapterOutpu
             // session list; report it immediately so the status bar stops
             // showing `新会话` as soon as the conversation starts.
             session::note_first_user_title(adapter, &text);
+            let id = adapter.request_id("prompt");
+            if adapter.pending_prompt_admissions.len() + adapter.pending_command_states.len() >= super::MAX_PENDING_PROMPT_ADMISSIONS {
+                return admission_limit("input-failed");
+            }
+            adapter.pending_prompt_admissions.insert(id.clone(), super::PendingPromptAdmission { session_id: adapter.session_id.clone(), counted: false });
             let mut output = AdapterOutput::command(RpcCommand::Prompt {
-                id: Some(adapter.request_id("prompt")),
+                id: Some(id.clone()),
                 message: text,
                 streaming_behavior: adapter.is_streaming.then_some(StreamingBehavior::Steer),
             });
+            output.events.push(AgentEvent::Interaction(InteractionEvent::PromptDispatched {
+                record_id,
+                request_id: id, session_id: super::queue::session_key(adapter),
+            }));
             output.events.extend(session::title_events(adapter));
             output
         }
@@ -136,6 +191,7 @@ fn route_request(adapter: &mut PiAdapter, request: AgentRequest) -> AdapterOutpu
             let id = adapter.request_id("new");
             adapter.configuration_request = Some(id.clone());
             adapter.pending_new.insert(id.clone(), NewSubmission {
+                record_id,
                 text: normalize_skill_line(text),
                 model: adapter.current_model.clone(),
                 thinking_level: adapter.thinking_level.clone(),
@@ -144,7 +200,7 @@ fn route_request(adapter: &mut PiAdapter, request: AgentRequest) -> AdapterOutpu
         }
         AgentRequest::Command { line, images } => {
             if images.is_empty() {
-                command_line(adapter, line)
+                command_line(adapter, line, record_id)
             } else {
                 adapter.unsupported("Pi command images must be pasted as temporary file paths")
             }
@@ -155,9 +211,9 @@ fn route_request(adapter: &mut PiAdapter, request: AgentRequest) -> AdapterOutpu
             }
             super::compaction::interrupt(adapter);
             adapter.pending_skill_prompt = None;
-            AdapterOutput::command(RpcCommand::Abort {
-                id: Some(adapter.request_id("abort")),
-            })
+            let id = adapter.request_id("abort");
+            adapter.pending_interrupt = Some(id.clone());
+            AdapterOutput::command(RpcCommand::Abort { id: Some(id) })
         }
         AgentRequest::Attach { session_id } => {
             // Force the post-switch refresh to re-emit `Attached` even when the
@@ -220,6 +276,7 @@ fn route_request(adapter: &mut PiAdapter, request: AgentRequest) -> AdapterOutpu
         | AgentRequest::LoginProxyDelete { .. } => adapter.unsupported(
             "Manage Pi credentials with native `pi /login`; pie reuses Pi's auth.json and environment credentials",
         ),
+        AgentRequest::CapturePromptState { record_id } => super::prompt_state::request(adapter, record_id),
         AgentRequest::ModelGet => {
             if super::compaction::controls_open(adapter) {
                 super::model::available_model_catalog(adapter)

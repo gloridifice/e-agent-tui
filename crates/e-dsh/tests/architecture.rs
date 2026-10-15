@@ -216,16 +216,14 @@ fn runners_share_selection_policy_and_publish_only_after_submission() {
             2,
             "{name} must gate both animation and notice deadlines"
         );
-        let draw = source.find("let transaction = terminal.draw(").unwrap();
-        let submitted = source[draw..]
-            .find("let transaction = transaction?;")
-            .unwrap();
-        let publish = source[draw..]
-            .find("committed_presentation.commit(")
-            .unwrap();
+        assert_eq!(
+            source.matches(".commit_after_submission(").count(),
+            1,
+            "{name} must use the shared submission-checked presentation commit"
+        );
         assert!(
-            submitted < publish,
-            "{name} must not publish a failed frame"
+            !source.contains(".commit("),
+            "{name} must not bypass submission checking"
         );
         assert!(
             !source.contains("same_geometry("),

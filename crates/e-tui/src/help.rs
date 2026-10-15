@@ -93,6 +93,8 @@ fn append_group(
 /// Build the complete local help Markdown from the effective key mapping.
 pub(crate) fn markdown(config: &crate::Config) -> String {
     let mut output = tr(config.language, "help.body").trim_end().to_owned();
+    output.push_str("\n\n");
+    output.push_str(&tr(config.language, "help.prompt_macros"));
 
     append_group(
         &mut output,

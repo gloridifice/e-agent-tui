@@ -110,6 +110,28 @@ pub struct TemporaryModel {
     pub materializing: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct RecordExecution {
+    pub id: u64,
+    pub snapshot_pending: bool,
+    pub cancel_pending: bool,
+    pub snapshot_error: Option<String>,
+    pub prompt: crate::PromptInput,
+    pub sent: bool,
+    pub admitted: bool,
+    pub consumed: bool,
+    pub skill_consumed: bool,
+    pub original: crate::PromptInput,
+    pub session_id: Option<String>,
+    pub command_pending: bool,
+    pub command_name: Option<String>,
+    pub native_command_id: Option<String>,
+    pub admission_id: Option<String>,
+    pub run_observed: bool,
+    pub awaiting_run: bool,
+    pub recovered: bool,
+}
+
 /// State whose lifetime is the currently attached (or deferred-new) session.
 #[derive(Debug)]
 pub struct SessionModel {
@@ -121,6 +143,9 @@ pub struct SessionModel {
     pub provider: Option<String>,
     pub model: Option<String>,
     pub temporary_model: Option<TemporaryModel>,
+    pub macro_execution: Option<RecordExecution>,
+    pub macro_admissions: Vec<(crate::display::DisplayId, crate::PromptInput)>,
+    pub macro_draft_input: Option<crate::PromptInput>,
     pub current_mode: Option<String>,
     pub current_mode_seq: Option<u64>,
     pub token_usage: TokenUsage,
@@ -148,6 +173,9 @@ impl Default for SessionModel {
             provider: None,
             model: None,
             temporary_model: None,
+            macro_execution: None,
+            macro_admissions: Vec::new(),
+            macro_draft_input: None,
             current_mode: None,
             current_mode_seq: None,
             token_usage: TokenUsage::default(),
@@ -274,6 +302,7 @@ pub struct TuiApp {
     pub mcp_reload_required: bool,
     pub next_mcp_page_id: u64,
     pub next_history_request_id: u64,
+    pub next_prompt_record_id: u64,
     reading_layout_anchor: Option<ReadingLayoutAnchor>,
     pending_actions: Vec<UiAction>,
 }

@@ -62,12 +62,16 @@ fn set_model(selection: &ModelSelection) -> AgentRequest {
 }
 
 pub(super) fn blocked(app: &RuntimeState) -> bool {
-    app.session.temporary_model.as_ref().is_some_and(|model| {
-        matches!(
-            model.phase,
-            Phase::Selecting | Phase::Restoring | Phase::RestoreFailed
-        )
-    })
+    app.session
+        .macro_execution
+        .as_ref()
+        .is_some_and(|owner| owner.snapshot_pending || owner.cancel_pending)
+        || app.session.temporary_model.as_ref().is_some_and(|model| {
+            matches!(
+                model.phase,
+                Phase::Selecting | Phase::Restoring | Phase::RestoreFailed
+            )
+        })
 }
 
 pub(super) fn select(
@@ -75,7 +79,17 @@ pub(super) fn select(
     target: &ModelSelection,
 ) -> Result<Option<AgentRequest>, &'static str> {
     if app.session.temporary_model.as_ref().is_some_and(|model| {
-        model.target == *target && matches!(model.phase, Phase::Ready | Phase::Active)
+        model.target == *target
+            && matches!(model.phase, Phase::Ready | Phase::Active)
+            && (app.session.macro_execution.is_none()
+                || app.catalogs.current_model.as_ref().is_some_and(|current| {
+                    current.provider == target.provider
+                        && current.model == target.model
+                        && target
+                            .reasoning_effort
+                            .as_ref()
+                            .is_none_or(|effort| current.reasoning_effort.as_ref() == Some(effort))
+                }))
     }) {
         return Ok(None);
     }
@@ -112,10 +126,18 @@ pub(super) fn confirm(app: &mut RuntimeState, current: &ModelSelection) {
         Phase::Selecting
             if current.provider == model.target.provider && current.model == model.target.model =>
         {
-            model.phase = Phase::Ready;
+            if model
+                .target
+                .reasoning_effort
+                .as_ref()
+                .is_none_or(|effort| current.reasoning_effort.as_ref() == Some(effort))
+            {
+                model.phase = Phase::Ready;
+            }
         }
         Phase::Restoring | Phase::RestoreFailed if *current == model.original => {
             app.session.temporary_model = None;
+            app.session.macro_execution = None;
         }
         _ => {}
     }
@@ -131,7 +153,21 @@ pub(super) fn should_restore(app: &RuntimeState, next: Option<&PendingPrompt>) -
             .new_conversation
             .as_ref()
             .is_some_and(|draft| draft.pending_input.is_some());
-    if blocked(app) || creating || !app.is_agent_idle() || app.interaction.queue.has_backend() {
+    if blocked(app)
+        || creating
+        || !app.is_agent_idle()
+        || app.interaction.queue.has_backend()
+        || (app.session.macro_execution.is_some() && app.has_active_command())
+        || app
+            .session
+            .macro_execution
+            .as_ref()
+            .is_some_and(|execution| {
+                execution.command_pending
+                    || execution.awaiting_run
+                    || (execution.sent && !execution.admitted && !execution.recovered)
+            })
+    {
         return false;
     }
     model.phase == Phase::Active

@@ -247,6 +247,7 @@ fn image_to_wire(image: e_tui::PromptImage) -> WirePromptImage {
 
 pub fn agent_request_to_client(request: AgentRequest) -> Result<ClientMessage, String> {
     Ok(match request {
+        AgentRequest::Record { request, .. } => return agent_request_to_client(*request),
         AgentRequest::Input { prompt } => ClientMessage::Input {
             content: prompt_to_wire(prompt),
             mode: "queue".into(),
@@ -323,7 +324,7 @@ pub fn agent_request_to_client(request: AgentRequest) -> Result<ClientMessage, S
             model,
             reasoning_effort,
         },
-        AgentRequest::Ping => ClientMessage::Ping,
+        AgentRequest::CapturePromptState { .. } | AgentRequest::Ping => ClientMessage::Ping,
     })
 }
 

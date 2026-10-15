@@ -127,6 +127,10 @@ pub enum ClipboardPaste {
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum AgentRequest {
+    Record {
+        record_id: u64,
+        request: Box<AgentRequest>,
+    },
     Input {
         prompt: PromptInput,
     },
@@ -162,7 +166,7 @@ pub enum AgentRequest {
         before_sequence: u64,
         limit: usize,
     },
-    Mcp(crate::mcp::McpRequest),
+    Mcp(crate::mcp::types::McpRequest),
     LoginGet,
     AuthGet {
         provider_ref: Option<String>,
@@ -197,6 +201,9 @@ pub enum AgentRequest {
         id: String,
     },
     ModelGet,
+    CapturePromptState {
+        record_id: u64,
+    },
     ModelSet {
         provider: String,
         model: String,
@@ -205,12 +212,26 @@ pub enum AgentRequest {
     Ping,
 }
 
+impl AgentRequest {
+    pub fn unwrapped(&self) -> &Self {
+        match self {
+            Self::Record { request, .. } => request.unwrapped(),
+            request => request,
+        }
+    }
+}
+
 impl std::fmt::Debug for AgentRequest {
     /// Names the variant so requests stay diagnosable, and never formats a
     /// credential or provider answer.
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         const REDACTED: &str = "<redacted>";
         match self {
+            Self::Record { record_id, request } => formatter
+                .debug_struct("Record")
+                .field("record_id", record_id)
+                .field("request", request)
+                .finish(),
             Self::Input { prompt } => formatter.debug_tuple("Input").field(prompt).finish(),
             Self::Steer { prompt } => formatter.debug_tuple("Steer").field(prompt).finish(),
             Self::ClearAsap => formatter.write_str("ClearAsap"),
@@ -313,6 +334,10 @@ impl std::fmt::Debug for AgentRequest {
                 .field("id", id)
                 .finish(),
             Self::ModelGet => formatter.write_str("ModelGet"),
+            Self::CapturePromptState { record_id } => formatter
+                .debug_tuple("CapturePromptState")
+                .field(record_id)
+                .finish(),
             Self::ModelSet {
                 provider,
                 model,

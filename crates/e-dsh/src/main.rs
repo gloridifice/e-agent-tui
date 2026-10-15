@@ -196,10 +196,7 @@ impl<T: BridgeTransportPort + Sync> AgentRequestPort for DshAgentPort<'_, T> {
         request: e_tui::AgentRequest,
     ) -> impl std::future::Future<Output = Result<(), String>> + Send {
         let outbound = self.outbound;
-        async move {
-            let message = e_dsh::bridge::adapter::agent_request_to_client(request)?;
-            outbound.send_message(message).await
-        }
+        async move { outbound.send_request(request).await }
     }
 }
 
@@ -283,7 +280,7 @@ async fn run(
         .join()
         .map_err(|_| anyhow::anyhow!("syntax asset warm-up panicked"))?;
     phases.mark("syntax warm-up");
-    let tx_out = bridge_io.outbound.clone();
+    let tx_out = e_dsh::bridge::prompt_state::PromptStateTransport::new(bridge_io.outbound.clone());
     let state_r = Arc::clone(&state);
 
     // ---- event-driven main loop ----
@@ -427,7 +424,7 @@ async fn run(
             let mut count = 0usize;
             while let Some(msg) = next.take() {
                 count += 1;
-                let mut event = e_dsh::bridge::adapter::normalize_server_message(msg);
+                let mut event = tx_out.normalize(msg);
                 let attached = matches!(
                     &event,
                     e_tui::AgentEvent::Session(e_tui::agent::SessionEvent::Attached(_))
@@ -725,11 +722,11 @@ async fn run(
             let preview_work = state.preview.take_work_stats();
             drop(state);
             state_r.lock().unwrap().interaction = interaction;
-            let transaction = transaction?;
-            committed_presentation.commit(
-                candidate_presentation.expect("render always produces presentation"),
+            let transaction = committed_presentation.commit_after_submission(
+                transaction,
+                candidate_presentation,
                 &mut state_r.lock().unwrap().interaction.mouse_selection,
-            );
+            )?;
             scheduler.complete(Instant::now());
             let io = transaction.io;
             let report = frame_metrics.record(FrameSample {

@@ -974,6 +974,11 @@ async fn run_frontend(
             let preview_work = state.preview.take_work_stats();
             drop(state);
             state_r.lock().unwrap().interaction = interaction;
+            let transaction = committed_presentation.commit_after_submission(
+                transaction,
+                candidate_presentation,
+                &mut state_r.lock().unwrap().interaction.mouse_selection,
+            );
             let transaction = match transaction {
                 Ok(transaction) => transaction,
                 Err(error) => {
@@ -981,10 +986,6 @@ async fn run_frontend(
                     break 'outer;
                 }
             };
-            committed_presentation.commit(
-                candidate_presentation.expect("render always produces presentation"),
-                &mut state_r.lock().unwrap().interaction.mouse_selection,
-            );
             scheduler.complete(Instant::now());
             let io = transaction.io;
             let report = frame_metrics.record(FrameSample {

@@ -82,6 +82,10 @@ pub(super) fn state_response(adapter: &mut PiAdapter, data: Option<&Value>) -> A
         adapter.pending_stats_request = None;
         adapter.stats_refresh_queued = false;
         adapter.pending_queue = super::queue::PendingQueue::default();
+        adapter.pending_prompt_admissions.clear();
+        adapter.pending_command_prompt = None;
+        adapter.pending_skill_prompt = None;
+        adapter.pending_command_states.clear();
         // `Attached` already carries the title; mirror it in the dedup key
         // so the follow-up refresh does not emit a duplicate event.
         adapter.emitted_title = adapter.session_name.clone();

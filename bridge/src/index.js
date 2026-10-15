@@ -238,7 +238,7 @@ function apply(ctx, config = {}) {
     // resolved per-session by `session.models`; push it right after welcome so
     // the status bar reflects the session's own triple, not the deployment
     // default used for a freshly resumed agent.
-    void sendModel(conn.ws, agent).catch(() => {})
+    void sendModel(conn.ws, agent, () => conns.has(conn)).catch(() => {})
     sendSnapshot(conn, send)
     // DSH/plugin commands are effective per agent (scoped definitions may
     // shadow globals), so discover them after every attach/session switch.
@@ -399,7 +399,7 @@ function apply(ctx, config = {}) {
   // model frame to every attached connection so the status bar and /effort
   // page reflect the new reasoning metadata without a manual /model.
   const refreshModel = () => {
-    for (const conn of [...conns]) void sendModel(conn.ws, conn.agent).catch(() => {})
+    for (const conn of [...conns]) void sendModel(conn.ws, conn.agent, () => conns.has(conn)).catch(() => {})
   }
   const offAdapters = ctx.on('llm/adapters-updated', refreshModel)
   const offSettings = ctx.on('settings/document-updated', refreshModel)

@@ -98,6 +98,20 @@ impl Presentation {
         Some(self.cursor)
     }
 
+    pub fn commit_after_submission<T, E>(
+        &mut self,
+        submitted: Result<T, E>,
+        candidate: Option<Self>,
+        selection: &mut MouseSelection,
+    ) -> Result<T, E> {
+        let transaction = submitted?;
+        self.commit(
+            candidate.expect("successful render produces a presentation"),
+            selection,
+        );
+        Ok(transaction)
+    }
+
     /// Call only after the complete terminal transaction has succeeded.
     pub fn commit(&mut self, mut candidate: Self, selection: &mut MouseSelection) {
         let changed = !candidate
@@ -303,9 +317,24 @@ mod tests {
             PointerEvent::PrimaryDrag { column: 2, row: 0 },
             committed.selection_frame(),
         );
-        let failed_candidate =
-            Presentation::capture(&Buffer::with_lines(["new screen"]), None, 7, true);
-        drop(failed_candidate);
+        for failed_candidate in [
+            None,
+            Some(Presentation::capture(
+                &Buffer::with_lines(["new screen"]),
+                None,
+                7,
+                true,
+            )),
+        ] {
+            assert_eq!(
+                committed.commit_after_submission(
+                    Err::<(), _>("frame submission failed"),
+                    failed_candidate,
+                    &mut selection,
+                ),
+                Err("frame submission failed")
+            );
+        }
         let mut output = Buffer::empty(base.area);
         assert_eq!(
             committed.replay(&mut output, &selection, 7),
@@ -324,7 +353,13 @@ mod tests {
                 .as_deref(),
             Some("old")
         );
-        committed.commit(Presentation::capture(&base, None, 8, true), &mut selection);
+        committed
+            .commit_after_submission(
+                Ok::<(), &str>(()),
+                Some(Presentation::capture(&base, None, 8, true)),
+                &mut selection,
+            )
+            .unwrap();
         assert_eq!(selection, MouseSelection::default());
     }
 }

@@ -111,7 +111,7 @@ fn pending_submissions_render_before_any_agent_echo() {
     for drafting in [false, true] {
         for (prompt, visible) in [
             ("submitted text", "submitted text"),
-            ("/skill:review", "[Skill] review"),
+            ("/skill:review", "[skill] review"),
         ] {
             let mut state = crate::runtime::RuntimeState::default();
             force_message_only(&mut state.tui);

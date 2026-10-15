@@ -64,6 +64,7 @@ impl PiAdapter {
         }
         let remaining = waiting.due.saturating_duration_since(now);
         let blocked = self.configuration_request.is_some()
+            || self.pending_interrupt.is_some()
             || self.pending_compaction.is_some()
             || self.pending_fork.is_some()
             || self.pending_skill_prompt.is_some()

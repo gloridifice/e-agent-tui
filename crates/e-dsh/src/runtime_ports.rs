@@ -28,6 +28,19 @@ pub trait BridgeTransportPort {
         &self,
         message: ClientMessage,
     ) -> impl Future<Output = Result<(), String>> + Send;
+
+    fn send_request(
+        &self,
+        request: e_tui::AgentRequest,
+    ) -> impl Future<Output = Result<(), String>> + Send
+    where
+        Self: Sync,
+    {
+        async move {
+            self.send_message(crate::bridge::adapter::agent_request_to_client(request)?)
+                .await
+        }
+    }
 }
 
 impl BridgeTransportPort for mpsc::Sender<ClientMessage> {

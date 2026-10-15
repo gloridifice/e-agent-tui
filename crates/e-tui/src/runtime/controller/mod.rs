@@ -40,6 +40,7 @@ mod key_mapping_tests;
 mod model;
 #[cfg(test)]
 mod model_tests;
+mod record;
 mod resume;
 #[cfg(test)]
 mod resume_tests;

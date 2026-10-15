@@ -342,6 +342,7 @@ pub struct Config {
     pub error_auto_retry: bool,
     pub model_marks: crate::model_marks::ModelMarks,
     pub model_default_efforts: crate::model_defaults::ModelDefaultEfforts,
+    pub prompt_macros: crate::prompt_macros::PromptMacros,
     /// Agent-preset mode for bare `/new` and the session a fresh TUI process
     /// opens (the bridge falls back to `standard` when this id is stale).
     pub default_mode: String,

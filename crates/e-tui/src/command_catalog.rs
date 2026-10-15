@@ -27,6 +27,7 @@ pub enum CompletionKind {
     Effort,
     Skill,
     FixedSubcommands,
+    PromptMacro,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +48,7 @@ pub enum CommandAction {
     Help,
     Reading,
     History,
+    PromptMacro,
     Quit,
 }
 
@@ -117,6 +119,13 @@ macro_rules! command {
 /// The sole declaration site for built-in behavior and completion metadata.
 pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
     command!("help", "command.help.description", None, None, Help),
+    command!(
+        "prompt-macro",
+        "command.prompt_macro.description",
+        Some("command.prompt_macro.hint"),
+        PromptMacro,
+        PromptMacro
+    ),
     command!(
         "settings",
         "command.settings.description",

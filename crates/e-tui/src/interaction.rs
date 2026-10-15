@@ -195,22 +195,44 @@ pub enum PromptDelivery {
     AfterTurn,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PromptState {
+    pub model: Option<crate::agent::ModelSelection>,
+    pub effort: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PendingPrompt {
+pub struct Record {
     pub prompt: crate::PromptInput,
     pub delivery: PromptDelivery,
     pub model: Option<crate::agent::ModelSelection>,
     pub new_mode: Option<String>,
+    pub macro_input: Option<crate::PromptInput>,
+    pub record_id: Option<u64>,
+    pub prompt_state: PromptState,
+    pub command: bool,
 }
 
-impl PendingPrompt {
+pub type PendingPrompt = Record;
+
+impl Record {
     pub fn new(prompt: crate::PromptInput, delivery: PromptDelivery) -> Self {
         Self {
             prompt,
             delivery,
             model: None,
             new_mode: None,
+            macro_input: None,
+            record_id: None,
+            prompt_state: PromptState::default(),
+            command: false,
         }
+    }
+
+    pub fn recovery_input(&self) -> crate::PromptInput {
+        self.macro_input
+            .clone()
+            .unwrap_or_else(|| self.prompt.clone())
     }
 }
 
@@ -235,11 +257,33 @@ impl PendingPromptQueue {
         self.rebuild();
     }
 
+    pub(crate) fn push_front(&mut self, pending: PendingPrompt) {
+        self.local.insert(0, pending);
+        self.rebuild();
+    }
+
+    pub(crate) fn capture_macro_input(&mut self, original: crate::PromptInput) {
+        if let Some(pending) = self.local.last_mut() {
+            pending.macro_input = Some(original);
+            self.rebuild();
+        }
+    }
+
     pub fn fail_model(&mut self, model: &crate::agent::ModelSelection) -> Option<PendingPrompt> {
         let index = self
             .local
             .iter()
             .position(|pending| pending.model.as_ref() == Some(model))?;
+        let pending = self.local.remove(index);
+        self.rebuild();
+        Some(pending)
+    }
+
+    pub(crate) fn fail_record(&mut self, id: u64) -> Option<PendingPrompt> {
+        let index = self
+            .local
+            .iter()
+            .position(|pending| pending.record_id == Some(id))?;
         let pending = self.local.remove(index);
         self.rebuild();
         Some(pending)
@@ -283,6 +327,10 @@ impl PendingPromptQueue {
                 .display
                 .iter()
                 .any(|entry| entry.delivery == PromptDelivery::Asap)
+    }
+
+    pub(crate) fn sending_record_id(&self) -> Option<u64> {
+        self.sending.as_ref().and_then(|pending| pending.record_id)
     }
 
     pub fn has_backend(&self) -> bool {

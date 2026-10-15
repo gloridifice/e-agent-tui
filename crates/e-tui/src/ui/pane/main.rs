@@ -159,6 +159,7 @@ fn render_main_pane_with_cursor(
                 input.model_hint(&state.config, &state.catalogs),
                 &state.catalogs,
                 &state.shell.name,
+                &state.config.prompt_macros,
                 None,
             )
         };
@@ -254,6 +255,7 @@ fn render_main_pane_with_cursor(
             input.model_hint(&state.config, &state.catalogs),
             &state.catalogs,
             &state.shell.name,
+            &state.config.prompt_macros,
             state.render.tips.line.as_ref(),
         );
         region::status::render_input_header(frame, rect, state, theme);

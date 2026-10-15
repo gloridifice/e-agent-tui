@@ -21,6 +21,7 @@ pub(super) fn render_input(
     )
 }
 
+#[cfg(test)]
 pub(super) fn render_input_with_catalog(
     frame: &mut Frame,
     area: ratatui::layout::Rect,
@@ -30,6 +31,30 @@ pub(super) fn render_input_with_catalog(
     model_hint: Option<&str>,
     catalogs: &crate::CatalogModel,
 ) -> Option<Position> {
+    render_input_with_macros(
+        frame,
+        area,
+        input,
+        theme,
+        padding,
+        model_hint,
+        catalogs,
+        &Default::default(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn render_input_with_macros(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    input: &InputState,
+    theme: &Theme,
+    padding: u16,
+    model_hint: Option<&str>,
+    catalogs: &crate::CatalogModel,
+    macros: &crate::prompt_macros::PromptMacros,
+) -> Option<Position> {
+    let macro_entry = input.matched_macro(macros);
     let bark = Style::default().fg(theme.input.hint.fg);
     render_ruled_chrome(frame, area, theme);
     let horizontal = padding.saturating_mul(2).saturating_add(1);
@@ -110,6 +135,8 @@ pub(super) fn render_input_with_catalog(
             theme.input.placeholder.style()
         } else if let Some(style) = shell_styles.as_ref().and_then(|styles| styles.get(index)) {
             *style
+        } else if macro_entry.is_some_and(|entry| index < entry.id.chars().count()) {
+            theme.input.text.style().fg(theme.coral)
         } else if command_range.contains(&index) {
             theme.input.text.style().fg(theme.code.r#type.fg)
         } else {
@@ -177,6 +204,24 @@ pub(super) fn render_input_with_catalog(
     }
     let paragraph = Paragraph::new(Text::from(rendered)).style(surface_style);
     frame.render_widget(paragraph, inner);
+    if let Some(entry) = macro_entry {
+        let row = chunks.len().saturating_sub(1);
+        if row >= start && row < end {
+            let column = UnicodeWidthStr::width(chunks[row].text.as_str()).saturating_add(1);
+            let budget = usize::from(inner.width).saturating_sub(column);
+            if budget > 0 {
+                frame.buffer_mut().set_line(
+                    inner.x + column as u16,
+                    inner.y + (row - start) as u16,
+                    &Line::styled(
+                        crate::prompt_macros::preview(&entry.prompt, budget),
+                        theme.activity.label.style(),
+                    ),
+                    budget as u16,
+                );
+            }
+        }
+    }
     if let Some((row, col)) = cursor_patch {
         let x = inner.x.saturating_add(col);
         let y = inner.y.saturating_add(row);

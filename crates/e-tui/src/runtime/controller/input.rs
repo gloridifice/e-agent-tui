@@ -39,6 +39,29 @@ fn submit_prompt(
             return;
         }
     };
+    if state.lock().unwrap().session.macro_execution.is_some() {
+        let prompt_state = crate::interaction::PromptState {
+            effort: target
+                .as_ref()
+                .and_then(|target| target.reasoning_effort.clone()),
+            model: target.clone(),
+        };
+        let expanded = if target.is_some() {
+            super::model::stripped_prompt(&prompt)
+        } else {
+            prompt.clone()
+        };
+        enqueue_record(
+            expanded,
+            prompt,
+            prompt_state,
+            delivery,
+            state,
+            queue,
+            outcome,
+        );
+        return;
+    }
     let defer_new = {
         let mut app = state.lock().unwrap();
         app.fold_shell_output();
@@ -94,6 +117,46 @@ fn submit_prompt(
     }
 }
 
+pub(super) fn enqueue_record(
+    prompt: PromptInput,
+    original: PromptInput,
+    prompt_state: crate::interaction::PromptState,
+    delivery: PromptDelivery,
+    state: &Mutex<RuntimeState>,
+    queue: &mut PendingPromptQueue,
+    outcome: &mut InputHandlerOutcome,
+) {
+    let mut app = state.lock().unwrap();
+    let mut pending = crate::interaction::PendingPrompt::new(prompt.clone(), delivery);
+    pending.command = prompt
+        .plain_text()
+        .is_some_and(|text| text.starts_with('/'));
+    pending.macro_input = Some(original.clone());
+    pending.prompt_state = prompt_state;
+    app.next_prompt_record_id = app
+        .next_prompt_record_id
+        .checked_add(1)
+        .expect("record ID exhausted");
+    pending.record_id = Some(app.next_prompt_record_id);
+    if app.is_new_conversation() {
+        if pending.command && prompt.skill_invocation().is_none() {
+            app.push_error_message(
+                "Send a prompt or explicit skill first to create the new session",
+            );
+            outcome.restore_prompt = Some(original);
+            return;
+        }
+        let Some(AgentRequest::NewInput { mode, .. }) = app.materialize_new_conversation(prompt)
+        else {
+            outcome.restore_prompt = Some(original);
+            return;
+        };
+        pending.new_mode = Some(mode);
+    }
+    app.fold_shell_output();
+    queue.push_pending(pending);
+}
+
 pub(super) fn apply_input_action(
     action: InputAction,
     state: &Mutex<RuntimeState>,
@@ -102,6 +165,87 @@ pub(super) fn apply_input_action(
     let mut outcome = InputHandlerOutcome::default();
     match action {
         InputAction::None | InputAction::ToggleMultiline => {}
+        InputAction::Macro {
+            entry,
+            original,
+            after_turn,
+        } => {
+            let compatible = crate::runtime::command::temporary_route_compatible(&entry.prompt);
+            let overrides = entry.model.is_some() || entry.effort.is_some();
+            if overrides && !compatible {
+                state.lock().unwrap().push_error_message(
+                    "This macro body cannot be combined with temporary model/effort options",
+                );
+                outcome.restore_prompt = Some(original);
+                return outcome;
+            }
+            let prompt_state = {
+                let app = state.lock().unwrap();
+                crate::runtime::command::macro_state(
+                    &entry,
+                    &app.config,
+                    &app.catalogs.model_providers,
+                )
+            };
+            match prompt_state {
+                Err(error) => {
+                    state.lock().unwrap().push_error_message(error);
+                    outcome.restore_prompt = Some(original);
+                }
+                Ok(_) if !compatible => {
+                    let action =
+                        crate::input::InputState::classify(PromptInput::text(entry.prompt));
+                    let action = match action {
+                        InputAction::Send(prompt) if after_turn => {
+                            InputAction::SendAfterTurn(prompt)
+                        }
+                        action => action,
+                    };
+                    let queued = queue.len();
+                    let admissions = state.lock().unwrap().pending_submissions.len();
+                    outcome = apply_input_action(action, state, queue);
+                    if queue.len() > queued {
+                        queue.capture_macro_input(original.clone());
+                    } else if outcome.effects.iter().any(|effect| {
+                        matches!(
+                            effect,
+                            UiAction::Agent(
+                                AgentRequest::Input { .. } | AgentRequest::NewInput { .. }
+                            )
+                        )
+                    }) {
+                        let mut app = state.lock().unwrap();
+                        if app.is_new_conversation() {
+                            app.session.macro_draft_input = Some(original.clone());
+                        } else if let Some(id) = app.pending_submissions.get(admissions).cloned() {
+                            app.session.macro_admissions.push((id, original.clone()));
+                        }
+                    }
+                    if outcome.restore_prompt.is_some() {
+                        outcome.restore_prompt = Some(original.clone())
+                    }
+                    if let Some(command) = &mut outcome.command {
+                        command.original = original
+                    }
+                }
+                Ok(prompt_state) => {
+                    let delivery = if after_turn || state.lock().unwrap().is_compacting() {
+                        PromptDelivery::AfterTurn
+                    } else {
+                        PromptDelivery::Asap
+                    };
+                    enqueue_record(
+                        PromptInput::text(entry.prompt),
+                        original,
+                        prompt_state,
+                        delivery,
+                        state,
+                        queue,
+                        &mut outcome,
+                    );
+                }
+            }
+        }
         InputAction::Send(prompt) => {
             let delivery = {
                 let app = state.lock().unwrap();
@@ -125,11 +269,32 @@ pub(super) fn apply_input_action(
             images,
             original,
         } => {
-            outcome.command = Some(PendingCommand {
-                line,
-                images,
-                original,
-            })
+            let prompt = PromptInput::text(line.clone());
+            if images.is_empty()
+                && prompt.skill_invocation().is_some()
+                && state.lock().unwrap().session.macro_execution.is_some()
+            {
+                let delivery = if state.lock().unwrap().is_compacting() {
+                    PromptDelivery::AfterTurn
+                } else {
+                    PromptDelivery::Asap
+                };
+                enqueue_record(
+                    prompt,
+                    original,
+                    Default::default(),
+                    delivery,
+                    state,
+                    queue,
+                    &mut outcome,
+                );
+            } else {
+                outcome.command = Some(PendingCommand {
+                    line,
+                    images,
+                    original,
+                });
+            }
         }
         InputAction::Shell { command, original } => {
             let mut app = state.lock().unwrap();
@@ -164,10 +329,35 @@ pub(super) fn apply_input_action(
                 return outcome;
             }
             queue.clear();
-            state.lock().unwrap().pending_submissions.clear();
+            let record_id = {
+                let mut app = state.lock().unwrap();
+                app.pending_submissions.clear();
+                app.session
+                    .macro_execution
+                    .as_mut()
+                    .filter(|owner| owner.sent)
+                    .map(|owner| {
+                        owner.cancel_pending = true;
+                        owner.id
+                    })
+            };
             outcome.effects.push(agent_action(AgentRequest::Interrupt));
+            if let Some(record_id) = record_id {
+                outcome
+                    .effects
+                    .push(agent_action(AgentRequest::CapturePromptState { record_id }));
+            }
         }
-        InputAction::Quit => outcome.effects.push(UiAction::Quit),
+        InputAction::Quit => {
+            if state.lock().unwrap().session.macro_execution.is_some() {
+                state
+                    .lock()
+                    .unwrap()
+                    .push_error_message("Wait for the prompt macro route to be restored");
+            } else {
+                outcome.effects.push(UiAction::Quit)
+            }
+        }
         InputAction::PreviewToggle => {
             let mut app = state.lock().unwrap();
             app.preview.fullscreen = !app.preview.fullscreen;
@@ -232,7 +422,26 @@ pub(super) fn apply_input_page_key(
     let mut effects = Vec::new();
     for effect in outcome.effects {
         match effect {
-            PageEffect::Send(message) => effects.push(UiAction::Agent(message)),
+            PageEffect::Send(message) => {
+                let exclusive = state.lock().unwrap().session.macro_execution.is_some();
+                if exclusive
+                    && matches!(
+                        message,
+                        AgentRequest::ModelSet { .. }
+                            | AgentRequest::Attach { .. }
+                            | AgentRequest::Command { .. }
+                            | AgentRequest::AuthStart { .. }
+                            | AgentRequest::Mcp(_)
+                    )
+                {
+                    state
+                        .lock()
+                        .unwrap()
+                        .push_error_message("Wait for the prompt macro route to be restored");
+                } else {
+                    effects.push(UiAction::Agent(message));
+                }
+            }
             PageEffect::WriteClipboard(value) => effects.push(UiAction::WriteClipboard(value)),
             PageEffect::ConfigChanged => {
                 ui.config.resolved_theme = theme::resolve(&ui.config.theme, ui.themes);

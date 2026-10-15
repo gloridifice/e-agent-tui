@@ -15,6 +15,7 @@ use std::ops::Range;
 
 mod completion;
 pub(crate) mod layout;
+mod macro_completion;
 pub use completion::{match_efforts, match_models, match_new_modes, match_skills};
 
 #[cfg(test)]
@@ -83,6 +84,7 @@ pub struct InputState {
     pub suggest: Option<Suggestion>,
     command_completion: Option<CommandCompletion>,
     path_request: Option<crate::path_completion::PathCompletionRequest>,
+    macro_definition_completion: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -224,6 +226,7 @@ pub enum SuggestionKind {
     Efforts,
     Skills,
     Files,
+    Macros,
 }
 
 /// Normalize terminal and system-clipboard line endings to the frontend's
@@ -271,6 +274,7 @@ impl InputState {
             suggest: None,
             command_completion: None,
             path_request: None,
+            macro_definition_completion: false,
         }
     }
 
@@ -519,6 +523,11 @@ pub enum InputAction {
     Send(PromptInput),
     /// Keep the committed buffer until the active turn has fully ended.
     SendAfterTurn(PromptInput),
+    Macro {
+        entry: crate::prompt_macros::PromptMacro,
+        original: PromptInput,
+        after_turn: bool,
+    },
     /// Send the committed buffer as a slash command line with any image inputs.
     Command {
         line: String,
@@ -706,6 +715,18 @@ impl InputState {
         width: usize,
         model_hint: Option<&str>,
     ) -> InputAction {
+        self.handle_key_with_macros(key, idle, catalogs, width, model_hint, &Default::default())
+    }
+
+    pub(crate) fn handle_key_with_macros(
+        &mut self,
+        key: &KeyEvent,
+        idle: bool,
+        catalogs: &CatalogModel,
+        width: usize,
+        model_hint: Option<&str>,
+        macros: &crate::prompt_macros::PromptMacros,
+    ) -> InputAction {
         let scope = self.key_scope(idle);
         let mapped = self.key_mapping.input(scope, key);
         if mapped == Command(Action::ClearOrQuit) {
@@ -871,7 +892,7 @@ impl InputState {
                         }
                         // Recompute the popup for the recalled prompt, the
                         // same way plain Up/Down refreshes after each key.
-                        self.refresh_suggest_at_cursor(catalogs);
+                        self.refresh_suggest_with_macros(catalogs, macros);
                         return InputAction::None;
                     }
                     let cmd = {
@@ -880,7 +901,7 @@ impl InputState {
                     };
                     self.fill_command(cmd.clone());
                     if cmd == "/skill" {
-                        self.refresh_suggest_at_cursor(catalogs);
+                        self.refresh_suggest_with_macros(catalogs, macros);
                     }
                     return InputAction::None;
                 }
@@ -897,11 +918,23 @@ impl InputState {
                     let cmd = s.matches[s.sel].to_string();
                     self.fill_command(cmd.clone());
                     if cmd == "/skill" {
-                        self.refresh_suggest_at_cursor(catalogs);
+                        self.refresh_suggest_with_macros(catalogs, macros);
                     }
                     return InputAction::None;
                 }
                 Command(Action::Accept) => {
+                    if self
+                        .suggest
+                        .as_ref()
+                        .is_some_and(|s| s.kind == SuggestionKind::Macros)
+                    {
+                        return self.commit_with_macros(macros);
+                    }
+                    let definition = self.macro_definition_completion
+                        || self
+                            .suggest
+                            .as_ref()
+                            .is_some_and(|s| s.matches[s.sel] == "/prompt-macro");
                     let cmd = self
                         .suggest
                         .take()
@@ -914,10 +947,11 @@ impl InputState {
                         self.fill_command(cmd);
                     }
                     self.retain_command_suffix();
-                    return if has_suffix {
+                    return if has_suffix || definition {
+                        self.command_completion = None;
                         InputAction::None
                     } else {
-                        self.commit()
+                        self.commit_with_macros(macros)
                     };
                 }
                 _ => {}
@@ -935,20 +969,27 @@ impl InputState {
         }
 
         if mapped == Command(Action::SendAfterTurn) {
-            return match self.commit() {
+            return match self.commit_with_macros(macros) {
                 InputAction::Send(prompt) => InputAction::SendAfterTurn(prompt),
+                InputAction::Macro {
+                    entry, original, ..
+                } => InputAction::Macro {
+                    entry,
+                    original,
+                    after_turn: true,
+                },
                 action => action,
             };
         }
         let action = match mapped {
-            Command(Action::Send | Action::SendAsap) => self.commit(),
+            Command(Action::Send | Action::SendAsap) => self.commit_with_macros(macros),
             Command(Action::Complete) => {
-                self.refresh_suggest_at_cursor(catalogs);
+                self.refresh_suggest_with_macros(catalogs, macros);
                 if let Some(s) = &self.suggest {
                     let cmd = s.matches[s.sel].clone();
                     self.fill_command(cmd.clone());
                     if cmd == "/skill" {
-                        self.refresh_suggest_at_cursor(catalogs);
+                        self.refresh_suggest_with_macros(catalogs, macros);
                     }
                 }
                 InputAction::None
@@ -1023,7 +1064,7 @@ impl InputState {
             }
             _ => InputAction::None,
         };
-        self.refresh_suggest_at_cursor(catalogs);
+        self.refresh_suggest_with_macros(catalogs, macros);
         action
     }
 
@@ -1278,6 +1319,7 @@ impl InputState {
                         });
                         return;
                     }
+                    CompletionKind::PromptMacro => {}
                     CompletionKind::None => unreachable!("filtered by completion_context"),
                 }
             }
@@ -1568,8 +1610,21 @@ impl InputState {
         PromptInput { parts }
     }
 
+    #[cfg(test)]
     fn commit(&mut self) -> InputAction {
-        let prompt = self.prompt();
+        self.commit_with_macros(&Default::default())
+    }
+
+    fn commit_with_macros(&mut self, macros: &crate::prompt_macros::PromptMacros) -> InputAction {
+        let matched = self.matched_macro(macros).cloned();
+        let raw = self.buf.clone();
+        let mut prompt = self.prompt();
+        if crate::command_catalog::parse_command_line(&raw)
+            .is_some_and(|(name, _)| name == "prompt-macro")
+            && !prompt.has_images()
+        {
+            prompt = PromptInput::text(raw.clone());
+        }
         if prompt.is_empty() {
             self.suggest = None;
             return InputAction::None;
@@ -1606,6 +1661,33 @@ impl InputState {
         if self.multiline {
             self.multiline = false;
         }
+        if let Some(entry) = matched {
+            return InputAction::Macro {
+                entry,
+                original: PromptInput::text(raw),
+                after_turn: false,
+            };
+        }
+        Self::classify(prompt)
+    }
+
+    pub(crate) fn classify(prompt: PromptInput) -> InputAction {
+        let command_line = prompt
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                PromptPart::Text(text) => Some(text.as_str()),
+                PromptPart::Image(_) => None,
+            })
+            .collect::<String>();
+        let images = prompt
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                PromptPart::Image(image) => Some(image.clone()),
+                PromptPart::Text(_) => None,
+            })
+            .collect::<Vec<_>>();
         if let Some(command) = command_line.strip_prefix('!') {
             InputAction::Shell {
                 command: command.to_owned(),
@@ -2188,14 +2270,22 @@ mod tests {
 
     #[test]
     fn fuzzy_search_ranks_prefix_then_substring_then_fuzzy() {
-        // Prefix match first.
-        assert_eq!(match_commands("set")[0], "/settings");
-        // Substring match.
-        assert_eq!(match_commands("ett"), vec!["/settings"]);
-        // Fuzzy subsequence (p-l-n inside "plan").
-        assert_eq!(match_commands("pln"), vec!["/plan"]);
-        // All prefix results come before everything else.
-        assert_eq!(match_commands("c"), vec!["/compact", "/copy", "/econfig"]);
+        let mut s = state();
+        s.integrated_commands = ["x-y-z", "axyz", "xyz", "unrelated"]
+            .into_iter()
+            .map(|name| CommandDescriptor {
+                name: name.into(),
+                description: String::new(),
+                input_hint: None,
+            })
+            .collect();
+        for c in "/xyz".chars() {
+            s.handle_key(&key(KeyCode::Char(c)), true);
+        }
+        assert_eq!(
+            s.suggest.as_ref().unwrap().matches,
+            ["/xyz", "/axyz", "/x-y-z"]
+        );
     }
 
     #[test]

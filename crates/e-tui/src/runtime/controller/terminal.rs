@@ -413,6 +413,21 @@ pub(super) fn apply_terminal_route(
             *ui.help_visible = true;
         }
         TerminalRoute::Global(action) => {
+            if state.lock().unwrap().session.macro_execution.is_some()
+                && matches!(
+                    action,
+                    Action::ChooseModel
+                        | Action::ChooseEffort
+                        | Action::ResumeSession
+                        | Action::OpenMcp
+                )
+            {
+                state
+                    .lock()
+                    .unwrap()
+                    .push_error_message("Wait for the prompt macro route to be restored");
+                return effects;
+            }
             ui.mouse_selection.clear();
             match action {
                 Action::CopyLink => {
@@ -668,6 +683,7 @@ pub(super) fn apply_ordinary_key(
         let app = state.lock().unwrap();
         (
             app.shell.active.is_none()
+                && app.session.macro_execution.is_none()
                 && (app.is_new_conversation()
                     || (app.session.status == crate::SessionStatus::Idle
                         && !app.has_active_command()
@@ -680,15 +696,22 @@ pub(super) fn apply_ordinary_key(
         )
     };
     let model_hint = ui.input.model_hint(ui.config, &catalogs);
-    let action = ui
-        .input
-        .handle_key_with_layout(&key, idle, &catalogs, input_width, model_hint);
+    let action = ui.input.handle_key_with_macros(
+        &key,
+        idle,
+        &catalogs,
+        input_width,
+        model_hint,
+        &ui.config.prompt_macros,
+    );
     if matches!(
         action,
         super::InputAction::Send(_)
             | super::InputAction::SendAfterTurn(_)
             | super::InputAction::Shell { .. }
-    ) {
+    ) || matches!(&action, super::InputAction::Macro { entry, .. }
+        if !entry.prompt.starts_with('/') || entry.prompt.starts_with("//"))
+    {
         *ui.scroll = ScrollState::default();
         ui.mouse_selection.clear();
     }
@@ -700,6 +723,16 @@ pub(super) fn apply_ordinary_key(
         outcome.effects.extend(enter_reading(size, now, state, ui));
     }
     if let Some(pending) = outcome.command {
+        if state.lock().unwrap().session.macro_execution.is_some()
+            && runtime_command::command_mutates_backend(&pending.line)
+        {
+            ui.input.restore_prompt(pending.original);
+            state
+                .lock()
+                .unwrap()
+                .push_error_message("Wait for the prompt macro route to be restored");
+            return outcome.effects;
+        }
         let command_name = pending
             .line
             .split_whitespace()
@@ -719,6 +752,12 @@ pub(super) fn apply_ordinary_key(
                 .show(tr(ui.config.language, "terminal.command_no_images"), now);
             return outcome.effects;
         }
+        let macro_original = pending
+            .original
+            .plain_text()
+            .is_some_and(|raw| crate::prompt_macros::valid_id(raw.trim_end_matches(' ')))
+            .then(|| pending.original.clone());
+        let admissions = state.lock().unwrap().pending_submissions.len();
         let command = runtime_command::handle_local_command(
             pending.line,
             LocalCommandContext {
@@ -738,6 +777,16 @@ pub(super) fn apply_ordinary_key(
                 state,
             },
         );
+        if let Some(original) = macro_original {
+            if !command.outbound.is_empty() && is_skill_injection {
+                let mut app = state.lock().unwrap();
+                if app.is_new_conversation() {
+                    app.session.macro_draft_input = Some(original);
+                } else if let Some(id) = app.pending_submissions.get(admissions).cloned() {
+                    app.session.macro_admissions.push((id, original));
+                }
+            }
+        }
         if command.starts_interruptible_command {
             state.lock().unwrap().begin_command_execution();
         }
@@ -855,6 +904,9 @@ pub(super) fn apply_ordinary_key(
             *ui.scroll = ScrollState::default();
             *ui.input_page = None;
             ui.mouse_selection.clear();
+        }
+        if command.restore_input {
+            ui.input.restore_prompt(pending.original);
         }
         if command.config_changed {
             super::effect::sync_live_config(ui.config, state, ui.input, ui.theme);

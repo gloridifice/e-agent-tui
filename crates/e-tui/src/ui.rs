@@ -98,7 +98,12 @@ pub(crate) fn tips_budget(size: TerminalSize, state: &TuiApp) -> usize {
     if usize::from(page.height) < plan.bottom_stack + 1 {
         return 0;
     }
-    region::composer::tips_width(page.width, &state.interaction.input, &state.shell.name)
+    region::composer::tips_width(
+        page.width,
+        &state.interaction.input,
+        &state.shell.name,
+        &state.config.prompt_macros,
+    )
 }
 
 /// Terminal dimensions shared by the render path and the runtime scroll/input

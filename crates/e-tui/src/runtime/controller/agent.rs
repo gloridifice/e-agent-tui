@@ -56,8 +56,31 @@ pub(super) fn apply_agent(
             {
                 app.session.new_conversation = None;
             }
-            app.apply_host_event(&record);
             use crate::agent::timeline::TimelineFact;
+            if commits_new_conversation {
+                app.session.macro_draft_input = None;
+            }
+            super::record::observe(&mut app, &record.fact);
+            let session_id = app.session.session_id.clone();
+            if let TimelineFact::CommandStarted { id, name, .. } = &record.fact {
+                if let Some(execution) = app.session.macro_execution.as_mut() {
+                    if execution.command_pending
+                        && execution.session_id == session_id
+                        && execution
+                            .command_name
+                            .as_deref()
+                            .is_some_and(|expected| expected.eq_ignore_ascii_case(name))
+                        && execution.native_command_id.is_none()
+                    {
+                        execution.native_command_id = Some(id.clone());
+                    }
+                }
+            }
+            app.apply_host_event(&record);
+            let pending = app.pending_submissions.clone();
+            app.session
+                .macro_admissions
+                .retain(|(id, _)| pending.contains(id));
             if matches!(
                 record.fact,
                 TimelineFact::AssistantMessage { .. }
@@ -102,9 +125,40 @@ pub(super) fn apply_agent(
             ui.queue.update_remote(prompts);
             match operation {
                 Some(crate::agent::AsapQueueOperation::Submit) => {
+                    let sending = ui.queue.sending_record_id();
+                    if let Some(owner) = state
+                        .lock()
+                        .unwrap()
+                        .session
+                        .macro_execution
+                        .as_mut()
+                        .filter(|owner| Some(owner.id) == sending)
+                    {
+                        owner.admitted = true;
+                        if error.is_some() {
+                            owner.awaiting_run = false;
+                            owner.recovered = true;
+                        }
+                    }
                     ui.queue.complete_submission(error.is_some())
                 }
-                Some(crate::agent::AsapQueueOperation::Clear) => ui.queue.complete_clear(),
+                Some(crate::agent::AsapQueueOperation::Clear) => {
+                    ui.queue.complete_clear();
+                    if error.is_none() {
+                        if let Some(owner) = state
+                            .lock()
+                            .unwrap()
+                            .session
+                            .macro_execution
+                            .as_mut()
+                            .filter(|owner| owner.sent && owner.admitted && !owner.consumed)
+                        {
+                            owner.awaiting_run = false;
+                            owner.consumed = true;
+                            owner.recovered = true;
+                        }
+                    }
+                }
                 None => {}
             }
             if let Some(error) = error {
@@ -158,6 +212,7 @@ pub(super) fn apply_session(
                 let mut app = state.lock().unwrap();
                 let switched = app.session.session_id.as_deref() != Some(attached.id.as_str());
                 if switched {
+                    app.session.macro_admissions.clear();
                     let initial = app.session.session_id.is_none();
                     let shells: Vec<_> = app
                         .transcript
@@ -208,11 +263,16 @@ pub(super) fn apply_session(
                     .is_some_and(|draft| draft.pending_input.is_some());
                 if !materialization_pending {
                     app.session.temporary_model = None;
+                    app.session.macro_execution = None;
+                    app.session.macro_draft_input = None;
                     app.session.new_conversation = None;
                 } else if switched {
                     if let Some(draft) = app.session.new_conversation.as_mut() {
                         draft.attached = true;
                     }
+                }
+                if let Some(execution) = app.session.macro_execution.as_mut() {
+                    execution.session_id = Some(attached.id.clone());
                 }
                 app.session.session_title = attached.title;
                 app.session.session_cwd = attached.workspace;
@@ -255,6 +315,24 @@ pub(super) fn apply_session(
         SessionEvent::Status(status) => {
             let mut app = state.lock().unwrap();
             app.session.status = normalized_session_status(&status);
+            let running = app.session.status == crate::SessionStatus::Running;
+            let macro_active = app
+                .session
+                .temporary_model
+                .as_ref()
+                .is_some_and(|model| model.phase == crate::app::TemporaryModelPhase::Active);
+            if macro_active {
+                if let Some(execution) = app.session.macro_execution.as_mut() {
+                    if running {
+                        execution.run_observed = true;
+                        if execution.consumed {
+                            execution.awaiting_run = false;
+                        }
+                    } else if !execution.consumed {
+                        execution.run_observed = false;
+                    }
+                }
+            }
             if app.session.status == crate::SessionStatus::Idle
                 && app.pending_submissions.is_empty()
             {
@@ -309,7 +387,7 @@ pub(super) fn apply_catalog(
                 app.catalogs.new_modes = modes.clone();
                 app.catalogs.clone()
             };
-            ui.input.catalog_changed(&catalogs);
+            refresh_input_catalogs(state, ui, &catalogs);
             if let Some(page) = ui.input_page.as_mut() {
                 page.apply_modes(modes.iter().map(|mode| mode.id.clone()).collect());
             }
@@ -320,7 +398,7 @@ pub(super) fn apply_catalog(
                 app.catalogs.skills = skills;
                 app.catalogs.clone()
             };
-            ui.input.catalog_changed(&catalogs);
+            refresh_input_catalogs(state, ui, &catalogs);
         }
         CatalogEvent::Commands(commands) => {
             let catalogs = {
@@ -328,7 +406,7 @@ pub(super) fn apply_catalog(
                 app.catalogs.integrated_commands = commands;
                 app.catalogs.clone()
             };
-            ui.input.catalog_changed(&catalogs);
+            refresh_input_catalogs(state, ui, &catalogs);
         }
         CatalogEvent::Login {
             providers,
@@ -367,13 +445,33 @@ pub(super) fn apply_catalog(
             app.catalogs.current_model = current.clone();
             let catalogs = app.catalogs.clone();
             app.render.status_flashes.observe(&catalogs, Instant::now());
+            let effort_mismatch = current.as_ref().is_some_and(|current| {
+                app.session.temporary_model.as_ref().is_some_and(|model| {
+                    model.phase == crate::app::TemporaryModelPhase::Selecting
+                        && current.provider == model.target.provider
+                        && current.model == model.target.model
+                        && model
+                            .target
+                            .reasoning_effort
+                            .as_ref()
+                            .is_some_and(|effort| current.reasoning_effort.as_ref() != Some(effort))
+                })
+            });
             if let Some(current) = current {
                 super::model::confirm(&mut app, &current);
                 app.session.provider = Some(current.provider);
                 app.session.model = Some(current.model);
             }
             drop(app);
-            ui.input.catalog_changed(&catalogs);
+            if effort_mismatch {
+                return apply_agent_error(
+                    "model-failed",
+                    "The requested macro/temporary effort was not confirmed",
+                    state,
+                    ui,
+                );
+            }
+            refresh_input_catalogs(state, ui, &catalogs);
             if let Some(page) = ui.input_page.as_mut() {
                 page.apply_model(providers, selected);
                 page.apply_effort(&catalogs);
@@ -381,6 +479,16 @@ pub(super) fn apply_catalog(
         }
     }
     Vec::new()
+}
+
+fn refresh_input_catalogs(
+    state: &Mutex<RuntimeState>,
+    ui: &mut RuntimeUiState<'_>,
+    catalogs: &crate::CatalogModel,
+) {
+    let app = state.lock().unwrap();
+    ui.input
+        .catalog_changed_with_macros(catalogs, &app.config.prompt_macros);
 }
 
 pub(super) fn apply_interaction(
@@ -391,10 +499,126 @@ pub(super) fn apply_interaction(
     use crate::agent::InteractionEvent;
 
     match event {
+        InteractionEvent::PromptStateCaptured {
+            record_id,
+            session_id,
+            result,
+        } => {
+            let mut app = state.lock().unwrap();
+            if app.session.session_id.as_deref() == Some(&session_id) {
+                super::record::captured(&mut app, record_id, result, ui.queue, ui.input);
+            }
+        }
+        InteractionEvent::Heartbeat => {}
+        InteractionEvent::PromptDispatched {
+            record_id,
+            request_id,
+            session_id,
+        } => {
+            let mut app = state.lock().unwrap();
+            if app.session.session_id.as_deref() == Some(&session_id) {
+                if let Some(owner) = app.session.macro_execution.as_mut().filter(|owner| {
+                    Some(owner.id) == record_id && owner.sent && owner.admission_id.is_none()
+                }) {
+                    owner.admission_id = Some(request_id);
+                    owner.admitted = false;
+                }
+            }
+        }
+        InteractionEvent::PromptAdmission {
+            request_id,
+            session_id,
+            expects_run,
+        } => {
+            let mut app = state.lock().unwrap();
+            if app.session.session_id.as_deref() != Some(&session_id) {
+                return Vec::new();
+            }
+            let Some(execution) = app.session.macro_execution.as_mut() else {
+                return Vec::new();
+            };
+            if execution.session_id.as_deref() != Some(&session_id)
+                || execution.admission_id.as_deref() != Some(request_id.as_str())
+            {
+                return Vec::new();
+            }
+            execution.admitted = true;
+            execution.awaiting_run =
+                expects_run && (!execution.consumed || !execution.run_observed);
+            if !expects_run {
+                execution.consumed = true;
+                execution.command_pending = true;
+                execution.native_command_id = Some(request_id);
+                app.pending_submissions.clear();
+                if app
+                    .session
+                    .new_conversation
+                    .as_ref()
+                    .is_some_and(|draft| draft.attached)
+                {
+                    app.session.new_conversation = None;
+                }
+                if app.session.status == crate::SessionStatus::Idle {
+                    app.stop_thinking();
+                }
+            }
+        }
+        InteractionEvent::PromptSettlement {
+            request_id,
+            session_id,
+            confirmed,
+        } => {
+            let mut app = state.lock().unwrap();
+            if app.session.session_id.as_deref() != Some(&session_id) {
+                return Vec::new();
+            }
+            if let Some(execution) = app.session.macro_execution.as_mut() {
+                if execution.session_id.as_deref() == Some(&session_id)
+                    && execution.admission_id.as_deref() == Some(&request_id)
+                    && execution.command_pending
+                {
+                    if confirmed {
+                        execution.command_pending = false;
+                    } else {
+                        app.push_error_message("Prompt settlement could not be confirmed; its macro route remains held. Cancel to refresh native state.");
+                    }
+                }
+            }
+        }
         InteractionEvent::CommandResult { id, outcome, text } => {
             let mut app = state.lock().unwrap();
+            if outcome == "unconfirmed" {
+                app.push_error_message("Command settlement could not be confirmed; queued work remains held. Cancel to refresh native state.");
+                return Vec::new();
+            }
+            let session_id = app.session.session_id.clone();
+            let mut recovery = None;
+            if let Some(execution) = app.session.macro_execution.as_mut() {
+                if execution.command_pending && execution.session_id == session_id {
+                    if !execution
+                        .native_command_id
+                        .iter()
+                        .chain(execution.admission_id.iter())
+                        .any(|expected| expected == &id)
+                    {
+                        return Vec::new();
+                    }
+                    execution.command_pending = false;
+                    execution.admitted = true;
+                    execution.consumed = true;
+                    if outcome == "error" && !execution.recovered {
+                        execution.awaiting_run = false;
+                        execution.recovered = true;
+                        recovery = Some(execution.original.clone());
+                    }
+                }
+            }
             app.finish_command_execution();
             app.apply_command_result(&id, &outcome, text.as_deref());
+            drop(app);
+            if let Some(original) = recovery {
+                restore_macro_prompt(ui, original);
+            }
         }
         InteractionEvent::Approval {
             id, label, reason, ..
@@ -470,11 +694,21 @@ pub(super) fn apply_interaction(
         InteractionEvent::Error { code, message } => {
             return apply_agent_error(&code, &message, state, ui);
         }
-        InteractionEvent::Heartbeat
-        | InteractionEvent::SetEditorText { .. }
-        | InteractionEvent::AsapQueue { .. } => {}
+        InteractionEvent::SetEditorText { .. } | InteractionEvent::AsapQueue { .. } => {}
     }
     Vec::new()
+}
+
+fn restore_macro_prompt(ui: &mut RuntimeUiState<'_>, original: crate::PromptInput) {
+    if ui.input.buf.is_empty() {
+        ui.input.restore_prompt(original);
+    } else {
+        ui.queue
+            .retain_failed(crate::interaction::PendingPrompt::new(
+                original,
+                crate::interaction::PromptDelivery::AfterTurn,
+            ));
+    }
 }
 
 pub(super) fn apply_agent_error(
@@ -485,6 +719,73 @@ pub(super) fn apply_agent_error(
 ) -> Vec<UiAction> {
     if code == "fatal" {
         return vec![UiAction::Fatal(message.to_owned())];
+    }
+    if matches!(
+        code,
+        "model-failed" | "pi-rpc-set_model" | "pi-rpc-set_thinking_level" | "pi-rpc-get_state"
+    ) {
+        let mut app = state.lock().unwrap();
+        if let Some(owner) = app
+            .session
+            .macro_execution
+            .as_mut()
+            .filter(|owner| owner.snapshot_pending)
+        {
+            owner.snapshot_error = Some(message.into());
+            return Vec::new();
+        }
+    }
+    if matches!(
+        code,
+        "new-failed"
+            | "new-input-failed"
+            | "input-failed"
+            | "image-input-failed"
+            | "skill-unknown"
+            | "skill-unavailable"
+            | "skill-failed"
+            | "pi-rpc-prompt"
+            | "command-failed"
+            | "command-unknown"
+            | "command-invalid-result"
+            | "no-commands"
+            | "command-cancelled"
+    ) {
+        let recoveries = {
+            let mut app = state.lock().unwrap();
+            let command_error = matches!(
+                code,
+                "command-failed"
+                    | "command-unknown"
+                    | "command-invalid-result"
+                    | "no-commands"
+                    | "command-cancelled"
+            );
+            let mut recoveries = Vec::new();
+            let admissions = std::mem::take(&mut app.session.macro_admissions);
+            for (id, original) in admissions {
+                let failed = app.pending_submissions.contains(&id) && (!command_error || app.transcript.get(&id).is_some_and(|node| matches!(&node.item, crate::display::DisplayItem::Card(card) if card.role == crate::display::CardRole::Skill)));
+                if failed {
+                    recoveries.push(original);
+                } else {
+                    app.session.macro_admissions.push((id, original));
+                }
+            }
+            if let Some(execution) = app.session.macro_execution.as_mut() {
+                if execution.command_pending || execution.awaiting_run || execution.run_observed {
+                    execution.command_pending = false;
+                    execution.awaiting_run = false;
+                    if !execution.recovered {
+                        execution.recovered = true;
+                        recoveries.push(execution.original.clone());
+                    }
+                }
+            }
+            recoveries
+        };
+        for original in recoveries {
+            restore_macro_prompt(ui, original);
+        }
     }
     if matches!(
         code,
@@ -512,12 +813,18 @@ pub(super) fn apply_agent_error(
                     ));
                     return Vec::new();
                 }
-                if let Some(pending) = ui.queue.fail_model(&model.target) {
+                let owner = app.session.macro_execution.as_ref().map(|owner| owner.id);
+                let failed = if let Some(id) = owner {
+                    ui.queue.fail_record(id)
+                } else {
+                    ui.queue.fail_model(&model.target)
+                };
+                if let Some(pending) = failed {
                     if pending.new_mode.is_some() {
                         app.restore_new_conversation_input();
                     }
                     if ui.input.buf.is_empty() {
-                        ui.input.restore_prompt(pending.prompt);
+                        ui.input.restore_prompt(pending.recovery_input());
                     } else {
                         ui.queue.retain_failed(pending);
                     }
@@ -539,10 +846,35 @@ pub(super) fn apply_agent_error(
             | "skill-failed"
             | "pi-rpc-prompt"
     ) && state.lock().unwrap().is_new_conversation()
+        && !(code == "pi-rpc-prompt" && {
+            let app = state.lock().unwrap();
+            app.session
+                .new_conversation
+                .as_ref()
+                .is_some_and(|draft| !draft.attached)
+                && (app.session.macro_draft_input.is_some()
+                    || ui
+                        .queue
+                        .entries()
+                        .iter()
+                        .any(|pending| pending.new_mode.is_some() && pending.macro_input.is_some()))
+        })
     {
-        let restored = {
+        let (restored, macro_restore) = {
             let mut app = state.lock().unwrap();
             let restored = app.restore_new_conversation_input();
+            let macro_original = app.session.macro_draft_input.take();
+            let macro_restore = macro_original.is_some();
+            let recovered = app
+                .session
+                .macro_execution
+                .as_ref()
+                .is_some_and(|execution| execution.recovered);
+            let restored = if recovered {
+                None
+            } else {
+                macro_original.or(restored)
+            };
             if restored.is_some() {
                 let language = app.config.language;
                 app.set_new_conversation_notice(tr_args(
@@ -551,11 +883,15 @@ pub(super) fn apply_agent_error(
                     &[("message", message.to_owned())],
                 ));
             }
-            restored
+            (restored, macro_restore)
         };
         if let Some(prompt) = restored {
-            ui.input.restore_prompt(prompt);
-            ui.input.multiline = ui.input.buf.contains('\n');
+            if macro_restore {
+                restore_macro_prompt(ui, prompt);
+            } else {
+                ui.input.restore_prompt(prompt);
+                ui.input.multiline = ui.input.buf.contains('\n');
+            }
         } else {
             let mut app = state.lock().unwrap();
             let language = app.config.language;

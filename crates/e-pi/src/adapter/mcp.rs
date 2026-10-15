@@ -447,7 +447,6 @@ pub(super) fn response(adapter: &mut PiAdapter, record: &RpcRecord) -> Option<Ad
         {
             output.merge(saved_notice(adapter, "MCP configuration was saved after the operation timed out. Run /reload when idle to apply it."));
         }
-        super::response::drain_deferred(adapter, &mut output);
         return Some(output);
     }
     let mut output = AdapterOutput::default();
@@ -468,7 +467,6 @@ pub(super) fn response(adapter: &mut PiAdapter, record: &RpcRecord) -> Option<Ad
                 pending.id,
                 "MCP companion did not return a supported response.",
             ));
-            super::response::drain_deferred(adapter, &mut output);
             return Some(output);
         };
         if control.saved {
@@ -510,13 +508,10 @@ pub(super) fn response(adapter: &mut PiAdapter, record: &RpcRecord) -> Option<Ad
                 pending.stage = Stage::Reload;
                 pending.deadline = Instant::now() + Duration::from_secs(90);
                 adapter.mcp.pending = Some(pending);
-                output.merge(super::request::route(
-                    adapter,
-                    AgentRequest::Command {
-                        line: "/reload".into(),
-                        images: vec![],
-                    },
-                ));
+                adapter.deferred_requests.push_front(AgentRequest::Command {
+                    line: "/reload".into(),
+                    images: vec![],
+                });
             }
         } else {
             let wire_id = adapter.request_id("mcp-status");
@@ -541,7 +536,6 @@ pub(super) fn response(adapter: &mut PiAdapter, record: &RpcRecord) -> Option<Ad
         let args = json!({"id": id, "sessionId": adapter.session_id});
         output.merge(command(adapter, id, Stage::Get, format!("/{GET} {args}")));
     }
-    super::response::drain_deferred(adapter, &mut output);
     Some(output)
 }
 
@@ -638,6 +632,5 @@ pub(super) fn tick(adapter: &mut PiAdapter, now: Instant) -> AdapterOutput {
     {
         adapter.configuration_request = None;
     }
-    super::response::drain_deferred(adapter, &mut output);
     output
 }

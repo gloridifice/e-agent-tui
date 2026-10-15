@@ -16,6 +16,7 @@ remember_last_session = false
 error_auto_retry = true
 model_marks = []
 model_default_efforts = []
+prompt_macros = []
 default_mode = "standard"
 # Kept for compatibility with older config files; Enter always sends.
 enter_sends = true

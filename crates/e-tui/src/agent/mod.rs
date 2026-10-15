@@ -261,6 +261,26 @@ pub enum InteractionEvent {
         operation: Option<AsapQueueOperation>,
         error: Option<String>,
     },
+    PromptStateCaptured {
+        record_id: u64,
+        session_id: String,
+        result: Result<ModelSelection, String>,
+    },
+    PromptDispatched {
+        record_id: Option<u64>,
+        request_id: String,
+        session_id: String,
+    },
+    PromptAdmission {
+        request_id: String,
+        session_id: String,
+        expects_run: bool,
+    },
+    PromptSettlement {
+        request_id: String,
+        session_id: String,
+        confirmed: bool,
+    },
     CommandResult {
         id: String,
         outcome: String,
@@ -325,7 +345,7 @@ pub enum DeadlineEvent {
 
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
-    Mcp(crate::mcp::McpEvent),
+    Mcp(crate::mcp::types::McpEvent),
     Session(SessionEvent),
     Timeline(TimelineEvent),
     Catalog(CatalogEvent),

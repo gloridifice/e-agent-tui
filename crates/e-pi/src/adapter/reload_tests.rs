@@ -37,7 +37,8 @@ fn reload_uses_native_companion_then_replaces_catalog_before_releasing_work() {
         &json!({"commands":[{"name":RELOAD_COMMAND,"source":"extension"}]}),
     ));
     assert!(
-        matches!(&catalog.events[0], AgentEvent::Catalog(CatalogEvent::Commands(commands)) if commands.is_empty())
+        matches!(&catalog.events[0], AgentEvent::Catalog(CatalogEvent::Commands(commands))
+            if commands.iter().all(|command| command.name != RELOAD_COMMAND))
     );
     let output = command(&mut adapter, "/reload");
     assert!(
@@ -83,6 +84,146 @@ fn reload_uses_native_companion_then_replaces_catalog_before_releasing_work() {
         .iter()
         .any(|cmd| matches!(cmd, RpcCommand::Prompt { message, .. } if message == "/skill:new")));
     assert!(adapter.pending_reload.is_none());
+}
+
+fn mcp_catalog() -> Value {
+    json!({"commands":[
+        {"name":RELOAD_COMMAND,"source":"extension"},
+        {"name":mcp::GET,"source":"extension"},
+        {"name":mcp::SAVE,"source":"extension"},
+        {"name":"mcp","source":"extension","sourceInfo":{"path":"builtin:mcp"}}
+    ]})
+}
+
+fn mcp_control(adapter: &mut PiAdapter, kind: &str) {
+    adapter.record(
+        serde_json::from_value(json!({
+            "type":"extension_ui_request", "method":"setStatus", "statusKey":"pie-mcp-v1",
+            "statusText":json!({"protocol":1, "sessionId":"s", "id":"edit", "kind":kind,
+                "success":true, "saved":kind == "save", "snapshot":{
+                    "revision":"updated", "trusted":true, "errors":[], "servers":[], "exposures":[]
+                }}).to_string()
+        }))
+        .unwrap(),
+    );
+}
+
+#[test]
+fn mcp_save_prioritizes_reload_and_holds_work_until_native_status_settles() {
+    use e_tui::mcp::{McpEvent, McpPatch, McpRequest};
+    let mut adapter = PiAdapter::new(".", ".");
+    response(
+        &mut adapter,
+        "bootstrap",
+        "get_state",
+        true,
+        json!({"sessionId":"s"}),
+    );
+    adapter.commands_response(Some(&mcp_catalog()));
+    adapter.request(AgentRequest::Mcp(McpRequest::Save {
+        id: "edit".into(),
+        server: "demo".into(),
+        revision: "original".into(),
+        patch: McpPatch::Enabled(false),
+    }));
+    let save_id = adapter.configuration_request.clone().unwrap();
+    assert!(adapter
+        .request(AgentRequest::Input {
+            prompt: e_tui::PromptInput::text("waiting work")
+        })
+        .commands
+        .is_empty());
+    mcp_control(&mut adapter, "save");
+    let output = response(
+        &mut adapter,
+        &save_id,
+        "prompt",
+        true,
+        json!({"disposition":"handled"}),
+    );
+    assert!(
+        matches!(&output.commands[..], [RpcCommand::Prompt { message, .. }] if message == &format!("/{RELOAD_COMMAND}"))
+    );
+    for (cmd, data) in [
+        ("prompt", json!({"disposition":"handled"})),
+        ("get_state", json!({"sessionId":"s"})),
+        ("get_available_models", json!({"models":[]})),
+        ("get_commands", mcp_catalog()),
+    ] {
+        let id = reload_id(&adapter);
+        let output = response(&mut adapter, &id, cmd, true, data);
+        assert!(!output.commands.iter().any(
+            |cmd| matches!(cmd, RpcCommand::Prompt { message, .. } if message == "waiting work")
+        ));
+    }
+    let get_id = adapter.configuration_request.clone().unwrap();
+    mcp_control(&mut adapter, "get");
+    let output = response(
+        &mut adapter,
+        &get_id,
+        "prompt",
+        true,
+        json!({"disposition":"handled"}),
+    );
+    assert!(
+        matches!(&output.commands[..], [RpcCommand::Prompt { message, .. }] if message == "/mcp")
+    );
+    let status_id = adapter.configuration_request.clone().unwrap();
+    let output = response(
+        &mut adapter,
+        &status_id,
+        "prompt",
+        true,
+        json!({"disposition":"handled"}),
+    );
+    assert!(output.events.iter().any(|event| matches!(event,
+        AgentEvent::Mcp(McpEvent::Finished { id, error: None }) if id == "edit")));
+    assert_eq!(
+        output
+            .commands
+            .iter()
+            .filter(|cmd| matches!(cmd,
+        RpcCommand::Prompt { message, .. } if message == "waiting work"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn mcp_inspection_timeout_releases_work_without_late_response_replay() {
+    use e_tui::mcp::{McpEvent, McpRequest};
+    let mut adapter = PiAdapter::new(".", ".");
+    adapter.commands_response(Some(&mcp_catalog()));
+    adapter.request(AgentRequest::Mcp(McpRequest::Get {
+        id: "inspect".into(),
+    }));
+    let id = adapter.configuration_request.clone().unwrap();
+    assert!(adapter
+        .request(AgentRequest::Input {
+            prompt: e_tui::PromptInput::text("waiting work")
+        })
+        .commands
+        .is_empty());
+    let output = adapter.tick_mcp(std::time::Instant::now() + std::time::Duration::from_secs(91));
+    assert!(output.events.iter().any(|event| matches!(event,
+        AgentEvent::Mcp(McpEvent::Finished { id, error: Some(_) }) if id == "inspect")));
+    assert_eq!(
+        output
+            .commands
+            .iter()
+            .filter(|cmd| matches!(cmd,
+        RpcCommand::Prompt { message, .. } if message == "waiting work"))
+            .count(),
+        1
+    );
+    let late = response(
+        &mut adapter,
+        &id,
+        "prompt",
+        true,
+        json!({"disposition":"handled"}),
+    );
+    assert!(late.commands.is_empty());
 }
 
 #[test]

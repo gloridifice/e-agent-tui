@@ -26,7 +26,8 @@
 - Effective commands, skills, models, questions, and login data come through their owning host services. Missing optional services fail through bounded user-visible errors rather than hanging.
 - Direct command executions own abort controllers and return typed results. Interrupt aborts active commands and the agent turn.
 - Question relay MUST acquire optional API proxy services lazily and clean up across service reloads.
-- Model selection MUST mutate local state only after host confirmation and MUST preserve submission order with dependent prompts.
+- Model selection MUST mutate local state only after host confirmation and MUST preserve submission order with dependent prompts. An attached `ping` MUST serialize behind prior model controls and refresh the model and current host/inbox status before `pong`; the adapter correlates this fence per socket/session without new wire fields. Detached refreshes MUST NOT publish into replacement sessions.
+- Direct command outcomes MUST be preceded by current host status, treating native inbox work as busy, so a no-run result cannot release a route using a pre-dispatch idle snapshot.
 
 ## Deployment
 

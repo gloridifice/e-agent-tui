@@ -36,6 +36,7 @@ pub struct CommandOutcome {
     pub starts_interruptible_command: bool,
     pub reload_config: bool,
     pub config_changed: bool,
+    pub restore_input: bool,
     pub new_conversation: bool,
     pub activate_reading: bool,
     pub history: Option<FixedSubcommandAction>,
@@ -62,6 +63,115 @@ pub struct LocalCommandContext<'a> {
     pub question_open: bool,
     pub approval_open: bool,
     pub state: &'a Arc<Mutex<RuntimeState>>,
+}
+
+pub(crate) fn temporary_route_compatible(line: &str) -> bool {
+    if line.starts_with(['!']) || line.starts_with("//") {
+        return false;
+    }
+    let Some((name, input)) = parse_line(line) else {
+        return true;
+    };
+    if is_colon_skill_invocation(name) || (name == "skill" && !input.trim().is_empty()) {
+        return true;
+    }
+    if matches!(name, "fork" | "clone" | "logout" | "mcp") {
+        return false;
+    }
+    builtin_command(name).is_none_or(|command| command.action == CommandAction::Forward)
+}
+
+pub(crate) fn macro_state(
+    entry: &crate::prompt_macros::PromptMacro,
+    config: &Config,
+    providers: &[ModelProvider],
+) -> Result<crate::interaction::PromptState, String> {
+    let mut state = crate::interaction::PromptState {
+        model: None,
+        effort: entry.effort.clone(),
+    };
+    if let Some(reference) = &entry.model {
+        let (provider, model) = resolve_model_reference(providers, reference)
+            .ok_or_else(|| format!("Macro model is unavailable or ambiguous: {reference}"))?;
+        state.model = Some(ModelSelection {
+            provider: provider.id.clone(),
+            model: model.id.clone(),
+            reasoning_effort: None,
+        });
+        if state.effort.is_none() {
+            state.effort = crate::catalog::configured_model_effort(
+                &config.model_default_efforts,
+                &provider.id,
+                model,
+            );
+        }
+    }
+    Ok(state)
+}
+
+pub(crate) fn record_route(
+    state: &crate::interaction::PromptState,
+    providers: &[ModelProvider],
+    baseline: &ModelSelection,
+) -> Result<ModelSelection, String> {
+    if state.model.is_none() && state.effort.is_none() {
+        return Ok(baseline.clone());
+    }
+    let mut target = state.model.clone().unwrap_or_else(|| baseline.clone());
+    if state.model.is_some() {
+        target.reasoning_effort = None;
+    }
+    let model = providers
+        .iter()
+        .find(|provider| provider.id == target.provider)
+        .and_then(|provider| {
+            provider
+                .models
+                .iter()
+                .find(|model| model.id == target.model)
+        })
+        .ok_or_else(|| {
+            format!(
+                "Record model is unavailable: {}/{}",
+                target.provider, target.model
+            )
+        })?;
+    if let Some(effort) = &state.effort {
+        target.reasoning_effort = Some(
+            model
+                .reasoning
+                .as_ref()
+                .and_then(|reasoning| {
+                    reasoning
+                        .efforts
+                        .iter()
+                        .find(|value| value.id.eq_ignore_ascii_case(effort))
+                })
+                .ok_or_else(|| format!("Unsupported record effort: {effort}"))?
+                .id
+                .clone(),
+        );
+    }
+    Ok(target)
+}
+
+pub(crate) fn command_mutates_backend(line: &str) -> bool {
+    let Some((name, _)) = parse_line(line) else {
+        return true;
+    };
+    !builtin_command(name).is_some_and(|command| {
+        matches!(
+            command.action,
+            CommandAction::Help
+                | CommandAction::Reading
+                | CommandAction::History
+                | CommandAction::Copy
+                | CommandAction::Econfig
+                | CommandAction::Settings
+                | CommandAction::Theme
+                | CommandAction::PromptMacro
+        )
+    })
 }
 
 fn is_colon_skill_invocation(name: &str) -> bool {
@@ -105,6 +215,18 @@ fn forward(line: String, outcome: &mut CommandOutcome, interruptible: bool) {
     outcome.starts_interruptible_command = interruptible;
 }
 
+pub(crate) fn backend_command(app: &mut RuntimeState, prompt: &crate::PromptInput) -> AgentRequest {
+    if prompt.skill_invocation().is_some() {
+        app.admit_submission(prompt, true);
+    } else {
+        app.begin_command_execution();
+    }
+    AgentRequest::Command {
+        line: prompt.plain_text().unwrap_or_default().into(),
+        images: Vec::new(),
+    }
+}
+
 fn submit_skill(line: String, context: &LocalCommandContext<'_>, outcome: &mut CommandOutcome) {
     let prompt = crate::PromptInput::text(line.clone());
     let mut state = context.state.lock().unwrap();
@@ -115,8 +237,7 @@ fn submit_skill(line: String, context: &LocalCommandContext<'_>, outcome: &mut C
             state.set_new_conversation_notice(tr(context.language, "command.new.in_progress"));
         }
     } else {
-        state.admit_submission(&prompt, true);
-        forward(line, outcome, false);
+        outcome.outbound.push(backend_command(&mut state, &prompt));
     }
 }
 
@@ -228,6 +349,45 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
     };
 
     match command.action {
+        CommandAction::PromptMacro => {
+            let definition = (|| {
+                let mut entry = crate::prompt_macros::parse_definition(&line)?;
+                if let Some(reference) = &entry.model {
+                    let (provider, model) =
+                        resolve_model_reference(context.model_providers, reference).ok_or_else(
+                            || format!("Macro model is unavailable or ambiguous: {reference}"),
+                        )?;
+                    entry.model = Some(format!("{}/{}", provider.id, model.id));
+                    if let Some(effort) = &entry.effort {
+                        entry.effort = Some(
+                            model
+                                .reasoning
+                                .as_ref()
+                                .and_then(|reasoning| {
+                                    reasoning
+                                        .efforts
+                                        .iter()
+                                        .find(|value| value.id.eq_ignore_ascii_case(effort))
+                                })
+                                .ok_or_else(|| format!("Unsupported macro effort: {effort}"))?
+                                .id
+                                .clone(),
+                        );
+                    }
+                }
+                Ok::<_, String>(entry)
+            })();
+            match definition {
+                Ok(entry) => {
+                    context.config.prompt_macros.set(entry);
+                    outcome.config_changed = true;
+                }
+                Err(error) => {
+                    push_error(context.state, error);
+                    outcome.restore_input = true;
+                }
+            }
+        }
         CommandAction::Settings => {
             if reject_arguments(&context, name, raw_input) {
                 return outcome;

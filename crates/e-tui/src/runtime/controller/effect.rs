@@ -26,7 +26,7 @@ pub(super) fn sync_live_config(
         state.preview.invalidate_layout();
         state.catalogs.clone()
     };
-    input.catalog_changed(&catalogs);
+    input.catalog_changed_with_macros(&catalogs, &config.prompt_macros);
 }
 
 pub(super) fn apply_reloaded_config(
@@ -148,6 +148,11 @@ pub(super) fn apply_effect_result(
         }
         EffectResult::ConfigPersisted(Err(error)) => {
             let mut app = state.lock().unwrap();
+            if !app.config.prompt_macros.entries().is_empty() {
+                app.push_error_message(
+                    "Live prompt macro definitions may be unsaved; reload discards unsaved changes",
+                );
+            }
             let language = app.config.language;
             app.push_error_message(tr_args(
                 language,
@@ -243,6 +248,9 @@ pub(super) fn apply_effect_result(
 
 pub(super) fn dispatch_next_queued(state: &Mutex<RuntimeState>) -> Vec<UiAction> {
     let mut state = state.lock().unwrap();
+    if let Some(effects) = super::record::dispatch(&mut state) {
+        return effects;
+    }
     if super::model::blocked(&state) {
         return Vec::new();
     }
@@ -284,7 +292,10 @@ pub(super) fn dispatch_next_queued(state: &Mutex<RuntimeState>) -> Vec<UiAction>
                         state.restore_new_conversation_input();
                     }
                     if state.interaction.input.buf.is_empty() {
-                        state.interaction.input.restore_prompt(pending.prompt);
+                        state
+                            .interaction
+                            .input
+                            .restore_prompt(pending.recovery_input());
                     } else {
                         state.interaction.queue.retain_failed(pending);
                     }
@@ -304,6 +315,8 @@ pub(super) fn dispatch_next_queued(state: &Mutex<RuntimeState>) -> Vec<UiAction>
     }
     let steering = pending.delivery == crate::interaction::PromptDelivery::Asap
         && (!was_idle || state.interaction.queue.has_backend());
+    let original = pending.macro_input.clone();
+    let admissions = state.pending_submissions.len();
     let request = if let Some(mode) = pending.new_mode {
         if let Some(model) = state.session.temporary_model.as_mut() {
             model.materializing = true;
@@ -312,6 +325,8 @@ pub(super) fn dispatch_next_queued(state: &Mutex<RuntimeState>) -> Vec<UiAction>
             mode,
             prompt: pending.prompt,
         }
+    } else if pending.command {
+        crate::runtime::command::backend_command(&mut state, &pending.prompt)
     } else if steering {
         state.interaction.queue.begin_submission(pending.clone());
         AgentRequest::Steer {
@@ -323,6 +338,15 @@ pub(super) fn dispatch_next_queued(state: &Mutex<RuntimeState>) -> Vec<UiAction>
             prompt: pending.prompt,
         }
     };
+    if let Some(original) = original {
+        if state.is_new_conversation() {
+            state.session.macro_draft_input = Some(original);
+        } else if !steering {
+            if let Some(id) = state.pending_submissions.get(admissions).cloned() {
+                state.session.macro_admissions.push((id, original));
+            }
+        }
+    }
     vec![agent_action(request)]
 }
 

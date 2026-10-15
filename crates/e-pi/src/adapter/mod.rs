@@ -53,6 +53,7 @@ enum PendingExtensionUi {
 }
 
 struct NewSubmission {
+    record_id: Option<u64>,
     text: String,
     model: Option<Value>,
     thinking_level: Option<String>,
@@ -81,6 +82,22 @@ pub const AUTH_CONTEXT_COMMAND: &str = "__pie_native_auth_context_v1";
 pub const AUTH_REFRESH_COMMAND: &str = "__pie_native_auth_refresh_v1";
 pub const RELOAD_COMMAND: &str = "__pie_reload_v1";
 
+const MAX_PENDING_PROMPT_ADMISSIONS: usize = 64;
+
+#[derive(Clone)]
+struct PendingPromptAdmission {
+    session_id: String,
+    counted: bool,
+}
+
+struct PendingCommandState {
+    session_id: String,
+    command_id: String,
+    counted: bool,
+    required: bool,
+    failed: bool,
+}
+
 pub struct PiAdapter {
     cwd: PathBuf,
     session_root: PathBuf,
@@ -99,6 +116,10 @@ pub struct PiAdapter {
     /// Id of a prompt sent for a slash command; its response triggers the
     /// same-session state refresh that observes extension-side renames.
     pending_command_prompt: Option<String>,
+    pending_command_states: HashMap<String, PendingCommandState>,
+    pending_prompt_state: Option<(String, u64, String)>,
+    pending_interrupt: Option<String>,
+    pending_prompt_admissions: HashMap<String, PendingPromptAdmission>,
     pending_skill_prompt: Option<PendingSkillPrompt>,
     compaction_model: Option<Value>,
     compaction_model_path: Option<std::path::PathBuf>,
@@ -167,6 +188,10 @@ impl PiAdapter {
             derived_title: None,
             emitted_title: None,
             pending_command_prompt: None,
+            pending_command_states: HashMap::new(),
+            pending_prompt_state: None,
+            pending_interrupt: None,
+            pending_prompt_admissions: HashMap::new(),
             pending_skill_prompt: None,
             compaction_model: None,
             compaction_model_path: None,
@@ -205,7 +230,9 @@ impl PiAdapter {
     }
 
     pub fn tick_mcp(&mut self, now: std::time::Instant) -> AdapterOutput {
-        mcp::tick(self, now)
+        let mut output = mcp::tick(self, now);
+        response::drain_deferred(self, &mut output);
+        output
     }
 
     pub fn startup_commands(&mut self) -> Vec<RpcCommand> {
@@ -215,7 +242,7 @@ impl PiAdapter {
     pub fn request(&mut self, request: AgentRequest) -> AdapterOutput {
         if self.pending_fork.is_some()
             && matches!(
-                request,
+                request.unwrapped(),
                 AgentRequest::Input { .. }
                     | AgentRequest::Steer { .. }
                     | AgentRequest::ClearAsap
@@ -224,11 +251,12 @@ impl PiAdapter {
                     | AgentRequest::ModelSet { .. }
                     | AgentRequest::ModelGet
                     | AgentRequest::Ping
+                    | AgentRequest::CapturePromptState { .. }
                     | AgentRequest::Attach { .. }
             )
         {
             let message = "Wait for the fork/clone operation to finish";
-            return match request {
+            return match request.unwrapped() {
                 AgentRequest::Steer { .. } => queue::event(
                     self,
                     Some(e_tui::agent::AsapQueueOperation::Submit),
@@ -239,8 +267,11 @@ impl PiAdapter {
                     Some(e_tui::agent::AsapQueueOperation::Clear),
                     Some(message.into()),
                 ),
+                AgentRequest::CapturePromptState { record_id } => {
+                    prompt_state::failed(self, *record_id, message)
+                }
                 _ => AdapterOutput::event(AgentEvent::Interaction(InteractionEvent::Error {
-                    code: if matches!(request, AgentRequest::Command { .. }) {
+                    code: if matches!(request.unwrapped(), AgentRequest::Command { .. }) {
                         "command-failed"
                     } else {
                         "input-failed"
@@ -251,11 +282,12 @@ impl PiAdapter {
             };
         }
         if (self.configuration_request.is_some()
+            || self.pending_interrupt.is_some()
             || self.pending_queue.operation.is_some()
             || self.pending_skill_prompt.is_some()
             || self.pending_compaction.is_some())
             && matches!(
-                request,
+                request.unwrapped(),
                 AgentRequest::Input { .. }
                     | AgentRequest::Steer { .. }
                     | AgentRequest::ClearAsap
@@ -264,11 +296,12 @@ impl PiAdapter {
                     | AgentRequest::ModelSet { .. }
                     | AgentRequest::ModelGet
                     | AgentRequest::Ping
+                    | AgentRequest::CapturePromptState { .. }
                     | AgentRequest::Attach { .. }
             )
         {
             if self.deferred_requests.len() >= 64 {
-                let operation = match request {
+                let operation = match request.unwrapped() {
                     AgentRequest::Steer { .. } => Some(e_tui::agent::AsapQueueOperation::Submit),
                     AgentRequest::ClearAsap => Some(e_tui::agent::AsapQueueOperation::Clear),
                     _ => None,
@@ -280,8 +313,15 @@ impl PiAdapter {
                         Some("Too many requests waiting for the model/session change".into()),
                     );
                 }
+                if let AgentRequest::CapturePromptState { record_id } = request.unwrapped() {
+                    return prompt_state::failed(
+                        self,
+                        *record_id,
+                        "Too many requests waiting for the model/session change",
+                    );
+                }
                 return AdapterOutput::event(AgentEvent::Interaction(InteractionEvent::Error {
-                    code: if matches!(request, AgentRequest::NewInput { .. }) {
+                    code: if matches!(request.unwrapped(), AgentRequest::NewInput { .. }) {
                         "new-failed"
                     } else {
                         "input-failed"
@@ -664,6 +704,7 @@ mod extension;
 mod fork;
 mod mcp;
 mod model;
+mod prompt_state;
 mod queue;
 #[cfg(test)]
 mod queue_tests;

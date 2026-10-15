@@ -43,6 +43,7 @@ pub mod presentation;
 pub mod preview;
 pub mod profile;
 pub mod projection;
+pub mod prompt_macros;
 pub mod question;
 pub mod reading;
 pub mod render;

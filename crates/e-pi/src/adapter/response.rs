@@ -5,13 +5,52 @@ use e_tui::agent::{AgentEvent, InteractionEvent};
 use crate::protocol::{response, RpcCommand, RpcRecord};
 use serde_json::Value;
 
-use super::{model, session, AdapterOutput, NewSubmission, PendingReload, PiAdapter, ReloadStep};
+use super::{
+    model, session, AdapterOutput, NewSubmission, PendingCommandState, PendingReload, PiAdapter,
+    ReloadStep,
+};
+
+fn request_order(id: &str) -> Option<u64> {
+    id.rsplit_once('-')?.1.parse().ok()
+}
+
+fn settlement_event(
+    adapter: &PiAdapter,
+    pending: &PendingCommandState,
+    confirmed: bool,
+) -> AgentEvent {
+    AgentEvent::Interaction(if pending.counted {
+        InteractionEvent::CommandResult {
+            id: pending.command_id.clone(),
+            outcome: if confirmed { "success" } else { "unconfirmed" }.into(),
+            text: None,
+        }
+    } else {
+        InteractionEvent::PromptSettlement {
+            request_id: pending.command_id.clone(),
+            session_id: super::queue::session_key(adapter),
+            confirmed,
+        }
+    })
+}
 
 pub(super) fn dispatch(adapter: &mut PiAdapter, mut record: RpcRecord) -> AdapterOutput {
+    if adapter
+        .pending_interrupt
+        .as_deref()
+        .is_some_and(|id| record.string("id") == Some(id))
+    {
+        adapter.pending_interrupt = None;
+    }
     if let Some(output) = super::retry::response(adapter, &record) {
         return output;
     }
-    if let Some(output) = super::mcp::response(adapter, &record) {
+    if let Some(mut output) = super::prompt_state::response(adapter, &record) {
+        drain_deferred(adapter, &mut output);
+        return output;
+    }
+    if let Some(mut output) = super::mcp::response(adapter, &record) {
+        drain_deferred(adapter, &mut output);
         return output;
     }
     if let Some(mut output) = super::fork::response(adapter, &record) {
@@ -67,7 +106,51 @@ pub(super) fn dispatch(adapter: &mut PiAdapter, mut record: RpcRecord) -> Adapte
         return output;
     }
     let response_id = record.string("id").map(str::to_owned);
+    let command_prompt = response_id.as_deref() == adapter.pending_command_prompt.as_deref()
+        && adapter.pending_command_prompt.is_some();
+    let command_state = response_id
+        .as_ref()
+        .and_then(|id| adapter.pending_command_states.remove(id));
+    let response_session = record
+        .field("data")
+        .and_then(|data| data.get("sessionId"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     let response_command = record.string("command").map(str::to_owned);
+    let admission = response_id
+        .as_ref()
+        .filter(|_| response_command.as_deref() == Some("prompt"))
+        .and_then(|id| {
+            adapter
+                .pending_prompt_admissions
+                .get(id)
+                .cloned()
+                .map(|pending| (id.clone(), pending))
+        });
+    let command_input = response_command.as_deref() == Some("prompt")
+        && response_id
+            .as_deref()
+            .is_some_and(|id| id.starts_with("pie-command-"));
+    if (response_command.as_deref() == Some("prompt")
+        && response_id
+            .as_deref()
+            .is_some_and(|id| id.starts_with("pie-prompt-") || id.starts_with("pie-command-"))
+        && admission
+            .as_ref()
+            .is_none_or(|(_, pending)| pending.session_id != adapter.session_id))
+        || (response_command.as_deref() == Some("get_state")
+            && response_id.as_deref().is_some_and(|id| {
+                id.starts_with("pie-command-state-") || id.starts_with("pie-handled-state-")
+            })
+            && command_state.is_none())
+    {
+        return AdapterOutput::default();
+    }
+    let disposition = record
+        .field("data")
+        .and_then(|data| data.get("disposition"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     let selection_response =
         super::compaction::is_model_selection_response(adapter, response_id.as_deref());
     if selection_response
@@ -101,7 +184,115 @@ pub(super) fn dispatch(adapter: &mut PiAdapter, mut record: RpcRecord) -> Adapte
         (selection_response && successful && response_command.as_deref() == Some("get_state"))
             .then(|| record.field("data").cloned())
             .flatten();
+    let command_state_response = command_state.is_some();
     let mut output = dispatch_response(adapter, record);
+    if command_state_response && failed {
+        for event in &mut output.events {
+            if let AgentEvent::Interaction(InteractionEvent::Error { code, .. }) = event {
+                if code == "pi-rpc-get_state" {
+                    *code = "command-state-failed".into();
+                }
+            }
+        }
+    }
+    let counted = admission
+        .as_ref()
+        .is_some_and(|(_, pending)| pending.counted);
+    if let Some((request_id, pending)) = admission {
+        adapter.pending_prompt_admissions.remove(&request_id);
+        if pending.session_id == adapter.session_id && successful {
+            if let Some(expects_run) = disposition.as_deref().and_then(|value| match value {
+                "started" | "queued" => Some(true),
+                "handled" => Some(false),
+                _ => None,
+            }) {
+                output
+                    .events
+                    .push(AgentEvent::Interaction(InteractionEvent::PromptAdmission {
+                        request_id: request_id.clone(),
+                        session_id: super::queue::session_key(adapter),
+                        expects_run,
+                    }));
+            }
+            if !command_prompt && (command_input || disposition.as_deref() == Some("handled")) {
+                let id = adapter.request_id("handled-state");
+                let required = pending.counted || disposition.as_deref() == Some("handled");
+                adapter.pending_command_states.insert(
+                    id.clone(),
+                    PendingCommandState {
+                        session_id: adapter.session_id.clone(),
+                        command_id: request_id,
+                        counted: pending.counted,
+                        required,
+                        failed: false,
+                    },
+                );
+                if required {
+                    adapter.configuration_request = Some(id.clone());
+                }
+                output.commands.push(RpcCommand::GetState { id: Some(id) });
+            }
+        }
+    }
+    if counted && failed {
+        output
+            .events
+            .push(AgentEvent::Interaction(InteractionEvent::CommandResult {
+                id: response_id.clone().unwrap_or_default(),
+                outcome: "error".into(),
+                text: None,
+            }));
+    }
+    if let Some(mut pending) = command_state {
+        if pending.session_id == adapter.session_id {
+            let confirmed =
+                successful && response_session.as_deref() == Some(pending.session_id.as_str());
+            output
+                .events
+                .push(settlement_event(adapter, &pending, confirmed));
+            if !confirmed && pending.required {
+                pending.failed = true;
+                adapter
+                    .pending_command_states
+                    .insert(response_id.clone().unwrap_or_default(), pending);
+            }
+        }
+    }
+    if successful
+        && response_command.as_deref() == Some("get_state")
+        && response_session.as_deref() == Some(adapter.session_id.as_str())
+    {
+        if let Some(order) = response_id.as_deref().and_then(request_order) {
+            let settled: Vec<_> = adapter
+                .pending_command_states
+                .iter()
+                .filter(|(id, pending)| {
+                    pending.failed
+                        && pending.session_id == adapter.session_id
+                        && request_order(id).is_some_and(|previous| previous < order)
+                })
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in settled {
+                if let Some(pending) = adapter.pending_command_states.remove(&id) {
+                    output
+                        .events
+                        .push(settlement_event(adapter, &pending, true));
+                }
+            }
+        }
+    }
+    if successful
+        && response_command.as_deref() == Some("abort")
+        && adapter
+            .pending_command_states
+            .values()
+            .any(|pending| pending.failed && pending.session_id == adapter.session_id)
+    {
+        let id = adapter.request_id("command-recovery-state");
+        adapter.configuration_request = Some(id.clone());
+        output.commands.push(RpcCommand::GetState { id: Some(id) });
+    }
     if selection_response && successful && response_command.as_deref() != Some("get_state") {
         if let (Some(completed_id), Some(next_id)) = (
             response_id.as_deref(),
@@ -125,18 +316,25 @@ pub(super) fn dispatch(adapter: &mut PiAdapter, mut record: RpcRecord) -> Adapte
     if completed.is_some() && adapter.configuration_request == completed {
         adapter.configuration_request = None;
         if failed && !adapter.deferred_requests.is_empty() {
-            let code = if adapter
-                .deferred_requests
-                .iter()
-                .any(|request| matches!(request, e_tui::AgentRequest::NewInput { .. }))
-            {
-                "new-failed"
-            } else {
-                "input-failed"
-            };
+            let code =
+                if adapter.deferred_requests.iter().any(|request| {
+                    matches!(request.unwrapped(), e_tui::AgentRequest::NewInput { .. })
+                }) {
+                    "new-failed"
+                } else {
+                    "input-failed"
+                };
             let deferred = std::mem::take(&mut adapter.deferred_requests);
             for request in deferred {
-                let operation = match request {
+                if let e_tui::AgentRequest::CapturePromptState { record_id } = request.unwrapped() {
+                    output.merge(super::prompt_state::failed(
+                        adapter,
+                        *record_id,
+                        "Prior model/session selection failed before Record dispatch",
+                    ));
+                    continue;
+                }
+                let operation = match request.unwrapped() {
                     e_tui::AgentRequest::Steer { .. } => {
                         Some(e_tui::agent::AsapQueueOperation::Submit)
                     }
@@ -180,7 +378,7 @@ fn model_control_index(adapter: &PiAdapter) -> Option<usize> {
         return None;
     }
     for (index, request) in adapter.deferred_requests.iter().enumerate() {
-        match request {
+        match request.unwrapped() {
             e_tui::AgentRequest::ModelGet | e_tui::AgentRequest::ModelSet { .. } => {
                 return Some(index)
             }
@@ -195,6 +393,7 @@ fn model_control_index(adapter: &PiAdapter) -> Option<usize> {
 
 pub(super) fn drain_deferred(adapter: &mut PiAdapter, output: &mut AdapterOutput) {
     while adapter.configuration_request.is_none()
+        && adapter.pending_interrupt.is_none()
         && adapter.pending_fork.is_none()
         && adapter.pending_queue.operation.is_none()
         && adapter.pending_skill_prompt.is_none()
@@ -308,6 +507,7 @@ fn dispatch_response(adapter: &mut PiAdapter, record: RpcRecord) -> AdapterOutpu
                     id,
                     submission.text,
                     None,
+                    submission.record_id,
                 ));
             }
             output
@@ -418,10 +618,33 @@ fn dispatch_response(adapter: &mut PiAdapter, record: RpcRecord) -> AdapterOutpu
         // report the new title without re-attaching.
         "prompt" => {
             if response.id.as_deref() == adapter.pending_command_prompt.as_deref() {
-                adapter.pending_command_prompt = None;
-                AdapterOutput::command(RpcCommand::GetState {
-                    id: Some(adapter.request_id("state")),
-                })
+                let command = adapter.pending_command_prompt.take().unwrap();
+                let id = adapter.request_id("command-state");
+                let counted = adapter
+                    .pending_prompt_admissions
+                    .get(&command)
+                    .is_none_or(|pending| pending.counted);
+                let required = counted
+                    || response
+                        .data
+                        .as_ref()
+                        .and_then(|data| data.get("disposition"))
+                        .and_then(Value::as_str)
+                        == Some("handled");
+                adapter.pending_command_states.insert(
+                    id.clone(),
+                    PendingCommandState {
+                        session_id: adapter.session_id.clone(),
+                        command_id: command,
+                        counted,
+                        required,
+                        failed: false,
+                    },
+                );
+                if required {
+                    adapter.configuration_request = Some(id.clone());
+                }
+                AdapterOutput::command(RpcCommand::GetState { id: Some(id) })
             } else {
                 AdapterOutput::default()
             }

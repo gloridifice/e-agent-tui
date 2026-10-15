@@ -262,6 +262,11 @@ export function createClientDispatcher({
     // next session occupying that socket. Each execution gets its own abort
     // controller so Esc can cancel commands without detaching the session.
     const current = conn
+    const publishStatus = () => {
+      if (typeof current.agent.status !== 'string') return
+      const queued = current.agent.inbox?.hasPending === true
+      send(ws, { type: 'status', status: queued ? 'running' : current.agent.status })
+    }
     const commandAbort = new AbortController()
     current.commandAborts ??= new Set()
     current.commandAborts.add(commandAbort)
@@ -274,6 +279,7 @@ export function createClientDispatcher({
         ? commands.execute(current.agent, msg.line, images, commandAbort.signal) : undefined)
       .then((execution) => {
         if (!conns.isCurrent(current, conn)) return
+        publishStatus()
         if (commandAbort.signal.aborted) {
           send(ws, { type: 'error', code: 'command-cancelled', message: 'command cancelled' })
           return
@@ -291,6 +297,7 @@ export function createClientDispatcher({
       })
       .catch((error) => {
         if (!conns.isCurrent(current, conn)) return
+        publishStatus()
         if (commandAbort.signal.aborted) {
           send(ws, { type: 'error', code: 'command-cancelled', message: 'command cancelled' })
         } else {
@@ -395,7 +402,7 @@ export function createClientDispatcher({
       try {
         current.agent.options = { ...(current.agent.options ?? {}), provider: selected.provider, model: selected.model }
       } catch {}
-      await sendModel(ws, current.agent)
+      await sendModel(ws, current.agent, () => conns.isCurrent(current, conn))
     } catch (error) {
       if (!conns.isCurrent(current, conn)) return
       send(ws, { type: 'error', code: 'model-failed', message: String(error?.message ?? error) })
@@ -453,9 +460,12 @@ export function createClientDispatcher({
       case 'login-proxy-create': if (conn && typeof msg.baseUrl === 'string') void saveProxy(msg); break
       case 'login-proxy-delete': if (conn && typeof msg.id === 'string') void removeProxy(msg); break
       case 'model-get':
-        if (conn) sendModel(ws, conn.agent).catch((error) => {
-          send(ws, { type: 'error', code: 'model-failed', message: String(error?.message ?? error) })
-        })
+        if (conn) {
+          const current = conn
+          queueCommand(ws, current, { code: 'model-failed' }, async (_signal, isCurrent) => {
+            await sendModel(ws, current.agent, isCurrent)
+          })
+        }
         break
       case 'model-set': {
         const current = conn
@@ -472,7 +482,28 @@ export function createClientDispatcher({
           conn.agent.cancel({ kind: 'user' })
         }
         break
-      case 'ping': send(ws, { type: 'pong' }); break
+      case 'ping': {
+        const current = conn
+        if (!current) { send(ws, { type: 'pong' }); break }
+        const update = Promise.resolve(modelUpdates).then(async () => {
+          const isCurrent = () => conns.isCurrent(current, conn)
+          if (!isCurrent()) return
+          try {
+            if (await sendModel(ws, current.agent, isCurrent) === false) throw new Error('Model state refresh failed')
+          } catch (error) {
+            if (isCurrent()) send(ws, { type: 'error', code: 'model-failed', message: String(error?.message ?? error) })
+          }
+          if (isCurrent()) {
+            if (typeof current.agent.status === 'string') {
+              send(ws, { type: 'status', status: current.agent.inbox?.hasPending ? 'running' : current.agent.status })
+            }
+            send(ws, { type: 'pong' })
+          }
+        })
+        modelUpdates = update
+        void update.finally(() => { if (modelUpdates === update) modelUpdates = null })
+        break
+      }
       default: return false
     }
     return true

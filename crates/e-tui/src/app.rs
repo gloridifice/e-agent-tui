@@ -261,6 +261,7 @@ pub struct TuiApp {
     pub link_copy: crate::link_copy::LinkCopyState,
     pub timeline: TimelineModel,
     pub catalogs: CatalogModel,
+    pub tips: crate::tips::TipRegistry,
     pub interaction: InteractionModel,
     pub render: RenderState,
     pub preview: PreviewPaneState,
@@ -311,6 +312,7 @@ impl TuiApp {
             self.transcript_reveal_deadline(),
             self.preview.reveal_deadline(),
             self.render.status_flashes.next_due(),
+            self.render.tips.deadline,
             self.interaction.input_page.as_ref().and_then(|session| {
                 if let InputPage::Resume(page) = &session.page {
                     page.age_refresh
@@ -376,7 +378,64 @@ impl TuiApp {
             }
             false
         });
-        transcript || preview || status || resume
+        let tips = self.render.tips.tick(now);
+        transcript || preview || status || resume || tips
+    }
+
+    pub(crate) fn reconcile_tips(&mut self, budget: usize, now: Instant) -> bool {
+        use crate::tips::TipPrerequisite as P;
+        let working = self.config.show_tips
+            && self.session.new_conversation.is_none()
+            && (self.session.working
+                || self.session.status == SessionStatus::Running
+                || self.session.active_compaction.is_some());
+        let visible = self.interaction.input_page.is_none()
+            && self.interaction.approval.is_none()
+            && self.interaction.question.is_none()
+            && !self.interaction.help_visible
+            && !self.interaction.pane_resize.is_active()
+            && !self.interaction.mouse_selection.is_dragging()
+            && self.reading.is_none()
+            && self.history_page.is_none()
+            && self.mcp.is_none();
+        if !working || !visible || budget < crate::tips::MIN_TIP_COLUMNS {
+            return self.render.tips.reconcile(working, Vec::new(), now);
+        }
+        let mut prerequisites = Vec::new();
+        let facts = [
+            (P::CompletedAnswer, self.latest_completed_assistant_markdown().is_some()),
+            (P::AsapAdmission, self.session.active_compaction.is_none() && self.session.temporary_model.is_none()),
+            (P::PendingQueue, !self.interaction.queue.is_empty()),
+            (P::ShellAvailable, self.shell.active.is_none()),
+            (P::AttachedSession, self.session.session_id.is_some()),
+            (P::Skills, !self.catalogs.skills.is_empty()),
+            (P::Models, self.catalogs.model_providers.iter().any(|provider| !provider.models.is_empty())),
+            (P::CurrentEfforts, self.catalogs.current_efforts().is_some_and(|efforts| !efforts.is_empty())),
+            (P::AnyEfforts, self.catalogs.model_providers.iter().flat_map(|provider| &provider.models).any(|model| model.reasoning.as_ref().is_some_and(|reasoning| !reasoning.efforts.is_empty()))),
+            (P::ModelLetters, ('a'..='z').any(|letter| self.config.key_mapping.model_letter_available(letter))),
+            (P::ModelMark, ('a'..='z').any(|letter| self.config.key_mapping.model_letter_available(letter) && self.catalogs.marked_model(&self.config.model_marks, letter).is_some())),
+            (P::QuickLinks, !self.link_copy.links.is_empty()),
+            (P::Compaction, self.session.active_compaction.is_some()),
+            (P::NewModes, !self.catalogs.new_modes.is_empty()),
+            (P::UserMessages, self.transcript.nodes().iter().any(|node| matches!(&node.item, DisplayItem::Card(card) if matches!(card.role, CardRole::User | CardRole::Attachment | CardRole::Skill)))),
+            (P::NativeMcp, self.mcp_available),
+            (P::ErrorRecovery, self.config.error_auto_retry),
+        ];
+        prerequisites.extend(
+            facts
+                .into_iter()
+                .filter_map(|(value, available)| available.then_some(value)),
+        );
+        let candidates = self.tips.candidates(
+            crate::tips::TipContext {
+                language: self.config.language,
+                bindings: &self.config.key_mapping,
+                commands: &self.catalogs.integrated_commands,
+                prerequisites: &prerequisites,
+            },
+            budget,
+        );
+        self.render.tips.reconcile(working, candidates, now)
     }
 
     pub fn breath_phase(&self) -> f64 {

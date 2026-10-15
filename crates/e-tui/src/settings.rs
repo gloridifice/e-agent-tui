@@ -262,6 +262,19 @@ pub static ITEMS: &[ItemDef] = &[
     },
     ItemDef {
         category: 2,
+        key: "show_tips",
+        label: "settings.item.show_tips.label",
+        desc: "settings.item.show_tips.desc",
+        kind: ItemKind::Choice {
+            options: BOOL_OPTIONS,
+        },
+        get: |c| bool_value(c.show_tips),
+        apply: |c, v| {
+            c.show_tips = v == "on";
+        },
+    },
+    ItemDef {
+        category: 2,
         key: "show_tool_duration",
         label: "settings.item.show_tool_duration.label",
         desc: "settings.item.show_tool_duration.desc",

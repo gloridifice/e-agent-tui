@@ -172,6 +172,14 @@ impl AuthManager {
         }
     }
 
+    pub fn available_for_session(&self, session_id: &str) -> bool {
+        self.helper.is_some()
+            && self
+                .context
+                .as_ref()
+                .is_some_and(|context| context.session_id == session_id)
+    }
+
     pub async fn configure(&mut self, context: AuthContext) -> Result<(), String> {
         if context.protocol != 1 {
             return Err(format!(

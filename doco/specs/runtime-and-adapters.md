@@ -4,6 +4,7 @@
 
 - `e-tui` MUST remain provider-neutral and MUST NOT import DSH/Pi wire names, transport control, provider persistence, or filesystem-backed effects.
 - `e-dsh` and `e-pi` MUST depend on `e-tui` and MUST NOT depend on each other.
+- `e-tui` MUST own common Tips definitions and an owned, atomic batch-registration API with typed validation errors. Adapters MUST append only their private definitions at composition and publish normalized availability through the registry; IDs and command names alone MUST NOT imply native support. Eligibility MUST use current owner state, effective bindings and exact-locale translations, omitting unavailable candidates rather than displaying stale or mixed-language advice. Session replacement retains definitions but resets capabilities and ephemeral rotation.
 - Each adapter MUST convert provider input into owned `AgentEvent` values and convert `AgentRequest` values at its boundary. Raw provider JSON MUST NOT enter the frontend reducer.
 - Architecture tests MUST reject production module cycles and forbidden cross-package dependencies.
 
@@ -43,6 +44,7 @@
 ## Scheduling and transport bounds
 
 - Idle runtime waits MUST remain deadline-driven; a fixed polling ticker is forbidden.
+- Tips rotation MUST use shared monotonic presentation deadlines and advance at most one candidate per due tick. Only visible reading time consumes the interval; hidden states, disabled Tips and idle MUST have no Tips deadline. New work and re-enabling start a fresh interval. Shared measured composer geometry MUST determine both rendering and time accounting; drawing MUST NOT advance rotation. Rotation MUST preserve semantic caches, frame admission and immutable selection snapshots.
 - Animation cadence MUST be at least 16 ms. Each inbound fairness turn MUST stop at 64 items or 2 ms, and visible assistant deltas MUST yield to rendering.
 - DSH frames and Pi JSONL records MUST be bounded before untrusted payloads reach reducers. Pi JSONL accepts LF records, tolerates CRLF, fails closed on invalid UTF-8/JSON or oversized records, and rejects an unterminated final record. The Pi authentication helper uses inherited stdio, 256 KiB JSONL records, channels capped at 64, one active mutation, finite control/shutdown deadlines, and explicit uncertain outcomes after mid-mutation disconnect.
 - Terminal frames MUST be submitted atomically. A selectable screen snapshot becomes current only after successful submission and MUST NOT enter semantic caches.

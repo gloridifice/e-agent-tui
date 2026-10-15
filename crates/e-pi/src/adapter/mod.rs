@@ -110,6 +110,7 @@ pub struct PiAdapter {
     active_compaction_id: Option<String>,
     active_compaction_automatic: Option<bool>,
     last_attached_session: Option<String>,
+    saved_session: bool,
     current_model: Option<Value>,
     available_models: Vec<Value>,
     thinking_level: Option<String>,
@@ -128,6 +129,22 @@ pub struct PiAdapter {
 }
 
 impl PiAdapter {
+    pub fn native_session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    pub fn refresh_tip_availability(&self, app: &mut e_tui::TuiApp, native_auth_available: bool) {
+        let attached = self.last_attached_session.is_some()
+            && app.session.session_id == self.last_attached_session;
+        for key in ["history", "session-ancestry", "native-compaction"] {
+            app.tips.set_capability(key, attached);
+        }
+        app.tips
+            .set_capability("saved-session", attached && self.saved_session);
+        app.tips
+            .set_capability("native-auth", attached && native_auth_available);
+    }
+
     pub fn session_index_root(&self, workspace: &str) -> PathBuf {
         if std::path::Path::new(workspace) == self.cwd {
             self.session_root.clone()
@@ -161,6 +178,7 @@ impl PiAdapter {
             active_compaction_id: None,
             active_compaction_automatic: None,
             last_attached_session: None,
+            saved_session: false,
             current_model: None,
             available_models: Vec::new(),
             thinking_level: None,

@@ -54,6 +54,7 @@ pub mod settings;
 pub mod shell;
 pub mod syntax;
 pub mod theme;
+pub mod tips;
 pub mod transcript_layout;
 pub mod ui;
 mod wrap;

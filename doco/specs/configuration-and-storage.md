@@ -5,6 +5,7 @@
 - `e-tui` owns config and theme schemas; adapters own platform paths and filesystem I/O.
 - Embedded default TOML is the sole default source. User config overlays only known keys, then deserializes strictly; malformed known values fall back safely and unknown deprecated keys do not become runtime fields.
 - Runtime-only adapter overrides MUST NOT overwrite unrelated shared settings.
+- `show_tips` is a default-on Display setting shared by both frontends. Settings and reload MUST apply it live through existing frontend config persistence; disabling it removes Tips presentation and its deadline. Catalog definitions, rotation position and timing MUST NOT be persisted.
 - `error_auto_retry` is a default-on Behavior setting for Pi fallback recovery. It MUST persist in frontend config and apply live, including after reload. Disabling it cancels pending fallback attempts without aborting an already running model call or changing Pi's native retry configuration; DSH ignores this preference.
 - Per-model default efforts belong only to e's shared `config.toml`, keyed by exact provider/model identity. Setting a preference MUST use adapter-owned frontend config persistence, report write failures, and MUST NOT send a backend command or modify Pi configuration.
 - Model letter marks belong to shared `config.toml`, not `key_mapping.toml`. Associations use lowercase ASCII letters and exact provider/model identities, with unique letters and routes; older configs default to no marks. Reassignment MUST preserve those uniqueness constraints.

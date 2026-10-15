@@ -353,6 +353,7 @@ pub struct Config {
     // 显示
     pub show_model_in_status: bool,
     pub show_tool_duration: bool,
+    pub show_tips: bool,
     pub read_merge: bool,
     /// How reasoning content is shown: `compact` (default), `lines`, or `full`.
     pub thinking_display: String,

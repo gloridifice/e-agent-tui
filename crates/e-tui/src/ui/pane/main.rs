@@ -159,6 +159,7 @@ fn render_main_pane_with_cursor(
                 input.model_hint(&state.config, &state.catalogs),
                 &state.catalogs,
                 &state.shell.name,
+                None,
             )
         };
         region::status::render_input_header(frame, chunks[6], state, theme);
@@ -253,6 +254,7 @@ fn render_main_pane_with_cursor(
             input.model_hint(&state.config, &state.catalogs),
             &state.catalogs,
             &state.shell.name,
+            state.render.tips.line.as_ref(),
         );
         region::status::render_input_header(frame, rect, state, theme);
         y = y.saturating_add(plan.bottom_rows);

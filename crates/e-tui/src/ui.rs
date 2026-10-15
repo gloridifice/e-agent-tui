@@ -74,6 +74,33 @@ pub fn input_bar_width(area_width: u16, state: &TuiApp) -> u16 {
     layout::main_page_rect(main, state, reserve_collapsed_separator).width
 }
 
+pub(crate) fn tips_budget(size: TerminalSize, state: &TuiApp) -> usize {
+    let (main, collapsed) = match screen::layout(
+        ratatui::layout::Rect::new(0, 0, size.width, size.height),
+        state.config.message_pane_percent,
+        state.preview.fullscreen,
+    ) {
+        screen::ScreenLayout::MainOnly(main) => (main, true),
+        screen::ScreenLayout::Split { main, .. } => (main, false),
+        screen::ScreenLayout::PreviewOnly(_) => return 0,
+    };
+    let page = layout::main_page_rect(main, state, collapsed);
+    let plan = layout::BottomLayoutPlan::new(
+        page.height,
+        page.width,
+        state,
+        &state.interaction.input,
+        None,
+        state.interaction.approval.as_ref(),
+        state.interaction.queue.entries(),
+        false,
+    );
+    if usize::from(page.height) < plan.bottom_stack + 1 {
+        return 0;
+    }
+    region::composer::tips_width(page.width, &state.interaction.input, &state.shell.name)
+}
+
 /// Terminal dimensions shared by the render path and the runtime scroll/input
 /// path. Named fields remove the transposition hazard of threading two
 /// adjacent `u16`s (height,width vs width,height) across the render→runtime

@@ -448,6 +448,8 @@ impl RuntimeState {
 impl RuntimeState {
     /// Drop the whole transcript (used when attaching to another session).
     pub fn reset_transcript(&mut self) {
+        self.render.tips = Default::default();
+        self.tips.clear_capabilities();
         self.clear_shell();
         self.transcript.clear();
         self.render.markdown_layout.clear();

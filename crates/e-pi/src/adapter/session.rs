@@ -37,6 +37,10 @@ pub(super) fn state_response(adapter: &mut PiAdapter, data: Option<&Value>) -> A
         .and_then(Value::as_str)
         .unwrap_or("pi-session")
         .to_owned();
+    adapter.saved_session = data
+        .get("sessionFile")
+        .and_then(Value::as_str)
+        .is_some_and(|path| !path.trim().is_empty());
     let session_key = data
         .get("sessionFile")
         .and_then(Value::as_str)

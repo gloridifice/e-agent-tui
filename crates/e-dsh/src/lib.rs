@@ -13,5 +13,6 @@ pub mod runtime_ports;
 pub mod setup;
 pub mod shell;
 pub mod theme;
+pub mod tips;
 #[cfg(windows)]
 pub mod win_input;

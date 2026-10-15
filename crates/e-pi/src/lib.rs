@@ -18,3 +18,4 @@ pub mod process;
 pub mod protocol;
 pub mod session_index;
 pub mod shell;
+pub mod tips;

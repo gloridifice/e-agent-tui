@@ -150,6 +150,19 @@ fn normalized_session_status(status: &crate::agent::AgentStatus) -> crate::Sessi
 }
 
 impl RuntimeController {
+    pub fn reconcile_tips(
+        state: &Arc<Mutex<RuntimeState>>,
+        size: TerminalSize,
+        scheduler: &mut crate::runtime::scheduler::FrameScheduler,
+        now: Instant,
+    ) {
+        let mut state = state.lock().unwrap();
+        let budget = crate::ui::tips_budget(size, &state);
+        if state.reconcile_tips(budget, now) {
+            scheduler.request(crate::runtime::scheduler::DirtyReason::Content, now);
+        }
+    }
+
     pub fn reconcile_presentation(
         state: &Arc<Mutex<RuntimeState>>,
         committed: &crate::ui::Presentation,

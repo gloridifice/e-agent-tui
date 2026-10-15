@@ -339,6 +339,7 @@ async fn run_frontend(
         eprintln!("{error}");
         app.push_error_message(error.clone());
     }
+    app.tips.register_tips(e_pi::tips::definitions())?;
     app.frontend = e_tui::FrontendKind::Pi;
     app.config = config.clone();
     app.interaction = e_tui::InteractionModel::new(&config);
@@ -444,6 +445,21 @@ async fn run_frontend(
                 HerdrStatus::from_runtime(&state)
             };
             herdr.report(status);
+        }
+        adapter.refresh_tip_availability(
+            &mut state_r.lock().unwrap(),
+            auth.available_for_session(adapter.native_session_id()),
+        );
+        if let Ok(size) = terminal.size() {
+            RuntimeController::reconcile_tips(
+                &state_r,
+                TerminalSize {
+                    width: size.width,
+                    height: size.height,
+                },
+                &mut scheduler,
+                Instant::now(),
+            );
         }
         let mut pending_event = None;
         let mut first_inbound = None;
@@ -897,6 +913,21 @@ async fn run_frontend(
             }
         }
 
+        adapter.refresh_tip_availability(
+            &mut state_r.lock().unwrap(),
+            auth.available_for_session(adapter.native_session_id()),
+        );
+        if let Ok(size) = terminal.size() {
+            RuntimeController::reconcile_tips(
+                &state_r,
+                TerminalSize {
+                    width: size.width,
+                    height: size.height,
+                },
+                &mut scheduler,
+                Instant::now(),
+            );
+        }
         let now = Instant::now();
         if let Some(requested_at) = scheduler.take_due(now) {
             let mut interaction = {

@@ -248,6 +248,7 @@ async fn run(
         eprintln!("{error}");
         app.push_error_message(error.clone());
     }
+    app.tips.register_tips(e_dsh::tips::definitions())?;
     app.frontend = e_tui::FrontendKind::Dsh;
     app.config = config.clone();
     app.interaction = e_tui::InteractionModel::new(&config);
@@ -322,6 +323,18 @@ async fn run(
 
     'outer: loop {
         let _main_loop_zone = e_tui::tracy_zone!("main loop");
+        e_dsh::tips::refresh_availability(&mut state_r.lock().unwrap());
+        if let Ok(size) = terminal.size() {
+            RuntimeController::reconcile_tips(
+                &state_r,
+                TerminalSize {
+                    width: size.width,
+                    height: size.height,
+                },
+                &mut scheduler,
+                Instant::now(),
+            );
+        }
         let mut pending_event = None;
         let mut first_inbound = None;
         RuntimeController::reconcile_presentation(
@@ -654,6 +667,18 @@ async fn run(
             }
         }
 
+        e_dsh::tips::refresh_availability(&mut state_r.lock().unwrap());
+        if let Ok(size) = terminal.size() {
+            RuntimeController::reconcile_tips(
+                &state_r,
+                TerminalSize {
+                    width: size.width,
+                    height: size.height,
+                },
+                &mut scheduler,
+                Instant::now(),
+            );
+        }
         let now = Instant::now();
         if let Some(requested_at) = scheduler.take_due(now) {
             let mut interaction = {

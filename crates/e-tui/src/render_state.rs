@@ -30,6 +30,7 @@ pub struct RenderState {
     pub transcript_reveals: HashMap<DisplayId, RevealTrack>,
     pub activity_frame: usize,
     pub(crate) status_flashes: status_flash::StatusFlashes,
+    pub(crate) tips: crate::tips::TipRotation,
 }
 
 impl Default for RenderState {
@@ -46,6 +47,7 @@ impl Default for RenderState {
             transcript_reveals: HashMap::new(),
             activity_frame: 0,
             status_flashes: status_flash::StatusFlashes::default(),
+            tips: crate::tips::TipRotation::default(),
         }
     }
 }

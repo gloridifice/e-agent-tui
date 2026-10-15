@@ -12,6 +12,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changelog:
+    name: Generate development changelog
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Generate changelog
+        uses: orhun/git-cliff-action@v4
+        with:
+          version: v2.14.2
+          config: cliff.toml
+          args: --offline --no-exec --use-branch-tags
+        env:
+          OUTPUT: CHANGELOG.md
+          GITHUB_REPO: ${{ github.repository }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: development-changelog
+          path: CHANGELOG.md
+          if-no-files-found: error
+          retention-days: 7
+
   linux:
     name: Linux checks
     runs-on: ubuntu-latest

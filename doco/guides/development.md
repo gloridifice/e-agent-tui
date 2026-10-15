@@ -110,7 +110,7 @@ Never use `--allow-dirty` or `--no-verify` for an executed release. Uncommitted 
 
 Pushing a stable `vX.Y.Z` tag triggers [the release workflow](../../.github/workflows/release.yml). The tag must match every Rust workspace package version; prerelease tags are not accepted. The workflow checks generated bridge assets and protocol artifacts, runs bridge tests, then builds both `dshe` and `pie` for Windows x64 (MSVC) and Linux x64 (GNU, built on Ubuntu 22.04).
 
-Each platform archive contains both executables, the README, and both license files. After all builds succeed, the workflow uploads the archives and `SHA256SUMS` to a draft GitHub Release and publishes it with generated release notes. It uses the repository's `GITHUB_TOKEN` with release-job-only write permission; no additional publishing secret is needed. If publication fails after draft creation, inspect the draft and either finish publishing it or delete it before rerunning the publish job.
+Each platform archive contains both executables, the README, and both license files. After all builds succeed, the workflow uses git-cliff to generate release notes for the checked-out tag, uploads the archives and `SHA256SUMS` to a draft GitHub Release, and publishes it with those notes. It uses the repository's `GITHUB_TOKEN` with release-job-only write permission; no additional publishing secret is needed. If publication fails after draft creation, inspect the draft and either finish publishing it or delete it before rerunning the publish job.
 
 The existing cargo-release flow pushes the shared tag and therefore triggers binary publication automatically. To publish binaries without publishing to crates.io, commit synchronized package versions and `Cargo.lock`, then push the corresponding tag manually:
 
@@ -120,6 +120,25 @@ git push origin v0.1.0
 ```
 
 Use the actual workspace version and a new tag; do not move an existing release tag. The GitHub workflow does not publish crates to crates.io. Downloaded executables still require their external DSH/Pi runtimes and setup described in the root README.
+
+### Development changelog
+
+Push and pull-request CI runs generate a complete changelog, including an `Unreleased` section when there are changes after the latest release tag. Download `CHANGELOG.md` from the run's `development-changelog` artifact; CI does not commit generated logs back to the repository.
+
+Both workflows use the shared [`cliff.toml`](../../cliff.toml) and a pinned git-cliff version. Changes are grouped by Conventional Commit type, with scopes, commit links, and breaking-change markers. Non-conventional messages are retained under `Other`; ordinary merge commits and release-version commits are omitted. Generation uses local Git history and release tags reachable from the checked-out commit, without remote API enrichment or external command execution.
+
+For local previews, install the git-cliff version pinned in the workflows and run from a checkout with complete history and tags:
+
+```powershell
+git cliff --config cliff.toml --offline --no-exec --use-branch-tags
+git cliff --config cliff.toml --offline --no-exec --use-branch-tags --unreleased
+```
+
+To preview a release's notes, check out that release tag and run:
+
+```powershell
+git cliff --config cliff.toml --offline --no-exec --use-branch-tags --current --strip header
+```
 
 ## Bridge development
 

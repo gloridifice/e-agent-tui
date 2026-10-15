@@ -112,6 +112,19 @@ jobs:
       GH_REPO: ${{ github.repository }}
       RELEASE_TAG: ${{ github.ref_name }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Generate release notes
+        uses: orhun/git-cliff-action@v4
+        with:
+          version: v2.14.2
+          config: cliff.toml
+          args: --current --strip header --offline --no-exec --use-branch-tags
+        env:
+          OUTPUT: RELEASE_NOTES.md
+          GITHUB_REPO: ${{ github.repository }}
       - uses: actions/download-artifact@v4
         with:
           pattern: release-*
@@ -123,5 +136,5 @@ jobs:
       - name: Upload and publish release
         run: |
           gh release create "$RELEASE_TAG" dist/* \
-            --verify-tag --draft --title "$RELEASE_TAG" --generate-notes
+            --verify-tag --draft --title "$RELEASE_TAG" --notes-file RELEASE_NOTES.md
           gh release edit "$RELEASE_TAG" --draft=false

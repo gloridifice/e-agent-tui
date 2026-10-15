@@ -5,9 +5,42 @@ use e_tui::{
 
 pub fn definitions() -> Vec<TipDefinition> {
     vec![
-        TipDefinition::bilingual("dshe.login-proxy", "空闲后在 `/login` 的 `Proxy` 页面管理自定义模型端点。", "When idle, manage custom model endpoints in `/login`'s `Proxy` page.", &[], vec![R::Command("login".into()), R::Capability("proxy-management".into()), R::Prerequisite(P::AttachedSession)]),
-        TipDefinition::bilingual("dshe.new-mode", "空闲后用 `/new 模式` 按 DSH 预设新建会话，可用模式会出现在补全中。", "When idle, use `/new mode` for a DSH preset; available modes appear in completion.", &[], vec![R::Command("new".into()), R::Prerequisite(P::NewModes)]),
-        TipDefinition::bilingual("dshe.compaction-route", "`/compact set-model 模型` 指定 DSH 手动和自动压缩使用的模型。", "Use `/compact set-model model` to choose the model for DSH manual and automatic compaction.", &[], vec![R::Command("compact".into()), R::Capability("compaction-routing".into()), R::Prerequisite(P::AttachedSession)]),
+        TipDefinition::bilingual(
+            "dshe.login-proxy",
+            "`/login` → `Proxy` 管理自定义模型端点。",
+            "`/login` → `Proxy` to manage custom model endpoints.",
+            &[],
+            vec![
+                R::Command("login".into()),
+                R::Capability("proxy-management".into()),
+                R::Prerequisite(P::AttachedSession),
+            ],
+        ),
+        TipDefinition::bilingual(
+            "dshe.new-mode",
+            "`/new 模式` 按 DSH 预设新建会话。",
+            "`/new mode` to start a session with a DSH preset.",
+            &[],
+            vec![R::Command("new".into()), R::Prerequisite(P::NewModes)],
+        ),
+        TipDefinition::bilingual(
+            "dshe.new-mode-completion",
+            "`/new` 补全候选列出可用模式。",
+            "`/new` completion lists available modes.",
+            &[],
+            vec![R::Command("new".into()), R::Prerequisite(P::NewModes)],
+        ),
+        TipDefinition::bilingual(
+            "dshe.compaction-route",
+            "`/compact set-model 模型` 设置 DSH 手动和自动压缩的模型。",
+            "`/compact set-model model` to set DSH's manual and automatic compaction model.",
+            &[],
+            vec![
+                R::Command("compact".into()),
+                R::Capability("compaction-routing".into()),
+                R::Prerequisite(P::AttachedSession),
+            ],
+        ),
     ]
 }
 

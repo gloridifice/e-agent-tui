@@ -1,3 +1,4 @@
+<!-- doco:lifecycle v=1 created-at=- completed-at=2026-10-15T10:12:34Z archived-at=- -->
 <!-- doco:managed template=v1 -->
 # rotating-tips
 
@@ -10,7 +11,8 @@ to the executable that supports it.
 
 The reviewed visual prototype places Tips on the right side of the composer's
 bottom horizontal rule. It replaces the earlier idea of a separate row above
-the input. The label and content are separated by exactly one ASCII space.
+the input. The approved refinement displays only the localized content, without
+a `Tips` label.
 
 ## Scope and acceptance
 
@@ -19,25 +21,29 @@ with shared definitions initialized once and a public registration interface
 for e-dsh and e-pi to append their own definitions. Both executables must use the
 same styling, eligibility, layout and rotation policy.
 
-The user-reviewed content draft contains 22 shared Chinese candidates, 3 dshe-only
-candidates and 8 pie-only candidates. Two additional prompt-macro candidates
-remain held until that workflow is accepted. The selected delivery includes
-all 33 revised non-held candidates with English equivalents reviewed against
-the current workflows during execution.
+The approved bilingual catalog contains 28 shared candidates, 4 dshe-only
+candidates and 11 pie-only candidates. Long compound hints become independent
+short tips, repeated advice is deduplicated, and unnecessary state/imperative
+lead-ins are removed. Preview, queue cancellation/interruption and session-tree
+hints are excluded at the user's request. Two prompt-macro candidates remain
+held until that workflow is accepted.
 
 Acceptance:
 
 - During live agent work, an eligible tip appears right-aligned inside the
   existing bottom input rule. Idle and blocking user-decision states show no tip.
-- `Tips` is followed by one ASCII space. Ordinary content uses the theme's
-  activity-label tone and keywords/key bindings use its activity-detail tone
-  (Umber and Bark in Ferra). Content supports multiple styled segments.
+- Display only the localized body, without a `Tips` prefix. All content uses
+  the theme's activity-detail color (Bark in Ferra); keywords and key bindings
+  are bold and italic, while ordinary text is unaccented. Content supports
+  multiple styled segments.
 - Tips have the lowest presentation priority. Existing rule labels retain their
   width and position; Tips clip on complete graphemes or disappear when too
   little width remains. Tips never wrap or add composer height.
-- Visible tips rotate periodically. The interval is six visible
-  seconds; hidden time does not consume reading time, and idle has no Tips
-  wakeup. Timing remains deadline-driven shared policy.
+- New live work waits three seconds, shows a tip for fifteen seconds, then
+  hides it for thirty seconds before showing the next candidate. Repeat until
+  task settlement. Unavailable composer views pause the phase, while intentional
+  delay/gap phases retain their deadlines. Idle has no Tips wakeup. Timing
+  remains deadline-driven shared policy.
 - Each executable registers only its own additional definitions. The shared
   renderer neither branches on backend identity nor imports either adapter.
 - Shortcuts use the effective key mapping. Unsupported commands, capabilities,
@@ -59,11 +65,23 @@ New or modified tests require separate user authorization.
 
 The user authorized execution after revising the Chinese catalog and requested
 a Settings toggle. Implementation decisions are recorded in work/implement.md.
-Execution does not authorize completion or archive.
+The user later authorized completion after the remaining live acceptance limits
+were disclosed; archive remains a separate action.
 
 ## Result
 
-Implementation delivered, including the Settings toggle and revised bilingual
-catalog. Scoped checks and isolated visual inspection are recorded in work/tasks.md;
-full live acceptance follow-ups remain open. The change remains active and has not
-been completed or archived.
+Delivered a shared provider-neutral Tips registry, adapter-owned catalog additions,
+and the default-on Settings toggle. The refined 43-entry bilingual catalog omits
+the three excluded hints. Presentation now waits three seconds, displays each
+tip for fifteen seconds with thirty-second gaps, shows no `Tips` prefix, and
+uses Bark text with bold-italic emphasis. Current architecture and contracts
+are synchronized; no README files or tests were changed.
+
+Both adapters compile. Twenty scoped existing tests, workspace formatting,
+mechanical Doco checks, and an isolated production-library terminal inspection
+passed. The inspection covered both catalog compositions, timing, hiding,
+resume after Help, language, and text styling. Live Pi/DSH end-to-end runs and
+specific registration, Unicode, capability, session-replacement, and selection
+scenarios were not performed. The user explicitly accepted these disclosed
+verification limits when authorizing completion; they are not reported as
+passing checks. Archive remains unauthorized.

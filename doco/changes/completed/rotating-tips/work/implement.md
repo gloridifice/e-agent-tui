@@ -8,8 +8,8 @@ Baseline commit: `825b5a9`. Relevant current contracts are
 [runtime and adapters](../../../../specs/runtime-and-adapters.md),
 [interaction and sessions](../../../../specs/interaction-and-sessions.md), and
 [configuration and storage](../../../../specs/configuration-and-storage.md).
-The target contract is [composer-tips](specs/composer-tips.md); localized content
-is maintained in [catalog.zh-CN.md](catalog.zh-CN.md).
+The target contract is [composer-tips](specs/composer-tips.md); content decisions
+and source ownership are recorded in [catalog.zh-CN.md](catalog.zh-CN.md).
 
 Current source entry points:
 
@@ -30,14 +30,16 @@ Current source entry points:
   [e-pi/main.rs](../../../../../crates/e-pi/src/main.rs) construct runtime state
   before sharing it behind a guard. These are the registration entry points.
 
-At execution start, no production Tips module, registry, API or timer exists.
-The working tree contains only the user's catalog edits. The composer currently
-has a shell label but no macro label; held macro Tips remain excluded.
+The original delivery established the production registry, timer and composer
+integration. The approved refinement reuses those boundaries and replaces only
+cadence, prefix presentation and bilingual content. Shell and macro labels keep
+priority; held macro Tips remain excluded.
 
-The reviewed [Python prototype](prototype/tips.py) is mock-only. It preserves the
-approved placement and one-space label separator. It does not implement the
-complete catalog, live availability, native effects or production scheduling.
-Its periodic refresh is not a precedent for a production polling loop.
+The retained [Python prototype](prototype/tips.py) illustrates the original
+placement, not the refined cadence or prefix-free content. It is mock-only and
+does not implement the complete catalog, live availability, native effects or
+production scheduling. Its periodic refresh is not a precedent for a production
+polling loop.
 
 Run the retained source from the repository root:
 
@@ -122,8 +124,9 @@ nonprinting control content with typed owned errors. A rejected batch must not
 partially change the registry or overwrite common definitions.
 
 Store semantic content, not RGB values, terminal escape codes, Ratatui spans,
-callbacks, backend payloads or borrowed backend state. `Text` uses the
-activity-label role; `Keyword` and `KeyBinding` use the activity-detail role.
+callbacks, backend payloads or borrowed backend state. All segments use the
+activity-detail color. `Text` is unaccented; `Keyword` and `KeyBinding` add bold
+and italic modifiers.
 Disabled bindings make the containing candidate ineligible. Bindings refresh
 from the effective mapping after reload; they are not expanded at registration.
 
@@ -168,24 +171,26 @@ Selected implementation rules:
    next eligible ID. Skip held macro candidates until accepted; no eligible
    candidates means no line and no Tips deadline.
 3. Keep registry lifetime at the frontend-instance level, and rotation index,
-   visible-time remainder and deadline as ephemeral presentation state. Session
+   phase, remaining phase duration and deadline as ephemeral presentation state. Session
    replacement retains definitions but resets rotation and session eligibility.
 4. Admit only live agent work with the ordinary composer visible. Hide for idle,
    blocking decisions, replacement Input Pages and full-screen/modal views;
    never infer work from old transcript activity or reveal alone.
-5. Reserve existing bottom-rule labels before allocating Tips width. Keep the
-   label/content separator at one ASCII space. Clip complete graphemes with one
-   trailing ellipsis, or suppress the tip if the remaining width is not useful.
-6. Retain six visible seconds and a 24-cell minimum Tips content budget. The
-   approved `show_tips` preference controls presentation; no interval/width or
-   rotation-state settings are added.
-7. Pause the remaining reading time when hidden, start a fresh interval on a new
-   work period, and advance at most one candidate per due tick. A disappeared
-   prerequisite invalidates its selected candidate without showing stale advice.
+5. Reserve existing bottom-rule labels before allocating Tips width. Display
+   only the body, without a prefix. Clip complete graphemes with one trailing
+   ellipsis, or suppress the tip if the remaining width is not useful.
+6. Retain a 24-cell minimum content budget. Use initial-delay, visible and hidden
+   phases with the durations in the target contract. The approved `show_tips`
+   preference controls presentation; no timing/width or rotation settings are added.
+7. New work begins with the initial delay. The visible phase ends by clearing
+   the line; the following hidden phase ends by selecting the next eligible tip.
+   Pause the remaining phase duration when the composer is unavailable. Advance
+   at most one phase per due tick; never consume missed periods in a catch-up loop.
+   A disappeared prerequisite invalidates its candidate without stale advice.
 8. Schedule through shared monotonic presentation deadlines. Tick outside
-   rendering, mark the composer dirty without rebuilding transcript caches,
-   and remove the Tips deadline when hidden or idle. Both runners continue to
-   use shared policy rather than independent polling tickers.
+   rendering and mark the composer dirty without rebuilding transcript caches.
+   Intentional delays/gaps retain deadlines; unavailable views, disabled Tips and
+   idle remove them. Both runners continue to use shared policy, not polling.
 9. Visual mouse selection retains its immutable committed screen; defer live
    presentation updates until release without altering transcript semantics.
 
@@ -196,16 +201,17 @@ with their current owners and outside frontend guards.
 
 ## 5. Fixed decisions and discretion
 
-Approved by the user: bottom-rule right alignment; no extra row; Umber ordinary
-text and Bark keywords; exactly one space after `Tips`; periodic working-only
-presentation; lowest priority; a public e-tui registration boundary for each
-adapter's private content; and Chinese content review first.
+Approved by the user: bottom-rule right alignment; no extra row; Bark text with
+bold-italic emphasis; prefix-free, phased working-only presentation; lowest
+priority; a public e-tui registration boundary for each adapter's private content;
+and bilingual content review before implementation.
 
-Execution authorized after the user's Chinese catalog revision: deliver its
-22 shared, 3 dshe and 8 pie candidates with English equivalents; exclude both
-held macro candidates. Retain six visible seconds and a 24-cell minimum budget.
-Use owned, atomic registration with semantic segments and typed prerequisites
-plus opaque capabilities as described above.
+The approved refinement replaces the original six-second rotation: initial
+three-second delay, fifteen-second display and repeating thirty-second gaps.
+Deliver 28 shared, 4 dshe and 11 pie candidates after splitting long hints and
+removing Preview, queue cancellation/interruption and session-tree advice.
+Exclude both held macro candidates. Retain the 24-cell minimum budget and owned,
+atomic registration with semantic segments, typed prerequisites and capabilities.
 
 Live work is current session working/running or live compaction, excluding a
 new-session draft. Hide for approvals/questions, Input Pages, Help, MCP, Reading,
@@ -213,8 +219,11 @@ History, Preview-only layout, pane resizing, insufficient composer geometry,
 disabled Settings or no eligible candidates. Held mouse selection suspends live
 updates and reading time while retaining its committed snapshot. Compute the
 bottom-rule width once in shared layout policy outside drawing, and reuse that
-budget in rendering and time accounting. Preserve remaining time while hidden;
-new work and re-enabling after disable start a fresh interval.
+budget in rendering and time accounting. Preserve remaining phase time while
+those views are unavailable; new work and re-enabling after disable restart the
+initial delay. Removing idle qualifiers from copy does not relax native command
+admission. Each split candidate retains only its own binding and availability
+requirements.
 
 The additional requested `show_tips` boolean defaults to true in embedded TOML,
 appears in Settings Display in both languages, persists using existing adapter

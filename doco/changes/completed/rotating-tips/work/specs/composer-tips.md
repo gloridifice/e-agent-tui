@@ -25,11 +25,11 @@ visibility and timing decisions; tasks track delivery and verification.
 
 - Tips MUST render right-aligned inside the ordinary composer's existing bottom
   horizontal rule, without adding rows or changing editable input geometry.
-- The displayed prefix MUST be `Tips` followed by exactly one ASCII U+0020
-  space, then the localized body.
-- Content MUST support multiple styled segments. Ordinary text MUST use the
-  theme's activity-label tone; the label, keywords and effective key bindings
-  MUST use its activity-detail tone (Umber and Bark in Ferra).
+- Only the localized body MUST be displayed, without a `Tips` prefix.
+- Content MUST support multiple styled segments. All tip text MUST use the
+  theme's activity-detail color (Bark in Ferra), not the activity-label color.
+  Ordinary text MUST be unaccented; keywords and effective key bindings MUST be
+  bold and italic.
 - Existing bottom-rule labels MUST receive width before Tips. Tips MUST have
   the lowest presentation priority and MUST NOT obscure or move those labels.
 - Width reduction MUST clip at complete grapheme boundaries with terminal-cell
@@ -41,14 +41,19 @@ visibility and timing decisions; tasks track delivery and verification.
 - A default-on `show_tips` Display setting MUST enable or disable Tips through
   the existing Settings/config workflow in both languages and frontends. Changes
   and reload MUST apply live. Disabling MUST remove presentation and its deadline;
-  re-enabling MUST start a fresh interval. Only this preference is persistent.
+  re-enabling MUST restart the initial delay. Only this preference is persistent.
 - Tips MUST be eligible only during live agent work with an ordinary composer
   visible. Idle, blocking decisions, replacement Input Pages and full-screen or
   modal views MUST hide them.
-- The selected tip MUST change periodically while visible. Hidden time MUST
-  NOT consume its reading interval. Idle MUST remove the Tips-specific deadline.
-- A new working period MUST start a fresh interval. Loss of selected-candidate
-  eligibility MUST NOT leave stale or unsupported advice visible.
+- A new working period MUST wait three seconds, show one tip for fifteen
+  seconds, then hide it for thirty seconds before showing the next eligible
+  candidate. The fifteen-second display and thirty-second gap MUST repeat until
+  task settlement, which MUST hide the tip and clear its deadline.
+- The intentional initial delay and inter-tip gap MUST retain a deadline.
+  Unavailable composer views, insufficient width and empty eligibility MUST pause
+  the current phase and remove its deadline. Only visible time consumes the
+  display phase. Each due tick MUST advance at most one phase without catch-up
+  bursts. Loss of selected-candidate eligibility MUST NOT leave stale advice.
 - Definitions MUST survive session replacement within one frontend instance;
   session-specific eligibility and rotation MUST reset. No rotation state is
   persistent.
@@ -69,9 +74,11 @@ visibility and timing decisions; tasks track delivery and verification.
   exclude the corresponding tip.
 - A private ID namespace or command name alone MUST NOT establish capability.
   Availability MUST come from normalized state supplied by its current owner.
-- The user-reviewed Chinese strings in [the catalog](../catalog.zh-CN.md) define
-  the selected content, with English equivalents. Held macro candidates MUST remain disabled until their
-  advertised workflow is accepted for delivery.
+- The approved [catalog scope](../catalog.zh-CN.md) defines the bilingual content
+  policy and exclusions; exact strings belong to the owning source modules.
+  Compound hints MUST become independent short candidates, with duplicate advice
+  removed. Held macro candidates MUST remain disabled until their advertised
+  workflow is accepted for delivery.
 
 ## Boundaries, errors and compatibility
 
@@ -93,17 +100,18 @@ reported during startup, not deferred into a rendering failure.
 
 ### A1: working, idle and hidden views
 
-With eligible content and ordinary composer work active, show a tip in the
-bottom rule. Settle the task or open a blocking decision, replacement page or
-modal: no tip is visible. Return to visible work: resume eligible presentation
-without charging the hidden period against reading time. Idle has no Tips wakeup.
+Submit a message with an eligible ordinary composer: show no tip for three
+seconds, then show one in the bottom rule. A task settling before that delay
+shows no tip. Settle a visible task or open a blocking decision, replacement page
+or modal: no live tip is visible. Return to visible work: resume the paused phase
+without charging the unavailable period. Idle has no Tips wakeup.
 
 ### A2: lowest-priority width allocation
 
 With a shell label or exact macro label present, reduce composer width. Keep its
 existing position and priority. Clip Tips without splitting a CJK glyph,
 combining sequence or emoji cluster, and then omit Tips when space is too small.
-Input rows and cursor positioning are unchanged. The prefix has one space.
+Input rows and cursor positioning are unchanged. No `Tips` prefix is displayed.
 
 ### A3: registration isolation and rejection
 
@@ -121,10 +129,13 @@ advice. A non-native `mcp` command does not enable native-manager Tips.
 
 ### A5: deadlines and session replacement
 
-Allow the visible interval to expire: advance one candidate. Hide the line:
-stop its deadline without periodic waking. Replace the session: retain registered
-definitions and reset session-dependent eligibility and rotation. No transcript
-nodes, semantic cache rebuilds or persisted records are created by rotation.
+After the initial delay, keep one candidate visible for fifteen seconds, hide
+it for thirty seconds, then show the next eligible candidate for fifteen seconds.
+Repeat the gap/display phases without skipping candidates after a late tick.
+Suspend the composer during each phase: remove its deadline and retain the
+remaining duration. Replace the session: retain registered definitions and reset
+session-dependent eligibility and rotation. No transcript nodes, semantic cache
+rebuilds or persisted records are created by rotation.
 
 ### A6: input, copy and selection
 

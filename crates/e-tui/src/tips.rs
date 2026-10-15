@@ -17,7 +17,9 @@ use crate::{
 
 mod shared;
 
-pub const ROTATION_INTERVAL: Duration = Duration::from_secs(6);
+pub const INITIAL_DELAY: Duration = Duration::from_secs(3);
+pub const DISPLAY_DURATION: Duration = Duration::from_secs(15);
+pub const HIDDEN_DURATION: Duration = Duration::from_secs(30);
 pub const MIN_TIP_COLUMNS: usize = 24;
 
 #[derive(Debug, Clone)]
@@ -268,7 +270,7 @@ impl TipRegistry {
                     .translations
                     .iter()
                     .find(|translation| translation.language == context.language)?;
-                let mut segments = vec![("Tips".to_owned(), true), (" ".to_owned(), false)];
+                let mut segments = Vec::with_capacity(translation.segments.len());
                 for segment in &translation.segments {
                     segments.push(match segment {
                         TipSegment::Text(text) => (text.clone(), false),
@@ -340,10 +342,28 @@ impl TipLine {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TipPhase {
+    InitialDelay,
+    Visible,
+    Hidden,
+}
+
+impl TipPhase {
+    fn duration(self) -> Duration {
+        match self {
+            Self::InitialDelay => INITIAL_DELAY,
+            Self::Visible => DISPLAY_DURATION,
+            Self::Hidden => HIDDEN_DURATION,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct TipRotation {
     selected: Option<usize>,
     working: bool,
+    phase: TipPhase,
     remaining: Duration,
     pub deadline: Option<Instant>,
     advance: bool,
@@ -355,7 +375,8 @@ impl Default for TipRotation {
         Self {
             selected: None,
             working: false,
-            remaining: ROTATION_INTERVAL,
+            phase: TipPhase::InitialDelay,
+            remaining: INITIAL_DELAY,
             deadline: None,
             advance: false,
             line: None,
@@ -388,6 +409,11 @@ impl TipRotation {
             self.line = None;
             return old.is_some();
         }
+        if self.phase != TipPhase::Visible {
+            self.line = None;
+            self.deadline.get_or_insert(now + self.remaining);
+            return old.is_some();
+        }
         let current = candidates
             .iter()
             .position(|(index, _)| Some(*index) == self.selected);
@@ -405,7 +431,7 @@ impl TipRotation {
             current.unwrap_or(0)
         };
         if self.advance || current.is_none() {
-            self.remaining = ROTATION_INTERVAL;
+            self.remaining = DISPLAY_DURATION;
             self.deadline = None;
         }
         self.advance = false;
@@ -418,8 +444,18 @@ impl TipRotation {
     pub fn tick(&mut self, now: Instant) -> bool {
         if self.deadline.is_some_and(|deadline| deadline <= now) {
             self.deadline = None;
-            self.remaining = ROTATION_INTERVAL;
-            self.advance = true;
+            self.phase = match self.phase {
+                TipPhase::InitialDelay => TipPhase::Visible,
+                TipPhase::Visible => TipPhase::Hidden,
+                TipPhase::Hidden => {
+                    self.advance = true;
+                    TipPhase::Visible
+                }
+            };
+            self.remaining = self.phase.duration();
+            if self.phase != TipPhase::Visible {
+                self.line = None;
+            }
             return true;
         }
         false

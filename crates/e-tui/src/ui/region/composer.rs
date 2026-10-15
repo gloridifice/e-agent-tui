@@ -1,6 +1,6 @@
 use ratatui::{
     layout::{Position, Rect},
-    style::Style,
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
     Frame,
@@ -88,14 +88,15 @@ pub(crate) fn render(
         if let Some(tip) =
             tip.filter(|tip| tip.budget == budget && budget >= crate::tips::MIN_TIP_COLUMNS)
         {
+            let style = Style::default().fg(theme.activity.detail.fg);
             let mut spans = vec![Span::raw(" ")];
             spans.extend(tip.segments.iter().map(|(text, keyword)| {
                 Span::styled(
                     text.as_str(),
                     if *keyword {
-                        theme.activity.detail.style()
+                        style.add_modifier(Modifier::BOLD | Modifier::ITALIC)
                     } else {
-                        theme.activity.label.style()
+                        style
                     },
                 )
             }));

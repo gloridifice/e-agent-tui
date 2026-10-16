@@ -1,3 +1,3 @@
 [alias]
-"devpi" = "install --path ./crates/e-pi"
-"devdsh" = "install --path ./crates/e-dsh"
+"devpi" = "install --path ./crates/e-pi --locked"
+"devdsh" = "install --path ./crates/e-dsh --locked"

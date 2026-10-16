@@ -12,6 +12,8 @@ Status: execution in progress. A five-scene recording workflow and playable prev
 
 ### Confirmed scope
 
+The user subsequently requested two recording profiles: `default` (implicit), with two short conversations submitted sequentially and a hard 30-second finished-video cap; and `full`, preserving the existing five-scene workflow below. Slow default runs fail without publishing rather than cutting answers or accelerating footage. The deferred 90-second target applies only to full mode.
+
 - Use `tui-test` and FFmpeg for the recording workflow.
 - Automate a relatively fixed interaction sequence that resembles real use and can generate a video artifact directly.
 - Target a finished video at or below 1 minute 30 seconds after the current pacing review; do not reject a longer pacing preview solely for its duration.

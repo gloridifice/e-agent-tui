@@ -15,16 +15,20 @@ const routeShown = (text, model) => text.split('\n').some(line => line.includes(
 const limits = { calls: 4, generationMs: 180_000, totalMs: 15 * 60_000 };
 const instructionGapMs = 1_000;
 const characterDelayMs = 0;
+const profiles = {
+  default: { maxSeconds: 30, prompts: ['Reply with just: Hello!', 'Reply with just: Goodbye!'] },
+  full: { maxSeconds: null },
+};
 const sample = 'pub fn double(n: i32) -> i32 { n * 2 }\n';
 
 function usage() {
-  return `Usage: node tools/record-demo.mjs --pie <release-pie.exe> --model <provider/model> --output <video.mp4> [--compare-model <provider/model>] [--preflight]\n\nWindows only. Requires pi, tui-test, FFmpeg and FFprobe on PATH. Uses the current user's Pi credentials and frontend config; backs up frontend config and resume state, and restores them unless another writer changes them during recording. Do not use pie/dshe concurrently. No audio or subtitles. A failed run does not publish a video. Preflight makes no model calls.\n`;
+  return `Usage: node tools/record-demo.mjs --pie <release-pie.exe> --model <provider/model> --output <video.mp4> [--profile default|full] [--compare-model <provider/model>] [--preflight]\n\nWindows only. Default profile: two sequential conversations, strict 30-second video cap (slow generations fail without publishing). Full profile: five feature scenes. --compare-model is full-only. Requires pi, tui-test, FFmpeg and FFprobe on PATH. Uses the current user's Pi credentials and frontend config; backs up frontend config and resume state, and restores them unless another writer changes them during recording. Do not use pie/dshe concurrently. No audio or subtitles. A failed run does not publish a video. Preflight makes no model calls.\n`;
 }
 
 function options(argv) {
   if (argv.includes('--help') || argv.includes('-h')) return null;
   const args = {};
-  const allowed = new Set(['--pie', '--model', '--output', '--compare-model']);
+  const allowed = new Set(['--pie', '--model', '--output', '--compare-model', '--profile']);
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
     if (flag === '--preflight') { args.preflight = true; continue; }
@@ -42,7 +46,10 @@ function options(argv) {
     }
   }
   if (path.extname(args['--output']).toLowerCase() !== '.mp4') throw new Error('--output must end in .mp4');
-  return { pie: path.resolve(args['--pie']), model: args['--model'], output: path.resolve(args['--output']), compare: args['--compare-model'], preflight: !!args.preflight };
+  const profile = args['--profile'] || 'default';
+  if (!Object.hasOwn(profiles, profile)) throw new Error('--profile must be default or full');
+  if (profile !== 'full' && args['--compare-model']) throw new Error('--compare-model requires --profile full');
+  return { profile, pie: path.resolve(args['--pie']), model: args['--model'], output: path.resolve(args['--output']), compare: args['--compare-model'], preflight: !!args.preflight };
 }
 
 async function run(file, args, timeout = 30_000, extra = {}) {
@@ -260,7 +267,7 @@ async function duration(file) {
   return seconds;
 }
 
-async function exportVideo(scenes, output, dir) {
+async function exportVideo(scenes, output, dir, profile) {
   await Promise.all(scenes.map(scene => duration(scene.file)));
   // A spinner repaints while the model waits. Preserve every frame until a safe cut can be identified.
   const clips = [];
@@ -275,9 +282,11 @@ async function exportVideo(scenes, output, dir) {
   const staged = path.join(dir, 'finished.mp4');
   await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', list, '-an', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-r', '30', staged], 120_000);
   const finalDuration = await duration(staged);
+  const maxSeconds = profiles[profile].maxSeconds;
+  if (maxSeconds && finalDuration > maxSeconds) throw new Error(`Default recording is ${finalDuration.toFixed(1)}s, exceeding ${maxSeconds}s; no video published. Use a faster model or --profile full.`);
   if (finalDuration > 90) console.warn(`Video is ${finalDuration.toFixed(1)}s; the 90-second target is deferred for this pacing review.`);
   const metadata = path.join(dir, 'finished.json');
-  await writeFile(metadata, JSON.stringify({ duration: finalDuration, instructionGapSeconds: instructionGapMs / 1_000, characterDelayMs, over90Seconds: finalDuration > 90, models: scenes[0].models, editedWaits: edits, timingIsNotLivePerformance: true }, null, 2) + '\n');
+  await writeFile(metadata, JSON.stringify({ profile, maxSeconds, duration: finalDuration, instructionGapSeconds: instructionGapMs / 1_000, characterDelayMs, over90Seconds: finalDuration > 90, models: scenes[0].models, editedWaits: edits, timingIsNotLivePerformance: true }, null, 2) + '\n');
   await mkdir(path.dirname(output), { recursive: true });
   await copyFile(staged, output, constants.COPYFILE_EXCL);
   try {
@@ -300,12 +309,15 @@ async function main() {
   const mainModel = exactModel(catalog, args.model);
   const other = catalog.find(model => model.provider === mainModel.provider && model.id === 'qwen3.8-max' && model.id !== mainModel.id)
     || catalog.find(model => model.reasoning && (model.provider !== mainModel.provider || model.id !== mainModel.id));
-  const compare = args.compare || (other && `${other.provider}/${other.id}`);
-  if (!compare || compare === args.model) throw new Error('Supply --compare-model with a distinct available route');
-  const comparison = exactModel(catalog, compare);
+  const full = args.profile === 'full';
+  const compare = full ? args.compare || (other && `${other.provider}/${other.id}`) : null;
+  if (full && (!compare || compare === args.model)) throw new Error('Supply --compare-model with a distinct available route');
+  const comparison = full ? exactModel(catalog, compare) : null;
   const effort = supportedEfforts(mainModel).includes('medium') ? 'medium' : supportedEfforts(mainModel).find(level => level !== 'off');
-  if (!effort) throw new Error(`Model ${args.model} has no supported reasoning effort to demonstrate`);
-  console.log(`Recording plan: ${args.model} (${mainModel.name}, effort ${effort}); resting comparison: ${compare} (${comparison.name}); max ${limits.calls} model calls, ${limits.generationMs / 1_000}s each.`);
+  if (full && !effort) throw new Error(`Model ${args.model} has no supported reasoning effort to demonstrate`);
+  console.log(full
+    ? `Recording plan (full): ${args.model} (${mainModel.name}, effort ${effort}); resting comparison: ${compare} (${comparison.name}); max ${limits.calls} model calls, ${limits.generationMs / 1_000}s each.`
+    : `Recording plan (default): ${args.model} (${mainModel.name}); two sequential conversations; strict 30-second video cap.`);
   if (args.preflight) return;
   if (await currentHash(args.output)) throw new Error(`Refusing to overwrite ${args.output}`);
 
@@ -336,11 +348,14 @@ async function main() {
     }
     scenes.push({ name, file, models: { main: args.model, compare } });
   };
+  let conversationDeadline = null;
   const modelCall = async (line, markedName = null) => {
     if (++calls > limits.calls) throw new Error('Model call budget exhausted');
     const before = (await sessionMessages(root)).filter(message => message?.role === 'assistant' && message.stopReason && message.stopReason !== 'toolUse').length;
     await terminal.line(line, markedName);
-    return await waitForAnswer(terminal, root, before, limits.generationMs);
+    const remaining = conversationDeadline === null ? limits.generationMs : conversationDeadline - Date.now();
+    if (remaining <= 0) throw new Error('Default recording exceeded its 30-second budget');
+    return await waitForAnswer(terminal, root, before, remaining);
   };
   try {
     await terminal.call('run', '--cols', '120', '--rows', '36', '--cwd', workspace, '--env', `PI_CODING_AGENT_SESSION_DIR=${root}`, '--', args.pie, '--cwd', workspace, '--session', path.join(root, 'demo.jsonl'), '--approve');
@@ -348,6 +363,14 @@ async function main() {
     await terminal.keys('Ctrl+L');
     await terminal.wait(text => /❯\s*\/model\b/.test(text) && /[●○] [^\n│]+│\s*[●○] /.test(text), 'loaded model catalog', 25_000);
     await terminal.closePage();
+    if (!full) {
+      await terminal.line(`/model ${args.model}`);
+      await terminal.wait(text => routeShown(text, mainModel), 'main route');
+      conversationDeadline = Date.now() + profiles.default.maxSeconds * 1_000;
+      await record('conversation', async () => {
+        for (const prompt of profiles.default.prompts) await modelCall(prompt);
+      });
+    } else {
     await terminal.line(`/model ${compare}`);
     await terminal.wait(text => routeShown(text, comparison), 'comparison route');
 
@@ -427,7 +450,8 @@ async function main() {
       await sleep(2_000);
       await terminal.keys('Escape');
     });
-    const result = await exportVideo(scenes, args.output, dir);
+    }
+    const result = await exportVideo(scenes, args.output, dir, args.profile);
     finished = true;
     console.log(`Created ${args.output} (${result.duration.toFixed(1)}s). Edited waits: ${result.edits.length}; see ${args.output}.json. Inspect each scene before publishing.`);
   } finally {

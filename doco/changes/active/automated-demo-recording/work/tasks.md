@@ -29,6 +29,10 @@ A Windows-first five-scene recording workflow and paced preview have been exerci
   - Blocked: the user explicitly deferred strict 90-second enforcement for this pacing pass.
   - Acceptance: Agree on verified wait-only cutting or another policy that preserves required interactions, then demonstrate a repeatable compliant export under slow generation. Do not complete or archive until this target is resolved or separately revised by the user.
 
+- [x] 5.1 Add default and full recording profiles
+  - Acceptance: Default records two sequential short conversations and publishes only at or below 30 seconds; full retains the five-scene workflow. Default has no comparison-route or reasoning-support requirement. Remove generated previews as requested.
+  - Verification: `node --check`, both profile preflights, and `git diff --check` passed. A live default run produced a 17.5-second MP4 with no timing edits; its video and sidecar were removed after validation along with the previous preview and contact sheet. Full mode was preflighted but not re-recorded after this change. No tests were added or modified.
+
 ## Verification
 
 - Build: `cargo build --release -p e-pi --bin pie` succeeded. Debug `pie` had a separate `UsageCost { usd_nanos: 0 }` projection assertion; this workflow uses release instead. An earlier Git Bash probe unintentionally submitted a converted slash command as one model prompt; the resulting temporary data was cleaned and the Node driver avoids shell argument conversion.

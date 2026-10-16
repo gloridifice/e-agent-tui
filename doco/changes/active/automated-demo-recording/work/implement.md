@@ -28,6 +28,8 @@ The native catalog query `pi --list-models deepseek` returned only `codemaker/de
 
 ## 2. Overall approach
 
+Profile extension: `--profile default|full` defaults to a two-turn conversation. Default mode selects the requested model before recording, submits two short fixed prompts sequentially after native settlement, and skips comparison-route, reasoning-effort, and feature-scene requirements. A shared 30-second recording budget bounds generation; the exporter additionally rejects any finished video over 30 seconds before publishing. Full mode retains the existing behavior below. The sidecar identifies the profile and its hard duration cap (null for full). No timing compression or automatic retries are introduced.
+
 The driver runs outside the frontend: it starts a real release `pie` in `tui-test`, records five chapters (working/tool Preview, Reading, saved effort, model mark and temporary route, fork/resume), and uses FFmpeg to concatenate them without cutting or speeding up content. It types commands and prompts character by character with no added inter-character delay, holds the completed input for one second before Enter, and spaces menu/navigation keys by one second. No renderer, adapter, or provider protocol is changed. Live generation is used; replay is not part of this version.
 
 ## 3. APIs and data model

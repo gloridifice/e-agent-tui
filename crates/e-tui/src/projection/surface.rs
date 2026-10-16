@@ -21,6 +21,9 @@ impl EventProjector {
             return vec![ProjectionEffect::Ignore];
         }
 
+        if matches!(event.fact, TimelineFact::UsageCost { .. }) {
+            return vec![ProjectionEffect::Ignore];
+        }
         if let TimelineFact::SessionTitle { title } = &event.fact {
             return vec![ProjectionEffect::PageState(PageStateEffect::Title(
                 title.clone(),

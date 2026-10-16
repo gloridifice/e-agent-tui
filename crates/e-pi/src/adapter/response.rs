@@ -35,12 +35,50 @@ fn settlement_event(
 }
 
 pub(super) fn dispatch(adapter: &mut PiAdapter, mut record: RpcRecord) -> AdapterOutput {
-    if adapter
-        .pending_interrupt
-        .as_deref()
-        .is_some_and(|id| record.string("id") == Some(id))
-    {
+    let interrupt_response = record.string("id").is_some_and(|id| {
+        id.starts_with("pie-interrupt-abort-") || id.starts_with("pie-interrupt-state-")
+    });
+    if interrupt_response {
+        if record.string("id") != adapter.pending_interrupt.as_deref() {
+            return AdapterOutput::default();
+        }
         adapter.pending_interrupt = None;
+        let current = adapter
+            .interrupt_context
+            .take()
+            .is_some_and(|(session, generation)| {
+                session == adapter.session_id && generation == adapter.run_generation
+            });
+        if !current {
+            let mut output = AdapterOutput::default();
+            drain_deferred(adapter, &mut output);
+            return output;
+        }
+        if record.bool("success") == Some(true) {
+            if record.string("command") == Some("abort") {
+                let id = adapter.request_id("interrupt-state");
+                adapter.pending_interrupt = Some(id.clone());
+                adapter.interrupt_context =
+                    Some((adapter.session_id.clone(), adapter.run_generation));
+                return AdapterOutput::command(RpcCommand::GetState { id: Some(id) });
+            }
+            let data = record.field("data");
+            if data
+                .and_then(|data| data.get("sessionId"))
+                .and_then(Value::as_str)
+                != Some(adapter.session_id.as_str())
+                || data
+                    .and_then(|data| data.get("isStreaming"))
+                    .and_then(Value::as_bool)
+                    .is_none()
+            {
+                let mut output = adapter.protocol_error(
+                    "Interrupt state could not be confirmed for the current session".into(),
+                );
+                drain_deferred(adapter, &mut output);
+                return output;
+            }
+        }
     }
     if let Some(output) = super::retry::response(adapter, &record) {
         return output;

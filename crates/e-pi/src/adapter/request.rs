@@ -211,8 +211,9 @@ fn route_request(
             }
             super::compaction::interrupt(adapter);
             adapter.pending_skill_prompt = None;
-            let id = adapter.request_id("abort");
+            let id = adapter.request_id("interrupt-abort");
             adapter.pending_interrupt = Some(id.clone());
+            adapter.interrupt_context = Some((adapter.session_id.clone(), adapter.run_generation));
             AdapterOutput::command(RpcCommand::Abort { id: Some(id) })
         }
         AgentRequest::Attach { session_id } => {

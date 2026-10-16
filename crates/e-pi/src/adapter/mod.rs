@@ -104,6 +104,7 @@ pub struct PiAdapter {
     next_id: u64,
     next_sequence: u64,
     current_turn: u64,
+    run_generation: u64,
     is_streaming: bool,
     retry: retry::RetryState,
     session_id: String,
@@ -119,6 +120,7 @@ pub struct PiAdapter {
     pending_command_states: HashMap<String, PendingCommandState>,
     pending_prompt_state: Option<(String, u64, String)>,
     pending_interrupt: Option<String>,
+    interrupt_context: Option<(String, u64)>,
     pending_prompt_admissions: HashMap<String, PendingPromptAdmission>,
     pending_skill_prompt: Option<PendingSkillPrompt>,
     compaction_model: Option<Value>,
@@ -181,6 +183,7 @@ impl PiAdapter {
             next_id: 1,
             next_sequence: 1,
             current_turn: 0,
+            run_generation: 0,
             is_streaming: false,
             retry: retry::RetryState::default(),
             session_id: "pi-starting".into(),
@@ -191,6 +194,7 @@ impl PiAdapter {
             pending_command_states: HashMap::new(),
             pending_prompt_state: None,
             pending_interrupt: None,
+            interrupt_context: None,
             pending_prompt_admissions: HashMap::new(),
             pending_skill_prompt: None,
             compaction_model: None,
@@ -343,6 +347,7 @@ impl PiAdapter {
             "response" => response::dispatch(self, record),
             "extension_ui_request" => extension::request(self, record),
             "agent_start" => {
+                self.run_generation = self.run_generation.wrapping_add(1);
                 self.pending_tool_result_messages.clear();
                 self.is_streaming = true;
                 let mut output = retry::started(self);

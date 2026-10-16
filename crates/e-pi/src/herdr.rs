@@ -138,15 +138,32 @@ impl Endpoint {
             .ok()
             .and_then(|elapsed| u64::try_from(elapsed.as_micros()).ok())
             .unwrap_or_default();
+        let mut acknowledged = None;
+        let mut retry_delay = Duration::from_millis(250);
         loop {
             if updates.has_changed().is_err() {
                 break;
             }
             let status = *updates.borrow_and_update();
-            for _ in 0..2 {
+            if acknowledged != Some(status) {
                 seq = seq.saturating_add(1);
-                if self.send(Some(status), seq).await || updates.has_changed().unwrap_or(true) {
-                    break;
+                if self.send(Some(status), seq).await {
+                    acknowledged = Some(status);
+                    retry_delay = Duration::from_millis(250);
+                } else {
+                    acknowledged = None;
+                    tokio::select! {
+                        changed = updates.changed() => {
+                            if changed.is_err() {
+                                break;
+                            }
+                            retry_delay = Duration::from_millis(250);
+                        }
+                        _ = tokio::time::sleep(retry_delay) => {
+                            retry_delay = (retry_delay * 2).min(Duration::from_secs(8));
+                        }
+                    }
+                    continue;
                 }
             }
             if updates.changed().await.is_err() {

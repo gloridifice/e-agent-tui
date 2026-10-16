@@ -71,7 +71,25 @@ pub fn render(
             let layout = if let Some(layout) = preview.cached_layout(&layout_key) {
                 layout
             } else {
-                let layout = content_layout(content, theme, inner_width, config.language);
+                let source = match content {
+                    PreviewContent::Command(source) => Some(source.as_str()),
+                    PreviewContent::Tool(ToolPreview {
+                        primary: ToolPreviewPrimary::Command { command, .. },
+                        ..
+                    }) => Some(command.as_str()),
+                    _ => None,
+                };
+                let script = source.and_then(|source| {
+                    preview
+                        .command_script
+                        .get(source)
+                        .map(|script| (source, script))
+                });
+                let layout = if let Some((source, script)) = script {
+                    script_layout(content, source, script, theme, inner_width, config.language)
+                } else {
+                    content_layout(content, theme, inner_width, config.language)
+                };
                 preview.store_preview_layout(layout_key, layout.clone());
                 layout
             };
@@ -217,25 +235,7 @@ fn content_layout(
 ) -> PreviewLayout {
     if let PreviewContent::Tool(tool) = content {
         let (information, secondary) = tool_sections(tool, theme, language);
-        let mut lines = information
-            .into_iter()
-            .flat_map(|line| wrap_line(line, width))
-            .collect::<Vec<_>>();
-        if let Some(secondary) = secondary {
-            lines.push(Line::raw(""));
-            let pinned_rows = lines.len();
-            lines.extend(secondary);
-            return PreviewLayout {
-                lines,
-                pinned_rows,
-                nowrap_from: Some(pinned_rows),
-            };
-        }
-        return PreviewLayout {
-            lines,
-            pinned_rows: 0,
-            nowrap_from: None,
-        };
+        return sections_layout(information, secondary, width);
     }
 
     PreviewLayout {
@@ -246,6 +246,77 @@ fn content_layout(
         pinned_rows: 0,
         nowrap_from: None,
     }
+}
+
+fn sections_layout(
+    information: Vec<Line<'static>>,
+    secondary: Option<Vec<Line<'static>>>,
+    width: usize,
+) -> PreviewLayout {
+    let mut lines = information
+        .into_iter()
+        .flat_map(|line| wrap_line(line, width))
+        .collect::<Vec<_>>();
+    if let Some(secondary) = secondary {
+        lines.push(Line::raw(""));
+        let pinned_rows = lines.len();
+        lines.extend(secondary);
+        PreviewLayout {
+            lines,
+            pinned_rows,
+            nowrap_from: Some(pinned_rows),
+        }
+    } else {
+        PreviewLayout {
+            lines,
+            pinned_rows: 0,
+            nowrap_from: None,
+        }
+    }
+}
+
+fn script_layout(
+    content: &PreviewContent,
+    source: &str,
+    script: &crate::command_script::Script,
+    theme: &Theme,
+    width: usize,
+    language: Language,
+) -> PreviewLayout {
+    let mut lines = command_lines(&source[..script.body.start], theme);
+    lines.pop(); // The header's final newline is the start of the script body.
+    let body = script
+        .formatted
+        .as_deref()
+        .unwrap_or(&source[script.body.clone()]);
+    lines.extend(
+        body.lines()
+            .map(|line| Line::styled(line.to_owned(), theme.surface.muted_text.style())),
+    );
+    if script.body.end < source.len() || body.is_empty() || body.ends_with('\n') {
+        lines.extend(source[script.body.end..].split('\n').map(|line| {
+            Line::styled(
+                line.strip_suffix('\r').unwrap_or(line).to_owned(),
+                theme.surface.muted_text.style(),
+            )
+        }));
+    }
+    let secondary = if let PreviewContent::Tool(tool) = content {
+        lines.insert(
+            0,
+            Line::styled(tool.name.clone(), theme.activity.label.style()),
+        );
+        if let ToolPreviewPrimary::Command { metrics, .. } = &tool.primary {
+            lines.push(Line::styled(
+                metrics_text(metrics, language),
+                theme.activity.detail.style(),
+            ));
+        }
+        tool_output(tool, theme)
+    } else {
+        None
+    };
+    sections_layout(lines, secondary, width)
 }
 
 fn content_lines(
@@ -419,14 +490,17 @@ fn tool_sections(
             }
         }
     }
-    let secondary = preview.secondary.as_ref().map(|secondary| match secondary {
+    (information, tool_output(preview, theme))
+}
+
+fn tool_output(preview: &ToolPreview, theme: &Theme) -> Option<Vec<Line<'static>>> {
+    preview.secondary.as_ref().map(|secondary| match secondary {
         ToolPreviewSecondary::Terminal { output, .. } => ansi::terminal_lines(
             output,
             theme.surface.muted_text.style(),
             theme.activity.label.style(),
         ),
-    });
-    (information, secondary)
+    })
 }
 
 fn clip_line(line: Line<'static>, width: usize) -> Line<'static> {

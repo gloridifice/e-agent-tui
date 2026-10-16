@@ -15,6 +15,7 @@ pub mod cache;
 pub mod catalog;
 mod color;
 pub mod command_catalog;
+mod command_script;
 pub mod config;
 pub mod copy;
 pub mod display;

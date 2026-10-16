@@ -45,8 +45,8 @@
 ## Herdr status reporting
 
 - `e-pi` owns optional pane-local Herdr status reporting. It MUST remain disabled outside a Herdr-managed environment and MUST NOT introduce Herdr protocol or process effects into `e-tui`.
-- Reports MUST distinguish active work, readiness, and pending user decisions using runtime and interaction state. Pi's settled-run lifecycle determines completion; individual turn/tool completion is insufficient. Herdr owns the distinction between seen idle results and unseen done results.
-- Reporting MUST be asynchronous, bounded, best-effort, and independent of conversation success. Repeated states MUST be deduplicated without idle polling. Shutdown and returned runtime errors MUST attempt to release the reporting source after outstanding reports. Reports MUST NOT contain conversation text or authentication secrets, links, or codes.
+- Reports MUST distinguish active work, readiness, and pending user decisions using runtime and interaction state. Pi's settled-run lifecycle determines normal completion; individual turn/tool completion is insufficient. After a successful native abort acknowledgment, the adapter MUST reconcile through an owned state read before releasing deferred requests. That read MUST NOT apply across a session change or a newer native run. Herdr owns the distinction between seen idle results and unseen done results.
+- Reporting MUST be asynchronous, bounded, best-effort, and independent of conversation success. Deduplication MUST track successful delivery, not only requested states. Failed delivery MUST retry with capped backoff using only the latest requested state; successful synchronization MUST stop retry wakeups without idle polling. Shutdown and returned runtime errors MUST stop retries and attempt to release the reporting source after outstanding reports. Reports MUST NOT contain conversation text or authentication secrets, links, or codes.
 - This integration reports status only; it MUST NOT claim native session-restore authority or modify the official Pi integration.
 
 ## Scheduling and transport bounds

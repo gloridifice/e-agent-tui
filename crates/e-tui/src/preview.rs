@@ -404,6 +404,7 @@ pub struct PreviewPaneState {
     pub reveal_intent: PreviewRevealIntent,
     seen_targets: HashSet<String>,
     layout: PreviewLayoutCache,
+    pub(crate) command_script: crate::command_script::ScriptCache,
     next_request_id: u64,
     work: PreviewWorkStats,
 }
@@ -468,6 +469,7 @@ impl PreviewPaneState {
         });
         let reveal_mode_changed = self.reveal_intent != reveal_intent;
         if identity_changed {
+            self.command_script = crate::command_script::ScriptCache::default();
             self.scroll = 0;
             self.manual_scroll = false;
             self.viewport_max_scroll = 0;
@@ -523,6 +525,7 @@ impl PreviewPaneState {
     pub fn clear(&mut self) {
         self.select_with_intent(None, PreviewRevealIntent::Page);
         self.cache = PreviewCache::default();
+        self.command_script = crate::command_script::ScriptCache::default();
         self.invalidate_layout();
         self.seen_targets.clear();
     }

@@ -291,7 +291,10 @@ impl RuntimeState {
     }
 
     pub fn is_agent_idle(&self) -> bool {
-        self.session.status == AgentStatus::Idle && !self.session.working && !self.is_compacting()
+        self.session.status == AgentStatus::Idle
+            && !self.session.working
+            && !self.session.interrupt_pending
+            && !self.is_compacting()
     }
 
     pub fn is_fully_idle(&self) -> bool {
@@ -327,7 +330,10 @@ impl RuntimeState {
     /// prompts; the latter are eligible only after all work has settled.
     pub fn take_next_queued(&mut self) -> Option<crate::interaction::PendingPrompt> {
         let active_turn = self.has_active_turn();
-        if self.interaction.queue.is_empty() || (!active_turn && !self.is_agent_idle()) {
+        if self.session.interrupt_pending
+            || self.interaction.queue.is_empty()
+            || (!active_turn && !self.is_agent_idle())
+        {
             return None;
         }
         let asap_only = !self.is_fully_idle();
@@ -488,6 +494,7 @@ impl RuntimeState {
         self.session.history_loading = false;
         self.session.history_exhausted = false;
         self.session.working = false;
+        self.session.interrupt_pending = false;
         self.session.active_commands = 0;
         self.session.active_compaction = None;
         self.session.activity_epoch = None;

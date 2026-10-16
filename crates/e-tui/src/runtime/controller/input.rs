@@ -331,6 +331,7 @@ pub(super) fn apply_input_action(
             queue.clear();
             let record_id = {
                 let mut app = state.lock().unwrap();
+                app.session.interrupt_pending = true;
                 app.pending_submissions.clear();
                 app.session
                     .macro_execution

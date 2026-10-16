@@ -276,6 +276,9 @@ pub(super) fn apply_session(
                 }
                 app.session.session_title = attached.title;
                 app.session.session_cwd = attached.workspace;
+                if attached.status == crate::agent::AgentStatus::Idle {
+                    app.session.interrupt_pending = false;
+                }
                 app.session.status = normalized_session_status(&attached.status);
                 app.session.working = app.session.status == crate::SessionStatus::Running;
                 app.session.provider = attached.provider;
@@ -314,6 +317,9 @@ pub(super) fn apply_session(
         }
         SessionEvent::Status(status) => {
             let mut app = state.lock().unwrap();
+            if status == crate::agent::AgentStatus::Idle {
+                app.session.interrupt_pending = false;
+            }
             app.session.status = normalized_session_status(&status);
             let running = app.session.status == crate::SessionStatus::Running;
             let macro_active = app

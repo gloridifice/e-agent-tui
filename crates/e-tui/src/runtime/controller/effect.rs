@@ -248,6 +248,9 @@ pub(super) fn apply_effect_result(
 
 pub(super) fn dispatch_next_queued(state: &Mutex<RuntimeState>) -> Vec<UiAction> {
     let mut state = state.lock().unwrap();
+    if state.session.interrupt_pending {
+        return Vec::new();
+    }
     if let Some(effects) = super::record::dispatch(&mut state) {
         return effects;
     }

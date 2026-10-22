@@ -349,6 +349,7 @@ pub(super) fn response(adapter: &mut PiAdapter, record: &RpcRecord) -> Option<Ad
             pending.editor_text = data.get("text").and_then(Value::as_str).map(str::to_owned);
             adapter.current_turn = 0;
             adapter.pending_tool_result_messages.clear();
+            adapter.preparing_tools.clear();
             adapter.extension_ui.clear();
             adapter.session_name = None;
             adapter.derived_title = None;

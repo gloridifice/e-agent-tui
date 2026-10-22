@@ -100,6 +100,34 @@ impl ToolProjectionState {
         merge_files: bool,
         now_ms: u64,
     ) -> Option<ToolMutation> {
+        if let TimelineFact::ToolPreparation {
+            id,
+            name,
+            received_chars,
+            state,
+        } = &event.fact
+        {
+            self.close_group();
+            let row_id = DisplayId::correlated("tool-call", id);
+            let call = self
+                .calls
+                .entry(id.clone())
+                .or_insert_with(|| ToolCallState {
+                    row_id: row_id.clone(),
+                    start_ms: now_ms,
+                    hide_metrics: true,
+                    kind: ActivityKind::Tool,
+                });
+            let mut row = ActivityRow::tool(row_id, name.clone());
+            row.state = display_activity_state(*state);
+            row.summary = match state {
+                AgentActivityState::Failure => "argument generation failed".into(),
+                AgentActivityState::Cancelled => "argument generation cancelled".into(),
+                _ => format!("generating arguments · {received_chars} chars"),
+            };
+            row.start_ms = row.state.is_active().then_some(call.start_ms);
+            return Some(ToolMutation::Upsert(row));
+        }
         let TimelineFact::ToolCall(activity) = &event.fact else {
             return None;
         };
@@ -123,7 +151,13 @@ impl ToolProjectionState {
             let group_id = if let Some(id) = self.open_group.clone() {
                 id
             } else {
-                let id = DisplayId::correlated("file-group", &self.next_group.to_string());
+                let id = self
+                    .calls
+                    .get(call_id)
+                    .map(|call| call.row_id.clone())
+                    .unwrap_or_else(|| {
+                        DisplayId::correlated("file-group", &self.next_group.to_string())
+                    });
                 self.next_group = self.next_group.wrapping_add(1);
                 self.groups.insert(
                     id.clone(),

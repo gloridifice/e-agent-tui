@@ -19,6 +19,97 @@ use super::{
 
 const GENERIC_JSON_CHARS: usize = 2_000;
 
+pub(super) struct PreparingTool {
+    id: String,
+    name: String,
+    received_chars: u64,
+    last_update: std::time::Instant,
+}
+
+fn preparation(tool: &PreparingTool, state: ActivityState) -> AdapterOutput {
+    AdapterOutput::event(e_tui::AgentEvent::Timeline(
+        e_tui::agent::TimelineEvent::Append(e_tui::agent::timeline::TimelineRecord {
+            sequence: None,
+            time_ms: None,
+            surface: None,
+            source_sequences: Vec::new(),
+            fact: TimelineFact::ToolPreparation {
+                id: tool.id.clone(),
+                name: tool.name.clone(),
+                received_chars: tool.received_chars,
+                state,
+            },
+        }),
+    ))
+}
+
+pub(super) fn finish_preparations(adapter: &mut PiAdapter, state: ActivityState) -> AdapterOutput {
+    let mut output = AdapterOutput::default();
+    for (_, tool) in adapter.preparing_tools.drain() {
+        output.merge(preparation(&tool, state));
+    }
+    output
+}
+
+fn tool_preparation(adapter: &mut PiAdapter, delta: &Value, kind: &str) -> AdapterOutput {
+    let Some(index) = delta.get("contentIndex").and_then(Value::as_u64) else {
+        return AdapterOutput::default();
+    };
+    let now = std::time::Instant::now();
+    if kind == "toolcall_start" {
+        let partial = delta
+            .get("partial")
+            .and_then(|partial| partial.get("content"))
+            .and_then(Value::as_array)
+            .and_then(|content| {
+                usize::try_from(index)
+                    .ok()
+                    .and_then(|index| content.get(index))
+            });
+        let id = delta
+            .get("id")
+            .or_else(|| partial.and_then(|call| call.get("id")))
+            .and_then(Value::as_str);
+        let name = delta
+            .get("toolName")
+            .or_else(|| partial.and_then(|call| call.get("name")))
+            .and_then(Value::as_str);
+        let (Some(id), Some(name)) = (id, name) else {
+            return AdapterOutput::default();
+        };
+        if adapter.preparing_tools.len() >= 128 {
+            return AdapterOutput::default();
+        }
+        let tool = PreparingTool {
+            id: id.into(),
+            name: name.into(),
+            received_chars: 0,
+            last_update: now,
+        };
+        let output = preparation(&tool, ActivityState::Running);
+        adapter.preparing_tools.insert(index, tool);
+        return output;
+    }
+    let Some(tool) = adapter.preparing_tools.get_mut(&index) else {
+        return AdapterOutput::default();
+    };
+    if kind == "toolcall_delta" {
+        tool.received_chars = tool.received_chars.saturating_add(
+            delta
+                .get("delta")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .chars()
+                .count() as u64,
+        );
+        if now.duration_since(tool.last_update) < std::time::Duration::from_millis(100) {
+            return AdapterOutput::default();
+        }
+    }
+    tool.last_update = now;
+    preparation(tool, ActivityState::Running)
+}
+
 pub(super) fn tool_result_fact(message: &Value) -> TimelineFact {
     let is_error = message
         .get("isError")
@@ -246,6 +337,9 @@ pub(super) fn message_update(adapter: &mut PiAdapter, record: &RpcRecord) -> Ada
         return AdapterOutput::default();
     };
     let kind = delta.get("type").and_then(Value::as_str);
+    if let Some(kind @ ("toolcall_start" | "toolcall_delta" | "toolcall_end")) = kind {
+        return tool_preparation(adapter, delta, kind);
+    }
     let (text, reasoning) = match kind {
         Some("text_delta") => (delta.get("delta").and_then(Value::as_str).unwrap_or(""), ""),
         Some("thinking_delta") => ("", delta.get("delta").and_then(Value::as_str).unwrap_or("")),
@@ -262,6 +356,7 @@ pub(super) fn message_update(adapter: &mut PiAdapter, record: &RpcRecord) -> Ada
 
 pub(super) fn tool_start(adapter: &mut PiAdapter, record: &RpcRecord) -> AdapterOutput {
     let id = record.string("toolCallId").unwrap_or("pi-tool");
+    adapter.preparing_tools.retain(|_, tool| tool.id != id);
     let name = record.string("toolName").unwrap_or("tool");
     let args = record.field("args").cloned().unwrap_or(Value::Null);
     adapter.timeline(TimelineFact::ToolCall(tool_activity(id, name, args)))

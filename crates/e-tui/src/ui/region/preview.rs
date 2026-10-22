@@ -284,7 +284,9 @@ fn script_layout(
     language: Language,
 ) -> PreviewLayout {
     let mut lines = command_lines(&source[..script.body.start], theme);
-    lines.pop(); // The header's final newline is the start of the script body.
+    if !script.inline {
+        lines.pop(); // The header's final newline is the start of the script body.
+    }
     let body = script
         .formatted
         .as_deref()
@@ -293,7 +295,12 @@ fn script_layout(
         body.lines()
             .map(|line| Line::styled(line.to_owned(), theme.surface.muted_text.style())),
     );
-    if script.body.end < source.len() || body.is_empty() || body.ends_with('\n') {
+    if script.inline {
+        let suffix = &source[script.body.end..];
+        if !suffix.trim().is_empty() {
+            lines.extend(command_lines(suffix, theme));
+        }
+    } else if script.body.end < source.len() || body.is_empty() || body.ends_with('\n') {
         lines.extend(source[script.body.end..].split('\n').map(|line| {
             Line::styled(
                 line.strip_suffix('\r').unwrap_or(line).to_owned(),

@@ -1,4 +1,4 @@
-//! Bounded, display-only preparation of direct Python/Node stdin scripts.
+//! Bounded, display-only preparation of direct Python/Node scripts.
 
 use std::{ops::Range, path::Path, sync::OnceLock};
 
@@ -38,6 +38,7 @@ impl ScriptCache {
 pub(crate) struct Script {
     pub body: Range<usize>,
     pub formatted: Option<String>,
+    pub inline: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -79,13 +80,17 @@ impl Header<'_> {
     }
 
     fn word(&mut self) -> Option<Word> {
+        self.read_word(false)
+    }
+
+    fn read_word(&mut self, multiline: bool) -> Option<Word> {
         let start = self.rest.len();
         let mut value = String::new();
         let mut quoted = false;
         let mut expands = false;
         let mut quote = None;
         while let Some(ch) = self.rest.chars().next() {
-            if ch == '\n' || ch == '\r' {
+            if matches!(ch, '\n' | '\r') && !(multiline && quote.is_some()) {
                 break;
             }
             if quote.is_none() && (ch.is_whitespace() || "<>;&|()".contains(ch)) {
@@ -129,6 +134,84 @@ impl Header<'_> {
 }
 
 fn prepare(source: &str) -> Option<Script> {
+    inline_script(source).or_else(|| stdin_script(source))
+}
+
+fn inline_script(source: &str) -> Option<Script> {
+    let mut header = Header { rest: source };
+    header.skip_space();
+    let executable = header.word()?;
+    if executable.expands
+        || !matches!(
+            stdin_language(&[executable.value.clone()]),
+            Some(Language::JavaScript)
+        )
+    {
+        return None;
+    }
+    let mut words = vec![executable.value];
+    loop {
+        header.skip_space();
+        let mut start = source.len() - header.rest.len();
+        if start > MAX_HEADER_BYTES {
+            return None;
+        }
+        let attached = header.rest.starts_with("--eval=");
+        if attached {
+            header.rest = &header.rest[7..];
+            start += 7;
+        }
+        let word = header.read_word(true)?;
+        if word.expands {
+            return None;
+        }
+        if attached || matches!(word.value.as_str(), "-e" | "--eval") {
+            if !matches!(stdin_language(&words), Some(Language::JavaScript)) {
+                return None;
+            }
+            let code = if attached {
+                word
+            } else {
+                header.skip_space();
+                start = source.len() - header.rest.len();
+                header.read_word(true)?
+            };
+            if !code.quoted || code.expands || start > MAX_HEADER_BYTES {
+                return None;
+            }
+            let end = source.len() - header.rest.len();
+            while !header.rest.trim().is_empty() {
+                header.skip_space();
+                if header.word()?.expands {
+                    return None;
+                }
+            }
+            return Some(Script {
+                body: start..end,
+                formatted: Some(format(&code.value, Language::JavaScript)?),
+                inline: true,
+            });
+        }
+        if matches!(word.value.as_str(), "-" | "--" | "-c" | "--check") {
+            return None;
+        }
+        let takes_value = matches!(
+            word.value.as_str(),
+            "-r" | "--require" | "--import" | "--input-type"
+        );
+        words.push(word.value);
+        if takes_value {
+            header.skip_space();
+            let value = header.word()?;
+            if value.expands {
+                return None;
+            }
+            words.push(value.value);
+        }
+    }
+}
+
+fn stdin_script(source: &str) -> Option<Script> {
     let mut header = Header { rest: source };
     let mut words = Vec::new();
     let mut heredoc = None;
@@ -217,6 +300,7 @@ fn prepare(source: &str) -> Option<Script> {
     Some(Script {
         body: start..end,
         formatted,
+        inline: false,
     })
 }
 

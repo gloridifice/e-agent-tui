@@ -574,6 +574,7 @@ fn dispatch_response(adapter: &mut PiAdapter, record: RpcRecord) -> AdapterOutpu
             }
             adapter.current_turn = 0;
             adapter.pending_tool_result_messages.clear();
+            adapter.preparing_tools.clear();
             // The fresh session starts unnamed; the follow-up refresh
             // re-derives every session-scoped value.
             adapter.session_name = None;
@@ -601,6 +602,7 @@ fn dispatch_response(adapter: &mut PiAdapter, record: RpcRecord) -> AdapterOutpu
         "switch_session" => {
             adapter.current_turn = 0;
             adapter.pending_tool_result_messages.clear();
+            adapter.preparing_tools.clear();
             adapter.session_name = None;
             adapter.derived_title = None;
             adapter.emitted_title = None;

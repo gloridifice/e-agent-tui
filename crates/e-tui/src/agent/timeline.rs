@@ -79,6 +79,12 @@ pub enum TimelineFact {
     UsageCost {
         usd_nanos: u64,
     },
+    ToolPreparation {
+        id: String,
+        name: String,
+        received_chars: u64,
+        state: super::tool::ActivityState,
+    },
     ToolCall(ToolActivity),
     ToolResult {
         activity_id: String,

@@ -694,7 +694,7 @@ impl RuntimeState {
     pub(super) fn project_tool_family(&mut self, event: &TimelineRecord) -> Option<ToolMutation> {
         let now_ms = host_event_time(event);
         match &event.fact {
-            TimelineFact::ToolCall(_) => {
+            TimelineFact::ToolPreparation { .. } | TimelineFact::ToolCall(_) => {
                 let session_cwd = self.session.session_cwd.clone();
                 let read_merge = self.config.read_merge;
                 self.projector.tool_family.project_call(
@@ -1003,7 +1003,15 @@ impl RuntimeState {
             }
         };
         match &event.fact {
-            TimelineFact::ToolCall(_) => {
+            TimelineFact::ToolPreparation { .. } => self.stop_thinking(),
+            TimelineFact::ToolCall(activity) => {
+                let preparing_id = DisplayId::correlated("tool-call", &activity.id);
+                if preparing_id != row.id {
+                    if let Some(index) = self.transcript.position(&preparing_id) {
+                        self.transcript.remove(index);
+                        self.projector.remove_display_index(index);
+                    }
+                }
                 self.render.transcript_cache.invalidate();
                 self.stop_thinking();
             }

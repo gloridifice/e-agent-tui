@@ -145,6 +145,7 @@ pub struct PiAdapter {
     /// Pi emits both `tool_execution_end` and the durable `message_end` for
     /// one result. Retain the id only until that duplicate message arrives.
     pending_tool_result_messages: HashSet<String>,
+    preparing_tools: HashMap<u64, tool::PreparingTool>,
     extension_ui: HashMap<String, PendingExtensionUi>,
     pending_queue: queue::PendingQueue,
     pending_stats_request: Option<String>,
@@ -217,6 +218,7 @@ impl PiAdapter {
             configuration_request: None,
             deferred_requests: std::collections::VecDeque::new(),
             pending_tool_result_messages: HashSet::new(),
+            preparing_tools: HashMap::new(),
             extension_ui: HashMap::new(),
             pending_queue: queue::PendingQueue::default(),
             pending_stats_request: None,
@@ -359,7 +361,9 @@ impl PiAdapter {
             "agent_settled" => {
                 self.pending_tool_result_messages.clear();
                 self.is_streaming = false;
-                let mut output = retry::settled(self, std::time::Instant::now());
+                let mut output =
+                    tool::finish_preparations(self, e_tui::agent::ActivityState::Cancelled);
+                output.merge(retry::settled(self, std::time::Instant::now()));
                 output.merge(session::refresh_stats(self));
                 output.events.push(AgentEvent::Session(SessionEvent::Status(
                     if self.retry.busy() {
@@ -387,6 +391,13 @@ impl PiAdapter {
                     .map(str::to_owned),
                 error_code: None,
             }),
+            "message_start"
+                if record.field("message").is_some_and(|message| {
+                    message.get("role").and_then(Value::as_str) == Some("assistant")
+                }) =>
+            {
+                tool::finish_preparations(self, e_tui::agent::ActivityState::Cancelled)
+            }
             "message_update" => tool::message_update(self, &record),
             "message_end" => {
                 let mut output = record
@@ -394,6 +405,16 @@ impl PiAdapter {
                     .map(|message| session::live_message(self, message))
                     .unwrap_or_default();
                 if let Some(message) = record.field("message") {
+                    if message.get("role").and_then(Value::as_str) == Some("assistant") {
+                        let state = match message.get("stopReason").and_then(Value::as_str) {
+                            Some("error" | "length") => Some(e_tui::agent::ActivityState::Failure),
+                            Some("aborted") => Some(e_tui::agent::ActivityState::Cancelled),
+                            _ => None,
+                        };
+                        if let Some(state) = state {
+                            output.merge(tool::finish_preparations(self, state));
+                        }
+                    }
                     output.merge(retry::message(self, message));
                 }
                 if record.field("message").is_some_and(|message| {

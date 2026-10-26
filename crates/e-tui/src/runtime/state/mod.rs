@@ -53,6 +53,8 @@ pub struct RuntimeState {
     /// Kernel-neutral application root. Existing field-style callers are
     /// temporarily forwarded through `Deref` while lifecycle owners move.
     pub tui: TuiApp,
+    pub side_sessions_available: bool,
+    pub side_commands: std::collections::VecDeque<super::sessions::SideSessionCommand>,
     #[cfg(test)]
     pub msgs: Vec<Msg>,
 }
@@ -75,6 +77,8 @@ impl Default for RuntimeState {
     fn default() -> Self {
         Self {
             tui: TuiApp::default(),
+            side_sessions_available: false,
+            side_commands: Default::default(),
             #[cfg(test)]
             msgs: Vec::new(),
         }

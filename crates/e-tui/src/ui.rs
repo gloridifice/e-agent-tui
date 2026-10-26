@@ -62,6 +62,9 @@ pub(crate) use layout::{bottom_area_rows, input_rows, INPUT_MAX_ROWS};
 /// columns, mirroring the split/page policy of rendering. The runtime scroll
 /// path uses the same width policy as the rendered composer.
 pub fn input_bar_width(area_width: u16, state: &TuiApp) -> u16 {
+    if let Some(main) = state.viewport.and_then(|view| view.main) {
+        return layout::main_page_rect(main, state, false).width;
+    }
     let (main, reserve_collapsed_separator) = match screen::layout(
         ratatui::layout::Rect::new(0, 0, area_width, 0),
         state.config.message_pane_percent,
@@ -75,10 +78,9 @@ pub fn input_bar_width(area_width: u16, state: &TuiApp) -> u16 {
 }
 
 pub(crate) fn tips_budget(size: TerminalSize, state: &TuiApp) -> usize {
-    let (main, collapsed) = match screen::layout(
+    let (main, collapsed) = match screen::resolved_layout(
         ratatui::layout::Rect::new(0, 0, size.width, size.height),
-        state.config.message_pane_percent,
-        state.preview.fullscreen,
+        state,
     ) {
         screen::ScreenLayout::MainOnly(main) => (main, true),
         screen::ScreenLayout::Split { main, .. } => (main, false),
@@ -218,16 +220,16 @@ pub fn render_with_cursor_and_selection(
         .flatten();
     let cursor = screen::render_with_cursor(frame, state, input, scroll, theme, overlays);
     if let Some(toast) = toast {
-        overlay::render_toast(frame, toast, theme);
+        let area = state
+            .viewport
+            .and_then(|view| view.main.or(view.preview))
+            .unwrap_or(frame.area());
+        overlay::render_toast(frame, area, toast, theme);
     }
     let pane_separator = if help_visible {
         None
     } else {
-        match screen::layout(
-            frame.area(),
-            state.config.message_pane_percent,
-            state.preview.fullscreen && state.history_page.is_none(),
-        ) {
+        match screen::resolved_layout(frame.area(), state) {
             screen::ScreenLayout::Split { main, .. } => Some(main.right()),
             _ => None,
         }
@@ -238,7 +240,8 @@ pub fn render_with_cursor_and_selection(
         context,
         !resizing && state.mcp.is_none(),
     )
-    .with_pane_separator(pane_separator);
+    .with_pane_separator(pane_separator)
+    .with_viewport(state.viewport);
     selection::clear_non_copyable_markers(frame.buffer_mut());
     if !resizing
         && presentation

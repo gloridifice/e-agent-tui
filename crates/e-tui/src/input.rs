@@ -1167,6 +1167,30 @@ impl InputState {
             };
             if !query.contains([' ', '\n']) {
                 match command.completion {
+                    CompletionKind::Side => {
+                        if !catalogs
+                            .integrated_commands
+                            .iter()
+                            .any(|command| command.name == "side")
+                        {
+                            self.suggest = None;
+                            return;
+                        }
+                        let matches: Vec<String> = crate::command_catalog::SIDE_ARGUMENTS
+                            .iter()
+                            .filter(|name| name.starts_with(query))
+                            .map(|name| format!("/side {name}"))
+                            .collect();
+                        self.suggest = (!matches.is_empty()).then(|| Suggestion {
+                            query: self.command_prefix().to_owned(),
+                            sel: 0,
+                            sources: vec![CommandSource::Builtin; matches.len()],
+                            descriptions: vec![String::new(); matches.len()],
+                            matches,
+                            kind: SuggestionKind::Subcommands,
+                        });
+                        return;
+                    }
                     CompletionKind::FixedSubcommands => {
                         let ranked = match_fixed_subcommands(command, query);
                         if ranked.is_empty() {

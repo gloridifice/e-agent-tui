@@ -46,12 +46,18 @@ impl AuthAssets {
         std::fs::write(&helper, include_bytes!("auth_helper.mjs"))?;
         let mcp = directory.path().join("pie-mcp-companion.mjs");
         std::fs::write(&mcp, include_bytes!("mcp_companion.mjs"))?;
+        let side = directory.path().join("pie-side-companion.mjs");
+        let side_helper = directory.path().join("pie-side-helper.mjs");
+        std::fs::write(&side, include_bytes!("side_companion.mjs"))?;
+        std::fs::write(&side_helper, include_bytes!("side_helper.mjs"))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&companion, std::fs::Permissions::from_mode(0o600))?;
             std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o600))?;
             std::fs::set_permissions(&mcp, std::fs::Permissions::from_mode(0o600))?;
+            std::fs::set_permissions(&side, std::fs::Permissions::from_mode(0o600))?;
+            std::fs::set_permissions(&side_helper, std::fs::Permissions::from_mode(0o600))?;
         }
         Ok(Self {
             _directory: directory,
@@ -156,6 +162,10 @@ pub struct AuthManager {
 }
 
 impl AuthManager {
+    pub(crate) fn companion_directory(&self) -> &Path {
+        self.assets._directory.path()
+    }
+
     pub fn new(assets: AuthAssets) -> Self {
         Self {
             assets,

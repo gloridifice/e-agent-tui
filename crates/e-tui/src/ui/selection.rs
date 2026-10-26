@@ -27,6 +27,7 @@ pub fn selection_context(
 ) -> u64 {
     let mut hash = DefaultHasher::new();
     state.session.session_id.hash(&mut hash);
+    state.viewport.hash(&mut hash);
     state.session.new_conversation.is_some().hash(&mut hash);
     page.map(|page| std::mem::discriminant(&page.page))
         .hash(&mut hash);
@@ -47,6 +48,8 @@ pub struct Presentation {
     buffer: Option<Arc<Buffer>>,
     selection_frame: SelectionFrame,
     cursor: Option<Position>,
+    viewport: Option<crate::viewport::ConversationViewport>,
+    selectable: bool,
 }
 
 impl Presentation {
@@ -72,7 +75,36 @@ impl Presentation {
             buffer: Some(Arc::new(saved)),
             selection_frame,
             cursor,
+            viewport: None,
+            selectable,
         }
+    }
+
+    pub(crate) fn with_viewport(
+        mut self,
+        viewport: Option<crate::viewport::ConversationViewport>,
+    ) -> Self {
+        self.viewport = viewport;
+        if let (Some(view), Some(saved)) = (viewport, self.buffer.as_ref()) {
+            let mut masked = (**saved).clone();
+            for y in masked.area.y..masked.area.bottom() {
+                for x in masked.area.x..masked.area.right() {
+                    if !view.contains(x, y) {
+                        masked[(x, y)].modifier.insert(Modifier::HIDDEN);
+                    }
+                }
+            }
+            let context = self.selection_frame.context();
+            self.selection_frame = if self.selectable {
+                collect(&masked)
+            } else {
+                SelectionFrame::default()
+            };
+            self.selection_frame.set_context(context);
+            self.selection_frame
+                .set_pane_separator(view.main.map(|area| area.right()));
+        }
+        self
     }
 
     pub(crate) fn with_pane_separator(mut self, column: Option<u16>) -> Self {
@@ -93,7 +125,17 @@ impl Presentation {
         {
             return None;
         }
-        buffer.clone_from(saved);
+        if let Some(view) = self.viewport {
+            for area in view.main.into_iter().chain(view.preview) {
+                for y in area.y..area.bottom() {
+                    for x in area.x..area.right() {
+                        buffer[(x, y)] = saved[(x, y)].clone();
+                    }
+                }
+            }
+        } else {
+            buffer.clone_from(saved);
+        }
         paint(&self.selection_frame, selection, buffer);
         Some(self.cursor)
     }

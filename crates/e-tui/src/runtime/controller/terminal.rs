@@ -111,17 +111,14 @@ pub(super) fn apply_terminal_route(
             return Vec::new();
         }
         let mut app = state.lock().unwrap();
-        let layout = crate::ui::screen::layout(
-            Rect::new(0, 0, size.width, size.height),
-            ui.config.message_pane_percent,
-            app.preview.fullscreen && app.history_page.is_none(),
-        );
+        let layout =
+            crate::ui::screen::resolved_layout(Rect::new(0, 0, size.width, size.height), &app);
         let over_preview = match layout {
             crate::ui::screen::ScreenLayout::Split { preview, .. } => {
-                if *column == preview.x {
+                if preview.width > 0 && *column == preview.x {
                     return Vec::new();
                 }
-                *column > preview.x
+                preview.contains((*column, *row).into())
             }
             crate::ui::screen::ScreenLayout::PreviewOnly(_) => true,
             crate::ui::screen::ScreenLayout::MainOnly(_) => false,

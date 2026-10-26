@@ -167,6 +167,7 @@ pub(crate) fn markdown(config: &crate::Config) -> String {
         "help.link_copy",
         "help.mouse_copy",
         "help.mouse_resize",
+        "help.side_sessions",
         "help.config",
     ] {
         output.push_str("- ");

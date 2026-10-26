@@ -27,6 +27,7 @@ pub enum CompletionKind {
     Effort,
     Skill,
     FixedSubcommands,
+    Side,
     PromptMacro,
 }
 
@@ -49,6 +50,7 @@ pub enum CommandAction {
     Reading,
     History,
     PromptMacro,
+    Side,
     Quit,
 }
 
@@ -215,7 +217,14 @@ pub(crate) fn parse_command_line(line: &str) -> Option<(&str, &str)> {
     (!name.is_empty()).then_some((name, raw_input))
 }
 
+pub const SIDE_ARGUMENTS: &[&str] = &["clone", "new", "fork", "close", "swap"];
+
+const SIDE_COMMAND: BuiltinCommand = command!("side", "command.side.description", None, Side, Side);
+
 pub fn builtin_command(name: &str) -> Option<&'static BuiltinCommand> {
+    if name == "side" {
+        return Some(&SIDE_COMMAND);
+    }
     BUILTIN_COMMANDS.iter().find(|command| command.name == name)
 }
 
@@ -390,7 +399,7 @@ pub fn match_command_catalog(
     }
 
     for command in integrated {
-        if builtin_command(&command.name).is_some() {
+        if command.name != "side" && builtin_command(&command.name).is_some() {
             continue;
         }
         let name = command.name.to_lowercase();

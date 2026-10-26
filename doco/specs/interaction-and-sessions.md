@@ -62,6 +62,15 @@
 - Pi CLI resume by exact session ID MUST resolve an existing native session and its saved workspace before terminal setup, without opening a picker, creating a replacement, or forking. Missing or ambiguous IDs and conflicting session selectors MUST fail explicitly. Discovery honors the adapter's native session-directory overrides.
 - On TUI exit, `pie` MUST print a recovery command for the last attached saved session after terminal restoration. Unsaved sessions MUST NOT produce recovery commands; files outside native session discovery use an explicit file command instead of an undiscoverable ID.
 
+## Parallel conversations
+
+- Side-session support is capability-gated and initially provided by Pi. DSH MUST retain single-session behavior and MUST NOT advertise unsupported side creation. The workspace permits one main and one side conversation, sharing the same working directory without filesystem isolation or a Git worktree. Main/side are frontend roles, not native session identities.
+- Bare <code>/side</code> clones and focuses a side conversation when absent, otherwise switches focus. <code>/side clone</code>, <code>/side new</code> and <code>/side fork</code> create and focus an independent conversation. Creation MUST reject an existing side or pending creation. Unknown arguments and trailing text MUST fail locally, never become model prompts.
+- New inherits workspace, model and effort without history. Clone and fork MUST use a safe native checkpoint without pausing or mutating the source, copying partial responses/unresolved tool calls, or transferring drafts, queues, questions or approvals. Fork choices are fixed at preparation time; acceptance restores the selected user text in the new composer without sending it. Clone starts with an empty composer.
+- Pending preparation/startup MUST preserve input and rendering responsiveness. Esc outside a question cancels pending creation without interrupting the source; question cancellation retains its ordinary meaning. Failed, cancelled or stale creation MUST NOT attach or steal focus.
+- <code>/side swap</code> exchanges roles and positions without backend requests or idle restrictions. Focus follows the same conversation. <code>/side close</code> and ordinary exit outcomes close only the focused conversation while split. Busy close requires an explicit confirmation bound to its target; declining changes neither runtime nor layout. Closing main promotes the survivor. Saved history is retained. With one conversation, <code>/side close</code> errors and ordinary exit behavior is unchanged.
+- Shared frontend configuration changes MUST refresh both conversations without replacing their independent routes, drafts or session state. Global shutdown MUST clean up all live and pending runtimes; recovery output MUST refer only to attached saved sessions, not discarded candidates.
+
 ## Execution history
 
 - Opening history starts in the longest-operation ranking. The history-scoped `toggle_view` action defaults to Tab and switches between ranking and chronological timeline without issuing another query or changing the composer draft.

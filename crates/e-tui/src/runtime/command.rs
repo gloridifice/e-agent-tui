@@ -170,6 +170,7 @@ pub(crate) fn command_mutates_backend(line: &str) -> bool {
                 | CommandAction::Settings
                 | CommandAction::Theme
                 | CommandAction::PromptMacro
+                | CommandAction::Side
         )
     })
 }
@@ -639,6 +640,25 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
                 outcome.history = Some(action);
             } else {
                 push_error(context.state, tr(context.language, "command.history.usage"));
+            }
+        }
+        CommandAction::Side => {
+            let available = context.state.lock().unwrap().side_sessions_available;
+            if !available {
+                push_error(
+                    context.state,
+                    "Side sessions are not available in this runtime",
+                );
+            } else {
+                match super::sessions::SideSessionCommand::parse(raw_input) {
+                    Ok(command) => context
+                        .state
+                        .lock()
+                        .unwrap()
+                        .side_commands
+                        .push_back(command),
+                    Err(message) => push_error(context.state, message),
+                }
             }
         }
         CommandAction::Quit => {

@@ -11,6 +11,7 @@ pub mod input;
 pub mod policy;
 pub mod ports;
 pub mod scheduler;
+pub mod sessions;
 pub mod state;
 pub mod terminal;
 

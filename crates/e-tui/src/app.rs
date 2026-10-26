@@ -284,6 +284,7 @@ struct ReadingLayoutAnchor {
 /// forwarding methods without creating a second transcript store.
 #[derive(Default)]
 pub struct TuiApp {
+    pub viewport: Option<crate::viewport::ConversationViewport>,
     pub frontend: FrontendKind,
     pub config: Config,
     pub session: SessionModel,

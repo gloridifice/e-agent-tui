@@ -229,6 +229,7 @@ pub(super) fn render_title(
         .unwrap_or("")
         .trim()
         .to_string();
+    let cwd = trim_to_width(&cwd, width);
     let path_w = UnicodeWidthStr::width(cwd.as_str());
     let avail = width.saturating_sub(path_w.saturating_add(2));
     let shown = if UnicodeWidthStr::width(title.as_str()) > avail {

@@ -27,6 +27,12 @@ pub enum RpcCommand {
         #[serde(skip_serializing_if = "Option::is_none")]
         id: Option<String>,
     },
+    #[serde(rename = "new_session")]
+    NewChildSession {
+        id: String,
+        #[serde(rename = "parentSession", skip_serializing_if = "Option::is_none")]
+        parent_session: Option<String>,
+    },
     GetForkMessages {
         id: Option<String>,
     },

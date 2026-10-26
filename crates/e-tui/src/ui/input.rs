@@ -43,6 +43,7 @@ pub(super) fn render_input_with_catalog(
     )
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_input_with_macros(
     frame: &mut Frame,
@@ -53,6 +54,23 @@ pub(super) fn render_input_with_macros(
     model_hint: Option<&str>,
     catalogs: &crate::CatalogModel,
     macros: &crate::prompt_macros::PromptMacros,
+) -> Option<Position> {
+    render_focused_input(
+        frame, area, input, theme, padding, model_hint, catalogs, macros, true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn render_focused_input(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    input: &InputState,
+    theme: &Theme,
+    padding: u16,
+    model_hint: Option<&str>,
+    catalogs: &crate::CatalogModel,
+    macros: &crate::prompt_macros::PromptMacros,
+    focused: bool,
 ) -> Option<Position> {
     let macro_entry = input.matched_macro(macros);
     let bark = Style::default().fg(theme.input.hint.fg);
@@ -173,7 +191,7 @@ pub(super) fn render_input_with_macros(
         let text = &chunk.text;
         let off = chunk.start;
         // No prompt prefix: the input bar text starts flush at the edge.
-        if i == cursor_row {
+        if focused && i == cursor_row {
             // Draw the cursor on its wrapped row. A cursor in whitespace
             // consumed by a row break clamps to the end of the previous row.
             let cur = display.cursor.saturating_sub(off).min(text.chars().count());

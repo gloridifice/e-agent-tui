@@ -63,8 +63,9 @@ pub(crate) fn render(
     shell_name: &str,
     macros: &crate::prompt_macros::PromptMacros,
     tip: Option<&crate::tips::TipLine>,
+    focused: bool,
 ) -> Option<Position> {
-    let cursor = super::super::input::render_input_with_macros(
+    let cursor = super::super::input::render_focused_input(
         frame,
         area,
         input,
@@ -73,6 +74,7 @@ pub(crate) fn render(
         model_hint,
         catalogs,
         macros,
+        focused,
     );
     let label = status_label(input, shell_name, macros);
     if !label.is_empty() && area.width > 4 && area.height > 1 {

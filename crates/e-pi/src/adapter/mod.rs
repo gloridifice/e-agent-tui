@@ -126,6 +126,7 @@ pub struct PiAdapter {
     compaction_model: Option<Value>,
     compaction_model_path: Option<std::path::PathBuf>,
     reload_available: bool,
+    side_available: bool,
     pending_reload: Option<PendingReload>,
     mcp: mcp::McpAdapter,
     pending_compaction: Option<compaction::Pending>,
@@ -157,16 +158,21 @@ impl PiAdapter {
         &self.session_id
     }
 
+    pub fn side_sessions_available(&self) -> bool {
+        self.side_available && self.last_attached_session.is_some()
+    }
+
     pub fn refresh_tip_availability(&self, app: &mut e_tui::TuiApp, native_auth_available: bool) {
-        let attached = self.last_attached_session.is_some()
-            && app.session.session_id == self.last_attached_session;
-        for key in ["history", "session-ancestry", "native-compaction"] {
-            app.tips.set_capability(key, attached);
+        self.tip_availability(native_auth_available).apply(app);
+    }
+
+    pub fn tip_availability(&self, native_auth_available: bool) -> crate::tips::Availability {
+        crate::tips::Availability {
+            attached_session: self.last_attached_session.clone(),
+            saved_session: self.saved_session,
+            native_auth: native_auth_available,
+            side_sessions: self.side_sessions_available(),
         }
-        app.tips
-            .set_capability("saved-session", attached && self.saved_session);
-        app.tips
-            .set_capability("native-auth", attached && native_auth_available);
     }
 
     pub fn session_index_root(&self, workspace: &str) -> PathBuf {
@@ -201,6 +207,7 @@ impl PiAdapter {
             compaction_model: None,
             compaction_model_path: None,
             reload_available: false,
+            side_available: false,
             pending_reload: None,
             mcp: mcp::McpAdapter::default(),
             pending_compaction: None,
@@ -561,6 +568,7 @@ impl PiAdapter {
         let mut mcp_save = false;
         let mut native_mcp = false;
         self.reload_available = false;
+        self.side_available = false;
         for command in data
             .and_then(|data| data.get("commands"))
             .and_then(Value::as_array)
@@ -570,6 +578,10 @@ impl PiAdapter {
             let Some(name) = command.get("name").and_then(Value::as_str) else {
                 continue;
             };
+            if name == crate::side::COMMAND {
+                self.side_available = true;
+                continue;
+            }
             if name == mcp::GET {
                 mcp_get = true;
                 continue;
@@ -619,6 +631,14 @@ impl PiAdapter {
                 name: name.to_owned(),
                 description,
                 input_hint: None,
+            });
+        }
+        if self.side_available {
+            commands.retain(|command| command.name != "side");
+            commands.push(CommandDescriptor {
+                name: "side".into(),
+                description: "Create, focus, close or swap a parallel conversation".into(),
+                input_hint: Some("[clone|new|fork|close|swap]".into()),
             });
         }
         let auth_companion = auth_context && auth_refresh;

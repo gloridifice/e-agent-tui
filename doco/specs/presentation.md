@@ -22,6 +22,13 @@
 
 - Local terminal output MUST use safe ANSI-to-span rendering, not Markdown interpretation. A running command MUST remain a single attached row at the bottom of the message viewport, without output or a duplicate transcript row. On settlement, it MUST freeze at the transcript tail and show all retained output up to the last 64 width-wrapped rows. New user submissions and live agent turn completion MUST fold settled commands to their command/status row; running commands are unaffected. Reading MUST expand only the focused terminal composite and restore its prior presentation on focus exit. Retained source and whole-block copy MUST remain unchanged by folding and resizing.
 
+## Parallel conversation layout
+
+- A side conversation MUST preserve the existing Preview allocation. The remaining conversation rectangle is divided equally into main on the left and side on the right, excluding their divider; an odd spare column belongs to main. Admission MUST reject insufficient room rather than hide Preview.
+- Resizing an open split below usable composer widths MUST retain both runtimes and show the focused conversation in the available conversation area. Widening restores both panes. Layout and input geometry MUST use the actual current terminal size, including the first frame following resize.
+- Drafts, transcript scroll, reading state, Preview selection and Preview scroll MUST remain conversation-owned. The single visible Preview follows focus without resetting the other conversation's selection. Clicks focus a conversation; wheel input targets the pane under the pointer without changing keyboard focus. Pointer capture remains with its owner until release.
+- Each conversation MUST wrap and clip within its own rectangle, including status paths and local notices. Only the focused composer shows its cursor. Held selection MUST replay only its owned regions, and selectable presentations MUST be committed only after the complete shared terminal submission succeeds. Screen-level modals remain owned by their initiating conversation.
+
 ## Reveal and Preview
 
 - Semantic transcript and Preview content MUST remain complete; reveal progress is presentation-only.

@@ -17,5 +17,8 @@ pub mod path_completion;
 pub mod process;
 pub mod protocol;
 pub mod session_index;
+pub mod session_runtime;
+pub mod session_worker;
 pub mod shell;
+pub mod side;
 pub mod tips;

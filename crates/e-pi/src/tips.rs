@@ -1,5 +1,27 @@
 use e_tui::tips::{TipDefinition, TipPrerequisite as P, TipRequirement as R};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Availability {
+    pub attached_session: Option<String>,
+    pub saved_session: bool,
+    pub native_auth: bool,
+    pub side_sessions: bool,
+}
+
+impl Availability {
+    pub fn apply(&self, app: &mut e_tui::TuiApp) {
+        let attached =
+            self.attached_session.is_some() && app.session.session_id == self.attached_session;
+        for key in ["history", "session-ancestry", "native-compaction"] {
+            app.tips.set_capability(key, attached);
+        }
+        app.tips
+            .set_capability("saved-session", attached && self.saved_session);
+        app.tips
+            .set_capability("native-auth", attached && self.native_auth);
+    }
+}
+
 pub fn definitions() -> Vec<TipDefinition> {
     vec![
         TipDefinition::bilingual(

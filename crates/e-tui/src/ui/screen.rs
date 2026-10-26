@@ -47,6 +47,23 @@ pub enum ScreenLayout {
     PreviewOnly(Rect),
 }
 
+pub fn resolved_layout(area: Rect, state: &TuiApp) -> ScreenLayout {
+    if let Some(view) = state.viewport {
+        return match view.main {
+            Some(main) => ScreenLayout::Split {
+                main,
+                preview: view.preview.unwrap_or_default(),
+            },
+            None => ScreenLayout::PreviewOnly(view.preview.unwrap_or_default()),
+        };
+    }
+    layout(
+        area,
+        state.config.message_pane_percent,
+        state.preview.fullscreen && state.history_page.is_none(),
+    )
+}
+
 pub fn layout(
     area: Rect,
     message_pane_percent: PaneWidthPercent,
@@ -282,11 +299,7 @@ pub(super) fn render_with_cursor(
         queue,
     };
     let preview_fullscreen = state.preview.fullscreen && state.history_page.is_none();
-    let screen_layout = layout(
-        frame.area(),
-        state.config.message_pane_percent,
-        preview_fullscreen,
-    );
+    let screen_layout = resolved_layout(frame.area(), state);
     let cursor = match screen_layout {
         ScreenLayout::MainOnly(main) | ScreenLayout::Split { main, .. } => {
             if let Some(history_page) = &mut state.history_page {
@@ -334,11 +347,17 @@ pub(super) fn render_with_cursor(
         ScreenLayout::MainOnly(_) => {}
     }
     if !matches!(screen_layout, ScreenLayout::PreviewOnly(_)) {
-        if let Some(column) = separator_column(
-            frame.area(),
-            state.config.message_pane_percent,
-            preview_fullscreen,
-        ) {
+        if let Some(column) = state
+            .viewport
+            .map(|view| view.main.map(|main| main.right()))
+            .unwrap_or_else(|| {
+                separator_column(
+                    frame.area(),
+                    state.config.message_pane_percent,
+                    preview_fullscreen,
+                )
+            })
+        {
             paint_separator(frame, frame.area(), column, theme, false);
         }
     }

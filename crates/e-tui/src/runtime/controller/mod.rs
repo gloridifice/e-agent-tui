@@ -252,6 +252,15 @@ impl RuntimeController {
         input::apply_input_page_key(key, state, ui)
     }
 
+    pub fn synchronize_config(
+        config: &Config,
+        state: &Mutex<RuntimeState>,
+        input: &mut crate::input::InputState,
+        theme: &mut Theme,
+    ) {
+        effect::sync_live_config(config, state, input, theme);
+    }
+
     pub fn apply_reloaded_config(
         config: Config,
         themes: Vec<ThemeFile>,

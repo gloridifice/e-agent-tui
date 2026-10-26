@@ -161,6 +161,7 @@ fn render_main_pane_with_cursor(
                 &state.shell.name,
                 &state.config.prompt_macros,
                 None,
+                state.viewport.is_none_or(|view| view.focused),
             )
         };
         region::status::render_input_header(frame, chunks[6], state, theme);
@@ -257,6 +258,7 @@ fn render_main_pane_with_cursor(
             &state.shell.name,
             &state.config.prompt_macros,
             state.render.tips.line.as_ref(),
+            state.viewport.is_none_or(|view| view.focused),
         );
         region::status::render_input_header(frame, rect, state, theme);
         y = y.saturating_add(plan.bottom_rows);

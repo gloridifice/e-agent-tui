@@ -1,8 +1,12 @@
 use super::*;
 use crate::i18n::tr;
 
-pub(super) fn render_toast(frame: &mut Frame, message: &str, theme: &Theme) {
-    let area = frame.area();
+pub(super) fn render_toast(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    message: &str,
+    theme: &Theme,
+) {
     if area.width < 4 || area.height < 3 {
         return;
     }

@@ -81,7 +81,7 @@ pub enum PiProcessEvent {
 }
 
 pub struct PiProcess {
-    child: Child,
+    child: Option<Child>,
     outbound: mpsc::Sender<RpcCommand>,
     inbound: mpsc::Receiver<PiProcessEvent>,
     stderr_tail: Arc<Mutex<VecDeque<u8>>>,
@@ -99,6 +99,8 @@ impl PiProcess {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
+        #[cfg(unix)]
+        command.process_group(0);
         let mut child = command.spawn().map_err(|error| {
             anyhow::anyhow!(
                 "cannot start Pi RPC with `{}` (resolved as `{}`): {error}. Install @earendil-works/pi-coding-agent and ensure its bin directory is on PATH",
@@ -128,7 +130,7 @@ impl PiProcess {
         tokio::spawn(stderr_loop(stderr, Arc::clone(&stderr_tail)));
 
         Ok(Self {
-            child,
+            child: Some(child),
             outbound,
             inbound,
             stderr_tail,
@@ -162,23 +164,60 @@ impl PiProcess {
     }
 
     pub fn try_exit(&mut self) -> Result<Option<std::process::ExitStatus>, std::io::Error> {
-        self.child.try_wait()
+        self.child.as_mut().map_or(Ok(None), Child::try_wait)
     }
 
     pub async fn shutdown(&mut self) {
-        if self.child.try_wait().ok().flatten().is_none() {
-            let _ = self.child.start_kill();
+        if let Some(mut child) = self.child.take() {
+            terminate(&mut child).await;
         }
-        let _ = tokio::time::timeout(SHUTDOWN_TIMEOUT, self.child.wait()).await;
     }
 }
 
 impl Drop for PiProcess {
     fn drop(&mut self) {
-        if self.child.try_wait().ok().flatten().is_none() {
-            let _ = self.child.start_kill();
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                terminate(&mut child).await;
+            });
+        } else {
+            let _ = child.start_kill();
         }
     }
+}
+
+async fn terminate(child: &mut Child) {
+    if child.try_wait().ok().flatten().is_none() {
+        if let Some(pid) = child.id() {
+            #[cfg(windows)]
+            let mut kill = {
+                let mut command = Command::new("taskkill.exe");
+                command
+                    .args(["/PID", &pid.to_string(), "/T", "/F"])
+                    .creation_flags(0x0800_0000);
+                command
+            };
+            #[cfg(unix)]
+            let mut kill = {
+                let mut command = Command::new("kill");
+                command.args(["-KILL", "--", &format!("-{pid}")]);
+                command
+            };
+            #[cfg(any(windows, unix))]
+            {
+                kill.stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .kill_on_drop(true);
+                let _ = tokio::time::timeout(SHUTDOWN_TIMEOUT, kill.status()).await;
+            }
+        }
+        let _ = child.start_kill();
+    }
+    let _ = tokio::time::timeout(SHUTDOWN_TIMEOUT, child.wait()).await;
 }
 
 async fn write_loop(

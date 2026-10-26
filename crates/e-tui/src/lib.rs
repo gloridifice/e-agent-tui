@@ -25,6 +25,7 @@ pub mod execution_history;
 mod help;
 pub mod history_page;
 pub mod i18n;
+pub mod viewport;
 i18n::init_i18n!();
 pub mod input;
 pub mod input_page;

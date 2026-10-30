@@ -373,6 +373,7 @@ pub struct Config {
     /// current terminal width; Preview may collapse responsively below its
     /// minimum without changing this committed percentage.
     pub message_pane_percent: PaneWidthPercent,
+    pub reading_message_pane_percent: PaneWidthPercent,
     /// Maximum page width in columns (0 = unlimited, use the terminal width
     /// minus the side margins). The content area is capped at this width;
     /// longer text wraps.

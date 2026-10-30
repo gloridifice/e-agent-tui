@@ -38,7 +38,8 @@ pub fn selection_context(
     state.reading.is_some().hash(&mut hash);
     state.history_page.is_some().hash(&mut hash);
     state.mcp.is_some().hash(&mut hash);
-    state.preview.fullscreen.hash(&mut hash);
+    state.message_pane_percent().hash(&mut hash);
+    state.preview_fullscreen().hash(&mut hash);
     hash.finish()
 }
 

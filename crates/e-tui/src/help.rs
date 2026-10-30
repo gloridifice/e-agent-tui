@@ -133,6 +133,17 @@ pub(crate) fn markdown(config: &crate::Config) -> String {
             (Scope::History, Some("help.context.history")),
         ],
     );
+    output.push_str("\n\n");
+    output.push_str(&tr_args(
+        config.language,
+        "help.reading_layout",
+        &[(
+            "preview",
+            config
+                .key_mapping
+                .label(Scope::Global, Action::TogglePreview),
+        )],
+    ));
     append_group(
         &mut output,
         config,

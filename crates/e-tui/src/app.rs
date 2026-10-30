@@ -285,6 +285,7 @@ struct ReadingLayoutAnchor {
 #[derive(Default)]
 pub struct TuiApp {
     pub viewport: Option<crate::viewport::ConversationViewport>,
+    pub side_session_opening: bool,
     pub frontend: FrontendKind,
     pub config: Config,
     pub session: SessionModel,
@@ -421,7 +422,8 @@ impl TuiApp {
             && (self.session.working
                 || self.session.status == SessionStatus::Running
                 || self.session.active_compaction.is_some());
-        let visible = self.interaction.input_page.is_none()
+        let visible = !self.side_session_opening
+            && self.interaction.input_page.is_none()
             && self.interaction.approval.is_none()
             && self.interaction.question.is_none()
             && !self.interaction.help_visible
@@ -684,6 +686,35 @@ impl TuiApp {
         {
             self.reading = None;
             self.preview.policy = PreviewPolicy::FollowLatestBlock;
+        }
+    }
+
+    pub fn message_pane_percent(&self) -> crate::config::PaneWidthPercent {
+        match &self.reading {
+            Some(reading) if reading.preview_collapsed || reading.preview_fullscreen => {
+                crate::config::PaneWidthPercent::from_basis_points(
+                    crate::config::PaneWidthPercent::MAX_BASIS_POINTS,
+                )
+                .expect("maximum pane percentage is valid")
+            }
+            Some(_) => self.config.reading_message_pane_percent,
+            None => self.config.message_pane_percent,
+        }
+    }
+
+    pub fn preview_fullscreen(&self) -> bool {
+        self.reading
+            .as_ref()
+            .map_or(self.preview.fullscreen, |reading| {
+                reading.preview_fullscreen
+            })
+    }
+
+    pub fn toggle_preview_fullscreen(&mut self) {
+        if let Some(reading) = &mut self.reading {
+            reading.preview_fullscreen = !reading.preview_fullscreen;
+        } else {
+            self.preview.fullscreen = !self.preview.fullscreen;
         }
     }
 

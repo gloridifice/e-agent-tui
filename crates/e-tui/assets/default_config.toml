@@ -43,6 +43,8 @@ preview_lines_per_second = 60
 user_input_padding = 1
 # Committed message-pane share in wide two-pane mode (25.00..=100.00%).
 message_pane_percent = 64.0
+# Independent Reading share; Preview occupies the remaining 60% by default.
+reading_message_pane_percent = 40.0
 # 0 = unlimited (terminal width minus side margins).
 page_max_width = 0
 # Horizontal alignment of the capped content page: center | left | right.

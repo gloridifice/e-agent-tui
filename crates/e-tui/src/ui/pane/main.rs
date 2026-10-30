@@ -257,7 +257,19 @@ fn render_main_pane_with_cursor(
             &state.catalogs,
             &state.shell.name,
             &state.config.prompt_macros,
-            state.render.tips.line.as_ref(),
+            if state.side_session_opening {
+                Some(region::composer::BottomHint::SideOpening(
+                    state.config.language,
+                    state.activity_spinner_frame(),
+                ))
+            } else {
+                state
+                    .render
+                    .tips
+                    .line
+                    .as_ref()
+                    .map(region::composer::BottomHint::Tip)
+            },
             state.viewport.is_none_or(|view| view.focused),
         );
         region::status::render_input_header(frame, rect, state, theme);

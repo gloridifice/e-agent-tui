@@ -281,13 +281,16 @@ pub(super) fn apply_terminal_route(
         }
         TerminalRoute::Pointer(pointer) => {
             let area = Rect::new(0, 0, size.width, size.height);
-            let preview_fullscreen = state.lock().unwrap().preview.fullscreen;
+            let (pane_percent, preview_fullscreen) = {
+                let app = state.lock().unwrap();
+                (app.message_pane_percent(), app.preview_fullscreen())
+            };
             let separator_hit = matches!(
                 pointer,
                 PointerEvent::PrimaryPress { column, .. }
                     if crate::ui::screen::separator_hit(
                         area,
-                        ui.config.message_pane_percent,
+                        pane_percent,
                         preview_fullscreen,
                         column,
                     )
@@ -296,11 +299,7 @@ pub(super) fn apply_terminal_route(
             if separator_hit {
                 ui.mouse_selection.clear();
                 let collapsed = matches!(
-                    crate::ui::screen::layout(
-                        area,
-                        ui.config.message_pane_percent,
-                        preview_fullscreen,
-                    ),
+                    crate::ui::screen::layout(area, pane_percent, preview_fullscreen),
                     crate::ui::screen::ScreenLayout::MainOnly(_)
                 );
                 ui.pane_resize.begin(
@@ -308,7 +307,7 @@ pub(super) fn apply_terminal_route(
                         PointerEvent::PrimaryPress { column, .. } => column,
                         _ => unreachable!("separator hit only matches primary press"),
                     },
-                    ui.config.message_pane_percent,
+                    pane_percent,
                     collapsed,
                 );
                 return effects;
@@ -322,10 +321,19 @@ pub(super) fn apply_terminal_route(
                     }
                     PointerEvent::PrimaryRelease { .. } => {
                         if let Some(drag) = ui.pane_resize.finish() {
-                            ui.config.message_pane_percent = drag.pending_percent;
-                            state.lock().unwrap().config.message_pane_percent =
-                                drag.pending_percent;
-                            effects.push(UiAction::PersistConfig(ui.config.clone()));
+                            let mut app = state.lock().unwrap();
+                            if let Some(reading) = &mut app.reading {
+                                reading.preview_collapsed = drag.pending_collapsed;
+                                if !drag.pending_collapsed {
+                                    ui.config.reading_message_pane_percent = drag.pending_percent;
+                                    app.config.reading_message_pane_percent = drag.pending_percent;
+                                    effects.push(UiAction::PersistConfig(ui.config.clone()));
+                                }
+                            } else {
+                                ui.config.message_pane_percent = drag.pending_percent;
+                                app.config.message_pane_percent = drag.pending_percent;
+                                effects.push(UiAction::PersistConfig(ui.config.clone()));
+                            }
                         }
                         ui.mouse_selection.clear();
                     }
@@ -434,8 +442,8 @@ pub(super) fn apply_terminal_route(
                 }
                 Action::EnterReadMode => effects.extend(enter_reading(size, now, state, ui)),
                 Action::TogglePreview => {
-                    let mut app = state.lock().unwrap();
-                    app.preview.fullscreen = !app.preview.fullscreen;
+                    ui.pane_resize.cancel();
+                    state.lock().unwrap().toggle_preview_fullscreen();
                 }
                 Action::ChooseModel => {
                     *ui.input_page = Some(InputPageSession::model());
@@ -535,7 +543,9 @@ fn enter_reading(
         let entered = app.enter_reading(ui.input, ui.scroll, viewport_height);
         (entered, app.take_actions())
     };
-    if !entered {
+    if entered {
+        ui.pane_resize.cancel();
+    } else {
         ui.notice
             .show(tr(ui.config.language, "terminal.no_readable_content"), now);
     }
@@ -572,6 +582,7 @@ pub(super) fn apply_reading_key(
     };
     match ui.config.key_mapping.resolve(scope, key) {
         Some(Action::Exit) => {
+            ui.pane_resize.cancel();
             let mut app = state.lock().unwrap();
             app.exit_reading(ui.input);
             app.take_actions()
@@ -879,23 +890,7 @@ pub(super) fn apply_ordinary_key(
             }
         }
         if command.activate_reading {
-            let viewport_height = {
-                let app = state.lock().unwrap();
-                transcript_view_height(
-                    size,
-                    &app,
-                    ui.input,
-                    ui.input_page.as_ref(),
-                    ui.approval.as_ref(),
-                    ui.queue.entries(),
-                )
-            };
-            let mut app = state.lock().unwrap();
-            if !app.enter_reading(ui.input, ui.scroll, viewport_height) {
-                ui.notice
-                    .show(tr(ui.config.language, "terminal.no_readable_content"), now);
-            }
-            outcome.effects.extend(app.take_actions());
+            outcome.effects.extend(enter_reading(size, now, state, ui));
         }
         if command.new_conversation {
             *ui.scroll = ScrollState::default();

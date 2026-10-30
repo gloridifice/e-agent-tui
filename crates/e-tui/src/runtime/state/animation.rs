@@ -21,6 +21,9 @@ pub fn animation_active(state: &RuntimeState, _now: std::time::Instant) -> bool 
     if state.history_page.is_some() {
         return false;
     }
+    if state.side_session_opening {
+        return true;
+    }
     if let Some(draft) = &state.session.new_conversation {
         return draft.pending_input.is_some();
     }
@@ -40,8 +43,12 @@ pub fn animation_active(state: &RuntimeState, _now: std::time::Instant) -> bool 
 /// Advance the Braille spinner and mark only active public display ranges.
 pub fn tick_spinners(state: &mut RuntimeState, now: std::time::Instant) -> bool {
     if let Some(draft) = &state.session.new_conversation {
-        if draft.pending_input.is_some() {
+        if draft.pending_input.is_some() || state.side_session_opening {
             state.session.activity_epoch.get_or_insert(now);
+            if state.side_session_opening {
+                state.render.activity_frame =
+                    (state.render.activity_frame + 1) % ACTIVITY_SPINNER_FRAMES.len();
+            }
             return true;
         }
         return false;
@@ -51,7 +58,9 @@ pub fn tick_spinners(state: &mut RuntimeState, now: std::time::Instant) -> bool 
         return tick_legacy_spinners(state, now);
     }
 
-    let mut any_pending = state.session.working || state.session.status == AgentStatus::Running;
+    let mut any_pending = state.side_session_opening
+        || state.session.working
+        || state.session.status == AgentStatus::Running;
     let mut dirty = Vec::new();
     for (index, node) in state.transcript.nodes().iter().enumerate() {
         let pending = display_item_animation_active(&node.item);

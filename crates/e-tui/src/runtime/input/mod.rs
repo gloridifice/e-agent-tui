@@ -141,6 +141,11 @@ pub fn route_terminal_event_with_mapping(
             Action::PrintHelp => unreachable!("help is routed before blocking contexts"),
             Action::PageUp => TerminalRoute::TranscriptPage { up: true },
             Action::PageDown => TerminalRoute::TranscriptPage { up: false },
+            Action::TogglePreview
+                if focus.reading_view_open && !focus.input_page_open && !focus.approval_open =>
+            {
+                TerminalRoute::Global(Action::TogglePreview)
+            }
             _ if focus.input_page_open || focus.approval_open || focus.reading_view_open => {
                 TerminalRoute::Ignore
             }

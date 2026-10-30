@@ -12,6 +12,11 @@ struct Settings<'a> {
     theme: &'a mut e_tui::Theme,
 }
 
+struct PreviewRestore {
+    width: e_tui::config::PaneWidthPercent,
+    fullscreen: bool,
+}
+
 struct Conversation {
     id: SessionId,
     state: Arc<std::sync::Mutex<RuntimeState>>,
@@ -27,6 +32,7 @@ struct Conversation {
     editor: Option<String>,
     artifact: Option<e_pi::side::PreparedSideFile>,
     pending_config: Option<Config>,
+    saved_preview_width: Option<e_tui::config::PaneWidthPercent>,
 }
 
 impl Conversation {
@@ -78,17 +84,21 @@ impl Conversation {
             editor,
             artifact: None,
             pending_config: None,
+            saved_preview_width: None,
         })
     }
 
     async fn effects(
         &mut self,
-        actions: Vec<e_tui::UiAction>,
+        mut actions: Vec<e_tui::UiAction>,
         scheduler: &mut FrameScheduler,
     ) -> e_tui::runtime::EffectExecution {
-        for action in &actions {
+        for action in &mut actions {
             if let e_tui::UiAction::PersistConfig(config) = action {
                 self.pending_config = Some(config.clone());
+                if let Some(width) = self.saved_preview_width {
+                    config.message_pane_percent = width;
+                }
             }
         }
         let requests = self.worker.requests();
@@ -279,11 +289,11 @@ async fn next_inbound(conversations: &mut [Conversation]) -> (SessionId, Inbound
 
 fn conversation_area(
     area: Rect,
-    config: &Config,
+    pane_percent: e_tui::config::PaneWidthPercent,
     fullscreen: bool,
 ) -> (Option<Rect>, Option<Rect>) {
     use e_tui::ui::screen::{layout, ScreenLayout};
-    match layout(area, config.message_pane_percent, fullscreen) {
+    match layout(area, pane_percent, fullscreen) {
         ScreenLayout::MainOnly(main) => (Some(main), None),
         ScreenLayout::Split { main, preview } => (Some(main), Some(preview)),
         ScreenLayout::PreviewOnly(preview) => (None, Some(preview)),
@@ -296,18 +306,26 @@ fn allocate(
     area: Rect,
     config: &Config,
 ) {
-    let fullscreen = conversations
+    let (pane_percent, fullscreen, reading) = conversations
         .iter()
         .find(|slot| slot.id == workspace.focused())
-        .is_some_and(|slot| {
+        .map(|slot| {
             let state = slot.state.lock().unwrap();
-            state.preview.fullscreen && state.history_page.is_none()
-        });
-    let (main, preview) = conversation_area(area, config, fullscreen);
-    let split = workspace.side().is_some() && main.is_some_and(|area| area.width >= 49);
+            (
+                state.message_pane_percent(),
+                state.preview_fullscreen() && state.history_page.is_none(),
+                state.reading.is_some(),
+            )
+        })
+        .unwrap_or((config.message_pane_percent, false, false));
+    let (main, preview) = conversation_area(area, pane_percent, fullscreen);
+    let split = !reading && workspace.side().is_some() && main.is_some_and(|area| area.width >= 49);
     for slot in conversations {
         let focused = slot.id == workspace.focused();
         let mut state = slot.state.lock().unwrap();
+        state.side_session_opening = workspace
+            .pending()
+            .is_some_and(|creation| creation.source() == slot.id);
         state.viewport = if workspace.side().is_none() {
             None
         } else {
@@ -384,6 +402,7 @@ pub(super) async fn run_frontend(
     let mut cleanup = tokio::task::JoinSet::new();
     let mut confirming: Option<SessionId> = None;
     let mut pending_source = None;
+    let mut preview_restore: Option<PreviewRestore> = None;
     let mut fatal = None;
 
     'running: loop {
@@ -434,6 +453,7 @@ pub(super) async fn run_frontend(
         let mut close_confirmed = false;
         let mut command = None;
         let mut prepared = None;
+        let mut side_attached = false;
         let mut update_started = None;
         tokio::select! {
             (id, inbound) = next_inbound(&mut conversations) => {
@@ -454,6 +474,7 @@ pub(super) async fn run_frontend(
                             if id == workspace.main().id() { phases.mark("Pi session ready"); }
                             if let Some(creation) = workspace.pending().filter(|creation| creation.session() == id) {
                                 if workspace.finish_side(creation, ()).is_ok() {
+                                    side_attached = true;
                                     if let Some(artifact) = slot.artifact.take() { artifact.commit(); }
                                     slot.ports.persist_session_enabled = true;
                                     let identity = slot.state.lock().unwrap().session.session_id.clone();
@@ -552,6 +573,26 @@ pub(super) async fn run_frontend(
             }
             _ = cleanup.join_next(), if !cleanup.is_empty() => {}
         }
+        if side_attached {
+            let fullscreen = conversations
+                .iter()
+                .find(|slot| slot.id == workspace.main().id())
+                .is_some_and(|slot| slot.state.lock().unwrap().preview.fullscreen);
+            let width = config.message_pane_percent;
+            preview_restore = Some(PreviewRestore { width, fullscreen });
+            config.message_pane_percent = e_tui::config::PaneWidthPercent::from_basis_points(
+                e_tui::config::PaneWidthPercent::MAX_BASIS_POINTS,
+            )
+            .expect("maximum pane percentage is valid");
+            for slot in &mut conversations {
+                slot.saved_preview_width = Some(width);
+                let mut state = slot.state.lock().unwrap();
+                state.config.message_pane_percent = config.message_pane_percent;
+                state.preview.fullscreen = false;
+                state.interaction.pane_resize.cancel();
+                state.interaction.mouse_selection.clear();
+            }
+        }
         let mut config_changed = false;
         for slot in &mut conversations {
             if let Some(updated) = slot.pending_config.take() {
@@ -646,11 +687,8 @@ pub(super) async fn run_frontend(
                     }
                 }
                 Some(SideSessionCommand::Create(kind)) => {
-                    if !conversation_area(area, &config, false)
-                        .0
-                        .is_some_and(|area| area.width >= 49)
-                    {
-                        Err("Not enough conversation width to open a side session without hiding Preview".into())
+                    if area.width < 49 {
+                        Err("Not enough conversation width to open a side session".into())
                     } else {
                         match workspace.begin_side(kind) {
                             Ok(creation) => {
@@ -704,6 +742,17 @@ pub(super) async fn run_frontend(
                 confirming = None;
                 let _ = workspace.close(id);
                 cleanup.spawn(conversations.remove(index).shutdown());
+                if let Some(saved) = preview_restore.take() {
+                    config.message_pane_percent = saved.width;
+                    for slot in &mut conversations {
+                        slot.saved_preview_width = None;
+                        let mut state = slot.state.lock().unwrap();
+                        state.config.message_pane_percent = saved.width;
+                        state.preview.fullscreen = saved.fullscreen;
+                        state.interaction.pane_resize.cancel();
+                        state.interaction.mouse_selection.clear();
+                    }
+                }
                 if let Some(survivor) = conversations
                     .iter_mut()
                     .find(|slot| slot.id == workspace.main().id())

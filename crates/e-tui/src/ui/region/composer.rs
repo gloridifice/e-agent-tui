@@ -9,6 +9,11 @@ use ratatui::{
 use crate::{i18n::Language, input::InputState, theme::Theme};
 use unicode_width::UnicodeWidthStr;
 
+pub(crate) enum BottomHint<'a> {
+    Tip(&'a crate::tips::TipLine),
+    SideOpening(Language, &'static str),
+}
+
 fn status_label<'a>(
     input: &InputState,
     shell_name: &'a str,
@@ -62,7 +67,7 @@ pub(crate) fn render(
     catalogs: &crate::CatalogModel,
     shell_name: &str,
     macros: &crate::prompt_macros::PromptMacros,
-    tip: Option<&crate::tips::TipLine>,
+    hint: Option<BottomHint<'_>>,
     focused: bool,
 ) -> Option<Position> {
     let cursor = super::super::input::render_focused_input(
@@ -87,29 +92,42 @@ pub(crate) fn render(
     }
     if area.height > 1 {
         let budget = tips_width(area.width, input, shell_name, macros);
-        if let Some(tip) =
-            tip.filter(|tip| tip.budget == budget && budget >= crate::tips::MIN_TIP_COLUMNS)
-        {
-            let style = Style::default().fg(theme.activity.detail.fg);
-            let mut spans = vec![Span::raw(" ")];
-            spans.extend(tip.segments.iter().map(|(text, keyword)| {
-                Span::styled(
-                    text.as_str(),
-                    if *keyword {
-                        style.add_modifier(Modifier::BOLD | Modifier::ITALIC)
-                    } else {
-                        style
-                    },
-                )
-            }));
-            spans.push(Span::raw(" "));
-            let line = Line::from(spans);
-            frame.buffer_mut().set_line(
-                area.right() - 4 - tip.width as u16,
-                area.bottom() - 1,
-                &line,
-                tip.width as u16 + 2,
-            );
+        let line = match hint {
+            Some(BottomHint::SideOpening(language, spinner)) if budget >= spinner.width() + 2 => {
+                let label = crate::wrap::ellipsize_text(
+                    &crate::i18n::tr(language, "input.side_opening"),
+                    budget - spinner.width() - 1,
+                );
+                Some(Line::styled(
+                    format!(" {label} {spinner} "),
+                    Style::default().fg(theme.working_status.running.fg),
+                ))
+            }
+            Some(BottomHint::Tip(tip))
+                if tip.budget == budget && budget >= crate::tips::MIN_TIP_COLUMNS =>
+            {
+                let style = Style::default().fg(theme.activity.detail.fg);
+                let mut spans = vec![Span::raw(" ")];
+                spans.extend(tip.segments.iter().map(|(text, keyword)| {
+                    Span::styled(
+                        text.as_str(),
+                        if *keyword {
+                            style.add_modifier(Modifier::BOLD | Modifier::ITALIC)
+                        } else {
+                            style
+                        },
+                    )
+                }));
+                spans.push(Span::raw(" "));
+                Some(Line::from(spans))
+            }
+            _ => None,
+        };
+        if let Some(line) = line {
+            let width = line.width() as u16;
+            frame
+                .buffer_mut()
+                .set_line(area.right() - 2 - width, area.bottom() - 1, &line, width);
         }
     }
     cursor

@@ -361,7 +361,7 @@ pub(super) fn apply_input_action(
         }
         InputAction::PreviewToggle => {
             let mut app = state.lock().unwrap();
-            app.preview.fullscreen = !app.preview.fullscreen;
+            app.toggle_preview_fullscreen();
         }
         InputAction::ReadingToggle => outcome.activate_reading = true,
     }

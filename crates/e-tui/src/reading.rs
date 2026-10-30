@@ -509,6 +509,8 @@ pub struct ReadingViewState {
     pub item_cursor: Option<ItemId>,
     pub retained_x: Option<usize>,
     pub saved_input: InputState,
+    pub preview_collapsed: bool,
+    pub preview_fullscreen: bool,
     preferred_index: usize,
 }
 
@@ -539,6 +541,8 @@ impl ReadingViewState {
             item_cursor: None,
             retained_x: None,
             saved_input: input.clone(),
+            preview_collapsed: false,
+            preview_fullscreen: false,
             preferred_index,
         })
     }

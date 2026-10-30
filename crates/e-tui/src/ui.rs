@@ -67,8 +67,8 @@ pub fn input_bar_width(area_width: u16, state: &TuiApp) -> u16 {
     }
     let (main, reserve_collapsed_separator) = match screen::layout(
         ratatui::layout::Rect::new(0, 0, area_width, 0),
-        state.config.message_pane_percent,
-        state.preview.fullscreen,
+        state.message_pane_percent(),
+        state.preview_fullscreen(),
     ) {
         screen::ScreenLayout::MainOnly(main) => (main, true),
         screen::ScreenLayout::Split { main, .. } => (main, false),

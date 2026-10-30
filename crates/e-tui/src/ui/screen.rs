@@ -50,6 +50,9 @@ pub enum ScreenLayout {
 pub fn resolved_layout(area: Rect, state: &TuiApp) -> ScreenLayout {
     if let Some(view) = state.viewport {
         return match view.main {
+            Some(main) if view.preview.is_none() && main.right() == area.right() => {
+                ScreenLayout::MainOnly(main)
+            }
             Some(main) => ScreenLayout::Split {
                 main,
                 preview: view.preview.unwrap_or_default(),
@@ -59,8 +62,8 @@ pub fn resolved_layout(area: Rect, state: &TuiApp) -> ScreenLayout {
     }
     layout(
         area,
-        state.config.message_pane_percent,
-        state.preview.fullscreen && state.history_page.is_none(),
+        state.message_pane_percent(),
+        state.preview_fullscreen() && state.history_page.is_none(),
     )
 }
 
@@ -298,7 +301,7 @@ pub(super) fn render_with_cursor(
         approval,
         queue,
     };
-    let preview_fullscreen = state.preview.fullscreen && state.history_page.is_none();
+    let preview_fullscreen = state.preview_fullscreen() && state.history_page.is_none();
     let screen_layout = resolved_layout(frame.area(), state);
     let cursor = match screen_layout {
         ScreenLayout::MainOnly(main) | ScreenLayout::Split { main, .. } => {
@@ -349,11 +352,21 @@ pub(super) fn render_with_cursor(
     if !matches!(screen_layout, ScreenLayout::PreviewOnly(_)) {
         if let Some(column) = state
             .viewport
-            .map(|view| view.main.map(|main| main.right()))
+            .map(|view| {
+                view.main.and_then(|main| {
+                    if matches!(screen_layout, ScreenLayout::MainOnly(_)) {
+                        main.right()
+                            .checked_sub(2)
+                            .filter(|column| *column >= main.x)
+                    } else {
+                        Some(main.right())
+                    }
+                })
+            })
             .unwrap_or_else(|| {
                 separator_column(
                     frame.area(),
-                    state.config.message_pane_percent,
+                    state.message_pane_percent(),
                     preview_fullscreen,
                 )
             })

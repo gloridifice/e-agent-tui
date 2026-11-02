@@ -212,9 +212,31 @@ pub(super) fn live_message(adapter: &mut PiAdapter, message: &Value) -> AdapterO
         }
         Some("assistant") => {
             let fact = assistant_fact(message, Some(adapter.current_turn.max(1)), Some(0));
-            let mut output = usage_cost_usd_nanos(message)
-                .map(|usd_nanos| adapter.timeline(TimelineFact::UsageCost { usd_nanos }))
-                .unwrap_or_default();
+            let outcome = match message.get("stopReason").and_then(Value::as_str) {
+                Some("stop" | "toolUse") => Some(e_tui::agent::timeline::LifecycleOutcome::Success),
+                Some("error" | "length") => Some(e_tui::agent::timeline::LifecycleOutcome::Failure),
+                Some("aborted") => Some(e_tui::agent::timeline::LifecycleOutcome::Cancelled),
+                _ => None,
+            };
+            let mut output = adapter.timeline(TimelineFact::ResponseMetrics {
+                duration_ms: message
+                    .get("usage")
+                    .and_then(|usage| usage.get("output"))
+                    .and_then(Value::as_u64)
+                    .and_then(|_| message.get("durationMs").and_then(Value::as_u64)),
+                outcome,
+                provider: message
+                    .get("provider")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                model: message
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            });
+            if let Some(usd_nanos) = usage_cost_usd_nanos(message) {
+                output.merge(adapter.timeline(TimelineFact::UsageCost { usd_nanos }));
+            }
             output.merge(adapter.timeline(fact));
             output
         }

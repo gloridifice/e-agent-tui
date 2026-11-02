@@ -360,6 +360,7 @@ impl PiAdapter {
                 self.pending_tool_result_messages.clear();
                 self.is_streaming = true;
                 let mut output = retry::started(self);
+                output.merge(self.timeline(TimelineFact::RunStarted));
                 output.events.push(AgentEvent::Session(SessionEvent::Status(
                     AgentStatus::Running,
                 )));
@@ -370,6 +371,7 @@ impl PiAdapter {
                 self.is_streaming = false;
                 let mut output =
                     tool::finish_preparations(self, e_tui::agent::ActivityState::Cancelled);
+                output.merge(self.timeline(TimelineFact::RunFinished));
                 output.merge(retry::settled(self, std::time::Instant::now()));
                 output.merge(session::refresh_stats(self));
                 output.events.push(AgentEvent::Session(SessionEvent::Status(

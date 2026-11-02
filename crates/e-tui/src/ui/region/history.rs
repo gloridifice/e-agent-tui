@@ -1,6 +1,6 @@
 //! Execution-history ranking document rendering.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use ratatui::{
     layout::Rect,
@@ -13,8 +13,8 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::{
     execution_history::{
-        ExecutionCall, ExecutionEvent, ExecutionOutcome, HistoryMessageKind, OperationKind,
-        OperationSummary,
+        response_summaries, ExecutionCall, ExecutionEvent, ExecutionOutcome, HistoryMessageKind,
+        OperationKind, OperationSummary, OutputSpeedSummary, ResponseSummary,
     },
     history_page::{HistoryLoadState, HistoryPage, HistoryView},
     key_mapping::{Action, KeyMapping, Scope},
@@ -380,6 +380,7 @@ struct TimelineItem {
     kind: HistoryMessageKind,
     model: Option<String>,
     turn: Option<(String, String)>,
+    response: Option<(String, u64)>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -393,6 +394,9 @@ struct TimelineDocument {
     row_count: usize,
     origin_ms: u64,
     turn_usage: BTreeMap<(String, String), UsageSummary>,
+    responses: HashMap<(String, u64), ResponseSummary>,
+    turn_speeds: BTreeMap<(String, String), OutputSpeedSummary>,
+    turn_outcomes: BTreeMap<(String, String), ExecutionOutcome>,
 }
 
 fn model_text(model: &crate::execution_history::ModelIdentity) -> String {
@@ -434,6 +438,33 @@ fn price(summary: &UsageSummary) -> String {
     }
 }
 
+fn speed_number(speed: Option<f64>) -> String {
+    speed.map_or_else(|| "—".into(), |speed| format!("{speed:.1}"))
+}
+
+fn outcome_suffix(outcome: Option<ExecutionOutcome>) -> &'static str {
+    match outcome {
+        Some(ExecutionOutcome::Failure) => " (failed)",
+        Some(ExecutionOutcome::Cancelled) => " (cancelled)",
+        _ => "",
+    }
+}
+
+fn turn_speed(summary: Option<&OutputSpeedSummary>) -> String {
+    let Some(summary) = summary else {
+        return "—".into();
+    };
+    let speed = speed_number(summary.tokens_per_second());
+    if summary.measured > 0 && summary.measured < summary.responses {
+        format!(
+            "{speed} (partial {}/{})",
+            summary.measured, summary.responses
+        )
+    } else {
+        speed
+    }
+}
+
 fn message_label(kind: HistoryMessageKind) -> &'static str {
     match kind {
         HistoryMessageKind::User => "USER",
@@ -464,6 +495,9 @@ fn timeline_document(width: usize, page: &HistoryPage, theme: &Theme) -> Timelin
     let mut models: BTreeMap<String, UsageSummary> = BTreeMap::new();
     let mut turns: BTreeMap<(String, String), bool> = BTreeMap::new();
     let mut turn_usage: BTreeMap<(String, String), UsageSummary> = BTreeMap::new();
+    let responses = response_summaries(&page.records);
+    let mut turn_speeds: BTreeMap<(String, String), OutputSpeedSummary> = BTreeMap::new();
+    let mut turn_outcomes = BTreeMap::new();
     for record in &page.records {
         match &record.event {
             ExecutionEvent::MessageObserved {
@@ -475,10 +509,22 @@ fn timeline_document(width: usize, page: &HistoryPage, theme: &Theme) -> Timelin
                     .entry((record.run_id.clone(), turn_id.clone()))
                     .or_default();
             }
-            ExecutionEvent::TurnFinished { turn_id, .. } => {
-                if let Some(closed) = turns.get_mut(&(record.run_id.clone(), turn_id.clone())) {
+            ExecutionEvent::MessageObserved {
+                turn_id: Some(turn_id),
+                kind: HistoryMessageKind::Assistant,
+                ..
+            } => {
+                turn_speeds
+                    .entry((record.run_id.clone(), turn_id.clone()))
+                    .or_default()
+                    .add(responses.get(&(record.run_id.clone(), record.sequence)));
+            }
+            ExecutionEvent::TurnFinished { turn_id, outcome } => {
+                let key = (record.run_id.clone(), turn_id.clone());
+                if let Some(closed) = turns.get_mut(&key) {
                     *closed = true;
                 }
+                turn_outcomes.insert(key, *outcome);
             }
             ExecutionEvent::UsageRecorded {
                 turn_id,
@@ -636,6 +682,8 @@ fn timeline_document(width: usize, page: &HistoryPage, theme: &Theme) -> Timelin
                         turn: turn_id
                             .as_ref()
                             .map(|turn| (record.run_id.clone(), turn.clone())),
+                        response: (*kind == HistoryMessageKind::Assistant)
+                            .then(|| (record.run_id.clone(), record.sequence)),
                     },
                 ));
             }
@@ -649,6 +697,7 @@ fn timeline_document(width: usize, page: &HistoryPage, theme: &Theme) -> Timelin
                         kind: HistoryMessageKind::ModelChange,
                         model: Some(model),
                         turn: None,
+                        response: None,
                     },
                 ));
             }
@@ -672,6 +721,7 @@ fn timeline_document(width: usize, page: &HistoryPage, theme: &Theme) -> Timelin
                             .turn_id
                             .as_ref()
                             .map(|turn| (record.run_id.clone(), turn.clone())),
+                        response: None,
                     },
                 ));
             }
@@ -693,6 +743,7 @@ fn timeline_document(width: usize, page: &HistoryPage, theme: &Theme) -> Timelin
                         turn: turn_id
                             .as_ref()
                             .map(|turn| (record.run_id.clone(), turn.clone())),
+                        response: None,
                     },
                 ));
             }
@@ -714,6 +765,9 @@ fn timeline_document(width: usize, page: &HistoryPage, theme: &Theme) -> Timelin
             row_count: 0,
             origin_ms: 0,
             turn_usage,
+            responses,
+            turn_speeds,
+            turn_outcomes,
         };
     };
     let last_ms = raw_items
@@ -735,6 +789,9 @@ fn timeline_document(width: usize, page: &HistoryPage, theme: &Theme) -> Timelin
         row_count,
         origin_ms,
         turn_usage,
+        responses,
+        turn_speeds,
+        turn_outcomes,
     }
 }
 
@@ -751,11 +808,11 @@ fn timeline_row(index: usize, width: usize, document: &TimelineDocument, theme: 
         usize,
         usize,
     ) = if width >= 100 {
-        (2, 12, 30, 44, 48, 72)
+        (2, 12, 22, 36, 40, 52)
     } else if width >= 70 {
-        (1, 10, 20, 32, 36, 54)
+        (1, 10, 14, 26, 30, 42)
     } else {
-        (1, usize::MAX, 0, 10, 14, 36)
+        (1, usize::MAX, 0, 10, 14, 26)
     };
     put(&mut row, time_x, clock(time, false), theme.history.metadata);
     put(&mut row, axis_x, "│", theme.history.separator);
@@ -778,15 +835,90 @@ fn timeline_row(index: usize, width: usize, document: &TimelineDocument, theme: 
             theme.history.operation.model,
         );
     }
-    let details = bucket
+    let detail_count = bucket
         .items
         .iter()
-        .filter(|item| item.kind == HistoryMessageKind::AgentStop)
-        .filter_map(|item| item.turn.as_ref())
-        .filter_map(|turn| document.turn_usage.get(turn))
-        .map(|usage| format!("{} tok  {}", comma_number(usage.tokens), price(usage)))
-        .collect::<Vec<_>>()
-        .join(" · ");
+        .filter(|item| {
+            matches!(
+                item.kind,
+                HistoryMessageKind::Assistant | HistoryMessageKind::AgentStop
+            )
+        })
+        .count();
+    let mut speeds = Vec::new();
+    let mut usage_details = Vec::new();
+    let mut assistant_index = 0;
+    let mut stop_index = 0;
+    for item in &bucket.items {
+        match item.kind {
+            HistoryMessageKind::Assistant => {
+                assistant_index += 1;
+                let response = item
+                    .response
+                    .as_ref()
+                    .and_then(|key| document.responses.get(key));
+                let prefix = if detail_count > 1 {
+                    format!("A{assistant_index} ")
+                } else {
+                    String::new()
+                };
+                speeds.push(format!(
+                    "{prefix}{}{}",
+                    speed_number(response.and_then(ResponseSummary::tokens_per_second)),
+                    outcome_suffix(response.and_then(|response| response.outcome))
+                ));
+                if detail_count == 1 {
+                    if let Some(response) = response {
+                        if let Some(tokens) = response.output_tokens {
+                            usage_details.push(format!("{} out", comma_number(tokens)));
+                        }
+                        if let Some(duration) = response
+                            .duration
+                            .filter(|duration| duration.duration_ms > 0)
+                        {
+                            usage_details
+                                .push(format!("{:.2}s", duration.duration_ms as f64 / 1_000.0));
+                        }
+                    }
+                }
+            }
+            HistoryMessageKind::AgentStop => {
+                stop_index += 1;
+                let turn = item.turn.as_ref();
+                let prefix = if detail_count > 1 {
+                    format!("STOP{stop_index} ")
+                } else {
+                    String::new()
+                };
+                speeds.push(format!(
+                    "{prefix}{}{}",
+                    turn_speed(turn.and_then(|turn| document.turn_speeds.get(turn))),
+                    outcome_suffix(
+                        turn.and_then(|turn| document.turn_outcomes.get(turn))
+                            .copied()
+                    )
+                ));
+                if let Some(usage) = turn.and_then(|turn| document.turn_usage.get(turn)) {
+                    usage_details.push(format!(
+                        "{} tok  {}",
+                        comma_number(usage.tokens),
+                        price(usage)
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    let details = if speeds.is_empty() {
+        String::new()
+    } else {
+        let mut details = format!("{} tok/s", speeds.join(" · "));
+        if !usage_details.is_empty() {
+            details.push_str(" · ");
+            details.push_str(&usage_details.join(" · "));
+        }
+        details
+    };
     let mut grouped: Vec<(HistoryMessageKind, &'static str, usize)> = Vec::new();
     for item in &bucket.items {
         if let Some((_, _, count)) = grouped.iter_mut().find(|(kind, _, _)| *kind == item.kind) {

@@ -21,7 +21,13 @@ impl EventProjector {
             return vec![ProjectionEffect::Ignore];
         }
 
-        if matches!(event.fact, TimelineFact::UsageCost { .. }) {
+        if matches!(
+            event.fact,
+            TimelineFact::UsageCost { .. }
+                | TimelineFact::ResponseMetrics { .. }
+                | TimelineFact::RunStarted
+                | TimelineFact::RunFinished
+        ) {
             return vec![ProjectionEffect::Ignore];
         }
         if let TimelineFact::SessionTitle { title } = &event.fact {

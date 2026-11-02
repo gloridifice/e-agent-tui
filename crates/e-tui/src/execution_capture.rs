@@ -110,6 +110,13 @@ struct ActiveOperation {
     observed_start: ObservedAt,
 }
 
+#[derive(Debug, Default)]
+struct PendingResponse {
+    duration: Option<MeasuredDuration>,
+    outcome: Option<ExecutionOutcome>,
+    model: Option<ModelIdentity>,
+}
+
 /// Pure adapter-ingress state. Snapshot/history replay is intentionally ignored.
 #[derive(Debug)]
 pub struct ExecutionCapture {
@@ -124,6 +131,9 @@ pub struct ExecutionCapture {
     current_model: Option<ModelIdentity>,
     pending_cost_usd_nanos: Option<u64>,
     pending_usage: Option<TokenUsageRecord>,
+    pending_response: PendingResponse,
+    explicit_run: bool,
+    turn_outcome: ExecutionOutcome,
 }
 
 impl ExecutionCapture {
@@ -140,6 +150,9 @@ impl ExecutionCapture {
             current_model: None,
             pending_cost_usd_nanos: None,
             pending_usage: None,
+            pending_response: PendingResponse::default(),
+            explicit_run: false,
+            turn_outcome: ExecutionOutcome::Success,
         }
     }
 
@@ -184,6 +197,48 @@ impl ExecutionCapture {
         let backend_time = timeline.time_ms;
         let record_time = backend_time.unwrap_or(at.wall_unix_ms);
         match &timeline.fact {
+            TimelineFact::RunStarted => {
+                self.explicit_run = true;
+                Vec::new()
+            }
+            TimelineFact::RunFinished => {
+                if !std::mem::take(&mut self.explicit_run) {
+                    return Vec::new();
+                }
+                self.finish_turn(record_time)
+            }
+            TimelineFact::ResponseMetrics {
+                duration_ms,
+                outcome,
+                provider,
+                model,
+            } => {
+                self.pending_response = PendingResponse {
+                    duration: duration_ms.map(|duration_ms| MeasuredDuration {
+                        duration_ms,
+                        source: TimingSource::Backend,
+                    }),
+                    outcome: outcome.map(|outcome| match outcome {
+                        crate::agent::timeline::LifecycleOutcome::Success => {
+                            ExecutionOutcome::Success
+                        }
+                        crate::agent::timeline::LifecycleOutcome::Failure => {
+                            ExecutionOutcome::Failure
+                        }
+                        crate::agent::timeline::LifecycleOutcome::Cancelled => {
+                            ExecutionOutcome::Cancelled
+                        }
+                    }),
+                    model: provider
+                        .as_ref()
+                        .zip(model.as_ref())
+                        .map(|(provider, model)| ModelIdentity {
+                            provider: provider.clone(),
+                            model: model.clone(),
+                        }),
+                };
+                Vec::new()
+            }
             TimelineFact::UserMessage { .. } => {
                 let mut records = Vec::new();
                 if self.current_turn.is_none() {
@@ -201,30 +256,24 @@ impl ExecutionCapture {
                     vec![self.record(record_time, ExecutionEvent::TurnStarted { turn_id })]
                 }
             }
-            TimelineFact::TurnEnd { error_message, .. } => {
-                let turn_id = self
-                    .current_turn
-                    .clone()
-                    .unwrap_or_else(|| "turn-unknown".into());
-                let outcome = if error_message.is_some() {
-                    ExecutionOutcome::Failure
-                } else {
-                    ExecutionOutcome::Success
+            TimelineFact::TurnEnd {
+                reason,
+                error_message,
+                ..
+            } => {
+                self.turn_outcome = match reason.as_deref() {
+                    Some("aborted" | "interrupted") => ExecutionOutcome::Cancelled,
+                    Some("error" | "length" | "max-tokens" | "blocked") => {
+                        ExecutionOutcome::Failure
+                    }
+                    _ if error_message.is_some() => ExecutionOutcome::Failure,
+                    _ => ExecutionOutcome::Success,
                 };
-                let records = vec![
-                    self.message(record_time, HistoryMessageKind::AgentStop),
-                    self.record(
-                        record_time,
-                        ExecutionEvent::TurnFinished {
-                            turn_id: turn_id.clone(),
-                            outcome,
-                        },
-                    ),
-                ];
-                self.current_turn = None;
-                self.pending_usage = None;
-                self.pending_cost_usd_nanos = None;
-                records
+                if self.explicit_run {
+                    Vec::new()
+                } else {
+                    self.finish_turn(record_time)
+                }
             }
             TimelineFact::UsageCost { usd_nanos } => {
                 self.pending_cost_usd_nanos = Some(*usd_nanos);
@@ -237,23 +286,44 @@ impl ExecutionCapture {
                 Vec::new()
             }
             TimelineFact::AssistantMessage { usage, .. } => {
-                let mut records = vec![self.message(record_time, HistoryMessageKind::Assistant)];
+                let response = std::mem::take(&mut self.pending_response);
+                let model = response.model.or_else(|| self.current_model.clone());
+                let message = self.record(
+                    record_time,
+                    ExecutionEvent::MessageObserved {
+                        turn_id: self.current_turn.clone(),
+                        kind: HistoryMessageKind::Assistant,
+                        model: model.clone(),
+                    },
+                );
+                let message_sequence = message.sequence;
+                let mut records = vec![message];
                 let cost_usd_nanos = self.pending_cost_usd_nanos.take();
                 let usage = usage
                     .map(TokenUsageRecord::from)
                     .or_else(|| self.pending_usage.take());
                 self.pending_usage = None;
+                let usage_sequence = usage.map(|_| self.next_sequence);
                 if let Some(usage) = usage {
                     records.push(self.record(
                         record_time,
                         ExecutionEvent::UsageRecorded {
                             turn_id: self.current_turn.clone(),
-                            model: self.current_model.clone(),
+                            model,
                             usage,
                             cost_usd_nanos,
                         },
                     ));
                 }
+                records.push(self.record(
+                    record_time,
+                    ExecutionEvent::ResponseFinished {
+                        message_sequence,
+                        usage_sequence,
+                        duration: response.duration,
+                        outcome: response.outcome,
+                    },
+                ));
                 records
             }
             TimelineFact::ToolCall(activity) => {
@@ -352,7 +422,29 @@ impl ExecutionCapture {
         }
     }
 
+    fn finish_turn(&mut self, record_time: u64) -> Vec<ExecutionRecord> {
+        self.pending_usage = None;
+        self.pending_cost_usd_nanos = None;
+        self.pending_response = PendingResponse::default();
+        let Some(turn_id) = self.current_turn.clone() else {
+            return Vec::new();
+        };
+        let records = vec![
+            self.message(record_time, HistoryMessageKind::AgentStop),
+            self.record(
+                record_time,
+                ExecutionEvent::TurnFinished {
+                    turn_id,
+                    outcome: self.turn_outcome,
+                },
+            ),
+        ];
+        self.current_turn = None;
+        records
+    }
+
     fn begin_turn(&mut self) -> String {
+        self.turn_outcome = ExecutionOutcome::Success;
         let turn_id = format!("turn-{}", self.next_turn);
         self.next_turn = self.next_turn.saturating_add(1);
         self.current_turn = Some(turn_id.clone());

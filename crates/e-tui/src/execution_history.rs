@@ -161,6 +161,12 @@ pub enum ExecutionEvent {
         usage: TokenUsageRecord,
         cost_usd_nanos: Option<u64>,
     },
+    ResponseFinished {
+        message_sequence: u64,
+        usage_sequence: Option<u64>,
+        duration: Option<MeasuredDuration>,
+        outcome: Option<ExecutionOutcome>,
+    },
     Started(OperationStart),
     Finished(OperationFinish),
 }
@@ -211,6 +217,88 @@ pub fn longest_calls(calls: &[ExecutionCall], limit: usize) -> Vec<&ExecutionCal
         .into_iter()
         .take(limit)
         .map(|(call, _)| call)
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ResponseSummary {
+    pub output_tokens: Option<u64>,
+    pub duration: Option<MeasuredDuration>,
+    pub outcome: Option<ExecutionOutcome>,
+}
+
+impl ResponseSummary {
+    pub fn tokens_per_second(&self) -> Option<f64> {
+        let tokens = self.output_tokens?;
+        let duration = self.duration?.duration_ms;
+        (duration > 0).then(|| tokens as f64 * 1_000.0 / duration as f64)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct OutputSpeedSummary {
+    pub responses: usize,
+    pub measured: usize,
+    output_tokens: u128,
+    duration_ms: u128,
+}
+
+impl OutputSpeedSummary {
+    pub fn add(&mut self, response: Option<&ResponseSummary>) {
+        self.responses += 1;
+        let Some(response) = response else { return };
+        let (Some(tokens), Some(duration), Some(ExecutionOutcome::Success)) =
+            (response.output_tokens, response.duration, response.outcome)
+        else {
+            return;
+        };
+        if duration.duration_ms == 0 {
+            return;
+        }
+        self.measured += 1;
+        self.output_tokens += u128::from(tokens);
+        self.duration_ms += u128::from(duration.duration_ms);
+    }
+
+    pub fn tokens_per_second(&self) -> Option<f64> {
+        (self.duration_ms > 0)
+            .then(|| self.output_tokens as f64 * 1_000.0 / self.duration_ms as f64)
+    }
+}
+
+pub(crate) fn response_summaries(
+    records: &[ExecutionRecord],
+) -> HashMap<(String, u64), ResponseSummary> {
+    let usages: HashMap<_, _> = records
+        .iter()
+        .filter_map(|record| match &record.event {
+            ExecutionEvent::UsageRecorded { usage, .. } => Some((
+                (record.run_id.as_str(), record.sequence),
+                usage.output_tokens,
+            )),
+            _ => None,
+        })
+        .collect();
+    records
+        .iter()
+        .filter_map(|record| match &record.event {
+            ExecutionEvent::ResponseFinished {
+                message_sequence,
+                usage_sequence,
+                duration,
+                outcome,
+            } => Some((
+                (record.run_id.clone(), *message_sequence),
+                ResponseSummary {
+                    output_tokens: usage_sequence
+                        .and_then(|sequence| usages.get(&(record.run_id.as_str(), sequence)))
+                        .copied(),
+                    duration: *duration,
+                    outcome: *outcome,
+                },
+            )),
+            _ => None,
+        })
         .collect()
 }
 

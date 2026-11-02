@@ -79,6 +79,16 @@ pub enum TimelineFact {
     UsageCost {
         usd_nanos: u64,
     },
+    /// Capture-only metadata for the immediately following final response.
+    ResponseMetrics {
+        duration_ms: Option<u64>,
+        outcome: Option<LifecycleOutcome>,
+        provider: Option<String>,
+        model: Option<String>,
+    },
+    /// Capture-only enclosing run boundaries, distinct from internal turns.
+    RunStarted,
+    RunFinished,
     ToolPreparation {
         id: String,
         name: String,

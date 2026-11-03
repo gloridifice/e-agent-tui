@@ -238,7 +238,10 @@ fn markdown_kind(source: &str) -> ReadingBlockKind {
     let trimmed = source.trim_start();
     if trimmed.starts_with("```mermaid") {
         ReadingBlockKind::Mermaid
-    } else if trimmed.starts_with("```") || trimmed.starts_with("    ") {
+    } else if trimmed.starts_with("```")
+        || trimmed.starts_with("~~~")
+        || trimmed.starts_with("    ")
+    {
         ReadingBlockKind::Code
     } else if trimmed.starts_with('|') && trimmed.lines().count() > 1 {
         ReadingBlockKind::Table

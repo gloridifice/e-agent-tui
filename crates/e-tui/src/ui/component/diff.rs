@@ -57,7 +57,17 @@ pub fn styled_line(
     content: Vec<Span<'static>>,
     width: usize,
 ) -> Line<'static> {
-    if width == 0 {
+    styled_row(theme, kind, line_num, content, Some(width))
+}
+
+fn styled_row(
+    theme: &Theme,
+    kind: DiffKind,
+    line_num: Option<usize>,
+    content: Vec<Span<'static>>,
+    width: Option<usize>,
+) -> Line<'static> {
+    if width == Some(0) {
         return Line::raw("");
     }
     let (accent, bg) = palette(theme, kind);
@@ -67,6 +77,8 @@ pub fn styled_line(
         |number| format!("{number:>LINE_NUM_WIDTH$}"),
     );
     let (prefix, prefix_width) = prefix_spans(base, accent, theme.diff.separator.fg, &number);
+    let content_width = spans_width(&content);
+    let width = width.unwrap_or_else(|| prefix_width.saturating_add(content_width));
     if width < prefix_width {
         let raw = prefix
             .iter()
@@ -76,15 +88,17 @@ pub fn styled_line(
     }
 
     let room = width - prefix_width;
-    let content_width = spans_width(&content);
-    let mut body = if content_width > room {
-        let keep = room.saturating_sub(1 + ELLIPSIS_MARGIN);
+    let mut body = if room == 0 {
+        Vec::new()
+    } else if content_width > room {
+        let margin = ELLIPSIS_MARGIN.min(room - 1);
+        let keep = room - 1 - margin;
         let mut clipped = truncate_spans(content, keep);
         let ellipsis_style = clipped
             .last()
             .map_or_else(|| theme.diff.text.style(), |span| span.style);
         clipped.push(Span::styled(ELLIPSIS, ellipsis_style));
-        clipped.push(Span::styled(" ".repeat(ELLIPSIS_MARGIN), ellipsis_style));
+        clipped.push(Span::styled(" ".repeat(margin), ellipsis_style));
         clipped
     } else {
         content
@@ -295,7 +309,7 @@ fn syntax_hint(path: Option<&str>) -> SyntaxHint<'_> {
     path.map_or(SyntaxHint::Token(""), SyntaxHint::Path)
 }
 
-fn render_hunk(hunk: ClassifiedHunk, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+fn render_hunk(hunk: ClassifiedHunk, theme: &Theme, width: Option<usize>) -> Vec<Line<'static>> {
     let old_source = hunk
         .rows
         .iter()
@@ -327,7 +341,7 @@ fn render_hunk(hunk: ClassifiedHunk, theme: &Theme, width: usize) -> Vec<Line<'s
     let mut new_index = 0usize;
     let mut lines = Vec::new();
     if let Some(header) = hunk.header {
-        lines.push(styled_line(
+        lines.push(styled_row(
             theme,
             DiffKind::Context,
             None,
@@ -337,7 +351,7 @@ fn render_hunk(hunk: ClassifiedHunk, theme: &Theme, width: usize) -> Vec<Line<'s
     }
     for row in hunk.rows {
         match row {
-            ClassifiedRow::Meta(meta) => lines.push(styled_line(
+            ClassifiedRow::Meta(meta) => lines.push(styled_row(
                 theme,
                 DiffKind::Context,
                 None,
@@ -368,14 +382,14 @@ fn render_hunk(hunk: ClassifiedHunk, theme: &Theme, width: usize) -> Vec<Line<'s
                         (body, new_line)
                     }
                 };
-                lines.push(styled_line(theme, kind, number, body, width));
+                lines.push(styled_row(theme, kind, number, body, width));
             }
         }
     }
     lines
 }
 
-/// Classify and render event-authored unified diff text. Classification adds
+/// Classify and render supplied unified diff text. Classification adds
 /// presentation metadata only; it never computes changes or reads a file.
 pub fn unified(
     source: &str,
@@ -383,10 +397,19 @@ pub fn unified(
     theme: &Theme,
     width: usize,
 ) -> Vec<Line<'static>> {
+    unified_lines(source, fallback_path, theme, Some(width))
+}
+
+pub(crate) fn unified_lines(
+    source: &str,
+    fallback_path: Option<&str>,
+    theme: &Theme,
+    width: Option<usize>,
+) -> Vec<Line<'static>> {
     classify(source, fallback_path)
         .into_iter()
         .flat_map(|block| match block {
-            ClassifiedBlock::Meta(meta) => vec![styled_line(
+            ClassifiedBlock::Meta(meta) => vec![styled_row(
                 theme,
                 DiffKind::Context,
                 None,

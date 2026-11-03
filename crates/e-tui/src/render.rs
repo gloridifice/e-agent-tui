@@ -77,9 +77,9 @@ pub struct RenderOptions {
     pub markdown_strength: MarkdownStrength,
     /// Optional display width of the surface these lines are painted into.
     /// When set, tables wrap cell text inside fitted columns, list items
-    /// pre-wrap with a hanging indent, and Mermaid diagrams clip over-wide
-    /// rows to preserve their geometry. `None` renders unbounded logical
-    /// rows and leaves wrapping to the paint-time wrapper.
+    /// pre-wrap with a hanging indent, and Mermaid diagrams and diff blocks
+    /// clip over-wide rows to preserve their geometry. `None` renders unbounded
+    /// logical rows and leaves wrapping to the paint-time wrapper.
     pub content_width: Option<usize>,
     pub link_tags: Vec<crate::link_copy::TaggedLink>,
 }
@@ -422,17 +422,29 @@ fn render_block(
             render_quote(raw, unit, theme, options, out);
         }
         BlockKind::CodeBlock { lang, fenced } => {
-            if lang.as_deref() == Some("mermaid") && options.mermaid_enabled {
+            let is_diff = *fenced
+                && lang
+                    .as_deref()
+                    .and_then(|info| info.split_whitespace().next())
+                    .is_some_and(|language| language.eq_ignore_ascii_case("diff"));
+            if is_diff {
+                render_diff_block(raw, unit, theme, options, out);
+            } else if lang.as_deref() == Some("mermaid") && options.mermaid_enabled {
                 render_mermaid_block(raw, unit, theme, options, out);
             } else {
                 render_code_block(raw, lang.as_deref(), *fenced, unit, theme, options, out);
             }
             for line in out.iter_mut() {
-                crate::link_copy::annotate(
-                    &mut line.line,
-                    &options.link_tags,
-                    Style::default().fg(theme.activity.label.fg),
-                );
+                let mut tag_style = Style::default().fg(theme.activity.label.fg);
+                if is_diff {
+                    tag_style.bg = line.line.spans.first().and_then(|span| span.style.bg);
+                }
+                crate::link_copy::annotate(&mut line.line, &options.link_tags, tag_style);
+                if is_diff {
+                    if let Some(width) = options.content_width {
+                        line.line = crate::wrap::clip_line(std::mem::take(&mut line.line), width);
+                    }
+                }
             }
         }
         BlockKind::Table => {
@@ -549,7 +561,7 @@ use inline::{collect_inlines, InlineBuilder, SoftBreak};
 
 #[path = "render/code.rs"]
 mod code;
-use code::{render_code_block, render_mermaid_block};
+use code::{render_code_block, render_diff_block, render_mermaid_block};
 
 #[path = "render/table.rs"]
 mod table;

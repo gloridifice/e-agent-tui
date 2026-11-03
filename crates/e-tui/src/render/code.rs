@@ -1,11 +1,13 @@
-//! Fenced code, syntax highlighting, and Mermaid block presentation.
+//! Fenced code, diff, syntax highlighting, and Mermaid block presentation.
 
+use pulldown_cmark::{Event, Parser};
 use ratatui::text::{Line, Span};
 
 use crate::{
     i18n::tr_args,
     render::{RenderLine, RenderOptions},
     theme::Theme,
+    ui::component::diff,
 };
 
 // ---------------------------------------------------------------------------
@@ -162,6 +164,41 @@ pub(super) fn render_mermaid_block(
     block_bottom_pad(unit, theme, out);
 }
 
+pub(super) fn render_diff_block(
+    raw: &str,
+    unit: u64,
+    theme: &Theme,
+    options: &RenderOptions,
+    out: &mut Vec<RenderLine>,
+) {
+    let mut source = String::new();
+    for event in Parser::new(raw) {
+        if let Event::Text(text) = event {
+            source.push_str(&text);
+        }
+    }
+    block_header(
+        Some("diff"),
+        source.lines().count(),
+        unit,
+        theme,
+        options,
+        out,
+    );
+    out.extend(
+        diff::unified_lines(&source, None, theme, options.content_width)
+            .into_iter()
+            .map(|line| RenderLine {
+                line,
+                unit,
+                raw_line: None,
+                atomic: true,
+                fill: false,
+            }),
+    );
+    block_bottom_pad(unit, theme, out);
+}
+
 // ---------------------------------------------------------------------------
 // Code block
 // ---------------------------------------------------------------------------
@@ -181,38 +218,8 @@ pub(super) fn render_code_block(
     } else {
         (raw_lines.as_slice(), 0)
     };
+    block_header(lang, content.len(), unit, theme, options, out);
     let dim = theme.code.meta.style();
-    let language_key = if content.len() == 1 {
-        "markdown.block_line"
-    } else {
-        "markdown.block_lines"
-    };
-    // Glow-style header: `  lang · N lines` — no frame.
-    out.push(RenderLine {
-        line: Line::from(vec![
-            Span::styled("  ", dim),
-            Span::styled(
-                lang.map_or_else(
-                    || crate::i18n::tr(options.language, "markdown.code"),
-                    str::to_owned,
-                ),
-                dim,
-            ),
-            Span::styled(
-                tr_args(
-                    options.language,
-                    language_key,
-                    &[("count", content.len().to_string())],
-                ),
-                dim,
-            ),
-        ]),
-        unit,
-        raw_line: Some(0),
-        atomic: true,
-        fill: true,
-    });
-
     let highlighted = crate::syntax::highlight_lines(
         content,
         crate::syntax::SyntaxHint::Token(lang.unwrap_or_default()),
@@ -232,7 +239,48 @@ pub(super) fn render_code_block(
     block_bottom_pad(unit, theme, out);
 }
 
-/// One row of inner padding below a code/mermaid block: flagged `fill` so the
+fn block_header(
+    lang: Option<&str>,
+    source_lines: usize,
+    unit: u64,
+    theme: &Theme,
+    options: &RenderOptions,
+    out: &mut Vec<RenderLine>,
+) {
+    let dim = theme.code.meta.style();
+    let language_key = if source_lines == 1 {
+        "markdown.block_line"
+    } else {
+        "markdown.block_lines"
+    };
+    // Glow-style header: `  lang · N lines` — no frame.
+    out.push(RenderLine {
+        line: Line::from(vec![
+            Span::styled("  ", dim),
+            Span::styled(
+                lang.map_or_else(
+                    || crate::i18n::tr(options.language, "markdown.code"),
+                    str::to_owned,
+                ),
+                dim,
+            ),
+            Span::styled(
+                tr_args(
+                    options.language,
+                    language_key,
+                    &[("count", source_lines.to_string())],
+                ),
+                dim,
+            ),
+        ]),
+        unit,
+        raw_line: Some(0),
+        atomic: true,
+        fill: true,
+    });
+}
+
+/// One row of inner padding below a code block: flagged `fill` so the
 /// UI paints it with the block background, and carrying a single backgrounded
 /// space so blank-normalization keeps it (a width-0 row would be trimmed as
 /// a glamour margin blank at the message end).

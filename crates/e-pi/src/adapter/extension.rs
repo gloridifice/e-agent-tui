@@ -86,7 +86,8 @@ pub(super) fn request(adapter: &mut PiAdapter, record: RpcRecord) -> AdapterOutp
         "setTitle" => AdapterOutput::event(AgentEvent::Session(SessionEvent::Title(
             request.title.unwrap_or_default(),
         ))),
-        "setStatus" | "setWidget" => AdapterOutput::default(),
+        "setStatus" => super::status::update(adapter, request.status_key, request.status_text),
+        "setWidget" => AdapterOutput::default(),
         _ => AdapterOutput::default(),
     }
 }

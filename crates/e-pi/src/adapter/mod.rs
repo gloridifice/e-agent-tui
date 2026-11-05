@@ -78,6 +78,7 @@ enum ReloadStep {
 }
 
 pub const AUTH_STATUS_KEY: &str = "pie-native-auth-v1";
+const FAST_STATUS_KEY: &str = "pi-effort-fast";
 pub const AUTH_CONTEXT_COMMAND: &str = "__pie_native_auth_context_v1";
 pub const AUTH_REFRESH_COMMAND: &str = "__pie_native_auth_refresh_v1";
 pub const RELOAD_COMMAND: &str = "__pie_reload_v1";
@@ -116,6 +117,7 @@ pub struct PiAdapter {
     emitted_title: Option<String>,
     /// Id of a prompt sent for a slash command; its response triggers the
     /// same-session state refresh that observes extension-side renames.
+    fast_enabled: bool,
     pending_command_prompt: Option<String>,
     pending_command_states: HashMap<String, PendingCommandState>,
     pending_prompt_state: Option<(String, u64, String)>,
@@ -140,6 +142,7 @@ pub struct PiAdapter {
     thinking_level: Option<String>,
     pending_new: HashMap<String, NewSubmission>,
     pending_fork: Option<fork::Pending>,
+    pending_resume: Option<String>,
     pending_model_effort: HashMap<String, Option<String>>,
     configuration_request: Option<String>,
     deferred_requests: std::collections::VecDeque<AgentRequest>,
@@ -214,6 +217,7 @@ impl PiAdapter {
             active_compaction_model: None,
             active_compaction_id: None,
             active_compaction_automatic: None,
+            fast_enabled: false,
             last_attached_session: None,
             saved_session: false,
             current_model: None,
@@ -221,6 +225,7 @@ impl PiAdapter {
             thinking_level: None,
             pending_new: HashMap::new(),
             pending_fork: None,
+            pending_resume: None,
             pending_model_effort: HashMap::new(),
             configuration_request: None,
             deferred_requests: std::collections::VecDeque::new(),
@@ -296,6 +301,7 @@ impl PiAdapter {
         }
         if (self.configuration_request.is_some()
             || self.pending_interrupt.is_some()
+            || self.pending_resume.is_some()
             || self.pending_queue.operation.is_some()
             || self.pending_skill_prompt.is_some()
             || self.pending_compaction.is_some())
@@ -762,6 +768,7 @@ mod request;
 mod response;
 mod retry;
 mod session;
+mod status;
 mod tool;
 
 #[cfg(test)]

@@ -234,6 +234,41 @@ impl RuntimeState {
         self.push_local_block(text.into(), DisplayTone::Error, "error");
     }
 
+    pub fn update_extension_status(&mut self, key: &str, text: Option<String>) {
+        if key.is_empty() || key == "pi-effort-fast" {
+            return;
+        }
+        let id = DisplayId::correlated("extension-status", key);
+        let text = text.filter(|text| !text.trim().is_empty());
+        if text.is_none() {
+            if let Some(index) = self.transcript.position(&id) {
+                self.transcript.remove(index);
+                self.extension_statuses.remove(key);
+                self.render.transcript_cache.invalidate();
+            }
+            return;
+        }
+        let text = format!("[{key}] {}", text.unwrap());
+        let block = TranscriptBlock {
+            id: id.clone(),
+            unit: None,
+            content: text.clone(),
+            format: TranscriptFormat::Plain,
+            tone: DisplayTone::Dim,
+            copy_source: text.clone(),
+            streaming: false,
+        };
+        if self
+            .transcript
+            .replace(&id, DisplayItem::Block(block.clone()), None)
+            .is_none()
+        {
+            self.transcript.append(DisplayItem::Block(block), None);
+        }
+        self.extension_statuses.insert(key.to_owned(), id);
+        self.render.transcript_cache.invalidate();
+    }
+
     fn push_local_block(&mut self, text: String, tone: DisplayTone, role: &str) {
         let id = DisplayId::correlated(role, &format!("local:{}", self.next_local_display_id));
         self.next_local_display_id = self.next_local_display_id.wrapping_add(1);
@@ -481,6 +516,8 @@ impl RuntimeState {
         self.session.current_mode_seq = None;
         self.session.token_usage = TokenUsage::default();
         self.session.cost_usd = None;
+        self.session.extension_fast = false;
+        self.extension_statuses.clear();
         self.session.last_usage_sample = None;
         self.session.context_usage_unknown = false;
         self.link_copy.clear();

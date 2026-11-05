@@ -433,6 +433,7 @@ pub(super) fn drain_deferred(adapter: &mut PiAdapter, output: &mut AdapterOutput
     while adapter.configuration_request.is_none()
         && adapter.pending_interrupt.is_none()
         && adapter.pending_fork.is_none()
+        && adapter.pending_resume.is_none()
         && adapter.pending_queue.operation.is_none()
         && adapter.pending_skill_prompt.is_none()
     {
@@ -513,6 +514,9 @@ fn dispatch_response(adapter: &mut PiAdapter, record: RpcRecord) -> AdapterOutpu
             .error
             .unwrap_or_else(|| format!("Pi RPC command `{}` failed", response.command));
         if let Some(id) = response.id.as_ref() {
+            if adapter.pending_resume.as_deref() == Some(id.as_str()) {
+                adapter.pending_resume = None;
+            }
             if adapter.pending_new.remove(id).is_some() {
                 return AdapterOutput::event(AgentEvent::Interaction(InteractionEvent::Error {
                     code: "new-failed".into(),
@@ -532,8 +536,25 @@ fn dispatch_response(adapter: &mut PiAdapter, record: RpcRecord) -> AdapterOutpu
 
     match response.command.as_str() {
         "get_state" => {
+            let resume = response
+                .id
+                .as_deref()
+                .is_some_and(|id| adapter.pending_resume.as_deref() == Some(id));
             let mut output = session::state_response(adapter, response.data.as_ref());
             output.merge(model::available_model_catalog(adapter));
+            if resume {
+                let id = adapter.request_id("resume-history");
+                adapter.pending_resume = Some(id.clone());
+                output.commands.extend([
+                    RpcCommand::GetMessages { id: Some(id) },
+                    RpcCommand::GetCommands {
+                        id: Some(adapter.request_id("commands")),
+                    },
+                    RpcCommand::GetAvailableModels {
+                        id: Some(adapter.request_id("models")),
+                    },
+                ]);
+            }
             if let Some(submission) = response
                 .id
                 .as_ref()
@@ -550,7 +571,17 @@ fn dispatch_response(adapter: &mut PiAdapter, record: RpcRecord) -> AdapterOutpu
             }
             output
         }
-        "get_messages" => session::messages_response(adapter, response.data.as_ref()),
+        "get_messages" => {
+            let resume = response
+                .id
+                .as_deref()
+                .is_some_and(|id| adapter.pending_resume.as_deref() == Some(id));
+            let output = session::messages_response(adapter, response.data.as_ref());
+            if resume {
+                adapter.pending_resume = None;
+            }
+            output
+        }
         "get_commands" => adapter.commands_response(response.data.as_ref()),
         "get_available_models" => model::models_response(adapter, response.data.as_ref()),
         "new_session" => {
@@ -600,16 +631,24 @@ fn dispatch_response(adapter: &mut PiAdapter, record: RpcRecord) -> AdapterOutpu
             }
         }
         "switch_session" => {
+            if response
+                .id
+                .as_deref()
+                .is_none_or(|id| adapter.pending_resume.as_deref() != Some(id))
+            {
+                return AdapterOutput::default();
+            }
             adapter.current_turn = 0;
             adapter.pending_tool_result_messages.clear();
             adapter.preparing_tools.clear();
             adapter.session_name = None;
             adapter.derived_title = None;
             adapter.emitted_title = None;
-            AdapterOutput {
-                commands: adapter.refresh_commands(),
-                events: Vec::new(),
-            }
+            // The target attach must reach the frontend before its snapshot:
+            // attaching a different session resets the rendered transcript.
+            let id = adapter.request_id("resume-state");
+            adapter.pending_resume = Some(id.clone());
+            AdapterOutput::command(RpcCommand::GetState { id: Some(id) })
         }
         "set_model" => {
             let compaction_selection =

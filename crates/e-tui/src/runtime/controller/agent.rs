@@ -357,6 +357,15 @@ pub(super) fn apply_session(
             }
             Vec::new()
         }
+        SessionEvent::ExtensionStatus { key, text } => {
+            let mut app = state.lock().unwrap();
+            app.update_extension_status(&key, text);
+            Vec::new()
+        }
+        SessionEvent::FastMode(enabled) => {
+            state.lock().unwrap().session.extension_fast = enabled;
+            Vec::new()
+        }
         SessionEvent::List {
             sessions,
             titles_pending,

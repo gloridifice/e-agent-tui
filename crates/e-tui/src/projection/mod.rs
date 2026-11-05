@@ -66,6 +66,7 @@ pub struct TimelineModel {
     pub session_state_events: HashSet<String>,
     pub next_thinking_id: u64,
     pub next_local_display_id: u64,
+    pub extension_statuses: HashMap<String, DisplayId>,
     pub pending_transcript_insert: Option<usize>,
     pub pending_submissions: Vec<DisplayId>,
     /// Stable display ids already present in the newer page while older

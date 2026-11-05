@@ -172,6 +172,9 @@ pub(super) fn render_status(
     if let Some(cost) = (!drafting).then_some(state.session.cost_usd).flatten() {
         metrics.push(format!("${cost:.2}"));
     }
+    if state.session.extension_fast {
+        metrics.push("fast".into());
+    }
     let left = Line::from(Span::styled(metrics.join(" "), dim));
     let right_text = format!(
         "{} {}",

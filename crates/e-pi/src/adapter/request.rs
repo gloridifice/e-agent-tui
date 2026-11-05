@@ -220,8 +220,10 @@ fn route_request(
             // Force the post-switch refresh to re-emit `Attached` even when the
             // resolved session key equals the last reported one (explicit re-attach).
             adapter.last_attached_session = None;
+            let id = adapter.request_id("resume-switch");
+            adapter.pending_resume = Some(id.clone());
             AdapterOutput::command(RpcCommand::SwitchSession {
-                id: Some(adapter.request_id("switch")),
+                id: Some(id),
                 session_path: session_id,
             })
         }

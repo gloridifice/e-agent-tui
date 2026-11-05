@@ -48,6 +48,13 @@ pub enum SessionEvent {
         session_id: String,
         usd: Option<f64>,
     },
+    /// Local extension status, keyed for replacement or removal.
+    ExtensionStatus {
+        key: String,
+        text: Option<String>,
+    },
+    /// A normalized service-tier preference reported by a Pi extension.
+    FastMode(bool),
     List {
         sessions: Vec<SessionSummary>,
         titles_pending: bool,

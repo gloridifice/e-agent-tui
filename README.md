@@ -1,138 +1,101 @@
-<p align="center">
-<img src="./readme/logo.png" width="128">
-</p>
+<div align="center">
 
-`e` is a terminal UI for coding agents, designed to be concise, attention-friendly, lightweight, and fast. It provides `dshe` for [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness) and the `pie` frontend for Pi.
-It does not alter either agent runtime. The project is still in an early stage of development.
+<img src="readme/logo.png" alt="e logo" width="128">
 
-<p align="center">
-<a href="#quick-start-dsh">Start for DSH</a> | <a href="#quick-start-pi">Start for Pi</a> | <a href="#build-yourself">Build Yourself</a> | <a href="#development">Development</a>
-</p>
+# e
+
+</div>
+
+<div align="center">
+
+English | [简体中文](readme/README.zh-CN.md) | [日本語](readme/README.ja-JP.md) | [Français](readme/README.fr-FR.md)
+
+</div>
+
+`e` is a terminal UI for coding agents: `dshe` connects to [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness), and `pie` runs Pi through its official RPC interface, without replacing either agent runtime.
+
+> Early-stage software. Windows and PowerShell are the primary supported environment; prebuilt binaries are also available for Linux x64.
 
 https://github.com/user-attachments/assets/45a75c55-7e3b-4af3-b1e2-1c6306b80358
 
-## Quick Start DSH
+## Quick Start
 
-> Windows and PowerShell are currently the primary supported environment.
+### Install
 
-Before installing, make sure [Git](https://git-scm.com/), [Node.js](https://nodejs.org/) with npm, and [Rust](https://rustup.rs/) with Cargo are available. And:
+Choose the frontend for your agent. The commands below require [Node.js and npm](https://nodejs.org/) and [Rust with Cargo](https://rustup.rs/). DSH also requires [Git](https://git-scm.com/) and pnpm.
 
-- Install pnpm: `npm install -g pnpm`
-- Install DeepSeek Harness: `npm install -g @deepseek-ai/dsh`
-
-Then install and setup `e` by:
+**DeepSeek Harness — `dshe`**
 
 ```bash
-cargo install e-dsh
+npm install --global pnpm @deepseek-ai/dsh
+cargo install e-dsh --locked
 dshe setup
 ```
 
-Run `e`:
-
-```bash
-dshe
-```
-
-On first launch, `dshe` starts its dedicated DSH service automatically. Use `/login` to configure an API key or proxy, `/model [provider/model]` to select a model, and `/effort [level]` to change the reasoning effort. Wide terminals show a themed Preview pane; drag the Bark-colored separator to resize it. Preview collapses below 16 columns, while narrow terminals keep the main conversation usable. The interface defaults to English; Simplified Chinese is available with `language = "zh-CN"` in the config (English remains the fallback).
-
-## Quick Start Pi
-
-Install Pi and the `pie` executable from source, then run it in a project directory:
+**Pi — `pie`**
 
 ```bash
 npm install --global @earendil-works/pi-coding-agent
-cargo install e-pi
-pie
+cargo install e-pi --locked
 ```
 
-`pie` launches the official `pi --mode rpc` runtime and reuses Pi's native models, credentials, extensions, resources, and session files. Inside `pie`, use `/login [provider]` for Pi's native API-key, OAuth, browser, device-code, and multi-step setup flows, and `/logout` to remove a stored credential. Use `pie --resume <session_id>` (or `pie -r <session_id>`) to reopen a saved session, or `pie --session <session.jsonl>` for a file. On exit, `pie` prints a command to resume the current saved session; `pie --approve` or `pie --no-approve` explicitly overrides Pi's native project-trust behavior. Run `pie --help` for all launch options.
+Prefer not to install Rust? Download a Windows x64 ZIP or Linux x64 tarball from [GitHub Releases](https://github.com/gloridifice/e/releases), verify it against `SHA256SUMS`, and extract the executables into a directory on `PATH`. Each archive includes both frontends. Install your chosen agent's npm dependencies above; DSH still needs Git and `dshe setup`.
 
-## Prebuilt binaries
+Run `dshe` or `pie` in your project directory, then use `/login` to configure access to your provider. `dshe` starts its dedicated DSH service automatically; `pie` reuses Pi's native credentials, models, extensions, and session files.
 
-Download the Windows x64 ZIP or Linux x64 tarball from [GitHub Releases](https://github.com/gloridifice/e/releases). Each archive includes `dshe` and `pie`; extract them into a directory on `PATH`. `SHA256SUMS` provides archive checksums. Rust/Cargo is not needed for these downloads, but the runtime prerequisites above still apply; run `dshe setup` before using DSH.
+Use `/help` inside either frontend for keyboard controls, and `pie --help` for Pi launch options. See [DSH setup and upgrades](doco/guides/dsh-integration.md) and [Pi runtime requirements](doco/guides/development.md#prerequisites) for compatibility details.
 
-## Build Yourself
+### Update
 
-To build without installing:
+Re-run the npm and Cargo install commands above for your chosen frontend. For prebuilt installs, replace the executables with those from the latest release.
 
-```bash
-git clone https://github.com/gloridifice/e.git
-cd e
-cargo devdsh # alias of `cargo install --path crates/e-dsh`
-cargo devpi # alias of `cargo install --path crates/e-pi`
-```
-
-```bash
-dshe setup
-dshe
-# or for pi
-pie
-```
-
-For a profiling build, enable the optional Tracy integration:
-
-```bash
-cargo build --release --features tracy
-```
+After updating DSH or `dshe`, run `dshe setup` again and restart any running DSH service so it loads the updated bridge. `/reload` does not replace that restart.
 
 ## Features
 
-- **Pi MCP manager:** Use `/mcp` or F6; `q` closes browsing but stays text in editors. Enabled/exposure changes require confirmation. Idle saves reload automatically; saves during a run only show a `/reload` reminder. Reload refreshes other Pi resources too.
-- **Input navigation and history:** Home/End moves to the start/end of the current input row, including wrapped rows. Ctrl+C saves a text-only draft to input history before clearing it; ↑ recalls it.
-- **Local shell commands:** Run `! <command>` in either frontend's workspace without sending input/output to the model or saving it in agent history. Commands are noninteractive and run with your permissions. Ctrl+R opens Reading; PageUp/PageDown scroll focused output, and Esc stops a running command. Reading and Preview show retained output; finished commands fold after a message or agent completion.
-- **Compaction queue:** In either frontend, Enter during compaction queues ordinary messages (`○`) until the current run finishes, not merely until compaction ends.
-- **Command completion:** Prefix an existing draft with `/` to complete commands or arguments without replacing it. Enter confirms, Enter again submits, and Esc restores the typed prefix.
-- **Path completion:** Type `@` to browse project-relative paths. ↑/↓ selects, Tab/Enter fills (directories continue browsing), and Esc dismisses. Paths with spaces are quoted; Enter sends only after completion closes.
-- **Model default effort:** Use `/model <model-id> set-default-effort <effort>` to save a default for future model selections without changing the current session's effort.
-- **Pi error recovery:** Additional retries with a live countdown are enabled by default. Toggle **Retry model errors** under `/settings` → **Behavior** (`error_auto_retry`); Pi's native retries are unchanged.
-- **Pi session forks:** Use `/fork [message]` to branch from a selected earlier prompt, or `/clone [message]` to duplicate the current branch. An optional message is sent only after the new session is ready. `/resume` groups derived sessions beneath their parents.
-- **Execution history:** Use `/history` to view slow operations and the usage timeline, or `/history copy` to copy execution metadata that may contain sensitive command arguments.
-- **Compaction model:** Use `/compact set-model` or `/compact unset-model` to configure a shared override for DSH compaction and Pi manual compaction.
+- Streaming Markdown with syntax-highlighted code, tables, Mermaid diagrams, and diff previews.
+- Resizable Preview pane and Reading mode for inspecting messages and tool output.
+- Multiline editing, input history, command and path completion, and queued prompts.
+- Model and reasoning-effort selection, reusable prompt macros, and a configurable compaction model.
+- Pi-native authentication, MCP management, and session resume, fork, and clone workflows.
+- Local shell commands kept out of model context and agent history; they are noninteractive and run with your permissions.
+- Execution history with operation timings and token/cost timelines. Exported metadata may contain sensitive command arguments.
+- Custom themes, configurable key bindings, and English or Simplified Chinese interface text.
 
 ## Config
 
-`e`'s config is under:
+Use `/settings` for common preferences or `/econfig` to locate the shared frontend configuration:
 
 - Windows: `%APPDATA%\e`
 - Linux: `$XDG_CONFIG_HOME/e` (default `~/.config/e`)
 - macOS: `~/.config/e`
 
-You can run `/econfig` in `e` to open or show the config path of your device.
+`config.toml` stores settings; set `language = "zh-CN"` for Simplified Chinese. English is the default and fallback. Agent credentials and session files remain managed by DSH or Pi.
 
-- `config.toml`: Settings configuration. `/econfig` prints its path in the message pane.
-- `key_mapping.toml`: Key mapping overrides.
-- `themes/`: custom theme folder.
+Customize `key_mapping.toml` with the [key mapping guide](doco/guides/key-mapping.md) and [default bindings](crates/e-tui/assets/default_key_mapping.toml). Add theme TOML files under `themes/`, using the [bundled themes](crates/e-tui/assets/themes/) as examples. `/reload` refreshes configuration, themes, and backend resources.
 
-- **Key mapping:** Customize `key_mapping.toml` using the [key mapping guide](doco/guides/key-mapping.md) and [default bindings](crates/e-tui/assets/default_key_mapping.toml).
-- **Themes:** Use `/theme` to switch themes or add custom TOML files under `themes/`, following the [bundled examples](crates/e-tui/assets/themes/).
+## Build from Source
 
-Use `/reload` to reload configuration, themes, and backend resources; replacing DSH plugin code still requires a service restart.
+Requires Git and Rust/Cargo. The runtime prerequisites above still apply.
+
+```bash
+git clone https://github.com/gloridifice/e.git
+cd e
+cargo build --release --locked -p e-dsh -p e-pi --bins
+```
+
+The executables are in `target/release/`. For checkout installs, bridge changes, and profiling builds, see the [development guide](doco/guides/development.md).
+
+## License
+
+Licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
 
 ## Development
 
-This project is still a prototype. Issues are welcome, but pull requests are not being accepted yet.
+Issues are welcome. Pull requests are not being accepted yet while the project is a prototype.
 
-Useful checks:
-
-```powershell
-cargo fmt --check
-cargo clippy --all-targets
-cargo test
-
-cd bridge
-npm test
-cd ..
-
-node tools/sync-protocol-contract.mjs --check
-node tools/sync-release-assets.mjs --check
-```
-
-After changing `bridge/`, regenerate the packaged mirror, rebuild the client, and re-run `dshe setup` so the embedded bridge is current. Then restart DSH before testing it:
-
-```powershell
-node tools/sync-release-assets.mjs
-cargo build --release
-dshe setup
-```
-
-See the [doco index](doco/README.md) for current architecture, contracts, and guides, and the [generated wire reference](doco/specs/wire-protocol.md) for WebSocket framing. The canonical wire source is [`bridge/protocol-contract.json`](bridge/protocol-contract.json).
+- [Documentation index](doco/README.md)
+- [Development guide](doco/guides/development.md)
+- [Architecture](doco/architecture.md)
+- [Testing and validation](doco/guides/testing.md)
+- [Troubleshooting](doco/guides/troubleshooting.md)

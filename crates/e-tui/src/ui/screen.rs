@@ -303,9 +303,25 @@ pub(super) fn render_with_cursor(
     };
     let preview_fullscreen = state.preview_fullscreen() && state.history_page.is_none();
     let screen_layout = resolved_layout(frame.area(), state);
+    let resize_percent = state.viewport.and_then(|view| view.resize_percent);
     let cursor = match screen_layout {
         ScreenLayout::MainOnly(main) | ScreenLayout::Split { main, .. } => {
-            if let Some(history_page) = &mut state.history_page {
+            if let Some(percent) = resize_percent {
+                frame.render_widget(Block::default().style(theme.surface.base.style()), main);
+                render_placeholder_box(
+                    frame,
+                    main,
+                    MAIN_PAGE_MARGIN,
+                    MAIN_PAGE_MARGIN,
+                    &format!(
+                        "{}\n{:.2}%",
+                        crate::i18n::tr(state.config.language, "screen.message_pane"),
+                        f64::from(percent) / 100.0
+                    ),
+                    theme,
+                );
+                None
+            } else if let Some(history_page) = &mut state.history_page {
                 pane::history::render(frame, main, history_page, &state.config, theme);
                 None
             } else {
@@ -371,7 +387,12 @@ pub(super) fn render_with_cursor(
                 )
             })
         {
-            paint_separator(frame, frame.area(), column, theme, false);
+            let dragging = resize_percent.is_some()
+                && state
+                    .viewport
+                    .and_then(|view| view.main)
+                    .is_some_and(|main| main.x == frame.area().x);
+            paint_separator(frame, frame.area(), column, theme, dragging);
         }
     }
     if let Some(menu) = &mut state.mcp {

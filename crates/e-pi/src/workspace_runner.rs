@@ -3,7 +3,7 @@ use crossterm::event::{Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind
 use e_tui::runtime::sessions::{
     SessionId, SidePreparationResult, SideSessionCommand, SideSessionKind, SideSessionSeed,
 };
-use e_tui::viewport::ConversationViewport;
+use e_tui::viewport::{ConversationSplit, ConversationViewport};
 use ratatui::layout::Rect;
 
 struct Settings<'a> {
@@ -301,12 +301,12 @@ fn conversation_area(
 }
 
 fn allocate(
-    workspace: &SessionWorkspace<()>,
+    workspace: &mut SessionWorkspace<()>,
     conversations: &mut [Conversation],
     area: Rect,
     config: &Config,
-) {
-    let (pane_percent, fullscreen, reading) = conversations
+) -> Option<Rect> {
+    let (pane_percent, fullscreen, reading, modal) = conversations
         .iter()
         .find(|slot| slot.id == workspace.focused())
         .map(|slot| {
@@ -315,11 +315,29 @@ fn allocate(
                 state.message_pane_percent(),
                 state.preview_fullscreen() && state.history_page.is_none(),
                 state.reading.is_some(),
+                state.interaction.help_visible || state.mcp.is_some(),
             )
         })
-        .unwrap_or((config.message_pane_percent, false, false));
+        .unwrap_or((config.message_pane_percent, false, false, false));
     let (main, preview) = conversation_area(area, pane_percent, fullscreen);
-    let split = !reading && workspace.side().is_some() && main.is_some_and(|area| area.width >= 49);
+    let split_area = main.filter(|area| {
+        !reading && workspace.side().is_some() && area.width >= ConversationSplit::MIN_WIDTH
+    });
+    let resize_area = split_area.filter(|_| {
+        !modal
+            && !conversations.iter().any(|slot| {
+                slot.state
+                    .lock()
+                    .unwrap()
+                    .interaction
+                    .pane_resize
+                    .is_active()
+            })
+    });
+    if resize_area.is_none() {
+        workspace.split.cancel();
+    }
+    let split = split_area.and_then(|area| workspace.split.layout(area));
     for slot in conversations {
         let focused = slot.id == workspace.focused();
         let mut state = slot.state.lock().unwrap();
@@ -330,13 +348,11 @@ fn allocate(
             None
         } else {
             let main = main.and_then(|area| {
-                if split {
-                    let left = area.width / 2;
-                    let right = area.width - left - 1;
+                if let Some((left, right)) = split {
                     Some(if slot.id == workspace.main().id() {
-                        Rect::new(area.x, area.y, left, area.height)
+                        left
                     } else {
-                        Rect::new(area.x + left + 1, area.y, right, area.height)
+                        right
                     })
                 } else {
                     focused.then_some(area)
@@ -346,9 +362,18 @@ fn allocate(
                 main,
                 preview: focused.then_some(preview).flatten(),
                 focused,
+                resize_percent: if workspace.split.is_active() {
+                    split.zip(main).map(|((left, right), main)| {
+                        ((u32::from(main.width) * 10_000 + u32::from(left.width + right.width) / 2)
+                            / u32::from(left.width + right.width)) as u16
+                    })
+                } else {
+                    None
+                },
             })
         };
     }
+    resize_area
 }
 
 pub(super) async fn run_frontend(
@@ -407,15 +432,15 @@ pub(super) async fn run_frontend(
 
     'running: loop {
         let _zone = e_tui::tracy_zone!("main loop");
-        let area = terminal
+        let mut area = terminal
             .size()
             .map(|size| Rect::new(0, 0, size.width, size.height))
             .unwrap_or(Rect::new(0, 0, 80, 24));
-        let size = TerminalSize {
+        let mut size = TerminalSize {
             width: area.width,
             height: area.height,
         };
-        allocate(&workspace, &mut conversations, area, &config);
+        allocate(&mut workspace, &mut conversations, area, &config);
         let mut deadline = scheduler.deadline();
         for slot in &mut conversations {
             slot.worker.set_error_auto_retry(config.error_auto_retry);
@@ -511,10 +536,34 @@ pub(super) async fn run_frontend(
                     Some(Err(error)) => { fatal = Some(error); break 'running; }
                     None => break 'running,
                 };
+                if let Event::Resize(width, height) = &event {
+                    area = Rect::new(0, 0, *width, *height);
+                    size = TerminalSize { width: *width, height: *height };
+                }
+                let resize_area = allocate(&mut workspace, &mut conversations, area, &config);
+                let divider_handled = if confirming.is_none() {
+                    match route_terminal_event(event.clone(), TerminalFocus::default(), &config.key_mapping) {
+                        e_tui::runtime::input::TerminalRoute::Pointer(pointer) => workspace.split.handle_pointer(pointer, resize_area),
+                        _ => {
+                            let captured = workspace.split.is_active();
+                            if !matches!(&event, Event::Mouse(_) | Event::FocusGained) {
+                                workspace.split.cancel();
+                            }
+                            captured && matches!(&event, Event::Mouse(_) | Event::Key(crossterm::event::KeyEvent { code: KeyCode::Esc, .. }))
+                        }
+                    }
+                } else {
+                    workspace.split.cancel();
+                    false
+                };
                 let cancel_creation = matches!(&event, Event::Key(key) if key.code == KeyCode::Esc && key.kind != KeyEventKind::Release)
                     && workspace.pending().is_some()
                     && !conversations.iter().any(|slot| slot.state.lock().unwrap().interaction.input_page.is_some());
-                if cancel_creation {
+                if divider_handled {
+                    for slot in &mut conversations {
+                        slot.state.lock().unwrap().interaction.mouse_selection.clear();
+                    }
+                } else if cancel_creation {
                     let creation = workspace.pending().unwrap();
                     workspace.cancel_side(creation);
                     pending_source = None;
@@ -687,7 +736,7 @@ pub(super) async fn run_frontend(
                     }
                 }
                 Some(SideSessionCommand::Create(kind)) => {
-                    if area.width < 49 {
+                    if area.width < ConversationSplit::MIN_WIDTH {
                         Err("Not enough conversation width to open a side session".into())
                     } else {
                         match workspace.begin_side(kind) {
@@ -738,6 +787,7 @@ pub(super) async fn run_frontend(
             // A confirmed target remains stable even if a different conversation becomes focused.
             if busy && !close_confirmed {
                 confirming = Some(id);
+                workspace.split.cancel();
             } else {
                 confirming = None;
                 let _ = workspace.close(id);
@@ -829,7 +879,7 @@ pub(super) async fn run_frontend(
         if workspace.pending().is_none() {
             pending_source = None;
         }
-        allocate(&workspace, &mut conversations, area, &config);
+        allocate(&mut workspace, &mut conversations, area, &config);
         if let Some(started) = update_started {
             pending_update += started.elapsed();
         }
@@ -848,7 +898,7 @@ pub(super) async fn run_frontend(
             let mut candidates = Vec::new();
             let transaction = terminal.draw(|frame| {
                 let area = frame.area();
-                allocate(&workspace, &mut conversations, area, &config);
+                allocate(&mut workspace, &mut conversations, area, &config);
                 let mut cursor = None;
                 let focused_modal = conversations
                     .iter()

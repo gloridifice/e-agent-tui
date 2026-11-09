@@ -78,6 +78,12 @@ pub fn input_bar_width(area_width: u16, state: &TuiApp) -> u16 {
 }
 
 pub(crate) fn tips_budget(size: TerminalSize, state: &TuiApp) -> usize {
+    if state
+        .viewport
+        .is_some_and(|view| view.resize_percent.is_some())
+    {
+        return 0;
+    }
     let (main, collapsed) = match screen::resolved_layout(
         ratatui::layout::Rect::new(0, 0, size.width, size.height),
         state,
@@ -199,7 +205,10 @@ pub fn render_with_cursor_and_selection(
     selection: &MouseSelection,
     committed: &Presentation,
 ) -> RenderOutput {
-    let resizing = overlays.pane_resize.is_active();
+    let resizing = overlays.pane_resize.is_active()
+        || state
+            .viewport
+            .is_some_and(|view| view.resize_percent.is_some());
     let help_visible = overlays.help_visible;
     let context = selection_context(
         state,

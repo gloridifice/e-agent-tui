@@ -124,6 +124,7 @@ pub struct SessionWorkspace<T> {
     focused: SessionId,
     pending: Option<SideCreation>,
     last_id: u64,
+    pub split: crate::viewport::ConversationSplit,
 }
 
 impl<T> SessionWorkspace<T> {
@@ -135,6 +136,7 @@ impl<T> SessionWorkspace<T> {
             focused: id,
             pending: None,
             last_id: id.0,
+            split: Default::default(),
         }
     }
 
@@ -233,6 +235,7 @@ impl<T> SessionWorkspace<T> {
             value,
         });
         self.focused = creation.session;
+        self.split = Default::default();
         Ok(creation.session)
     }
 
@@ -268,6 +271,7 @@ impl<T> SessionWorkspace<T> {
             side
         };
         self.focused = self.main.id;
+        self.split = Default::default();
         Ok(closed)
     }
 }

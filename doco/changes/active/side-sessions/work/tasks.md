@@ -13,7 +13,7 @@
   - Acceptance: Both queues and streams progress while unfocused; side startup, snapshot/choice loading and materialization never block page input, scrolling, focus or rendering; local failures and stale work do not cross sessions; shutdown cleans up both runtimes and their child effects. Retain the startup owner and select on completion rather than awaiting startup inline.
 - [x] 3.1 Integrate two conversation panes, shared Preview, input geometry, mouse focus/scroll and atomic selection presentation.
   - Dependencies: 1.1, 2.2
-  - Acceptance: Equal conversation widths use the current Preview layout; independent drafts and scroll survive focus/swap; narrow resize preserves runtimes. Preview entry/exit behavior follows task 3.3.
+  - Acceptance: Initial equal conversation widths use the current Preview layout; independent drafts and scroll survive focus/swap; narrow resize preserves runtimes. Preview entry/exit behavior follows task 3.3; adjustable conversation widths follow task 3.5.
 - [x] 3.2 Wire command discovery, completion, busy-close confirmation, exit interception and Help.
   - Dependencies: 2.1, 2.2, 3.1
   - Acceptance: All proposal commands work; no <code>/side main</code>; duplicate creation rejects locally; DSH does not claim unsupported capabilities; exit closes only the focused conversation when split.
@@ -21,6 +21,8 @@
   - Acceptance: Preserve prior width/collapsed and fullscreen state; restore after closing either role, including swap/promotion; do not change layout for pending/failed/cancelled creation or declined close. Temporary widths must not leak through config persistence. Admission accounts for the collapsed width.
 - [x] 3.4 Show side-opening progress in the composer bottom rule.
   - Acceptance: Bare creation and new/clone/fork preparation/startup use the localized opening label and existing tool spinner cadence in Honey, right-aligned without adding rows. Tips pause while displaced. Success, failure, cancellation and stale reservations clear it; focus-only operations do not show it. Input remains responsive. No test edits.
+- [x] 3.5 Add transient main/side divider resizing.
+  - Acceptance: Initially equal widths; exclusive drag capture shows placeholder panes and percentages, commits on release and clamps both composers without collapsing. Preview stays independent. Reading, narrow-window recovery and swap retain the left/right ratio; closing/reopening resets it. Focus loss/resize cancels pending drag. No config persistence, test edits or README edits.
 - [x] 4.1 Synchronize delivered current contracts and run overall verification.
   - Dependencies: 3.1, 3.2
   - Acceptance: Relevant existing tests, workspace formatting/Clippy and isolated manual Pi/TUI checks pass or have explicit limitations; current documentation describes delivered behavior; no test edits or README edits; change remains active.
@@ -66,6 +68,14 @@ Temporary native sessions and an offline provider were driven through real Pi JS
 - Existing `e-tui` checks passed: `ui::` (130), `runtime::state::animation::` (1), and `i18n::` (4). The `tips` filter matched no existing tests; no tests were added or modified.
 - An isolated offline Pi Windows PTY exercise with delayed candidate startup confirmed the English bottom-rule label in Honey (`#f5d76e`), advancing tool-spinner frames, editable drafts during loading, immediate removal on Esc, removal after failed startup, and successful bare <code>/side</code> attachment without a lingering label. Focus-only <code>/side</code> showed no loading label. At 30 columns, the shell label retained its space and the opening text clipped while its spinner remained visible.
 - Tips displacement/resumption and fork preparation use the shared reservation/render paths; they were not separately exercised during live agent work. Chinese localization was checked by the existing locale checks, not a Chinese-language PTY run. No paid model requests were made. Temporary native sessions and owned frontend state/history were cleaned or restored.
+
+### Conversation-divider follow-up
+
+- `cargo check -p e-pi -p e-tui -p e-dsh`, `cargo build -p e-pi --bin pie`, `cargo fmt --all --check`, `git diff --check` and `doco check side-sessions`: passed.
+- Existing scoped checks passed: e-tui `runtime::controller::` (71), `ui::screen::` (4), `interaction::` (8), `i18n::` (4); e-pi architecture (2); e-dsh architecture filtered to `production` (3). No tests were added or modified.
+- `cargo clippy --workspace --all-targets`: passed with pre-existing warnings outside the changed code.
+- Real Windows PTY exercises with temporary native Pi sessions confirmed exclusive divider dragging with percentage placeholders, release-to-commit, minimum widths on both sides, unchanged keyboard focus/drafts, fixed screen widths on swap, narrow/wide restoration, Reading restoration, independent reopened Preview, and equal widths after closing/reopening side. Esc and terminal resize cancelled pending adjustments. No paid model requests were made. Probe-owned native/history files were removed and original frontend config/resume state restored.
+- Current architecture, presentation/interaction contracts and both Help translations are synchronized. Physical validation remains Windows-only; focus-loss/modal cancellation and wheel suppression were checked through source routing, not separate physical terminal runs. The change remains active.
 
 ### Limits and phase boundary
 

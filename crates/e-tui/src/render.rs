@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Event, Options, Tag, TagEnd};
 use ratatui::{
     style::Style,
     text::{Line, Span},
@@ -132,7 +132,7 @@ pub fn render_markdown(
         | Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_TASKLISTS
         | Options::ENABLE_FOOTNOTES;
-    let parser = Parser::new_ext(text, md_options);
+    let source = math_source::MathSource::new(text, md_options);
     let mut out = Vec::new();
 
     let mut block: Vec<(Event, Range<usize>)> = Vec::new();
@@ -140,7 +140,7 @@ pub fn render_markdown(
     let mut depth: usize = 0;
     let mut block_start: usize = 0;
 
-    for (event, range) in parser.into_offset_iter() {
+    for (event, range) in source.events() {
         if block_kind.is_none() {
             // Start of a top-level block.
             let kind = top_level_kind(&event);
@@ -360,6 +360,9 @@ fn render_block(
 ) {
     match kind {
         BlockKind::Paragraph => {
+            if math::render_display(raw, unit, theme, options, out) {
+                return;
+            }
             let inlines =
                 collect_inlines(theme, raw, theme.markdown.text.style(), &options.link_tags);
             for (i, line) in inlines.into_iter().enumerate() {
@@ -555,6 +558,11 @@ fn heading_style(theme: &Theme, level: usize) -> Style {
     }
 }
 
+#[path = "render/math.rs"]
+mod math;
+#[path = "render/math_source.rs"]
+mod math_source;
+
 #[path = "render/inline.rs"]
 mod inline;
 use inline::{collect_inlines, InlineBuilder, SoftBreak};
@@ -616,7 +624,7 @@ fn render_list(
 ) {
     let md_options =
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
-    let parser = Parser::new_ext(raw, md_options);
+    let source = math_source::MathSource::new(raw, md_options);
     let mut levels: Vec<ListLevel> = Vec::new();
     let mut item_stack: Vec<ItemBuf> = Vec::new();
     let mut list = ListRenderer {
@@ -626,7 +634,7 @@ fn render_list(
         raw_line_no: 0,
     };
 
-    for event in parser {
+    for (event, range) in source.events() {
         match &event {
             Event::Start(Tag::List(start)) => levels.push(ListLevel { next: *start }),
             Event::End(TagEnd::List(_)) => {
@@ -673,7 +681,7 @@ fn render_list(
             }
             other => {
                 if let Some(item) = item_stack.last_mut() {
-                    item.inline.push_event(other);
+                    item.inline.push_event(other, &raw[range]);
                 }
             }
         }

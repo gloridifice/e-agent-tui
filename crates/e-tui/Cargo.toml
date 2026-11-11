@@ -24,12 +24,15 @@ futures-util = "0.3"
 ratatui = "0.30"
 ruff_python_formatter = "=0.0.15"
 pulldown-cmark = "0.13"
+pulldown-latex = "=0.7.1"
 rust-i18n = { version = "4", default-features = false }
+rust-latex-parser = "=0.1.0"
 serde = { version = "1", features = ["derive"] }
 syntect = { version = "5", default-features = false, features = [
     "default-syntaxes",
     "regex-fancy",
 ] }
+term-maths = { version = "=1.0.0", default-features = false }
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 toml = "1.1"
 tracy-client = { version = "0.18", optional = true, default-features = false, features = [

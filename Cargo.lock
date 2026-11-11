@@ -1057,12 +1057,15 @@ dependencies = [
  "dprint-plugin-typescript",
  "futures-util",
  "pulldown-cmark",
+ "pulldown-latex",
  "ratatui",
  "ruff_python_formatter",
  "rust-i18n",
+ "rust-latex-parser",
  "serde",
  "serde_json",
  "syntect",
+ "term-maths",
  "tokio",
  "toml 1.1.4+spec-1.1.0",
  "tracy-client",
@@ -2532,6 +2535,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "007d8adb5ddab6f8e3f491ac63566a7d5002cc7ed73901f72057943fa71ae1ae"
 
 [[package]]
+name = "pulldown-latex"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b8bc0583825170e3f560701d966dc2f0e3a16946da371e37d30d3ad7207fb7e"
+dependencies = [
+ "bumpalo",
+]
+
+[[package]]
 name = "pxfm"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3076,6 +3088,12 @@ dependencies = [
  "toml 0.8.23",
  "triomphe",
 ]
+
+[[package]]
+name = "rust-latex-parser"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "30b0949524549f0f83d8a14c71e9b378c45307a77bb6ea6bb969d1399d5ae134"
 
 [[package]]
 name = "rustc-hash"
@@ -3707,6 +3725,17 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "term-maths"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "26ccccf7b1e429ef47ef4a82726346feefdb67169e6a9d8d97fc6d3707640a05"
+dependencies = [
+ "rust-latex-parser",
+ "unicode-segmentation",
+ "unicode-width",
 ]
 
 [[package]]

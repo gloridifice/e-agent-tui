@@ -1,6 +1,6 @@
 //! Event-driven Markdown inline styling shared by block renderers.
 
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Event, Options, Tag, TagEnd};
 use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
@@ -58,9 +58,17 @@ impl<'a> InlineBuilder<'a> {
         }
     }
 
-    pub(super) fn push_event(&mut self, event: &Event) {
+    pub(super) fn push_event(&mut self, event: &Event, source: &str) {
         match event {
             Event::Text(text) => self.push_text(text),
+            Event::InlineMath(formula) => {
+                if let Some(block) = super::math::render(formula, false) {
+                    self.push_text(block.to_string().trim_end());
+                } else {
+                    self.push_text(source);
+                }
+            }
+            Event::DisplayMath(_) => self.push_text(source),
             Event::Code(code) => {
                 // Inline code owns an independent semantic foreground/background.
                 // Padding is configurable per side via the theme's inline_code
@@ -189,8 +197,9 @@ impl<'a> InlineBuilder<'a> {
         self.lines.iter().all(|line| line.width() == 0)
     }
 
-    pub(super) fn finish(mut self) -> Vec<Line<'static>> {
-        for line in self.lines.iter_mut() {
+    pub(super) fn take_lines(&mut self) -> Vec<Line<'static>> {
+        let mut lines = std::mem::replace(&mut self.lines, vec![Line::default()]);
+        for line in lines.iter_mut() {
             trim_line_end(line);
             crate::link_copy::annotate(
                 line,
@@ -199,13 +208,19 @@ impl<'a> InlineBuilder<'a> {
             );
         }
         // Drop trailing empty line artifacts.
-        while self.lines.last().is_some_and(|line| line.width() == 0) {
-            self.lines.pop();
+        while lines.last().is_some_and(|line| line.width() == 0) {
+            lines.pop();
         }
-        if self.lines.is_empty() {
-            self.lines.push(Line::default());
+        lines
+    }
+
+    pub(super) fn finish(mut self) -> Vec<Line<'static>> {
+        let lines = self.take_lines();
+        if lines.is_empty() {
+            vec![Line::default()]
+        } else {
+            lines
         }
-        self.lines
     }
 }
 
@@ -220,8 +235,9 @@ pub(super) fn collect_inlines(
 ) -> Vec<Line<'static>> {
     let options = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH;
     let mut builder = InlineBuilder::new(theme, base, SoftBreak::NewLine, link_tags);
-    for event in Parser::new_ext(raw, options) {
-        builder.push_event(&event);
+    let source = super::math_source::MathSource::new(raw, options);
+    for (event, range) in source.events() {
+        builder.push_event(&event, &raw[range]);
     }
     builder.finish()
 }

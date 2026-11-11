@@ -81,6 +81,7 @@ pub struct TerminalOwner {
     counters: IoCounters,
     sync_output: bool,
     restored: bool,
+    math_graphics: Option<crate::math_graphics::MathGraphics>,
 }
 
 impl TerminalOwner {
@@ -145,7 +146,9 @@ impl TerminalOwner {
             let _ = disable_raw_mode();
             return Err(error);
         }
+        let math_graphics = crate::math_graphics::MathGraphics::detect();
         Ok(Self {
+            math_graphics,
             terminal,
             counters,
             sync_output,
@@ -173,11 +176,16 @@ impl TerminalOwner {
 
         let mut cursor_anchor = None;
         let mut render_elapsed = Duration::ZERO;
+        let images = crate::math_graphics::FrameImages::begin(self.math_graphics.is_some());
+        let graphics = &mut self.math_graphics;
         let draw_result = self
             .terminal
             .draw(|frame| {
                 let render_started = Instant::now();
                 cursor_anchor = render(frame);
+                if let Some(graphics) = graphics {
+                    graphics.paint(images.take(), frame.buffer_mut());
+                }
                 render_elapsed = render_started.elapsed();
             })
             .map(|_| ());

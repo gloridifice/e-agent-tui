@@ -55,6 +55,7 @@ pub(super) fn render_table(
                 line: Line::from(Span::styled(line.to_string(), theme.markdown.text.style())),
                 unit,
                 raw_line: Some(i),
+                math_image: None,
                 atomic: false,
                 fill: false,
             });
@@ -134,6 +135,7 @@ fn push_plain(out: &mut Vec<RenderLine>, unit: u64, s: String, style: Style) {
         line: Line::from(Span::styled(s, style)),
         unit,
         raw_line: None,
+        math_image: None,
         atomic: true,
         fill: false,
     });
@@ -170,6 +172,7 @@ fn push_table_cells(
         line: Line::from(spans),
         unit,
         raw_line: None, // atomic block
+        math_image: None,
         atomic: true,
         fill: false,
     });
@@ -367,6 +370,7 @@ fn push_table_cell_rows(
             line: Line::from(spans),
             unit,
             raw_line: None, // atomic block
+            math_image: None,
             atomic: true,
             fill: false,
         });

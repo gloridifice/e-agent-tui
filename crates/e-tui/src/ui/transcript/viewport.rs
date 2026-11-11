@@ -184,6 +184,7 @@ pub(super) fn render_transcript_impl(
     display.truncate(content_height);
     let paragraph = Paragraph::new(Text::from(display)).style(Style::default().fg(theme.fg));
     frame.render_widget(paragraph, area);
+    offer_math_images(frame, area, state, start, end, visual_row_offset);
     if let Some(line) = attached.filter(|_| bottom_y > 0) {
         frame.render_widget(
             Paragraph::new(line),
@@ -204,4 +205,78 @@ pub(super) fn render_transcript_impl(
         }
     }
     bottom_y
+}
+
+fn offer_math_images(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    state: &TuiApp,
+    start: usize,
+    end: usize,
+    visual_offset: usize,
+) {
+    if !crate::math_graphics::enabled() {
+        return;
+    }
+    let cache = &state.render.transcript_cache;
+    for (index, node) in state.transcript.nodes().iter().enumerate() {
+        let DisplayItem::Block(block) = &node.item else {
+            continue;
+        };
+        if block.format != TranscriptFormat::Markdown
+            || block.streaming
+            || state.render.transcript_reveals.contains_key(&block.id)
+        {
+            continue;
+        }
+        let Some(range) = cache.message_ranges.get(index).and_then(|range| *range) else {
+            continue;
+        };
+        if cache
+            .layout
+            .prefix
+            .get(range.end)
+            .is_none_or(|row| *row <= start)
+            || cache
+                .layout
+                .prefix
+                .get(range.start)
+                .is_none_or(|row| *row >= end)
+        {
+            continue;
+        }
+        let Some(lines) = state.render.markdown_layout.lines(&block.id) else {
+            continue;
+        };
+        for (row, line) in lines.iter().enumerate() {
+            let Some(image) = &line.math_image else {
+                continue;
+            };
+            let base = range.start + row;
+            if base + usize::from(image.height) > range.end || image.width > area.width {
+                continue;
+            }
+            let Some(&global) = cache.layout.prefix.get(base) else {
+                continue;
+            };
+            if global < start || global + usize::from(image.height) > end {
+                continue;
+            }
+            let image_area = ratatui::layout::Rect::new(
+                area.x,
+                area.y + (global - start + visual_offset) as u16,
+                image.width,
+                image.height,
+            );
+            if image_area.intersection(area) != image_area {
+                continue;
+            }
+            let buffer = frame.buffer_mut();
+            let background = match buffer[(image_area.x, image_area.y)].bg {
+                ratatui::style::Color::Reset => state.config.background_color.color(),
+                color => color,
+            };
+            crate::math_graphics::offer(image, image_area, background, buffer);
+        }
+    }
 }

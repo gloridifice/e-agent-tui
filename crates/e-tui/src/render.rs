@@ -35,7 +35,11 @@ pub struct RenderLine {
     /// Full-width background fill: the UI pads the row to the area width
     /// with Night (`bg`, glow-style code/mermaid blocks).
     pub fill: bool,
+    /// Presentation-only image candidate on the first row of a display grid.
+    pub math_image: Option<MathImage>,
 }
+
+pub use crate::math_graphics::MathImage;
 
 /// Block taxonomy for copy-mode semantics.
 #[derive(Debug, Clone, PartialEq)]
@@ -244,6 +248,7 @@ fn blank_row(unit: u64, atomic: bool) -> RenderLine {
         raw_line: None,
         atomic,
         fill: false,
+        math_image: None,
     }
 }
 
@@ -368,6 +373,7 @@ fn render_block(
             for (i, line) in inlines.into_iter().enumerate() {
                 out.push(RenderLine {
                     line,
+                    math_image: None,
                     unit,
                     raw_line: Some(i),
                     atomic: false,
@@ -414,6 +420,7 @@ fn render_block(
                 );
                 out.push(RenderLine {
                     line: rendered,
+                    math_image: None,
                     unit,
                     raw_line: Some(i),
                     atomic: false,
@@ -461,6 +468,7 @@ fn render_block(
                 line: Line::from(Span::styled("─".repeat(32), theme.markdown.rule.style())),
                 unit,
                 raw_line: Some(0),
+                math_image: None,
                 atomic: false,
                 fill: false,
             });
@@ -469,6 +477,7 @@ fn render_block(
             for (i, line) in raw.lines().enumerate() {
                 out.push(RenderLine {
                     line: Line::from(Span::styled(line.to_string(), theme.code.meta.style())),
+                    math_image: None,
                     unit,
                     raw_line: Some(i),
                     atomic: false,
@@ -526,6 +535,7 @@ fn render_quote(
                     unit,
                     // Wrapped rows stay on their quote line's source line.
                     raw_line: Some(index),
+                    math_image: None,
                     atomic: false,
                     fill: false,
                 });
@@ -755,6 +765,7 @@ impl ListRenderer<'_> {
                     unit: self.unit,
                     // Wrapped rows stay on their logical row's source line.
                     raw_line: Some(self.raw_line_no),
+                    math_image: None,
                     atomic: false,
                     fill: false,
                 });

@@ -235,6 +235,9 @@ pub fn render_with_cursor_and_selection(
             .unwrap_or(frame.area());
         overlay::render_toast(frame, area, toast, theme);
     }
+    if selection.is_dragging() || resizing || help_visible || state.mcp.is_some() {
+        crate::math_graphics::suppress(frame.area());
+    }
     let pane_separator = if help_visible {
         None
     } else {

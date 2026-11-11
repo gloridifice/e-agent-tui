@@ -85,8 +85,25 @@ pub fn render(
                         .get(source)
                         .map(|script| (source, script))
                 });
+                preview.math_images.clear();
                 let layout = if let Some((source, script)) = script {
                     script_layout(content, source, script, theme, inner_width, config.language)
+                } else if let PreviewContent::Markdown(source)
+                | PreviewContent::MutedMarkdown(source)
+                | PreviewContent::Reasoning(source) = content
+                {
+                    let mut lines = Vec::new();
+                    for row in weak_markdown_rows(source, theme, inner_width, config.language) {
+                        if let Some(image) = row.math_image {
+                            preview.math_images.push((lines.len(), image));
+                        }
+                        lines.extend(wrap_line(row.line, inner_width));
+                    }
+                    PreviewLayout {
+                        lines,
+                        pinned_rows: 0,
+                        nowrap_from: None,
+                    }
                 } else {
                     content_layout(content, theme, inner_width, config.language)
                 };
@@ -187,6 +204,44 @@ pub fn render(
     } else {
         0
     };
+    let image_areas = preview
+        .math_images
+        .iter()
+        .filter_map(|(source_row, image)| {
+            if !crate::math_graphics::enabled()
+                || !matches!(
+                    &preview.state,
+                    PreviewState::Ready(
+                        PreviewContent::Markdown(_)
+                            | PreviewContent::MutedMarkdown(_)
+                            | PreviewContent::Reasoning(_)
+                    )
+                )
+                || preview
+                    .reveal
+                    .as_ref()
+                    .is_some_and(|track| !track.is_complete())
+            {
+                return None;
+            }
+            let row = visible_lines
+                .iter()
+                .position(|(index, _)| index == source_row)?;
+            let last = row + usize::from(image.height) - 1;
+            if visible_lines.get(last)?.0 != source_row + usize::from(image.height) - 1
+                || usize::from(image.width) > inner_width
+            {
+                return None;
+            }
+            let rect = Rect::new(
+                area.x + left_padding,
+                area.y + (top_padding + row) as u16,
+                image.width,
+                image.height,
+            );
+            (rect.intersection(area) == rect).then_some((image.clone(), rect))
+        })
+        .collect::<Vec<_>>();
     let mut centered = Vec::with_capacity(usize::from(area.height));
     centered.extend(std::iter::repeat_n(Line::raw(""), top_padding));
     centered.extend(visible_lines.into_iter().map(|(_, line)| line));
@@ -199,6 +254,14 @@ pub fn render(
         ))),
         area,
     );
+    for (image, rect) in image_areas {
+        let buffer = frame.buffer_mut();
+        let background = match buffer[(rect.x, rect.y)].bg {
+            ratatui::style::Color::Reset => config.background_color.color(),
+            color => color,
+        };
+        crate::math_graphics::offer(&image, rect, background, buffer);
+    }
 }
 
 fn hash_value(value: &impl Hash) -> u64 {
@@ -408,6 +471,18 @@ fn weak_markdown_lines(
     width: usize,
     language: crate::Language,
 ) -> Vec<Line<'static>> {
+    weak_markdown_rows(source, theme, width, language)
+        .into_iter()
+        .map(|row| row.line)
+        .collect()
+}
+
+fn weak_markdown_rows(
+    source: &str,
+    theme: &Theme,
+    width: usize,
+    language: crate::Language,
+) -> Vec<crate::render::RenderLine> {
     let mut next_unit = 0u64;
     let mut units = std::collections::HashMap::new();
     let options = RenderOptions {
@@ -419,14 +494,13 @@ fn weak_markdown_lines(
     };
     render_markdown(source, theme, &mut next_unit, &options, &mut units)
         .into_iter()
-        .map(|render_line| {
+        .map(|mut render_line| {
             if render_line.fill {
-                render_line
+                render_line.line = render_line
                     .line
-                    .patch_style(theme.markdown_weak.code_block_bg.style())
-            } else {
-                render_line.line
+                    .patch_style(theme.markdown_weak.code_block_bg.style());
             }
+            render_line
         })
         .collect()
 }

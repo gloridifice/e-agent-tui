@@ -39,10 +39,27 @@ pub(super) fn render_display(
         &options.link_tags,
     );
     let mut lines = Vec::new();
+    let mut images = std::collections::HashMap::new();
     for (event, range) in source.events() {
         if let MdEvent::DisplayMath(formula) = event {
             lines.extend(builder.take_lines());
-            let rendered = render(&formula, true).map(|block| block.to_string());
+            let rendered = render(&formula, true).map(|block| {
+                if options
+                    .content_width
+                    .is_none_or(|width| block.width() <= width)
+                {
+                    images.insert(
+                        lines.len(),
+                        super::MathImage {
+                            source: std::sync::Arc::from(formula.as_ref()),
+                            width: block.width() as u16,
+                            height: block.height() as u16,
+                            foreground: theme.markdown.text.fg,
+                        },
+                    );
+                }
+                block.to_string()
+            });
             let text = rendered.as_deref().unwrap_or(&raw[range]);
             for row in text.lines() {
                 let mut line = Line::from(Span::styled(
@@ -66,13 +83,19 @@ pub(super) fn render_display(
         }
     }
     lines.extend(builder.take_lines());
-    out.extend(lines.into_iter().map(|line| super::RenderLine {
-        line,
-        unit,
-        raw_line: None,
-        atomic: true,
-        fill: false,
-    }));
+    out.extend(
+        lines
+            .into_iter()
+            .enumerate()
+            .map(|(index, line)| super::RenderLine {
+                line,
+                math_image: images.remove(&index),
+                unit,
+                raw_line: None,
+                atomic: true,
+                fill: false,
+            }),
+    );
     true
 }
 

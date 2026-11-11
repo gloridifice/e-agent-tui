@@ -404,6 +404,7 @@ pub struct PreviewPaneState {
     pub reveal_intent: PreviewRevealIntent,
     seen_targets: HashSet<String>,
     layout: PreviewLayoutCache,
+    pub(crate) math_images: Vec<(usize, crate::render::MathImage)>,
     pub(crate) command_script: crate::command_script::ScriptCache,
     next_request_id: u64,
     work: PreviewWorkStats,
@@ -598,6 +599,7 @@ impl PreviewPaneState {
     }
 
     pub fn invalidate_layout(&mut self) {
+        self.math_images.clear();
         self.layout = PreviewLayoutCache::default();
     }
 

@@ -38,7 +38,7 @@ See [bridge contracts](specs/dsh-bridge.md).
 
 ## State and effects
 
-Frontend semantic state is provider-neutral. Presentation caches and reveal progress are derived state. Adapters own filesystem, process, clipboard, transport, and provider persistence effects. Execution-history records are normalized before entering shared code and exclude model text, file contents, patches, and raw unknown payloads.
+Frontend semantic state is provider-neutral. Presentation caches and reveal progress are derived state. Display-math image candidates retain character-grid geometry and source provenance. Shared terminal setup owns graphics capability negotiation; the terminal owner maintains the bounded raster/encoding cache and composes eligible Sixel overlays after text snapshot capture, within the same atomic frame transaction. UI viewports submit only ephemeral placement requests; image transport never enters semantic or selectable text. Adapters own filesystem, process, clipboard, transport, and provider persistence effects. Execution-history records are normalized before entering shared code and exclude model text, file contents, patches, and raw unknown payloads.
 
 Compaction selection uses one user-wide route file shared by the Pi adapter and DSH bridge; each compaction captures the latest route, independently of session cwd. Filesystem persistence remains adapter-owned and its data schema belongs to `e-tui`.
 

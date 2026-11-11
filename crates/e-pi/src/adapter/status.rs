@@ -1,6 +1,6 @@
 //! Pi extension status projection; never replayed as native session history.
 
-use e_tui::agent::{AgentEvent, SessionEvent};
+use e_tui::agent::SessionEvent;
 
 use super::{AdapterOutput, PiAdapter, FAST_STATUS_KEY};
 
@@ -19,8 +19,5 @@ pub(super) fn update(
             adapter.fast_enabled,
         )));
     }
-    AdapterOutput::event(AgentEvent::Session(SessionEvent::ExtensionStatus {
-        key,
-        text,
-    }))
+    AdapterOutput::default()
 }

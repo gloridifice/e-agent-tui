@@ -38,6 +38,26 @@ pub struct SessionSummary {
     pub modified_at: Option<std::time::SystemTime>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Delegation {
+    pub enabled: bool,
+    pub entries: Vec<DelegatedTask>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DelegatedTask {
+    pub slot: usize,
+    pub label: String,
+    pub status: DelegatedStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DelegatedStatus {
+    Running,
+    Done,
+    Failed,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum SessionEvent {
     Attached(AttachedSession),
@@ -55,6 +75,7 @@ pub enum SessionEvent {
     },
     /// A normalized service-tier preference reported by a Pi extension.
     FastMode(bool),
+    Delegation(Delegation),
     List {
         sessions: Vec<SessionSummary>,
         titles_pending: bool,

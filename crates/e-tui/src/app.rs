@@ -152,6 +152,7 @@ pub struct SessionModel {
     pub token_usage: TokenUsage,
     pub cost_usd: Option<f64>,
     pub extension_fast: bool,
+    pub delegation: Option<crate::agent::Delegation>,
     pub last_usage_sample: Option<(Option<u64>, Option<u64>, TokenUsage)>,
     pub context_usage_unknown: bool,
     pub session_title: Option<String>,
@@ -184,6 +185,7 @@ impl Default for SessionModel {
             token_usage: TokenUsage::default(),
             cost_usd: None,
             extension_fast: false,
+            delegation: None,
             last_usage_sample: None,
             context_usage_unknown: false,
             session_title: None,
@@ -199,6 +201,13 @@ impl Default for SessionModel {
 }
 
 impl SessionModel {
+    pub(crate) fn delegated_tasks(&self) -> &[crate::agent::DelegatedTask] {
+        self.delegation
+            .as_ref()
+            .filter(|d| d.enabled && self.new_conversation.is_none())
+            .map_or(&[], |d| d.entries.as_slice())
+    }
+
     pub fn cache_hit_rate(&self) -> Option<u64> {
         let prompt_tokens = self
             .token_usage

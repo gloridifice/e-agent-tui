@@ -111,6 +111,7 @@ pub(crate) fn tips_budget(size: TerminalSize, state: &TuiApp) -> usize {
         &state.interaction.input,
         &state.shell.name,
         &state.config.prompt_macros,
+        state.session.delegated_tasks(),
     )
 }
 

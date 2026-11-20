@@ -517,6 +517,7 @@ impl RuntimeState {
         self.session.token_usage = TokenUsage::default();
         self.session.cost_usd = None;
         self.session.extension_fast = false;
+        self.session.delegation = None;
         self.extension_statuses.clear();
         self.session.last_usage_sample = None;
         self.session.context_usage_unknown = false;

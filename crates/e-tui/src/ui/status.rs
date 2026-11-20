@@ -175,7 +175,6 @@ pub(super) fn render_status(
     if state.session.extension_fast {
         metrics.push("fast".into());
     }
-    let left = Line::from(Span::styled(metrics.join(" "), dim));
     let right_text = format!(
         "{} {}",
         state.config.key_mapping.label(
@@ -191,8 +190,22 @@ pub(super) fn render_status(
     let left_width = area
         .width
         .saturating_sub(right_width.saturating_add(u16::from(right_width < area.width)));
+    let mut left = metrics.join(" ");
+    if let Some(delegation) = &state.session.delegation {
+        let mode = if delegation.enabled && !drafting {
+            "subagent on"
+        } else {
+            "subagent off"
+        };
+        let budget = usize::from(left_width).saturating_sub(mode.len() + 1);
+        left = crate::wrap::ellipsize_text(&left, budget);
+        if !left.is_empty() {
+            left.push(' ');
+        }
+        left.push_str(mode);
+    }
     let buffer = frame.buffer_mut();
-    buffer.set_line(area.x, area.y, &left, left_width);
+    buffer.set_line(area.x, area.y, &Line::styled(left, dim), left_width);
     let right_x = area.x + area.width.saturating_sub(right_width);
     buffer.set_line(right_x, area.y, &right, right_width);
 }

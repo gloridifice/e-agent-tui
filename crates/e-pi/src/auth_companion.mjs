@@ -15,6 +15,48 @@ function publish(ctx, value) {
   ctx.ui.setStatus(STATUS_KEY, JSON.stringify({ protocol: 1, ...value }));
 }
 
+// Only the switch is installed at startup. Do not register the tool or add
+// model-facing instructions until the user explicitly enables delegation.
+function registerDelegationSwitch(pi) {
+  let runtime;
+  let retired = false;
+  let serial = Promise.resolve();
+  const publish = (ctx) => ctx.ui.setStatus("pie-subagents-v1", JSON.stringify({
+    sessionId: ctx.sessionManager.getSessionId(), enabled: !!runtime?.enabled,
+    entries: runtime?.entries() ?? [],
+  }));
+  pi.on("session_start", (_event, ctx) => publish(ctx));
+  pi.registerCommand("subagent", {
+    description: "Toggle background agents, or set /subagent on|off",
+    handler: (args, ctx) => {
+      const change = async () => {
+        if (retired) return;
+        const arg = args.trim();
+        if (!["", "on", "off"].includes(arg)) {
+          ctx.ui.notify("Usage: /subagent [on|off]", "error");
+          return;
+        }
+        const enable = arg === "on" || (!arg && !runtime?.enabled);
+        if (enable && !runtime) {
+          const { createDelegation } = await import("./pie-subagents.mjs");
+          if (retired) return;
+          runtime = createDelegation(pi, publish, getPackageDir());
+        }
+        if (enable) runtime.enable();
+        else if (runtime?.enabled) await runtime.disable(ctx);
+        if (!retired) publish(ctx);
+      };
+      serial = serial.then(change).catch((e) => ctx.ui.notify(`Subagent switch failed: ${e.message}`, "error"));
+      return serial;
+    },
+  });
+  pi.on("session_shutdown", async () => {
+    retired = true;
+    await runtime?.shutdown();
+  });
+  return { publish };
+}
+
 function refreshFailed(result) {
   return result.aborted || result.errors.size > 0;
 }
@@ -22,6 +64,7 @@ function refreshFailed(result) {
 export default function registerPieNativeAuth(pi) {
   registerMcpControls(pi);
   registerSideControls(pi);
+  const delegation = registerDelegationSwitch(pi);
   pi.registerCommand("__pie_reload_v1", {
     description: "Internal pie resource reload",
     handler: async (_args, ctx) => {
@@ -33,6 +76,7 @@ export default function registerPieNativeAuth(pi) {
   pi.registerCommand(CONTEXT_COMMAND, {
     description: "Internal pie authentication context",
     handler: async (_args, ctx) => {
+      delegation.publish(ctx);
       publish(ctx, {
         kind: "context",
         packageRoot: getPackageDir(),

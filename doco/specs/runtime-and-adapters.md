@@ -6,7 +6,7 @@
 - `e-dsh` and `e-pi` MUST depend on `e-tui` and MUST NOT depend on each other.
 - `e-tui` MUST own common Tips definitions and an owned, atomic batch-registration API with typed validation errors. Adapters MUST append only their private definitions at composition and publish normalized availability through the registry; IDs and command names alone MUST NOT imply native support. Eligibility MUST use current owner state, effective bindings and exact-locale translations, omitting unavailable candidates rather than displaying stale or mixed-language advice. Session replacement retains definitions but resets capabilities and ephemeral rotation.
 - Each adapter MUST convert provider input into owned `AgentEvent` values and convert `AgentRequest` values at its boundary. Raw provider JSON MUST NOT enter the frontend reducer.
-- Pi extension `setStatus` records MUST NOT project message-area updates. Existing authentication, MCP, and side-control records MUST retain their private control consumers rather than becoming displayed JSON. The `pi-effort-fast` record publishes a normalized fast-mode preference for footer presentation; other ordinary statuses are ignored.
+- Pi extension `setStatus` records MUST NOT project message-area updates. Existing authentication, MCP, and side-control records MUST retain their private control consumers rather than becoming displayed JSON. The fast-mode preference and private delegation snapshot publish normalized composer/footer state; other ordinary statuses are ignored.
 - Architecture tests MUST reject production module cycles and forbidden cross-package dependencies.
 
 ## Runtime effects and locking
@@ -38,6 +38,11 @@
 - MCP menu state, safe metadata, and semantic actions belong to `e-tui`; configuration, browser, RPC, and native MCP lifecycle effects belong to the adapter. Exposure choices are adapter metadata, not frontend-native policy identifiers.
 - Pi management MUST use its existing runtime and public companion APIs. It MUST NOT create a second MCP client, replace the native MCP command, or present an independent connection probe as current-session status. Configuration/catalog inspection and native textual status are distinct from live connection telemetry.
 - Controls MUST be correlated to request and native session identity, serialized against conflicting resource/session changes, and bounded. Closing a modal discards callbacks and cancels pending native input. Uncertain mutations MUST NOT be retried automatically; conflicting operations remain held until native settlement.
+
+## Background delegation
+
+- Only an explicitly enabled Pi conversation may register the model-facing delegation tool. Each admitted task returns a distinct ID without waiting for execution. Children use an unsaved one-shot session with the parent workspace, model, effort and project trust, without the parent's history or delegation tool.
+- Accepted child results and failures return as bounded native custom follow-ups, not user submissions or streamed child transcripts. They wait behind active native work and trigger an idle parent. Disabling delegation or retiring the extension instance invalidates pending callbacks before stopping its children. Frontend status snapshots must be bounded, validated and correlated to their native session.
 
 ## Pi fallback recovery
 

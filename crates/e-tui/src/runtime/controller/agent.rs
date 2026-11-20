@@ -362,6 +362,10 @@ pub(super) fn apply_session(
             app.update_extension_status(&key, text);
             Vec::new()
         }
+        SessionEvent::Delegation(delegation) => {
+            state.lock().unwrap().session.delegation = Some(delegation);
+            Vec::new()
+        }
         SessionEvent::FastMode(enabled) => {
             state.lock().unwrap().session.extension_fast = enabled;
             Vec::new()

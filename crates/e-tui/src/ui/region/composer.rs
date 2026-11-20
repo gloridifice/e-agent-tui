@@ -28,7 +28,7 @@ fn status_label<'a>(
     }
 }
 
-pub(crate) fn tips_width(
+fn rule_budget(
     width: u16,
     input: &InputState,
     shell_name: &str,
@@ -41,6 +41,18 @@ pub(crate) fn tips_width(
         (label.width() + 2).min(usize::from(width.saturating_sub(4))) + 1
     };
     usize::from(width.saturating_sub(6)).saturating_sub(reserved)
+}
+
+pub(crate) fn tips_width(
+    width: u16,
+    input: &InputState,
+    shell_name: &str,
+    macros: &crate::prompt_macros::PromptMacros,
+    entries: &[crate::agent::DelegatedTask],
+) -> usize {
+    let budget = rule_budget(width, input, shell_name, macros);
+    let strip = super::task_strip::fit(entries, budget);
+    budget.saturating_sub(strip.width)
 }
 
 pub(crate) fn render_link_copy_hint(
@@ -67,6 +79,7 @@ pub(crate) fn render(
     catalogs: &crate::CatalogModel,
     shell_name: &str,
     macros: &crate::prompt_macros::PromptMacros,
+    entries: &[crate::agent::DelegatedTask],
     hint: Option<BottomHint<'_>>,
     focused: bool,
 ) -> Option<Position> {
@@ -91,20 +104,24 @@ pub(crate) fn render(
         );
     }
     if area.height > 1 {
-        let budget = tips_width(area.width, input, shell_name, macros);
+        let budget = rule_budget(area.width, input, shell_name, macros);
+        let mut strip = super::task_strip::fit(entries, budget);
+        let tip_budget = budget.saturating_sub(strip.width);
         let line = match hint {
             Some(BottomHint::SideOpening(language, spinner)) if budget >= spinner.width() + 2 => {
                 let label = crate::wrap::ellipsize_text(
                     &crate::i18n::tr(language, "input.side_opening"),
                     budget - spinner.width() - 1,
                 );
+                let text = format!(" {label} {spinner} ");
+                strip = super::task_strip::fit(entries, budget.saturating_sub(text.width()));
                 Some(Line::styled(
-                    format!(" {label} {spinner} "),
+                    text,
                     Style::default().fg(theme.working_status.running.fg),
                 ))
             }
             Some(BottomHint::Tip(tip))
-                if tip.budget == budget && budget >= crate::tips::MIN_TIP_COLUMNS =>
+                if tip.budget == tip_budget && tip_budget >= crate::tips::MIN_TIP_COLUMNS =>
             {
                 let style = Style::default().fg(theme.activity.detail.fg);
                 let mut spans = vec![Span::raw(" ")];
@@ -123,6 +140,15 @@ pub(crate) fn render(
             }
             _ => None,
         };
+        if strip.width > 0 {
+            let x = area.x + 2 + (usize::from(area.width.saturating_sub(6)) - budget) as u16;
+            frame.buffer_mut().set_line(
+                x,
+                area.bottom() - 1,
+                &strip.line(theme),
+                strip.width as u16,
+            );
+        }
         if let Some(line) = line {
             let width = line.width() as u16;
             frame

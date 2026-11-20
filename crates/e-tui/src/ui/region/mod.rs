@@ -5,4 +5,5 @@ pub mod history;
 pub mod input_page;
 pub mod preview;
 pub mod status;
+mod task_strip;
 pub mod transcript;

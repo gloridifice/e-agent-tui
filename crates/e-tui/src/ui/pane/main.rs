@@ -160,6 +160,7 @@ fn render_main_pane_with_cursor(
                 &state.catalogs,
                 &state.shell.name,
                 &state.config.prompt_macros,
+                &[],
                 None,
                 state.viewport.is_none_or(|view| view.focused),
             )
@@ -257,6 +258,7 @@ fn render_main_pane_with_cursor(
             &state.catalogs,
             &state.shell.name,
             &state.config.prompt_macros,
+            state.session.delegated_tasks(),
             if state.side_session_opening {
                 Some(region::composer::BottomHint::SideOpening(
                     state.config.language,

@@ -82,6 +82,7 @@ pub(super) fn render_mermaid_block(
         raw_line: Some(0),
         atomic: true,
         fill: true,
+        copy: None,
     });
 
     match crate::mermaid::render(&source, 0) {
@@ -125,6 +126,7 @@ pub(super) fn render_mermaid_block(
                     raw_line: None,
                     atomic: true,
                     fill: true,
+                    copy: None,
                 });
             }
         }
@@ -146,6 +148,7 @@ pub(super) fn render_mermaid_block(
                 raw_line: None,
                 atomic: true,
                 fill: true,
+                copy: None,
             });
             for (i, line) in content.iter().enumerate() {
                 out.push(RenderLine {
@@ -157,6 +160,7 @@ pub(super) fn render_mermaid_block(
                     raw_line: Some(i + 1),
                     atomic: true,
                     fill: true,
+                    copy: None,
                 });
             }
         }
@@ -194,6 +198,7 @@ pub(super) fn render_diff_block(
                 raw_line: None,
                 atomic: true,
                 fill: false,
+                copy: None,
             }),
     );
     block_bottom_pad(unit, theme, out);
@@ -234,6 +239,7 @@ pub(super) fn render_code_block(
             raw_line: Some(i + fence_offset),
             atomic: true,
             fill: true,
+            copy: None,
         });
     }
     block_bottom_pad(unit, theme, out);
@@ -277,6 +283,7 @@ fn block_header(
         raw_line: Some(0),
         atomic: true,
         fill: true,
+        copy: None,
     });
 }
 
@@ -291,5 +298,6 @@ fn block_bottom_pad(unit: u64, theme: &Theme, out: &mut Vec<RenderLine>) {
         raw_line: None,
         atomic: true,
         fill: true,
+        copy: None,
     });
 }

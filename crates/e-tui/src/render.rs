@@ -35,6 +35,23 @@ pub struct RenderLine {
     /// Full-width background fill: the UI pads the row to the area width
     /// with Night (`bg`, glow-style code/mermaid blocks).
     pub fill: bool,
+    pub(crate) copy: Option<crate::wrap::CopyRow>,
+}
+
+impl RenderLine {
+    pub(crate) fn layout_line(&self) -> crate::wrap::LayoutLine {
+        crate::wrap::LayoutLine {
+            line: self.line.clone(),
+            copy: self.copy_row(),
+        }
+    }
+
+    pub(crate) fn copy_row(&self) -> crate::wrap::CopyRow {
+        self.copy.clone().unwrap_or_else(|| crate::wrap::CopyRow {
+            content: 0..self.line.width(),
+            join_before: None,
+        })
+    }
 }
 
 /// Block taxonomy for copy-mode semantics.
@@ -244,6 +261,7 @@ fn blank_row(unit: u64, atomic: bool) -> RenderLine {
         raw_line: None,
         atomic,
         fill: false,
+        copy: None,
     }
 }
 
@@ -372,6 +390,7 @@ fn render_block(
                     raw_line: Some(i),
                     atomic: false,
                     fill: false,
+                    copy: None,
                 });
             }
         }
@@ -418,6 +437,7 @@ fn render_block(
                     raw_line: Some(i),
                     atomic: false,
                     fill: false,
+                    copy: None,
                 });
             }
         }
@@ -463,6 +483,7 @@ fn render_block(
                 raw_line: Some(0),
                 atomic: false,
                 fill: false,
+                copy: None,
             });
         }
         BlockKind::Html => {
@@ -473,6 +494,7 @@ fn render_block(
                     raw_line: Some(i),
                     atomic: false,
                     fill: false,
+                    copy: None,
                 });
             }
         }
@@ -511,16 +533,18 @@ fn render_quote(
             &options.link_tags,
         );
         for line in inlines {
+            let row = crate::wrap::LayoutLine::from(line);
             let rows = match body_width {
-                Some(width) => wrap_styled_line(line, width),
-                None => vec![line],
+                Some(width) => row.wrap(width),
+                None => vec![row],
             };
-            for row in rows {
+            for mut row in rows {
+                row.indent(gutter);
                 let mut spans = vec![Span::styled(
                     bars.clone(),
                     theme.markdown.quote_marker.style(),
                 )];
-                spans.extend(row.spans);
+                spans.extend(row.line.spans);
                 out.push(RenderLine {
                     line: Line::from(spans),
                     unit,
@@ -528,6 +552,7 @@ fn render_quote(
                     raw_line: Some(index),
                     atomic: false,
                     fill: false,
+                    copy: Some(row.copy),
                 });
             }
         }
@@ -573,7 +598,7 @@ use code::{render_code_block, render_diff_block, render_mermaid_block};
 
 #[path = "render/table.rs"]
 mod table;
-use table::{render_table, wrap_styled_line};
+use table::render_table;
 
 // ---------------------------------------------------------------------------
 // List
@@ -730,11 +755,13 @@ impl ListRenderer<'_> {
             .map(|width| width.saturating_sub(hang))
             .filter(|width| *width > 0);
         for (li, line) in inlines.into_iter().enumerate() {
+            let row = crate::wrap::LayoutLine::from(line);
             let rows = match body_width {
-                Some(width) => wrap_styled_line(line, width),
-                None => vec![line],
+                Some(width) => row.wrap(width),
+                None => vec![row],
             };
-            for (ri, row) in rows.into_iter().enumerate() {
+            for (ri, mut row) in rows.into_iter().enumerate() {
+                row.indent(hang);
                 let mut spans = Vec::new();
                 if li == 0 && ri == 0 {
                     spans.push(Span::styled(
@@ -749,7 +776,7 @@ impl ListRenderer<'_> {
                         theme.markdown.list_marker.style(),
                     ));
                 }
-                spans.extend(row.spans);
+                spans.extend(row.line.spans);
                 out.push(RenderLine {
                     line: Line::from(spans),
                     unit: self.unit,
@@ -757,6 +784,7 @@ impl ListRenderer<'_> {
                     raw_line: Some(self.raw_line_no),
                     atomic: false,
                     fill: false,
+                    copy: Some(row.copy),
                 });
             }
             self.raw_line_no += 1;

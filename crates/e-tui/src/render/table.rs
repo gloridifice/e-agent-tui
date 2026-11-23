@@ -57,6 +57,7 @@ pub(super) fn render_table(
                 raw_line: Some(i),
                 atomic: false,
                 fill: false,
+                copy: None,
             });
         }
         return;
@@ -136,6 +137,7 @@ fn push_plain(out: &mut Vec<RenderLine>, unit: u64, s: String, style: Style) {
         raw_line: None,
         atomic: true,
         fill: false,
+        copy: None,
     });
 }
 
@@ -172,6 +174,7 @@ fn push_table_cells(
         raw_line: None, // atomic block
         atomic: true,
         fill: false,
+        copy: None,
     });
 }
 
@@ -369,6 +372,7 @@ fn push_table_cell_rows(
             raw_line: None, // atomic block
             atomic: true,
             fill: false,
+            copy: None,
         });
     }
 }

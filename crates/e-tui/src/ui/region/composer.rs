@@ -82,6 +82,7 @@ pub(crate) fn render(
     entries: &[crate::agent::DelegatedTask],
     hint: Option<BottomHint<'_>>,
     focused: bool,
+    selection: &mut super::super::selection::SelectionLayout,
 ) -> Option<Position> {
     let cursor = super::super::input::render_focused_input(
         frame,
@@ -94,6 +95,7 @@ pub(crate) fn render(
         macros,
         focused,
     );
+    super::super::input::record_selection(selection, area, input, horizontal_padding, model_hint);
     let label = status_label(input, shell_name, macros);
     if !label.is_empty() && area.width > 4 && area.height > 1 {
         frame.buffer_mut().set_line(

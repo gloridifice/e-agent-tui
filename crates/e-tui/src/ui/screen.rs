@@ -365,6 +365,10 @@ pub(super) fn render_with_cursor(
         ),
         ScreenLayout::MainOnly(_) => {}
     }
+    state
+        .render
+        .selection_layout
+        .append(std::mem::take(&mut state.preview.selection_layout));
     if !matches!(screen_layout, ScreenLayout::PreviewOnly(_)) {
         if let Some(column) = state
             .viewport

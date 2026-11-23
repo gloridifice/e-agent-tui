@@ -1,5 +1,5 @@
 use super::InputDisplay;
-use crate::wrap::{wrap_text_chunks, WrapChunk};
+use crate::wrap::{wrap_text_chunks, CopyRow, WrapChunk};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -10,11 +10,13 @@ pub(crate) fn text_width(area_width: u16, padding: u16) -> usize {
 pub(crate) struct InputLayout {
     pub chunks: Vec<WrapChunk>,
     pub cursor_row: usize,
+    pub copy_rows: Vec<CopyRow>,
 }
 
 impl InputLayout {
     pub fn new(display: &InputDisplay, width: usize) -> Self {
         let mut chunks = Vec::new();
+        let mut copy_rows = Vec::new();
         let mut offset = 0;
         for line in display.text.split('\n') {
             if line.is_empty() {
@@ -25,8 +27,15 @@ impl InputLayout {
                     byte_start: 0,
                     byte_end: 0,
                 });
+                copy_rows.push(CopyRow::default());
             } else {
+                let mut previous_end = None;
                 for mut chunk in wrap_text_chunks(line, width.max(1)) {
+                    copy_rows.push(CopyRow {
+                        content: 0..chunk.text.width(),
+                        join_before: previous_end.map(|end| line[end..chunk.byte_start].to_owned()),
+                    });
+                    previous_end = Some(chunk.byte_end);
                     chunk.start += offset;
                     chunk.end += offset;
                     chunks.push(chunk);
@@ -37,6 +46,7 @@ impl InputLayout {
         let mut layout = Self {
             chunks,
             cursor_row: 0,
+            copy_rows,
         };
         layout.cursor_row = layout.row_for_cursor(display.cursor);
         layout

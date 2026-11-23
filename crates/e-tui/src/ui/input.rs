@@ -60,6 +60,52 @@ pub(super) fn render_input_with_macros(
     )
 }
 
+fn content_area(area: ratatui::layout::Rect, padding: u16) -> ratatui::layout::Rect {
+    ratatui::layout::Rect::new(
+        area.x.saturating_add(padding).saturating_add(1),
+        area.y.saturating_add(1),
+        area.width
+            .saturating_sub(padding.saturating_mul(2).saturating_add(1)),
+        area.height.saturating_sub(2),
+    )
+}
+
+fn visible_input_rows(layout: &InputLayout, height: u16) -> std::ops::Range<usize> {
+    let total = layout.chunks.len();
+    let visible = usize::from(height).max(1);
+    let start = if total <= visible {
+        0
+    } else {
+        layout
+            .cursor_row
+            .saturating_sub(visible - 1)
+            .min(total - visible)
+    };
+    start..(start + visible).min(total)
+}
+
+pub(super) fn record_selection(
+    selection: &mut super::selection::SelectionLayout,
+    area: ratatui::layout::Rect,
+    input: &InputState,
+    padding: u16,
+    model_hint: Option<&str>,
+) {
+    let inner = content_area(area, padding);
+    if input.search.is_some() || inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    let (display, _) = input.display_with_model_hint(model_hint);
+    let layout = InputLayout::new(&display, text_width(area.width, padding));
+    for (row, index) in visible_input_rows(&layout, inner.height).enumerate() {
+        let line = crate::wrap::LayoutLine {
+            line: Line::from(layout.chunks[index].text.clone()),
+            copy: layout.copy_rows[index].clone(),
+        };
+        selection.push(inner.x, inner.y + row as u16, &line);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_focused_input(
     frame: &mut Frame,
@@ -75,13 +121,7 @@ pub(super) fn render_focused_input(
     let macro_entry = input.matched_macro(macros);
     let bark = Style::default().fg(theme.input.hint.fg);
     render_ruled_chrome(frame, area, theme);
-    let horizontal = padding.saturating_mul(2).saturating_add(1);
-    let inner = ratatui::layout::Rect::new(
-        area.x.saturating_add(padding).saturating_add(1),
-        area.y.saturating_add(1),
-        area.width.saturating_sub(horizontal),
-        area.height.saturating_sub(2),
-    );
+    let inner = content_area(area, padding);
     if inner.height > 0 && area.width > 0 {
         frame.render_widget(
             Paragraph::new("❯").style(bark),
@@ -135,16 +175,7 @@ pub(super) fn render_focused_input(
         styles
     });
     // Keep the cursor's wrapped row visible when content exceeds the height cap.
-    let total = chunks.len();
-    let visible_rows = (inner.height as usize).max(1);
-    let start = if total <= visible_rows {
-        0
-    } else {
-        cursor_row
-            .saturating_sub(visible_rows - 1)
-            .min(total - visible_rows)
-    };
-    let end = (start + visible_rows).min(total);
+    let std::ops::Range { start, end } = visible_input_rows(&layout, inner.height);
 
     let char_style = |index| {
         if hint_range.contains(&index) {

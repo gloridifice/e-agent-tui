@@ -72,6 +72,7 @@ pub(super) fn render_display(
         raw_line: None,
         atomic: true,
         fill: false,
+        copy: None,
     }));
     true
 }

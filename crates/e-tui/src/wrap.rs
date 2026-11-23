@@ -15,11 +15,14 @@
 use std::ops::Range;
 
 use ratatui::{
-    style::Style,
+    style::{Modifier, Style},
     text::{Line, Span},
 };
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
+
+pub(crate) const NON_COPYABLE_MODIFIER: Modifier = Modifier::from_bits_retain(1 << 15);
+const _: () = assert!(Modifier::all().bits() & NON_COPYABLE_MODIFIER.bits() == 0);
 
 #[derive(Debug, Clone, Copy)]
 struct Token {
@@ -40,6 +43,104 @@ pub struct WrapChunk {
     /// gap between `byte_end` of one chunk and `byte_start` of the next.
     pub byte_start: usize,
     pub byte_end: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct CopyRow {
+    /// Cell bounds excluding layout-only prefixes and background fill.
+    pub content: Range<usize>,
+    /// Whitespace consumed by a soft wrap; `None` keeps a logical break.
+    pub join_before: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct LayoutLine {
+    pub line: Line<'static>,
+    pub copy: CopyRow,
+}
+
+impl From<Line<'static>> for LayoutLine {
+    fn from(line: Line<'static>) -> Self {
+        let end = line.width();
+        Self {
+            line,
+            copy: CopyRow {
+                content: 0..end,
+                join_before: None,
+            },
+        }
+    }
+}
+
+impl LayoutLine {
+    pub fn indent(&mut self, width: usize) {
+        self.copy.content.start += width;
+        self.copy.content.end += width;
+    }
+
+    pub fn wrap(self, width: usize) -> Vec<Self> {
+        if width == 0 || self.line.width() <= width {
+            return vec![self];
+        }
+        let base = self.line.style;
+        let mut text = String::new();
+        let mut styles = Vec::with_capacity(self.line.spans.len());
+        for span in &self.line.spans {
+            let start = text.len();
+            text.push_str(span.content.as_ref());
+            styles.push((start, text.len(), span.style));
+        }
+        let ranges = word_wrap_ranges(&text, width);
+        if ranges.is_empty() {
+            return vec![Line::default().patch_style(base).into()];
+        }
+        let mut previous_end = None;
+        let mut previous_column = 0;
+        ranges
+            .into_iter()
+            .map(|range| {
+                let mut spans = Vec::new();
+                for &(style_start, style_end, style) in &styles {
+                    let from = range.start.max(style_start);
+                    let to = range.end.min(style_end);
+                    if from < to {
+                        spans.push(Span::styled(text[from..to].to_owned(), style));
+                    }
+                }
+                let start = previous_column + text[previous_end.unwrap_or(0)..range.start].width();
+                let end = start + text[range.clone()].width();
+                let join_before = previous_end.map_or_else(
+                    || self.copy.join_before.clone(),
+                    |previous| {
+                        let mut separator = String::new();
+                        for &(style_start, style_end, style) in &styles {
+                            let from = previous.max(style_start);
+                            let to = range.start.min(style_end);
+                            if from < to
+                                && !base
+                                    .patch(style)
+                                    .add_modifier
+                                    .contains(NON_COPYABLE_MODIFIER)
+                            {
+                                separator.push_str(&text[from..to]);
+                            }
+                        }
+                        Some(separator)
+                    },
+                );
+                previous_end = Some(range.end);
+                previous_column = end;
+                Self {
+                    line: Line::from(spans).patch_style(base),
+                    copy: CopyRow {
+                        content: self.copy.content.start.saturating_sub(start)
+                            ..self.copy.content.end.min(end).saturating_sub(start),
+                        join_before,
+                    },
+                }
+            })
+            .collect()
+    }
 }
 
 /// Split `text` into rows of at most `width` display columns using greedy
@@ -309,35 +410,10 @@ pub fn stable_wrap_prefix_graphemes(text: &str, width: usize) -> usize {
 /// Split one styled line into wrapped rows without Ratatui's exact-width
 /// phantom row.
 pub fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
-    if width == 0 || line.width() <= width {
-        return vec![line];
-    }
-    let base = line.style;
-    let mut text = String::new();
-    let mut styles = Vec::with_capacity(line.spans.len());
-    for span in &line.spans {
-        let start = text.len();
-        text.push_str(span.content.as_ref());
-        styles.push((start, text.len(), span.style));
-    }
-
-    let ranges = word_wrap_ranges(&text, width);
-    if ranges.is_empty() {
-        return vec![Line::default().patch_style(base)];
-    }
-    ranges
+    LayoutLine::from(line)
+        .wrap(width)
         .into_iter()
-        .map(|range| {
-            let mut spans = Vec::new();
-            for &(style_start, style_end, style) in &styles {
-                let from = range.start.max(style_start);
-                let to = range.end.min(style_end);
-                if from < to {
-                    spans.push(Span::styled(text[from..to].to_owned(), style));
-                }
-            }
-            Line::from(spans).patch_style(base)
-        })
+        .map(|row| row.line)
         .collect()
 }
 

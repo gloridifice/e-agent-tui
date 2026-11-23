@@ -163,6 +163,7 @@ fn render_main_pane_with_cursor(
                 &[],
                 None,
                 state.viewport.is_none_or(|view| view.focused),
+                &mut state.render.selection_layout,
             )
         };
         region::status::render_input_header(frame, chunks[6], state, theme);
@@ -273,6 +274,7 @@ fn render_main_pane_with_cursor(
                     .map(region::composer::BottomHint::Tip)
             },
             state.viewport.is_none_or(|view| view.focused),
+            &mut state.render.selection_layout,
         );
         region::status::render_input_header(frame, rect, state, theme);
         y = y.saturating_add(plan.bottom_rows);

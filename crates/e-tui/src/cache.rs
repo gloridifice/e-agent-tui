@@ -63,6 +63,7 @@ pub struct CacheWorkStats {
 pub struct TranscriptRenderCache {
     /// Styled, unwrapped base lines. Gaps are represented as empty lines.
     pub lines: Vec<Line<'static>>,
+    pub(crate) copy_rows: Vec<crate::wrap::CopyRow>,
     pub valid: bool,
     pub tail_dirty: bool,
     /// Earliest message whose reveal changed base-line count/content. The UI

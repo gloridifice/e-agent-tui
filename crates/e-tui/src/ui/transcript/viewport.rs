@@ -53,14 +53,21 @@ pub(super) fn render_transcript_impl(
             .flat_map(|card| display_item_lines(&DisplayItem::Card(card), state, width))
             .collect();
         if let Some(notice) = &draft.notice {
-            display.push(Line::from(Span::styled(
-                notice.clone(),
-                theme.log.warning.style(),
-            )));
+            display
+                .push(Line::from(Span::styled(notice.clone(), theme.log.warning.style())).into());
         }
         display.truncate(bottom_y);
+        for (index, row) in display.iter().enumerate() {
+            state
+                .render
+                .selection_layout
+                .push(area.x, area.y + index as u16, row);
+        }
         frame.render_widget(
-            Paragraph::new(Text::from(display)).style(Style::default().fg(theme.fg)),
+            Paragraph::new(Text::from(
+                display.into_iter().map(|row| row.line).collect::<Vec<_>>(),
+            ))
+            .style(Style::default().fg(theme.fg)),
             area,
         );
         return bottom_y;
@@ -121,10 +128,11 @@ pub(super) fn render_transcript_impl(
     let mut reading_rail_rows = Vec::new();
     while base_index < state.render.transcript_cache.lines.len() && display.len() < available {
         let base_start = state.render.transcript_cache.layout.prefix[base_index];
-        let wrapped = wrap_line(
-            state.render.transcript_cache.lines[base_index].clone(),
-            width,
-        );
+        let mut source = LayoutLine::from(state.render.transcript_cache.lines[base_index].clone());
+        if let Some(copy) = state.render.transcript_cache.copy_rows.get(base_index) {
+            source.copy = copy.clone();
+        }
+        let wrapped = source.wrap(width);
         for (row_index, mut row) in wrapped.into_iter().enumerate() {
             let global_row = base_start + row_index;
             if global_row < start {
@@ -141,23 +149,28 @@ pub(super) fn render_transcript_impl(
             if reading_selected {
                 // A line-level Night background leaves explicit span-local
                 // backgrounds (inline code, diff chips) authoritative.
-                row = row.patch_style(Style::default().bg(theme.bg));
+                row.line = row.line.patch_style(Style::default().bg(theme.bg));
                 reading_rail_rows.push(display.len() + visual_row_offset);
             }
             // Only an explicit row-level background makes a solid row.
             // Span backgrounds (notably inline-code chips) must stay local;
             // treating any span bg as a row fill leaks that color through the
             // source separator and every trailing terminal cell.
-            if let Some(bg) = row.style.bg {
-                let used = row.width();
+            if let Some(bg) = row.line.style.bg {
+                let used = row.line.width();
                 if used < width {
-                    row.push_span(Span::styled(
+                    row.line.push_span(Span::styled(
                         " ".repeat(width - used),
                         Style::default().fg(theme.fg).bg(bg),
                     ));
                 }
             }
-            display.push(row);
+            state.render.selection_layout.push(
+                area.x,
+                area.y + (display.len() + visual_row_offset) as u16,
+                &row,
+            );
+            display.push(row.line);
         }
         base_index += 1;
     }
@@ -186,7 +199,7 @@ pub(super) fn render_transcript_impl(
     frame.render_widget(paragraph, area);
     if let Some(line) = attached.filter(|_| bottom_y > 0) {
         frame.render_widget(
-            Paragraph::new(line),
+            Paragraph::new(line.line),
             ratatui::layout::Rect::new(area.x, area.y + bottom_y as u16 - 1, area.width, 1),
         );
     }

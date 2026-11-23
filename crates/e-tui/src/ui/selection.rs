@@ -19,6 +19,9 @@ use crate::{
     mouse_selection::{MouseSelection, SelectionFrame},
 };
 
+mod layout;
+pub(crate) use layout::SelectionLayout;
+
 pub fn selection_context(
     state: &TuiApp,
     page: Option<&InputPageSession>,
@@ -86,25 +89,27 @@ impl Presentation {
         viewport: Option<crate::viewport::ConversationViewport>,
     ) -> Self {
         self.viewport = viewport;
-        if let (Some(view), Some(saved)) = (viewport, self.buffer.as_ref()) {
-            let mut masked = (**saved).clone();
-            for y in masked.area.y..masked.area.bottom() {
-                for x in masked.area.x..masked.area.right() {
-                    if !view.contains(x, y) {
-                        masked[(x, y)].modifier.insert(Modifier::HIDDEN);
-                    }
-                }
-            }
-            let context = self.selection_frame.context();
-            self.selection_frame = if self.selectable {
-                collect(&masked)
-            } else {
-                SelectionFrame::default()
-            };
-            self.selection_frame.set_context(context);
+        if let Some(view) = viewport {
+            self.selection_frame
+                .retain_cells(|x, y| view.contains(x, y));
             self.selection_frame
                 .set_pane_separator(view.main.map(|area| area.right()));
         }
+        self
+    }
+
+    pub(crate) fn with_selection_layout(
+        mut self,
+        buffer: &Buffer,
+        layout: &SelectionLayout,
+    ) -> Self {
+        self.selection_frame.set_joins(if self.selectable {
+            layout.collect(buffer, |x, y| {
+                self.viewport.is_none_or(|view| view.contains(x, y))
+            })
+        } else {
+            Vec::new()
+        });
         self
     }
 

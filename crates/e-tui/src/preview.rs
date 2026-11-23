@@ -387,6 +387,7 @@ pub(crate) struct PreviewLayout {
 struct PreviewLayoutCache {
     key: Option<PreviewLayoutKey>,
     layout: PreviewLayout,
+    copy_rows: Vec<crate::wrap::CopyRow>,
 }
 
 #[derive(Debug, Default)]
@@ -404,6 +405,7 @@ pub struct PreviewPaneState {
     pub reveal_intent: PreviewRevealIntent,
     seen_targets: HashSet<String>,
     layout: PreviewLayoutCache,
+    pub(crate) selection_layout: crate::ui::selection::SelectionLayout,
     pub(crate) command_script: crate::command_script::ScriptCache,
     next_request_id: u64,
     work: PreviewWorkStats,
@@ -595,6 +597,14 @@ impl PreviewPaneState {
         self.layout.key = Some(key);
         self.layout.layout = layout;
         self.work.layout_rebuilds = self.work.layout_rebuilds.saturating_add(1);
+    }
+
+    pub(crate) fn copy_rows(&self) -> &[crate::wrap::CopyRow] {
+        &self.layout.copy_rows
+    }
+
+    pub(crate) fn store_copy_rows(&mut self, rows: Vec<crate::wrap::CopyRow>) {
+        self.layout.copy_rows = rows;
     }
 
     pub fn invalidate_layout(&mut self) {

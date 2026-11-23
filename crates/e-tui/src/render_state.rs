@@ -31,6 +31,7 @@ pub struct RenderState {
     pub activity_frame: usize,
     pub(crate) status_flashes: status_flash::StatusFlashes,
     pub(crate) tips: crate::tips::TipRotation,
+    pub(crate) selection_layout: crate::ui::selection::SelectionLayout,
 }
 
 impl Default for RenderState {
@@ -48,6 +49,7 @@ impl Default for RenderState {
             activity_frame: 0,
             status_flashes: status_flash::StatusFlashes::default(),
             tips: crate::tips::TipRotation::default(),
+            selection_layout: Default::default(),
         }
     }
 }

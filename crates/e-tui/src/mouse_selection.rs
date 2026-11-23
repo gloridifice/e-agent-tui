@@ -26,12 +26,20 @@ pub struct SelectionFrame {
     viewport: (u16, u16),
     pane_separator: Option<u16>,
     cells: Arc<[Cell]>,
+    joins: Arc<[SelectionJoin]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectionUpdate {
     pub changed: bool,
     pub copy: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SelectionJoin {
+    pub previous: SelectionCellRange,
+    pub next: SelectionCellRange,
+    pub separator: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,6 +101,28 @@ impl SelectionFrame {
             && self.viewport == other.viewport
             && self.pane_separator == other.pane_separator
             && self.cells == other.cells
+            && self.joins == other.joins
+    }
+
+    pub(crate) fn set_joins(&mut self, joins: Vec<SelectionJoin>) {
+        self.joins = joins.into();
+    }
+
+    pub(crate) fn retain_cells(&mut self, owns: impl Fn(u16, u16) -> bool) {
+        let cells = Arc::make_mut(&mut self.cells);
+        for row in 0..self.viewport.1 {
+            for column in 0..self.viewport.0 {
+                if !owns(column, row) {
+                    cells[usize::from(row) * usize::from(self.viewport.0) + usize::from(column)] =
+                        Cell {
+                            symbol: " ".into(),
+                            owner: column,
+                            width: 1,
+                            copyable: true,
+                        };
+                }
+            }
+        }
     }
 
     pub fn matches_viewport(&self, width: u16, height: u16) -> bool {
@@ -175,22 +205,48 @@ impl SelectionFrame {
     }
 
     fn extract(&self, selection: &MouseSelection) -> Option<String> {
-        let text = self
-            .selected_cell_ranges(selection)
-            .into_iter()
-            .map(|range| {
-                let mut line = String::new();
-                for column in range.x..range.x + range.width {
-                    let cell = self.cell(column, range.y);
-                    if cell.copyable {
-                        line.push_str(&cell.symbol);
-                    }
-                }
-                line.truncate(line.trim_end_matches(' ').len());
-                line
+        let ranges = self.selected_cell_ranges(selection);
+        let joins = ranges
+            .windows(2)
+            .map(|pair| {
+                let previous = pair[0];
+                let next = pair[1];
+                self.joins.iter().find(|join| {
+                    let end = join.previous.x + join.previous.width;
+                    join.previous.y == previous.y
+                        && join.next.y == next.y
+                        && join.previous.width > 0
+                        && join.next.width > 0
+                        && previous.x < end
+                        && previous.x + previous.width >= end
+                        && next.x <= join.next.x
+                        && next.x + next.width > join.next.x
+                })
             })
-            .collect::<Vec<_>>()
-            .join("\n");
+            .collect::<Vec<_>>();
+        let mut text = String::new();
+        for (index, range) in ranges.iter().enumerate() {
+            let incoming = index.checked_sub(1).and_then(|index| joins[index]);
+            let outgoing = joins.get(index).copied().flatten();
+            if index > 0 {
+                text.push_str(incoming.map_or("\n", |join| join.separator.as_str()));
+            }
+            let start = incoming.map_or(range.x, |join| range.x.max(join.next.x));
+            let end = outgoing.map_or(range.x + range.width, |join| {
+                (range.x + range.width).min(join.previous.x + join.previous.width)
+            });
+            let mut line = String::new();
+            for column in start..end {
+                let cell = self.cell(column, range.y);
+                if cell.copyable {
+                    line.push_str(&cell.symbol);
+                }
+            }
+            if outgoing.is_none() {
+                line.truncate(line.trim_end_matches(' ').len());
+            }
+            text.push_str(&line);
+        }
         text.chars().any(|c| !c.is_whitespace()).then_some(text)
     }
 }

@@ -4,14 +4,13 @@ use std::collections::HashSet;
 
 use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use ratatui::{
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
 };
 
 use crate::display::DisplayId;
 
-pub(crate) const NON_COPYABLE_MODIFIER: Modifier = Modifier::from_bits_retain(1 << 15);
-const _: () = assert!(Modifier::all().bits() & NON_COPYABLE_MODIFIER.bits() == 0);
+pub(crate) use crate::wrap::NON_COPYABLE_MODIFIER;
 
 pub const TAGS: &str = "1234567890abcdefghijklmnopqrstuvwxyz";
 pub const MAX_CANDIDATES: usize = 256;

@@ -1,5 +1,5 @@
 use super::*;
-use crate::wrap::wrap_text;
+use crate::wrap::LayoutLine;
 use crate::{
     display::ActivityState,
     reveal::{apply_reveal, RevealSignature},
@@ -166,13 +166,13 @@ fn reasoning_block_lines(
     block: &TranscriptBlock,
     state: &TuiApp,
     area_width: usize,
-) -> Vec<Line<'static>> {
+) -> Vec<LayoutLine> {
     reasoning_content_lines(&block.content, state, area_width)
 }
 
 /// Render accumulated reasoning text according to the display mode, with the
 /// muted (Bark) tone used by the main transcript.
-fn reasoning_content_lines(content: &str, state: &TuiApp, area_width: usize) -> Vec<Line<'static>> {
+fn reasoning_content_lines(content: &str, state: &TuiApp, area_width: usize) -> Vec<LayoutLine> {
     let limit = match state.config.thinking_display_mode() {
         ThinkingDisplayMode::Compact => return Vec::new(),
         ThinkingDisplayMode::Lines => state.config.thinking_lines.max(1),
@@ -181,8 +181,11 @@ fn reasoning_content_lines(content: &str, state: &TuiApp, area_width: usize) -> 
     let style = Style::default().fg(state.theme().surface.muted_text.fg);
     let mut out = Vec::new();
     for source_line in content.lines() {
-        for wrapped in wrap_line(Line::from(source_line.to_owned()), area_width.max(1)) {
-            out.push(wrapped.patch_style(style));
+        for mut wrapped in
+            LayoutLine::from(Line::from(source_line.to_owned())).wrap(area_width.max(1))
+        {
+            wrapped.line = wrapped.line.patch_style(style);
+            out.push(wrapped);
             if out.len() == limit {
                 return out;
             }
@@ -194,11 +197,7 @@ fn reasoning_content_lines(content: &str, state: &TuiApp, area_width: usize) -> 
 /// Render the merged Thinking node: a yellow Braille `Thinking... xN`
 /// spinner in `compact` (or while no reasoning has streamed in yet);
 /// the accumulated reasoning content in `lines`/`full`.
-fn thinking_node_lines(
-    node: &ThinkingNode,
-    state: &TuiApp,
-    area_width: usize,
-) -> Vec<Line<'static>> {
+fn thinking_node_lines(node: &ThinkingNode, state: &TuiApp, area_width: usize) -> Vec<LayoutLine> {
     if state.config.thinking_display_mode().shows_reasoning() && !node.content.is_empty() {
         reasoning_content_lines(&node.content, state, area_width)
     } else {
@@ -210,30 +209,30 @@ fn thinking_node_lines(
                 .unwrap_or_default();
             working::thinking_label_spans(&node.row.label, &state.theme(), elapsed)
         });
-        vec![fitted_activity_row_line(
-            &node.row, state, label, area_width,
-        )]
+        vec![fitted_activity_row_line(&node.row, state, label, area_width).into()]
     }
 }
 
-fn user_markdown_lines(card: &ContentCard, state: &TuiApp, width: usize) -> Vec<Line<'static>> {
+fn user_markdown_lines(card: &ContentCard, state: &TuiApp, width: usize) -> Vec<LayoutLine> {
     let theme = state.theme();
     let mut rows = if let Some(layout) = state.render.markdown_layout.lines(&card.id) {
         layout
             .iter()
             .flat_map(|render_line| {
-                wrap_line(render_line.line.clone(), width)
+                render_line
+                    .layout_line()
+                    .wrap(width)
                     .into_iter()
-                    .map(|mut line| {
+                    .map(|mut row| {
                         if render_line.fill {
                             let style = theme.markdown.code_block_bg.style();
-                            line = line.patch_style(style);
-                            line.push_span(Span::styled(
-                                " ".repeat(width.saturating_sub(line.width())),
+                            row.line = row.line.patch_style(style);
+                            row.line.push_span(Span::styled(
+                                " ".repeat(width.saturating_sub(row.line.width())),
                                 style,
                             ));
                         }
-                        line
+                        row
                     })
             })
             .collect::<Vec<_>>()
@@ -241,10 +240,8 @@ fn user_markdown_lines(card: &ContentCard, state: &TuiApp, width: usize) -> Vec<
         card.content
             .lines()
             .flat_map(|line| {
-                wrap_line(
-                    Line::styled(line.to_owned(), theme.input.text.style()),
-                    width,
-                )
+                LayoutLine::from(Line::styled(line.to_owned(), theme.input.text.style()))
+                    .wrap(width)
             })
             .collect()
     };
@@ -260,13 +257,14 @@ fn user_markdown_lines(card: &ContentCard, state: &TuiApp, width: usize) -> Vec<
         );
         rows.splice(
             USER_MESSAGE_EDGE_ROWS..rows.len() - USER_MESSAGE_EDGE_ROWS,
-            [marker],
+            [marker.into()],
         );
+        rows[USER_MESSAGE_EDGE_ROWS + 1].copy.join_before = None;
     }
     rows
 }
 
-fn user_message_lines(card: &ContentCard, state: &TuiApp, area_width: usize) -> Vec<Line<'static>> {
+fn user_message_lines(card: &ContentCard, state: &TuiApp, area_width: usize) -> Vec<LayoutLine> {
     let theme = state.theme();
     let (gutter, avail) = crate::transcript_layout::user_message_geometry(card, area_width);
     let text_style = theme.input.text.style();
@@ -284,23 +282,25 @@ fn user_message_lines(card: &ContentCard, state: &TuiApp, area_width: usize) -> 
         ])
     };
 
-    let mut out = vec![super::input::ruled_line(area_width, &theme)];
+    let mut out = vec![super::input::ruled_line(area_width, &theme).into()];
     if let Some(header) = &card.header {
-        out.push(content_row(header.clone(), true));
+        out.push(content_row(header.clone(), true).into());
     }
-    for line in user_markdown_lines(card, state, avail) {
+    for mut row in user_markdown_lines(card, state, avail) {
         let mut spans = vec![Span::raw(" ".repeat(gutter))];
-        spans.extend(line.spans.into_iter().map(|span| {
-            let style = line.style.patch(span.style);
+        spans.extend(row.line.spans.into_iter().map(|span| {
+            let style = row.line.style.patch(span.style);
             span.style(style)
         }));
-        out.push(Line::from(spans));
+        row.line = Line::from(spans);
+        row.indent(gutter);
+        out.push(row);
     }
-    out.push(super::input::ruled_line(area_width, &theme));
+    out.push(super::input::ruled_line(area_width, &theme).into());
     out
 }
 
-fn content_card_lines(card: &ContentCard, state: &TuiApp, area_width: usize) -> Vec<Line<'static>> {
+fn content_card_lines(card: &ContentCard, state: &TuiApp, area_width: usize) -> Vec<LayoutLine> {
     if card.role == CardRole::Terminal {
         return terminal_output_lines(card, state, area_width);
     }
@@ -308,7 +308,10 @@ fn content_card_lines(card: &ContentCard, state: &TuiApp, area_width: usize) -> 
         return user_message_lines(card, state, area_width);
     }
     if card.role == CardRole::Skill {
-        return skill_invocation_lines(card, state);
+        return skill_invocation_lines(card, state)
+            .into_iter()
+            .map(Into::into)
+            .collect();
     }
     if card.role == CardRole::Context {
         return context_injection_lines(card, state, area_width);
@@ -329,11 +332,11 @@ fn content_card_lines(card: &ContentCard, state: &TuiApp, area_width: usize) -> 
             Style::default().fg(fg).bg(bg),
         ))
     };
-    let content_row = |content: Line<'static>| {
+    let content_row = |mut content: LayoutLine| {
         let shell = Style::default().fg(fg).bg(bg);
         let mut row = Line::from(vec![Span::styled(" ".repeat(gutter), shell)]);
-        row.spans.extend(content.spans.into_iter().map(|span| {
-            let style = shell.patch(content.style).patch(span.style);
+        row.spans.extend(content.line.spans.into_iter().map(|span| {
+            let style = shell.patch(content.line.style).patch(span.style);
             span.style(style)
         }));
         let used = row.width();
@@ -343,9 +346,11 @@ fn content_card_lines(card: &ContentCard, state: &TuiApp, area_width: usize) -> 
                 Style::default().fg(fg).bg(bg),
             ));
         }
-        row
+        content.line = row;
+        content.indent(gutter);
+        content
     };
-    let mut out = vec![fill_row()];
+    let mut out = vec![fill_row().into()];
     if let Some(header) = &card.header {
         let mut row = Line::from(vec![
             Span::styled(" ".repeat(gutter), Style::default().fg(fg).bg(bg)),
@@ -361,7 +366,7 @@ fn content_card_lines(card: &ContentCard, state: &TuiApp, area_width: usize) -> 
                 Style::default().fg(fg).bg(bg),
             ));
         }
-        out.push(row);
+        out.push(row.into());
     }
 
     if card.role == CardRole::Attachment {
@@ -372,21 +377,16 @@ fn content_card_lines(card: &ContentCard, state: &TuiApp, area_width: usize) -> 
         );
     } else {
         for line in card.content.lines() {
-            let chunks = if line.is_empty() {
-                vec![String::new()]
-            } else {
-                wrap_text(line, avail)
-            };
-            for chunk in chunks {
-                out.push(content_row(Line::from(chunk)));
+            for row in LayoutLine::from(Line::from(line.to_owned())).wrap(avail) {
+                out.push(content_row(row));
             }
         }
     }
-    out.push(fill_row());
+    out.push(fill_row().into());
     out
 }
 
-fn terminal_output_lines(card: &ContentCard, state: &TuiApp, width: usize) -> Vec<Line<'static>> {
+fn terminal_output_lines(card: &ContentCard, state: &TuiApp, width: usize) -> Vec<LayoutLine> {
     let theme = state.theme();
     let expanded = state.reading_terminal_owner() == Some(&card.id);
     if state.shell.active.as_ref() == Some(&card.id)
@@ -401,7 +401,8 @@ fn terminal_output_lines(card: &ContentCard, state: &TuiApp, width: usize) -> Ve
                 theme.surface.muted_text.style(),
             ),
             width,
-        )];
+        )
+        .into()];
     }
     let gutter = width.saturating_sub(1).min(4);
     let output = crate::ui::component::ansi::output_lines(
@@ -411,24 +412,29 @@ fn terminal_output_lines(card: &ContentCard, state: &TuiApp, width: usize) -> Ve
     );
     let mut output: Vec<_> = output
         .into_iter()
-        .flat_map(|line| wrap_line(line, width.saturating_sub(gutter).max(1)))
+        .flat_map(|line| LayoutLine::from(line).wrap(width.saturating_sub(gutter).max(1)))
         .collect();
     if !expanded {
         let hidden = output
             .len()
             .saturating_sub(crate::shell::OUTPUT_DISPLAY_ROWS);
         output.drain(..hidden);
+        if let Some(first) = output.first_mut() {
+            first.copy.join_before = None;
+        }
     }
     let prefix = crate::wrap::clip_text("  │ ", gutter);
     output
         .into_iter()
-        .map(|line| {
+        .map(|mut row| {
             let mut spans = vec![Span::styled(prefix.clone(), theme.separator.line.style())];
-            spans.extend(line.spans.into_iter().map(|span| {
-                let style = line.style.patch(span.style);
+            spans.extend(row.line.spans.into_iter().map(|span| {
+                let style = row.line.style.patch(span.style);
                 span.style(style)
             }));
-            Line::from(spans)
+            row.line = Line::from(spans);
+            row.indent(gutter);
+            row
         })
         .collect()
 }
@@ -458,7 +464,7 @@ fn context_injection_lines(
     card: &ContentCard,
     state: &TuiApp,
     area_width: usize,
-) -> Vec<Line<'static>> {
+) -> Vec<LayoutLine> {
     let label = format!(
         "{} ",
         crate::i18n::tr(state.config.language, "transcript.context_injection")
@@ -471,7 +477,7 @@ fn context_injection_lines(
         .saturating_sub(UnicodeWidthStr::width(label.as_str()))
         .max(1);
 
-    let mut rows: Vec<Line<'static>> = Vec::new();
+    let mut rows: Vec<LayoutLine> = Vec::new();
     let mut truncated = false;
     let mut first = true;
     'content: for source_line in card.content.lines() {
@@ -479,6 +485,7 @@ fn context_injection_lines(
             continue;
         }
         let mut text = source_line.to_owned();
+        let mut join_before = None;
         loop {
             if rows.len() == MAX_INJECTION_DISPLAY_LINES {
                 truncated = true;
@@ -493,36 +500,46 @@ fn context_injection_lines(
             };
             let head_text = head.text.clone();
             if first {
-                rows.push(Line::from(vec![
-                    Span::styled(label.clone(), label_style),
-                    Span::styled(head_text.clone(), content_style),
-                ]));
+                rows.push(
+                    Line::from(vec![
+                        Span::styled(label.clone(), label_style),
+                        Span::styled(head_text.clone(), content_style),
+                    ])
+                    .into(),
+                );
                 first = false;
             } else {
-                rows.push(Line::from(Span::styled(head_text.clone(), content_style)));
+                rows.push(Line::from(Span::styled(head_text.clone(), content_style)).into());
             }
+            rows.last_mut()
+                .expect("emitted context row")
+                .copy
+                .join_before = join_before.take();
             if chunks.len() <= 1 {
                 break;
             }
             // Resume from the next emitted chunk. Whitespace consumed by the
             // row break is deliberately skipped; a hard-split word resumes at
             // exactly the next byte.
+            join_before = Some(text[head.byte_end..chunks[1].byte_start].to_owned());
             text = text[chunks[1].byte_start..].to_owned();
         }
     }
     if rows.is_empty() {
-        rows.push(Line::from(Span::styled(label, label_style)));
+        rows.push(Line::from(Span::styled(label, label_style)).into());
     }
     if truncated {
         // End the final permitted row with an explicit ellipsis marker.
         if let Some(last) = rows.last_mut() {
             let text: String = last
+                .line
                 .spans
                 .iter()
                 .map(|span| span.content.as_ref())
                 .collect();
             let kept = trim_text_to_width(&text, avail.saturating_sub(1));
-            *last = Line::from(Span::styled(format!("{kept}…"), content_style));
+            last.line = Line::from(Span::styled(format!("{kept}…"), content_style));
+            last.copy.content.end = last.line.width();
         }
     }
     rows
@@ -612,7 +629,7 @@ fn markdown_block_lines(
     block: &TranscriptBlock,
     state: &TuiApp,
     area_width: usize,
-) -> Vec<Line<'static>> {
+) -> Vec<LayoutLine> {
     let theme = state.theme();
     let full = markdown_block_semantic_lines(block, state);
     let mut rendered = if let Some(track) = state.render.transcript_reveals.get(&block.id) {
@@ -639,13 +656,27 @@ fn markdown_block_lines(
             ));
         }
     }
+    let layout = state.render.markdown_layout.lines(&block.id);
     rendered
+        .into_iter()
+        .enumerate()
+        .map(|(index, line)| {
+            let copy = layout
+                .and_then(|layout| layout.get(index))
+                .map(crate::render::RenderLine::copy_row);
+            let mut row = LayoutLine::from(line);
+            if let Some(copy) = copy {
+                row.copy = copy;
+            }
+            row
+        })
+        .collect()
 }
 
-fn display_item_lines(item: &DisplayItem, state: &TuiApp, area_width: usize) -> Vec<Line<'static>> {
+fn display_item_lines(item: &DisplayItem, state: &TuiApp, area_width: usize) -> Vec<LayoutLine> {
     match item {
         DisplayItem::Activity(row) => {
-            vec![fitted_activity_row_line(row, state, None, area_width)]
+            vec![fitted_activity_row_line(row, state, None, area_width).into()]
         }
         DisplayItem::Block(block) if block.format == TranscriptFormat::Reasoning => {
             reasoning_block_lines(block, state, area_width)
@@ -653,7 +684,10 @@ fn display_item_lines(item: &DisplayItem, state: &TuiApp, area_width: usize) -> 
         DisplayItem::Block(block) if block.format == TranscriptFormat::Markdown => {
             markdown_block_lines(block, state, area_width)
         }
-        DisplayItem::Block(block) => transcript_block_lines(block, state),
+        DisplayItem::Block(block) => transcript_block_lines(block, state)
+            .into_iter()
+            .map(Into::into)
+            .collect(),
         DisplayItem::Card(card) => content_card_lines(card, state, area_width),
         DisplayItem::Thinking(node) => thinking_node_lines(node, state, area_width),
         DisplayItem::Composite { activity, detail } => {
@@ -705,7 +739,7 @@ fn display_item_lines(item: &DisplayItem, state: &TuiApp, area_width: usize) -> 
             } else {
                 fitted_activity_row_line(activity, state, label, area_width)
             };
-            let mut lines = vec![header];
+            let mut lines = vec![header.into()];
             lines.extend(content_card_lines(detail, state, area_width));
             lines
         }
@@ -746,11 +780,13 @@ fn presentation_lines(
     presentation: NodePresentation,
     state: &TuiApp,
     width: usize,
-) -> Vec<Line<'static>> {
+) -> Vec<LayoutLine> {
     match presentation {
         NodePresentation::Hidden => Vec::new(),
         NodePresentation::Visible => display_item_lines(item, state, width),
-        NodePresentation::ActivityFold { hidden } => vec![folded_activity_line(hidden, state)],
+        NodePresentation::ActivityFold { hidden } => {
+            vec![folded_activity_line(hidden, state).into()]
+        }
     }
 }
 
@@ -817,7 +853,10 @@ pub fn provenance_layout_rows(state: &TuiApp) -> Vec<ProvenanceLayoutRow> {
         if presentation == NodePresentation::Hidden {
             continue;
         }
-        let layout_lines = presentation_lines(item, presentation, state, width);
+        let layout_lines = presentation_lines(item, presentation, state, width)
+            .into_iter()
+            .map(|row| row.line)
+            .collect::<Vec<_>>();
         if matches!(presentation, NodePresentation::ActivityFold { .. }) {
             global_row += layout_lines
                 .iter()

@@ -72,6 +72,7 @@ fn refresh_transcript_reveals(state: &mut TuiApp) {
 pub(super) fn rebuild_transcript_cache(state: &mut TuiApp, width: usize) {
     let _zone = crate::tracy_zone!("transcript rebuild");
     let mut base = Vec::new();
+    let mut copy_rows = Vec::new();
     let mut ranges = vec![None; state.transcript.len()];
     let nodes = state.transcript.nodes();
     let presentations = transcript_presentations(state);
@@ -84,7 +85,10 @@ pub(super) fn rebuild_transcript_cache(state: &mut TuiApp, width: usize) {
         let start = base.len();
         let lines = presentation_lines(item, presentation, state, width);
         let line_count = lines.len();
-        base.extend(lines);
+        for row in lines {
+            base.push(row.line);
+            copy_rows.push(row.copy);
+        }
         let next_is_activity = next_presented_item_is_activity(nodes, &presentations, index);
         let gap = !(presentation_is_activity(item, presentation) && next_is_activity);
         ranges[index] = Some(MessageLineRange {
@@ -94,6 +98,7 @@ pub(super) fn rebuild_transcript_cache(state: &mut TuiApp, width: usize) {
         });
         if gap {
             base.push(Line::default());
+            copy_rows.push(Default::default());
         }
     }
     let fold_hidden_counts = presentations
@@ -105,6 +110,7 @@ pub(super) fn rebuild_transcript_cache(state: &mut TuiApp, width: usize) {
         .collect();
     let cache = &mut state.render.transcript_cache;
     cache.lines = base;
+    cache.copy_rows = copy_rows;
     cache.message_ranges = ranges;
     cache.activity_fold_hidden_counts = fold_hidden_counts;
     cache.valid = true;
@@ -150,6 +156,7 @@ pub(super) fn refresh_transcript_cache(state: &mut TuiApp, width: usize) {
         };
         let nodes = state.transcript.nodes();
         let mut suffix_lines = Vec::new();
+        let mut suffix_copy = Vec::new();
         let mut ranges = Vec::new();
         for (index, node) in nodes.iter().enumerate().skip(suffix_index) {
             let presentation = cached_node_presentation(&state.render.transcript_cache, index);
@@ -160,7 +167,10 @@ pub(super) fn refresh_transcript_cache(state: &mut TuiApp, width: usize) {
             let start = keep + suffix_lines.len();
             let lines = presentation_lines(&node.item, presentation, state, width);
             let line_count = lines.len();
-            suffix_lines.extend(lines);
+            for row in lines {
+                suffix_lines.push(row.line);
+                suffix_copy.push(row.copy);
+            }
             let next_is_activity = nodes
                 .iter()
                 .enumerate()
@@ -186,12 +196,15 @@ pub(super) fn refresh_transcript_cache(state: &mut TuiApp, width: usize) {
             ));
             if gap {
                 suffix_lines.push(Line::default());
+                suffix_copy.push(Default::default());
             }
         }
         let transcript_len = state.transcript.len();
         let cache = &mut state.render.transcript_cache;
         cache.lines.truncate(keep);
         cache.lines.extend(suffix_lines);
+        cache.copy_rows.truncate(keep);
+        cache.copy_rows.extend(suffix_copy);
         cache.message_ranges.resize(transcript_len, None);
         for (index, range) in ranges {
             cache.message_ranges[index] = range;
@@ -247,7 +260,11 @@ pub(super) fn refresh_transcript_cache(state: &mut TuiApp, width: usize) {
                 fallback = true;
                 break;
             }
-            state.render.transcript_cache.lines[range.start..range.end].clone_from_slice(&lines);
+            let cache = &mut state.render.transcript_cache;
+            for (offset, row) in lines.into_iter().enumerate() {
+                cache.lines[range.start + offset] = row.line;
+                cache.copy_rows[range.start + offset] = row.copy;
+            }
             applied += 1;
         }
         if fallback {

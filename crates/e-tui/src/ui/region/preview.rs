@@ -19,8 +19,8 @@ use crate::{
     reveal::{apply_line_reveal, LineRevealMode, LineRevealTrack},
     syntax::{self, SyntaxHint},
     theme::Theme,
-    transcript_layout::wrap_line,
     ui::component::{ansi, command, diff},
+    wrap::{CopyRow, LayoutLine},
 };
 
 pub fn render(
@@ -32,6 +32,7 @@ pub fn render(
     left_padding: u16,
     right_padding: u16,
 ) {
+    preview.selection_layout = Default::default();
     let inner_width = usize::from(area.width)
         .saturating_sub(usize::from(left_padding.saturating_add(right_padding)))
         .max(1);
@@ -90,8 +91,9 @@ pub fn render(
                 } else {
                     content_layout(content, theme, inner_width, config.language)
                 };
-                preview.store_preview_layout(layout_key, layout.clone());
-                layout
+                preview.store_copy_rows(layout.copy_rows);
+                preview.store_preview_layout(layout_key, layout.layout.clone());
+                layout.layout
             };
             let pinned_rows = layout.pinned_rows;
             let nowrap_from = layout.nowrap_from;
@@ -137,6 +139,11 @@ pub fn render(
     };
     // Ready layouts are wrapped once before entering the cache. Immediate
     // state labels are already bounded single rows.
+    let copy_rows = if matches!(preview.state, PreviewState::Ready(_)) {
+        preview.copy_rows().to_vec()
+    } else {
+        Vec::new()
+    };
     let total = lines.len();
     let visible = usize::from(area.height);
     preview.update_scroll_bounds(total, visible);
@@ -187,6 +194,22 @@ pub fn render(
     } else {
         0
     };
+    let mut previous_index = None;
+    for (index, (source_index, line)) in visible_lines.iter().enumerate() {
+        let mut row = LayoutLine::from(line.clone());
+        if let Some(copy) = copy_rows.get(*source_index) {
+            row.copy = copy.clone();
+        }
+        if previous_index != source_index.checked_sub(1) {
+            row.copy.join_before = None;
+        }
+        preview.selection_layout.push(
+            area.x.saturating_add(left_padding),
+            area.y + (top_padding + index) as u16,
+            &row,
+        );
+        previous_index = Some(*source_index);
+    }
     let mut centered = Vec::with_capacity(usize::from(area.height));
     centered.extend(std::iter::repeat_n(Line::raw(""), top_padding));
     centered.extend(visible_lines.into_iter().map(|(_, line)| line));
@@ -227,24 +250,53 @@ fn preview_layout_key(
     }
 }
 
+struct ContentLayout {
+    layout: PreviewLayout,
+    copy_rows: Vec<CopyRow>,
+}
+
+impl std::ops::Deref for ContentLayout {
+    type Target = PreviewLayout;
+
+    fn deref(&self) -> &Self::Target {
+        &self.layout
+    }
+}
+
 fn content_layout(
     content: &PreviewContent,
     theme: &Theme,
     width: usize,
     language: crate::Language,
-) -> PreviewLayout {
+) -> ContentLayout {
     if let PreviewContent::Tool(tool) = content {
         let (information, secondary) = tool_sections(tool, theme, language);
         return sections_layout(information, secondary, width);
     }
 
-    PreviewLayout {
-        lines: content_lines(content, theme, width, language)
+    let rows = match content {
+        PreviewContent::Markdown(source)
+        | PreviewContent::Reasoning(source)
+        | PreviewContent::MutedMarkdown(source) => {
+            weak_markdown_layout(source, theme, width, language)
+        }
+        _ => content_lines(content, theme, width, language)
             .into_iter()
-            .flat_map(|line| wrap_line(line, width))
+            .map(Into::into)
             .collect(),
-        pinned_rows: 0,
-        nowrap_from: None,
+    };
+    let (lines, copy_rows) = rows
+        .into_iter()
+        .flat_map(|row| row.wrap(width))
+        .map(|row| (row.line, row.copy))
+        .unzip();
+    ContentLayout {
+        layout: PreviewLayout {
+            lines,
+            pinned_rows: 0,
+            nowrap_from: None,
+        },
+        copy_rows,
     }
 }
 
@@ -252,25 +304,38 @@ fn sections_layout(
     information: Vec<Line<'static>>,
     secondary: Option<Vec<Line<'static>>>,
     width: usize,
-) -> PreviewLayout {
-    let mut lines = information
+) -> ContentLayout {
+    let (mut lines, mut copy_rows): (Vec<_>, Vec<_>) = information
         .into_iter()
-        .flat_map(|line| wrap_line(line, width))
-        .collect::<Vec<_>>();
+        .flat_map(|line| LayoutLine::from(line).wrap(width))
+        .map(|row| (row.line, row.copy))
+        .unzip();
     if let Some(secondary) = secondary {
         lines.push(Line::raw(""));
+        copy_rows.push(CopyRow::default());
         let pinned_rows = lines.len();
+        copy_rows.extend(
+            secondary
+                .iter()
+                .map(|line| LayoutLine::from(line.clone()).copy),
+        );
         lines.extend(secondary);
-        PreviewLayout {
-            lines,
-            pinned_rows,
-            nowrap_from: Some(pinned_rows),
+        ContentLayout {
+            layout: PreviewLayout {
+                lines,
+                pinned_rows,
+                nowrap_from: Some(pinned_rows),
+            },
+            copy_rows,
         }
     } else {
-        PreviewLayout {
-            lines,
-            pinned_rows: 0,
-            nowrap_from: None,
+        ContentLayout {
+            layout: PreviewLayout {
+                lines,
+                pinned_rows: 0,
+                nowrap_from: None,
+            },
+            copy_rows,
         }
     }
 }
@@ -282,7 +347,7 @@ fn script_layout(
     theme: &Theme,
     width: usize,
     language: Language,
-) -> PreviewLayout {
+) -> ContentLayout {
     let mut lines = command_lines(&source[..script.body.start], theme);
     if !script.inline {
         lines.pop(); // The header's final newline is the start of the script body.
@@ -408,6 +473,18 @@ fn weak_markdown_lines(
     width: usize,
     language: crate::Language,
 ) -> Vec<Line<'static>> {
+    weak_markdown_layout(source, theme, width, language)
+        .into_iter()
+        .map(|row| row.line)
+        .collect()
+}
+
+fn weak_markdown_layout(
+    source: &str,
+    theme: &Theme,
+    width: usize,
+    language: crate::Language,
+) -> Vec<LayoutLine> {
     let mut next_unit = 0u64;
     let mut units = std::collections::HashMap::new();
     let options = RenderOptions {
@@ -420,13 +497,13 @@ fn weak_markdown_lines(
     render_markdown(source, theme, &mut next_unit, &options, &mut units)
         .into_iter()
         .map(|render_line| {
+            let mut row = render_line.layout_line();
             if render_line.fill {
-                render_line
+                row.line = row
                     .line
-                    .patch_style(theme.markdown_weak.code_block_bg.style())
-            } else {
-                render_line.line
+                    .patch_style(theme.markdown_weak.code_block_bg.style());
             }
+            row
         })
         .collect()
 }

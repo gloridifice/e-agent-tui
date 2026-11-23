@@ -228,6 +228,7 @@ pub fn render_with_cursor_and_selection(
     let toast = (!resizing && !help_visible)
         .then_some(overlays.toast)
         .flatten();
+    state.render.selection_layout = Default::default();
     let cursor = screen::render_with_cursor(frame, state, input, scroll, theme, overlays);
     if let Some(toast) = toast {
         let area = state
@@ -251,7 +252,8 @@ pub fn render_with_cursor_and_selection(
         !resizing && state.mcp.is_none(),
     )
     .with_pane_separator(pane_separator)
-    .with_viewport(state.viewport);
+    .with_viewport(state.viewport)
+    .with_selection_layout(frame.buffer_mut(), &state.render.selection_layout);
     selection::clear_non_copyable_markers(frame.buffer_mut());
     if !resizing
         && presentation

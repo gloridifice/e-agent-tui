@@ -63,6 +63,10 @@
 - Pi CLI resume by exact session ID MUST resolve an existing native session and its saved workspace before terminal setup, without opening a picker, creating a replacement, or forking. Missing or ambiguous IDs and conflicting session selectors MUST fail explicitly. Discovery honors the adapter's native session-directory overrides.
 - On TUI exit, `pie` MUST print a recovery command for the last attached saved session after terminal restoration. Unsaved sessions MUST NOT produce recovery commands; files outside native session discovery use an explicit file command instead of an undiscoverable ID.
 
+## One-shot side questions
+
+<code>/btw &lt;message&gt;</code> asks a text-only question about the focused Pi conversation without pausing, steering, or queuing work in that conversation. Each question uses the current model and effort and a fresh snapshot of the finalized active branch, including compaction summaries and completed tool results, but not queued inputs, unfinished calls, or live response fragments. No tools execute. The message pane shows the question and its answer or failure together, marked `[BTW]`, without changing focus. Neither side of the exchange enters the native transcript, a separate saved history, or another side question. Session replacement discards stale results. DSH, unattached drafts, and missing companion support must reject rather than forward a prompt.
+
 ## Background delegation
 
 Pi conversations start with delegation off. <code>/subagent</code> toggles the current conversation; <code>/subagent on</code> and <code>/subagent off</code> are idempotent. Invalid arguments do not change the mode. Enabling exposes a task tool rather than opening another conversation pane. Disabling withdraws it and cancels outstanding children. The switch and task entries are not restored on resource reload, session replacement or application restart.

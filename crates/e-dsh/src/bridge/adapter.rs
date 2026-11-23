@@ -286,6 +286,7 @@ pub fn agent_request_to_client(request: AgentRequest) -> Result<ClientMessage, S
             before_seq: before_sequence,
             limit,
         },
+        AgentRequest::Btw { .. } => return Err("Side questions are not available from DSH".into()),
         AgentRequest::Mcp(_) => {
             return Err("MCP configuration management is not available from this adapter".into())
         }

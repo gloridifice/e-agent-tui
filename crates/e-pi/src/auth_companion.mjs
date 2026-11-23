@@ -4,6 +4,7 @@ import {
   VERSION,
 } from "@earendil-works/pi-coding-agent";
 
+import registerBtw from "./pie-btw-companion.mjs";
 import registerMcpControls from "./pie-mcp-companion.mjs";
 import registerSideControls from "./pie-side-companion.mjs";
 
@@ -62,6 +63,7 @@ function refreshFailed(result) {
 }
 
 export default function registerPieNativeAuth(pi) {
+  registerBtw(pi);
   registerMcpControls(pi);
   registerSideControls(pi);
   const delegation = registerDelegationSwitch(pi);

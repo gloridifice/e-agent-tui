@@ -129,6 +129,8 @@ pub struct PiAdapter {
     compaction_model_path: Option<std::path::PathBuf>,
     reload_available: bool,
     side_available: bool,
+    btw_available: bool,
+    pending_btw: HashMap<String, String>,
     pending_reload: Option<PendingReload>,
     mcp: mcp::McpAdapter,
     pending_compaction: Option<compaction::Pending>,
@@ -211,6 +213,8 @@ impl PiAdapter {
             compaction_model_path: None,
             reload_available: false,
             side_available: false,
+            btw_available: false,
+            pending_btw: HashMap::new(),
             pending_reload: None,
             mcp: mcp::McpAdapter::default(),
             pending_compaction: None,
@@ -577,6 +581,7 @@ impl PiAdapter {
         let mut native_mcp = false;
         self.reload_available = false;
         self.side_available = false;
+        self.btw_available = false;
         for command in data
             .and_then(|data| data.get("commands"))
             .and_then(Value::as_array)
@@ -586,6 +591,11 @@ impl PiAdapter {
             let Some(name) = command.get("name").and_then(Value::as_str) else {
                 continue;
             };
+            if name == btw::COMMAND {
+                self.btw_available =
+                    command.get("source").and_then(Value::as_str) == Some("extension");
+                continue;
+            }
             if name == crate::side::COMMAND {
                 self.side_available = true;
                 continue;
@@ -748,6 +758,7 @@ impl PiAdapter {
     }
 }
 
+mod btw;
 mod compaction;
 #[cfg(test)]
 mod compaction_tests;

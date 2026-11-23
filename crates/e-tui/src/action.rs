@@ -166,6 +166,10 @@ pub enum AgentRequest {
         before_sequence: u64,
         limit: usize,
     },
+    Btw {
+        session_id: String,
+        question: String,
+    },
     Mcp(crate::mcp::types::McpRequest),
     LoginGet,
     AuthGet {
@@ -235,6 +239,7 @@ impl std::fmt::Debug for AgentRequest {
             Self::Input { prompt } => formatter.debug_tuple("Input").field(prompt).finish(),
             Self::Steer { prompt } => formatter.debug_tuple("Steer").field(prompt).finish(),
             Self::ClearAsap => formatter.write_str("ClearAsap"),
+            Self::Btw { .. } => formatter.write_str("Btw"),
             Self::NewInput { mode, prompt } => formatter
                 .debug_struct("NewInput")
                 .field("mode", mode)

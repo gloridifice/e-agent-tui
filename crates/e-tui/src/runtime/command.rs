@@ -166,6 +166,7 @@ pub(crate) fn command_mutates_backend(line: &str) -> bool {
                 | CommandAction::Reading
                 | CommandAction::History
                 | CommandAction::Copy
+                | CommandAction::Btw
                 | CommandAction::Econfig
                 | CommandAction::Settings
                 | CommandAction::Theme
@@ -641,6 +642,25 @@ pub fn handle_local_command(line: String, context: LocalCommandContext<'_>) -> C
             } else {
                 push_error(context.state, tr(context.language, "command.history.usage"));
             }
+        }
+        CommandAction::Btw => {
+            let mut app = context.state.lock().unwrap();
+            if !is_pi {
+                app.push_error_message(tr(context.language, "command.btw.unavailable"));
+            } else if app.is_new_conversation() {
+                app.set_new_conversation_notice(tr(context.language, "command.new.must_send"));
+            } else if raw_input.trim().is_empty() {
+                app.push_error_message(tr(context.language, "command.btw.usage"));
+            } else if let Some(session_id) = app.session.session_id.clone() {
+                outcome.outbound.push(AgentRequest::Btw {
+                    session_id,
+                    question: raw_input.trim_start().to_owned(),
+                });
+                return outcome;
+            } else {
+                app.push_error_message(tr(context.language, "command.btw.unavailable"));
+            }
+            outcome.restore_input = true;
         }
         CommandAction::Side => {
             let available = context.state.lock().unwrap().side_sessions_available;

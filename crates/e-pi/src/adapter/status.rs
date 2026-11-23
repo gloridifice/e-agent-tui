@@ -14,6 +14,9 @@ pub(super) fn update(
         return AdapterOutput::default();
     };
     let text = text.filter(|text| !text.trim().is_empty());
+    if key == super::btw::STATUS {
+        return super::btw::status(adapter, text.as_deref().unwrap_or_default());
+    }
     if key == "pie-subagents-v1" {
         return text
             .as_deref()

@@ -529,6 +529,17 @@ pub(super) fn apply_interaction(
             }
         }
         InteractionEvent::Heartbeat => {}
+        InteractionEvent::BtwExchange {
+            id,
+            session_id,
+            question,
+            reply,
+        } => {
+            let mut app = state.lock().unwrap();
+            if app.session.session_id.as_deref() == Some(&session_id) {
+                app.update_btw_exchange(&id, &question, reply);
+            }
+        }
         InteractionEvent::PromptDispatched {
             record_id,
             request_id,

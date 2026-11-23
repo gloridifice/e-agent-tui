@@ -283,6 +283,12 @@ pub enum AsapQueueOperation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InteractionEvent {
+    BtwExchange {
+        id: String,
+        session_id: String,
+        question: String,
+        reply: Option<Result<String, String>>,
+    },
     AsapQueue {
         session_id: String,
         prompts: Vec<String>,

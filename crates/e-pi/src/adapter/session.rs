@@ -65,6 +65,10 @@ pub(super) fn state_response(adapter: &mut PiAdapter, data: Option<&Value>) -> A
     let switched = adapter.last_attached_session.as_deref() != Some(session_key.as_str());
     if switched {
         adapter.mcp.available = false;
+        adapter.pending_btw.clear();
+        if adapter.last_attached_session.is_some() {
+            adapter.btw_available = false;
+        }
         super::retry::reset(adapter);
     }
     let status = if adapter.is_streaming || adapter.retry.busy() {

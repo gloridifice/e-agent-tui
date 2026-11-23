@@ -32,6 +32,7 @@ fn command_line(adapter: &mut PiAdapter, line: String, record_id: Option<u64>) -
         if adapter.is_streaming {
             return adapter.unsupported("Wait for Pi to become idle before /reload");
         }
+        adapter.btw_available = false; // Re-discover the command after resource replacement.
         let id = adapter.request_id("reload");
         adapter.pending_reload = Some(PendingReload {
             id: id.clone(),
@@ -140,6 +141,7 @@ fn route_request(
 ) -> AdapterOutput {
     match request {
         AgentRequest::Record { .. } => adapter.protocol_error("Nested Record submission".into()),
+        AgentRequest::Btw { session_id, question } => super::btw::request(adapter, session_id, question),
         AgentRequest::Mcp(request) => super::mcp::request(adapter, request),
         AgentRequest::Input { prompt } => {
             let Some(text) = prompt.plain_text().map(str::to_owned) else {

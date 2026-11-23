@@ -230,6 +230,40 @@ impl RuntimeState {
         self.render.transcript_cache.invalidate();
     }
 
+    pub(crate) fn update_btw_exchange(
+        &mut self,
+        id: &str,
+        question: &str,
+        reply: Option<Result<String, String>>,
+    ) {
+        let id = DisplayId::correlated("btw", id);
+        let pending = reply.is_none();
+        let lang = self.config.language;
+        let body = match reply {
+            None => crate::i18n::tr(lang, "command.btw.pending"),
+            Some(Ok(text)) => text,
+            Some(Err(reason)) => {
+                crate::i18n::tr_args(lang, "command.btw.failed", &[("reason", reason)])
+            }
+        };
+        let content = format!("**[BTW]** {question}\n\n{body}");
+        let block = DisplayItem::Block(TranscriptBlock {
+            id: id.clone(),
+            unit: None,
+            copy_source: content.clone(),
+            content,
+            format: TranscriptFormat::Markdown,
+            tone: DisplayTone::Info,
+            streaming: false,
+        });
+        if pending {
+            self.transcript.append(block, None);
+        } else if self.transcript.replace(&id, block, None).is_none() {
+            return; // The originating transcript has been cleared.
+        }
+        self.render.transcript_cache.invalidate();
+    }
+
     pub fn push_error_message(&mut self, text: impl Into<String>) {
         self.push_local_block(text.into(), DisplayTone::Error, "error");
     }

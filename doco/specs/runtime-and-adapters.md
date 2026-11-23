@@ -6,7 +6,7 @@
 - `e-dsh` and `e-pi` MUST depend on `e-tui` and MUST NOT depend on each other.
 - `e-tui` MUST own common Tips definitions and an owned, atomic batch-registration API with typed validation errors. Adapters MUST append only their private definitions at composition and publish normalized availability through the registry; IDs and command names alone MUST NOT imply native support. Eligibility MUST use current owner state, effective bindings and exact-locale translations, omitting unavailable candidates rather than displaying stale or mixed-language advice. Session replacement retains definitions but resets capabilities and ephemeral rotation.
 - Each adapter MUST convert provider input into owned `AgentEvent` values and convert `AgentRequest` values at its boundary. Raw provider JSON MUST NOT enter the frontend reducer.
-- Pi extension `setStatus` records MUST NOT project message-area updates. Existing authentication, MCP, and side-control records MUST retain their private control consumers rather than becoming displayed JSON. The fast-mode preference and private delegation snapshot publish normalized composer/footer state; other ordinary statuses are ignored.
+- Pi extension `setStatus` records MUST NOT project message-area updates. Private authentication, MCP, side-session, and one-shot question result records MUST retain their private control consumers rather than becoming displayed JSON. The fast-mode preference and private delegation snapshot publish normalized composer/footer state; other ordinary statuses are ignored.
 - Architecture tests MUST reject production module cycles and forbidden cross-package dependencies.
 
 ## Runtime effects and locking

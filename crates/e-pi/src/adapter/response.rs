@@ -35,6 +35,9 @@ fn settlement_event(
 }
 
 pub(super) fn dispatch(adapter: &mut PiAdapter, mut record: RpcRecord) -> AdapterOutput {
+    if let Some(output) = super::btw::response(adapter, &record) {
+        return output;
+    }
     let interrupt_response = record.string("id").is_some_and(|id| {
         id.starts_with("pie-interrupt-abort-") || id.starts_with("pie-interrupt-state-")
     });

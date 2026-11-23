@@ -48,6 +48,8 @@ impl AuthAssets {
         std::fs::write(&mcp, include_bytes!("mcp_companion.mjs"))?;
         let subagents = directory.path().join("pie-subagents.mjs");
         std::fs::write(&subagents, include_bytes!("subagents.mjs"))?;
+        let btw = directory.path().join("pie-btw-companion.mjs");
+        std::fs::write(&btw, include_bytes!("btw_companion.mjs"))?;
         let side = directory.path().join("pie-side-companion.mjs");
         let side_helper = directory.path().join("pie-side-helper.mjs");
         std::fs::write(&side, include_bytes!("side_companion.mjs"))?;
@@ -59,6 +61,7 @@ impl AuthAssets {
             std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o600))?;
             std::fs::set_permissions(&mcp, std::fs::Permissions::from_mode(0o600))?;
             std::fs::set_permissions(&subagents, std::fs::Permissions::from_mode(0o600))?;
+            std::fs::set_permissions(&btw, std::fs::Permissions::from_mode(0o600))?;
             std::fs::set_permissions(&side, std::fs::Permissions::from_mode(0o600))?;
             std::fs::set_permissions(&side_helper, std::fs::Permissions::from_mode(0o600))?;
         }

@@ -41,7 +41,8 @@
 
 ## Background delegation
 
-- Only an explicitly enabled Pi conversation may register the model-facing delegation tool. Each admitted task returns a distinct ID without waiting for execution. Children use an unsaved one-shot session with the parent workspace, model, effort and project trust, without the parent's history or delegation tool.
+- Only an explicitly enabled Pi conversation may register the model-facing delegation tool. Each admitted task returns a distinct ID without waiting for execution. Children use an unsaved one-shot session with the parent workspace and project trust, without the parent's history or delegation tool.
+- `spawn_agent` accepts independent, per-task `model` and `thinking` overrides. Each omitted value inherits the parent's corresponding selection at dispatch. A model override must exactly match an available `provider/model-id` or a model ID on the parent's provider. Pi clamps the requested thinking level to the child model's capabilities. Neither override changes the parent session.
 - Accepted child results and failures return as bounded native custom follow-ups, not user submissions or streamed child transcripts. They wait behind active native work and trigger an idle parent. Disabling delegation or retiring the extension instance invalidates pending callbacks before stopping its children. Frontend status snapshots must be bounded, validated and correlated to their native session.
 
 ## Pi fallback recovery

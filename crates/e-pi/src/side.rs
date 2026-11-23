@@ -13,7 +13,7 @@ use crate::protocol::{extension_ui_request, RpcCommand, RpcRecord};
 pub const COMMAND: &str = "__pie_side_v1";
 const STATUS_KEY: &str = "pie-side-v1";
 const MAX_CONTROL_BYTES: usize = 512 * 1024;
-const PREPARATION_TIMEOUT: Duration = Duration::from_secs(20);
+const PREPARATION_TIMEOUT: Duration = Duration::from_secs(75);
 
 pub fn is_control_record(record: &RpcRecord) -> bool {
     if record.kind == "response" {

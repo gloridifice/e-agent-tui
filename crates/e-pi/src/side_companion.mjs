@@ -7,34 +7,40 @@ import { getPackageDir } from "@earendil-works/pi-coding-agent";
 const COMMAND = "__pie_side_v1";
 const STATUS = "pie-side-v1";
 const MAX_CHOICES = 512;
+const PREPARATION_TIMEOUT_MS = 60_000;
 
 function text(message) {
   return typeof message.content === "string" ? message.content :
     (message.content ?? []).filter((part) => part.type === "text").map((part) => part.text).join("");
 }
 
-function prepare(request, workers) {
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(new URL("./pie-side-helper.mjs", import.meta.url), {
-      workerData: { request, packageRoot: getPackageDir() },
-      resourceLimits: { maxOldGenerationSizeMb: 256 },
-      stdout: true, stderr: true,
-    });
-    workers.add(worker);
-    worker.stdout.resume();
-    worker.stderr.resume();
-    const timer = setTimeout(() => { void worker.terminate(); reject(new Error("Side session preparation timed out")); }, 15000);
-    worker.on("message", (result) => {
-      if (result.error) reject(new Error(result.error));
-      else resolve(result);
-    });
-    worker.on("error", reject);
-    worker.on("exit", () => {
-      clearTimeout(timer);
-      workers.delete(worker);
-      reject(new Error("Side session worker stopped before returning a result"));
-    });
+async function prepare(request, workers) {
+  const worker = new Worker(new URL("./pie-side-helper.mjs", import.meta.url), {
+    workerData: { request, packageRoot: getPackageDir() },
+    resourceLimits: { maxOldGenerationSizeMb: 256 },
+    stdout: true, stderr: true,
   });
+  workers.add(worker);
+  worker.stdout.resume();
+  worker.stderr.resume();
+  let timer;
+  try {
+    return await new Promise((resolve, reject) => {
+      let phase = "starting the worker";
+      timer = setTimeout(() => reject(new Error(`Side session preparation timed out while ${phase} (60s)`)), PREPARATION_TIMEOUT_MS);
+      worker.on("message", (result) => {
+        if (result.phase) { phase = result.phase; return; }
+        if (result.error) reject(new Error(result.error));
+        else resolve(result);
+      });
+      worker.once("error", reject);
+      worker.once("exit", () => reject(new Error("Side session worker stopped before returning a result")));
+    });
+  } finally {
+    clearTimeout(timer);
+    await worker.terminate();
+    workers.delete(worker);
+  }
 }
 
 export default function registerSideControls(pi) {

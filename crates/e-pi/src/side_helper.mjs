@@ -6,7 +6,9 @@ import { parentPort, workerData } from "node:worker_threads";
 const MAX_SOURCE_BYTES = 32 * 1024 * 1024;
 try {
   const { request, packageRoot } = workerData;
+  parentPort.postMessage({ phase: "loading the Pi SDK" });
   const { SessionManager, CURRENT_SESSION_VERSION } = await import(pathToFileURL(join(packageRoot, "dist", "index.js")).href);
+  parentPort.postMessage({ phase: "loading the source session" });
   let session;
   if (request.leaf) {
     if (statSync(request.source).size > MAX_SOURCE_BYTES) throw new Error("Session is too large for side snapshot preparation (32 MiB maximum)");
@@ -36,8 +38,10 @@ try {
       } else if (entry.message.role === "toolResult") pending.delete(entry.message.toolCallId);
     }
     if (pending.size) throw new Error("The selected checkpoint contains unfinished tool calls");
+    parentPort.postMessage({ phase: "creating the native branch" });
     session = manager.createBranchedSession(request.leaf);
   } else {
+    parentPort.postMessage({ phase: "creating the native session" });
     session = SessionManager.create(request.cwd, request.directory, {
       parentSession: request.parent,
     }).getSessionFile();
